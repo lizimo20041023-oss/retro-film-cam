@@ -90,17 +90,29 @@ jobs:
           cd ios
           pod install
 
-      - name: 7. 自动识别 scheme 名
+      - name: 7. 自动识别 App 的 scheme 名
+        # ⚠️ 这里踩过一个很大的坑，务必保留现在的写法：
+        # CocoaPods 会往 workspace 里塞进几十个【Pod 自己的 scheme】
+        # （EXConstants / Expo* / React* / RCT* / hermes-engine / Pods-FretroCam …），
+        # 而且按字母排序时 EXConstants 排在真正的 App scheme 前面。
+        # 如果偷懒「取第一个」，编的就是 EXConstants 那个静态库 ——
+        # xcodebuild 会老老实实报 ** BUILD SUCCEEDED **，但【根本不产出任何 .app】，
+        # 后面打包就会莫名其妙地找不到 App（表现为 ipa 只有几百字节或直接失败）。
+        # 正确做法：App 的 scheme 名一定等于 <App名>.xcodeproj 的文件名，按它精确匹配。
         id: scheme
         run: |
           WORKSPACE=$(ls -d ios/*.xcworkspace | head -n 1)
+          PROJ=$(basename "$(ls -d ios/*.xcodeproj | head -n 1)" .xcodeproj)
           echo "workspace = $WORKSPACE"
+          echo "工程名    = $PROJ"
+          echo "── workspace 里的全部 scheme ──"
+          xcodebuild -workspace "$WORKSPACE" -list 2>/dev/null | sed -n '/Schemes:/,/^$/p'
           SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list 2>/dev/null \
-            | awk '/Schemes:/{flag=1;next} /^$/{flag=0} flag' \
-            | tr -d '[:space:]' | grep -v '^$' | grep -v '^Pods-' \
-            | head -n 1)
-          if [ -z "$SCHEME" ]; then SCHEME="FretroCam"; fi
-          echo "scheme = $SCHEME"
+            | sed -n '/Schemes:/,/^$/p' \
+            | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+            | grep -x "$PROJ" | head -n 1)
+          if [ -z "$SCHEME" ]; then SCHEME="$PROJ"; fi
+          echo "✅ 选中的 scheme = $SCHEME"
           echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
           echo "scheme=$SCHEME"       >> "$GITHUB_OUTPUT"
 
