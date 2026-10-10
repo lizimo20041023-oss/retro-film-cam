@@ -39,6 +39,10 @@ export const zhHant: Messages = {
   'frame.cropMarks': '打樣張',
   'frame.archiveCard': '檔案卡',
 
+  /* ---------------- ② 取景器右緣的變焦軌道 ---------------- */
+  'zoom.a11y': '變焦 {percent}%，上下拖動調整',
+  'zoom.label': '變焦',
+
   /* ---------------- ③.5 顆粒強度 ---------------- */
   'grain.a11y': '顆粒強度 {label}',
   'grain.label': '顆粒 GRAIN',

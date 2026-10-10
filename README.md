@@ -36,6 +36,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [14. 路线 B：打独立 App 的技术说明](#14-路线-b打独立-app-的技术说明)
 - [15. 界面设计：为什么"质感"是图片而不是样式](#15-界面设计为什么质感是图片而不是样式)
 - [16. 成片质感：颗粒 / CCD / 分辨率天花板](#16-成片质感颗粒--ccd--分辨率天花板)
+- [17. 变焦：数码变焦怎么接、为什么读数写百分比](#17-变焦数码变焦怎么接为什么读数写百分比)
 
 ---
 
@@ -229,7 +230,7 @@ npm start
 
 ```
 retro-film-cam/
-├── App.tsx                       # 应用根：SafeAreaProvider + 状态栏 + 单屏
+├── App.tsx                       # 应用根：SafeAreaProvider + SettingsProvider + 状态栏
 ├── index.ts                      # registerRootComponent(App)（package.json 的 "main"）
 ├── app.json                      # Expo 配置：图标、bundleId、权限文案、深色 UI、插件
 ├── package.json                  # 依赖 + 脚本（start / tunnel / typecheck / deps）
@@ -238,6 +239,7 @@ retro-film-cam/
 ├── .gitignore                    # 忽略 node_modules / .expo / ios / android / 签名文件
 ├── 新手操作指南.md                # ★ 零基础：用 Expo Go 跑起来（路线 A）
 ├── 如何装到手机上.md              # ★ 零基础：打成独立 App 装到 iPhone（路线 B）
+├── 给朋友：怎么装 FretroCam.md    # ★ 发给别人的独立安装说明（SideStore 一键链接）
 │
 ├── .github/
 │   └── workflows/
@@ -245,10 +247,15 @@ retro-film-cam/
 │
 ├── assets/
 │   ├── icon.png                  # App 图标 1024×1024（由 scripts/generate_app_icon.py 生成）
-│   ├── frames/                   # 相框 PNG（透明镂空）+ 规范文档
-│   │   ├── classic-white.png     #   白边印刷 1350×1800
-│   │   ├── instant-square.png    #   拍立得 1425×1800（1:1 窗口）
-│   │   ├── film-35mm.png         #   35mm 胶片条 1350×1950（含透明齿孔）
+│   ├── frames/                   # 相框 PNG（透明镂空）+ 规范文档 —— 共 8 款
+│   │   ├── classic-white.png     #   纤维相纸 1350×1800
+│   │   ├── instant-square.png    #   拍立得 1425×1800
+│   │   ├── film-35mm.png         #   35mm 片边 1350×1950（含透明齿孔）
+│   │   ├── darkroom.png          #   暗房放大 1350×1800（窗口是毛边）
+│   │   ├── slide-mount.png       #   幻灯装裱 1350×1350（方形装裱卡）
+│   │   ├── orange-base.png       #   负片片基 1350×1800（橙色片基 + 齿孔）
+│   │   ├── crop-marks.png        #   打样张 1350×1800（规矩线 + 四色色标）
+│   │   ├── archive-card.png      #   档案卡 1350×1800（牛皮纸 + 打孔）
 │   │   └── README.md             #   ★ 自己加相框看这里
 │   ├── textures/                 # 颗粒 / 色噪 / 灰尘 / 暗角 / 漏光贴图
 │   │   ├── grain.png             #   512×512 无缝平铺颗粒（8 位灰度，σ=62）
@@ -265,38 +272,60 @@ retro-film-cam/
 │   │   ├── icon-torch[-on].png   #   168×168 补光图标（灰 / 琥珀）
 │   │   ├── icon-flip.png         #   168×168 镜头反转图标
 │   │   ├── icon-film.png         #   168×168 预设（胶片条）图标
+│   │   ├── icon-settings.png     #   168×168 设置（三条滑轨 + 旋钮）图标
 │   │   └── README.md             #   ★ 改质感 / 加按钮看这里
 │   └── fonts/                    # 默认空目录（数码管字体可选，见 README）
 │       └── README.md             #   ★ 想用 DSEG7 数码管字体看这里
 │
 ├── scripts/
-│   ├── generate_placeholder_assets.py   # 程序化重生成占位相框/纹理（Python + Pillow）
-│   ├── generate_app_icon.py             # 程序化重生成 App 图标（Python + Pillow）
-│   ├── generate_ui_assets.py            # 程序化重生成界面质感素材（Python + Pillow + numpy）
+│   ├── generate_frames.py               # ★ 重生成 8 张相框（可只画一张）
+│   ├── generate_placeholder_assets.py   # 重生成 assets/textures/ 那 5 张贴图（**不含相框**）
+│   ├── generate_app_icon.py             # 重生成 App 图标（Python + Pillow）
+│   ├── generate_ui_assets.py            # 重生成界面质感素材（Python + Pillow + numpy）
+│   ├── preview_frames.py                # ★ 把 8 张相框贴到同一张照片上做对照图
 │   ├── preview_ui_mock.py               # 把样式表"翻译"成一张排版示意图（本地看比例用）
 │   └── preview_grade.py                 # 模拟调色管线、打印每个预设的颗粒 σ（本地看质感用）
 │
 └── src/
     ├── types/index.ts            # 全部类型（唯一类型来源，导出完整）
+    ├── i18n/
+    │   ├── index.ts              # 系统语言匹配 / 插值 / useI18n() / 树外的 t()
+    │   ├── types.ts              # MessageKey = keyof typeof zhHans（漏一个键就编译不过）
+    │   └── locales/
+    │       ├── zh-Hans.ts        # ★ 母本：所有键名的唯一来源
+    │       ├── zh-Hant.ts        #   繁體中文
+    │       ├── ja.ts             #   日本語
+    │       ├── en.ts             #   English（兜底语言）
+    │       ├── fr.ts             #   Français
+    │       └── index.ts          #   LOCALES 注册表 + FALLBACK_LOCALE
     ├── constants/
-    │   ├── frames.ts             # ★ 相框纯数据（名称 / PNG / 比例 / 镂空窗口）
+    │   ├── frames.ts             # ★ 相框纯数据（8 条：名称 / PNG / 比例 / 窗口 / 日期锚点）
     │   ├── presets.ts            # ★ 预设纯数据（对比度/饱和度/色温/时间戳…）
+    │   ├── grain.ts              # ★ 颗粒强度 5 档（关 / 轻 / 标准 / 重 / 极重）
+    │   ├── zoom.ts               # 变焦量程 / 步长 / 量化 / 百分比换算（纯函数）
+    │   ├── theme.ts              # 全局墨水色 + 等宽字体（设置界面与取景器共用一套）
     │   ├── textures.ts           # 纹理注册表
     │   └── uiAssets.ts           # ★ 界面质感素材注册表（require 全部 assets/ui/*）
     ├── utils/
     │   ├── processFilmPhoto.ts   # ★ 后处理主管线（纯逻辑 + 依赖注入，可单测）
-    │   ├── geometry.ts           # 取景比例 / 相框窗口 / 日期定位的几何计算
+    │   ├── geometry.ts           # 取景比例 / 相框窗口 / 日期与定位水印定位的几何计算
     │   ├── gradeLayers.ts        # 预设数值 → 图层数组（声明式调色，13 层）
     │   ├── captureOptions.ts     # 成片分辨率规划（成片长边 → captureRef 参数 + 像素数）
     │   ├── normalizePhoto.ts     # 原图降采样（内存优化；默认已关，直接用原图）
     │   ├── saveToLibrary.ts      # 存相册（新 API 优先 + 旧 API 兜底）
     │   ├── formatTimestamp.ts    # 日期格式化（YY MM DD / YY-MM-DD…）
+    │   ├── locationStamp.ts      # 定位取点 + 坐标格式化 + 地名反查（各自带超时）
+    │   ├── settingsStore.ts      # 设置持久化（AsyncStorage；失败只 warn，绝不抛）
     │   └── describeError.ts      # unknown → 用户可读文案
     ├── hooks/
     │   ├── useFilmStage.ts       # 合成视图的"挂载 → 就绪 → 截图"状态机
-    │   └── useFilmFonts.ts       # 数码管字体加载 + 系统等宽兜底
+    │   ├── useFilmFonts.ts       # 数码管字体加载 + 系统等宽兜底
+    │   ├── useSettings.tsx       # SettingsProvider + useSettings()（语言 / 定位）
+    │   └── useLocationStamp.ts   # 定位状态 + 每次快门的 2.5s 死线
     └── components/
         ├── CameraScreen.tsx      # 主屏（顶栏 / 取景 / 主控 / LCD 四段式布局）
+        ├── SettingsScreen.tsx    # 设置面板（5 语言 + 定位三档），全屏覆盖层
+        ├── ZoomRail.tsx          # 取景器右缘那根变焦竖条
         ├── DialButton.tsx        # 滚花拨轮按钮（44pt，质感来自 PNG，无高亮填充色）
         ├── FilmCompositor.tsx    # 成片合成视图（被 ViewShot 截图的那块）
         ├── FrameOverlay.tsx      # 取景器上的相框预览
@@ -831,13 +860,96 @@ iOS 平滑插值把纯白噪声的 σ 从 42 抹到约 15），再乘 0.16 的 o
 ### 16.5 改完记得跑这两个脚本
 
 ```powershell
-python scripts/generate_placeholder_assets.py   # 重新生成相框 + 5 张贴图
-python scripts/preview_grade.py                 # 模拟调色结果，打印每个预设的颗粒 σ
+python scripts/generate_placeholder_assets.py   # 只重新生成 assets/textures/ 里那 5 张贴图
+python scripts/generate_frames.py                # 重新生成 assets/frames/ 里那 8 张相框
+python scripts/generate_frames.py darkroom       # 只重画其中一张
+python scripts/preview_grade.py                  # 模拟调色结果，打印每个预设的颗粒 σ
 ```
+
+> ⚠️ `generate_placeholder_assets.py` **只管贴图，不会再碰 `assets/frames/`**。
+> 它早期版本里也有相框生成函数，那些已经被 `generate_frames.py` 取代并**删掉了** ——
+> 留着的话，谁跑一次就会把 8 张新相框悄悄覆盖回旧设计。
 
 `preview_grade.py` 会用与 CoreImage 同源的混合公式，把 `presets.ts` 里的数值**解析出来重放一遍**
 （不抄第二份参数表，避免两边漂移），输出两张九宫格临时图 —— 这是在没有 iPhone 的情况下
 唯一能"看到"成片效果的办法。
+
+---
+
+## 17. 变焦：数码变焦怎么接、为什么读数写百分比
+
+需求原话：「再补充一点 要变焦 哪怕是数码变焦。」
+
+### 17.1 为什么没自己写手势放大
+
+`<CameraView>` **没有内置双指缩放**。翻遍 `node_modules/expo-camera`：
+`isPinchToZoomEnabled` 只出现在条码扫描的 `ScanningOptions`
+（`node_modules/expo-camera/build/Camera.types.d.ts:519`）和
+`node_modules/expo-camera/ios/Current/CameraViewModule.swift:399`，
+`node_modules/expo-camera/ios/Current/CameraView.swift` 里**没有任何 pinch 手势**。
+唯一的变焦通道就是 `zoom` 这个 prop。
+
+那就用 `zoom` —— 它做的是**真变焦，不是「拍完再裁」**：
+
+```
+node_modules/expo-camera/ios/Current/CameraSessionManager.swift:221
+    device.videoZoomFactor = minZoom * pow(device.activeFormat.videoMaxZoomFactor / minZoom, delegate.zoom)
+    // 其中 let minZoom = 1.0  →  指数插值
+```
+
+`videoZoomFactor` 是**设备级**属性，预览流和 `takePicture()` 的静态输出**一起吃**。所以：
+
+- **取景器里看到多大，成片就是多大** —— 不需要"拍完再按预览的裁切比例裁一遍"。
+- 成片是相机**按传感器裁出来的全分辨率结果**，比"拍全图、把长边缩到 2048 之后再裁中心"好得多
+  （后者只剩 2048 像素里的一小块，裁完直接糊）。这就是**没有自己写裁剪**的原因。
+- 指数插值意味着前半段动得慢、后半段动得快，手感像真实变焦环，而不是线性滑块。
+
+### 17.2 为什么界面上写百分比，不写「×3 倍」
+
+`device.activeFormat.videoMaxZoomFactor` **只有原生侧读得到，JS 拿不到**。
+也就是说 `zoom` 那个 0~1 的数，前端根本无法换算成"这是几倍"。
+与其猜一个错的倍数写在屏幕上，不如**把量程本身当刻度**：`0%` ~ `100%` 就是拉杆位置。
+（错的数字比没有数字更糟。）
+
+`ZOOM_MAX = 0.75` 而不是 1.0：`zoom = 1` 表示"这台设备允许的最大数码变焦"，
+16 倍机型上就是 16 倍 —— 而本 App 拍完还要把长边缩到 2048px（见 16.3），
+拉满的成片全是糊的。**宁可少给，也不给一个"看起来能拉、拉完不能用"的档位。**
+
+### 17.3 为什么轨道是竖的、贴在取景器右缘
+
+取景器上已经有一个**横向** PanResponder：`FrameSwitcher`（左右滑动换相框）。
+竖直方向是空的 —— 用竖条是刻意的（真实变焦环就是转，不是推）。
+
+- 手指落在轨道上时 `ZoomRail` 先取到响应权（`onStartShouldSetPanResponder` 返回 true），
+  所以**轨道上的横滑不会误触发换相框**；而 `FrameSwitcher` 自己的
+  `onStartShouldSetPanResponder` 恒为 `false`（它只认移动），两边不会抢。
+- 轨道**所有子节点**都设了 `pointerEvents="none"` —— 这样手势的 target 永远是轨道本身，
+  `nativeEvent.locationY` 才是相对轨道的坐标（否则会相对被点到的那个子节点）。
+- 外层是 `pointerEvents="box-none"` 的绝对定位容器，轨道以外的区域触摸照常穿透给取景器。
+
+放在取景器上而不是底部控制区，是因为变焦是**边看边调**的动作：
+手指离画面只有几毫米，视线不用在"画面"和"滑块"之间来回跳。
+
+### 17.4 两个小决定
+
+- **换前后摄时归零**（`CameraScreen.handleFlipCamera` 里 `setZoom(DEFAULT_ZOOM)`）：
+  前后摄模组的 `videoMaxZoomFactor` 差很多，沿用旧值会突然跳到另一档放大。
+- **写原生属性前先量化到 1%**（`toCameraZoom`）：不量化的话拖动时每一帧都写一次 `zoom` prop，
+  而 `node_modules/expo-camera/ios/Current/CameraView.swift:142` 的
+  `var zoom: CGFloat = 0 { didSet { sessionQueue.async { self.sessionManager.updateZoom() } } }`
+  每次都去 lock/unlock 一次 device 配置。
+
+### 17.5 相关文件
+
+| 文件 | 作用 |
+| --- | --- |
+| `src/constants/zoom.ts` | 量程、步长、量化、百分比换算 —— 全是纯函数 |
+| `src/components/ZoomRail.tsx` | 那根竖条 + PanResponder + 无障碍 `adjustable` |
+| `src/components/CameraScreen.tsx` | `zoom` state、`<CameraView zoom={zoom}>`、翻转时归零 |
+
+无障碍：轨道是 `accessibilityRole="adjustable"`，
+带 `accessibilityValue={{ min: 0, max: 100, now: percent }}` 和
+`accessibilityActions` 的 increment / decrement（标签用 RN 默认，不额外造词）。
 
 ---
 

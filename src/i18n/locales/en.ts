@@ -42,6 +42,10 @@ export const en: Messages = {
   'frame.cropMarks': 'PROOF',
   'frame.archiveCard': 'ARCHIVE',
 
+  /* ---------------- ② zoom rail on the viewfinder ---------------- */
+  'zoom.a11y': 'Zoom {percent} percent, drag up or down to adjust',
+  'zoom.label': 'ZOOM',
+
   /* ---------------- ③.5 grain ---------------- */
   'grain.a11y': 'Grain strength {label}',
   'grain.label': 'GRAIN',

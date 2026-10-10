@@ -42,6 +42,10 @@ export const fr: Messages = {
   'frame.cropMarks': 'ÉPREUVE',
   'frame.archiveCard': 'ARCHIVE',
 
+  /* ---------------- ② rail de zoom sur le viseur ---------------- */
+  'zoom.a11y': 'Zoom {percent} %, faites glisser vers le haut ou le bas',
+  'zoom.label': 'ZOOM',
+
   /* ---------------- ③.5 grain ---------------- */
   'grain.a11y': 'Intensité du grain {label}',
   'grain.label': 'GRAIN',

@@ -60,6 +60,7 @@ import {
 } from '../constants/presets';
 import { INK, UI_MONO, compact } from '../constants/theme';
 import { UI_ASSETS } from '../constants/uiAssets';
+import { DEFAULT_ZOOM, toCameraZoom } from '../constants/zoom';
 import { useI18n } from '../i18n';
 import { useFilmFonts } from '../hooks/useFilmFonts';
 import { useFilmStage } from '../hooks/useFilmStage';
@@ -77,6 +78,7 @@ import { FrameSwitcher } from './FrameSwitcher';
 import { PermissionNotice } from './PermissionNotice';
 import { SettingsScreen } from './SettingsScreen';
 import { ShutterButton } from './ShutterButton';
+import { ZoomRail } from './ZoomRail';
 
 /** 取景器里相框四周留白。 */
 const PREVIEW_PADDING = 10;
@@ -98,6 +100,11 @@ export function CameraScreen() {
   );
   const [facing, setFacing] = useState<CameraType>('back');
   const [torchOn, setTorchOn] = useState(false);
+  /**
+   * 变焦。值就是传给 `<CameraView zoom={...}>` 的那个数（0 = 不放大），
+   * 不是倍数 —— 为什么见 `src/constants/zoom.ts` 的文件头。
+   */
+  const [zoom, setZoom] = useState<number>(DEFAULT_ZOOM);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraKey, setCameraKey] = useState(0);
   const [mountError, setMountError] = useState<string | null>(null);
@@ -254,6 +261,13 @@ export function CameraScreen() {
     setFacing((current) => (current === 'back' ? 'front' : 'back'));
     // 前置没有补光灯，翻转时顺手关掉，避免状态残留
     setTorchOn(false);
+    // 前后摄的镜头模组不一样（后置广角的最大数码变焦和前置差很多），
+    // 沿用旧值会让翻转后突然变成另一档放大，直接归零最不容易出意外。
+    setZoom(DEFAULT_ZOOM);
+  }, []);
+
+  const handleZoomChange = useCallback((next: number) => {
+    setZoom(toCameraZoom(next));
   }, []);
 
   const handleToggleTorch = useCallback(() => {
@@ -467,6 +481,7 @@ export function CameraScreen() {
             mode="picture"
             flash="off"
             enableTorch={torchOn && facing === 'back'}
+            zoom={zoom}
             animateShutter
             onCameraReady={handleCameraReady}
             onMountError={handleMountError}
@@ -496,6 +511,13 @@ export function CameraScreen() {
               <FrameOverlay frame={frame} layout={previewLayout} />
             </View>
           </FrameSwitcher>
+        ) : null}
+
+        {/* 变焦：取景器右缘那根竖条。用的是原生 videoZoomFactor，
+            预览和成片一起变，所以「看到多大就是多大」。
+            竖着放是因为取景器的横向手势已经被 FrameSwitcher 占了。 */}
+        {cameraGranted ? (
+          <ZoomRail value={zoom} onChange={handleZoomChange} enabled={interactive} />
         ) : null}
 
         {/* 保存失败（通常是相册权限）：不阻塞拍摄，给一次"去设置" */}

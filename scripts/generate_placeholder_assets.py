@@ -1,23 +1,23 @@
-"""生成 retro-film-cam 的占位相框与胶片纹理。
+"""生成 retro-film-cam 的胶片纹理贴图（**不含相框**）。
 
 用法（在项目根目录）：
     python scripts/generate_placeholder_assets.py
 
-产物：
-    assets/frames/classic-white.png    3:4 白边印刷相框
-    assets/frames/instant-square.png   1:1 拍立得相框（下方留白）
-    assets/frames/film-35mm.png        35mm 胶片条（两侧齿孔）
-    assets/textures/grain.png          颗粒噪点平铺 tile（512×512，彩度中性）
-    assets/textures/chroma-noise.png   CCD 彩色噪点 tile（256×256，块状色斑）
-    assets/textures/dust.png           灰尘与划痕（screen 混合图层）
-    assets/textures/vignette.png       暗角（径向 alpha 遮罩）
-    assets/textures/light-leak.png     漏光（screen 混合图层）
+产物（全部落在 assets/textures/）：
+    grain.png          颗粒噪点平铺 tile（512×512，彩度中性）
+    chroma-noise.png   CCD 彩色噪点 tile（256×256，块状色斑）
+    dust.png           灰尘与划痕（screen 混合图层）
+    vignette.png       暗角（径向 alpha 遮罩）
+    light-leak.png     漏光（screen 混合图层）
 
-设计约定（与 src/constants/frames.ts 中的 window 归一化数值一一对应）：
-    相框 PNG 的"镂空窗口"必须完全透明（alpha = 0），
-    window = (x/W, y/H, w/W, h/H) 全部是相对整张相框的 0~1 归一化值。
+相框**不在这里**。它在 scripts/generate_frames.py（8 张：纤维相纸 / 拍立得 /
+35mm 片边 / 暗房放大 / 幻灯装裱 / 负片片基 / 打样张 / 档案卡）。
+那边支持只重画一张：`python scripts/generate_frames.py 相框名`。
+本脚本原来也生成过 3 张相框，已经被取代 —— 如果哪天又在这里生成相框，
+跑一次就会把 assets/frames/ 里的新图覆盖回旧设计。
 
-脚本会在结束时打印每个相框的归一化 window 数值，方便和 frames.ts 校对。
+（下面留下来的 punch_window / print_window / print_text 是那会儿的通用工具，
+现在只有个别地方还在用，留着不碍事。）
 """
 
 from __future__ import annotations
@@ -136,139 +136,15 @@ def paste_text(
 
 
 # --------------------------------------------------------------------------- #
-# 相框
+# 相框：已搬到 scripts/generate_frames.py
 # --------------------------------------------------------------------------- #
-def make_classic_white() -> None:
-    """3:4 白色印刷相框：四周留白，底部略宽，窗口内完全透明。"""
-    W, H = 1350, 1800
-    window = (75, 90, 1200, 1599)
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-
-    d.rectangle([0, 0, W - 1, H - 1], fill=(250, 249, 245, 255))
-    # 纸张边缘的极淡内阴影，避免死白
-    d.rectangle([0, 0, W - 1, H - 1], outline=(236, 233, 226, 255), width=4)
-
-    # 窗口外侧的细灰描边（模拟相纸裁切边）
-    x, y, w, h = window
-    d.rectangle([x - 4, y - 4, x + w + 3, y + h + 3], outline=(216, 212, 203, 255), width=4)
-
-    punch_window(img, window)
-
-    # 底部边缘码：宽字距 + 做旧，颜色比原先更浅更灰（"字重变轻"）
-    paste_text(
-        img,
-        (x, H - 82),
-        "RETRO 400 · 36 EXP · C-41",
-        size=32,
-        tracking=8,
-        ink=(178, 172, 161),
-        wear=0.17,
-        seed=11,
-    )
-    save(img, os.path.join(FRAMES_DIR, "classic-white.png"))
-    print_window("classic-white", (W, H), window)
-
-
-def make_instant_square() -> None:
-    """拍立得：1:1 窗口 + 很宽的下边框。"""
-    W, H = 1425, 1800
-    window = (75, 90, 1275, 1275)
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-
-    d.rectangle([0, 0, W - 1, H - 1], fill=(245, 243, 238, 255))
-    d.rectangle([0, 0, W - 1, H - 1], outline=(228, 224, 216, 255), width=5)
-
-    x, y, w, h = window
-    d.rectangle([x - 5, y - 5, x + w + 4, y + h + 4], outline=(208, 204, 196, 255), width=5)
-
-    punch_window(img, window)
-
-    # 下边框里的印刷标识（App 已改名 FretroCam）
-    paste_text(
-        img,
-        (x + 10, H - 312),
-        "FRETROCAM",
-        size=62,
-        tracking=15,
-        ink=(160, 155, 146),
-        wear=0.13,
-        seed=23,
-    )
-    paste_text(
-        img,
-        (x + 10, H - 198),
-        "INSTANT · ISO 800",
-        size=36,
-        tracking=10,
-        ink=(190, 185, 176),
-        wear=0.18,
-        seed=29,
-    )
-    # 一条极淡的分隔线
-    d.line([x + 10, H - 336, x + w + 2, H - 336], fill=(226, 222, 214, 255), width=2)
-
-    save(img, os.path.join(FRAMES_DIR, "instant-square.png"))
-    print_window("instant-square", (W, H), window)
-
-
-def make_film_35mm() -> None:
-    """35mm 胶片条：两侧为齿孔（透明），窗口 3:4。"""
-    W, H = 1350, 1950
-    window = (210, 270, 930, 1240)
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-
-    # 片基：近黑，边缘略深
-    d.rectangle([0, 0, W - 1, H - 1], fill=(26, 27, 30, 255))
-    d.rectangle([0, 0, W - 1, H - 1], outline=(12, 13, 15, 255), width=8)
-    # 两侧齿孔带底色
-    d.rectangle([0, 0, 190, H - 1], fill=(19, 20, 23, 255))
-    d.rectangle([W - 191, 0, W - 1, H - 1], fill=(19, 20, 23, 255))
-
-    x, y, w, h = window
-    # 窗口内侧的一圈压痕
-    d.rectangle([x - 6, y - 6, x + w + 5, y + h + 5], outline=(58, 60, 64, 255), width=6)
-    punch_window(img, window)
-
-    # 齿孔：透明矩形，露出 App 的深色背景 → 像真孔
-    hole_w, hole_h = 104, 74
-    for cy in (105, W - 105):
-        top = 120
-        while top + hole_h < H - 90:
-            d.rounded_rectangle(
-                [cy - hole_w // 2, top, cy + hole_w // 2, top + hole_h],
-                radius=16,
-                fill=TRANSPARENT,
-            )
-            top += 150
-
-    # 顶部/底部黑边上的片基标识（宽字距 + 做旧）
-    paste_text(img, (x, 142), "RETRO 400", size=50, tracking=13, ink=(198, 174, 118), wear=0.11, seed=41)
-    paste_text(
-        img,
-        (x, 208),
-        "35MM · COLOR NEGATIVE",
-        size=32,
-        tracking=9,
-        ink=(148, 145, 139),
-        wear=0.17,
-        seed=43,
-    )
-    paste_text(
-        img,
-        (x, H - 196),
-        "36 EXP · PROCESS C-41",
-        size=32,
-        tracking=9,
-        ink=(148, 145, 139),
-        wear=0.17,
-        seed=47,
-    )
-
-    save(img, os.path.join(FRAMES_DIR, "film-35mm.png"))
-    print_window("film-35mm", (W, H), window)
+# 这里原来放着 classic-white / instant-square / film-35mm 三个生成函数。它们已经被
+# scripts/generate_frames.py 里的 8 张新相框取代，**不要再在这里加相框**：
+#   · 那边有 paper() / deboss() / punch_ragged() / perf_holes() 这些真正画纸的工具，
+#     而且支持 `python scripts/generate_frames.py 相框名` 只重画其中一张；
+#   · 更要紧的是：留在这里的话，谁跑一次本脚本就会把 assets/frames/ 里那 8 张新图
+#     悄悄覆盖回旧版设计 —— 这是最容易被踩的坑。
+# 本脚本从此只负责 assets/textures/ 下的 5 张调色贴图。
 
 
 # --------------------------------------------------------------------------- #
@@ -429,10 +305,6 @@ def make_light_leak(w: int = 768, h: int = 768) -> None:
 
 def main() -> None:
     ensure_dirs()
-    print("frames:")
-    make_classic_white()
-    make_instant_square()
-    make_film_35mm()
     print("textures:")
     make_grain()
     make_chroma_noise()

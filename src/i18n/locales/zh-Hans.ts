@@ -50,6 +50,10 @@ export const zhHans = {
   'frame.cropMarks': '打样张',
   'frame.archiveCard': '档案卡',
 
+  /* ---------------- ② 取景器右缘的变焦轨道 ---------------- */
+  'zoom.a11y': '变焦 {percent}%，上下拖动调整',
+  'zoom.label': '变焦',
+
   /* ---------------- ③.5 颗粒强度 ---------------- */
   'grain.a11y': '颗粒强度 {label}',
   'grain.label': '颗粒 GRAIN',

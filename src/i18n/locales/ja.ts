@@ -40,6 +40,10 @@ export const ja: Messages = {
   'frame.cropMarks': '校正刷り',
   'frame.archiveCard': '台帳',
 
+  /* ---------------- ② ファインダー右端のズームレール ---------------- */
+  'zoom.a11y': 'ズーム {percent}%、上下にドラッグして調整',
+  'zoom.label': 'ズーム',
+
   /* ---------------- ③.5 粒子の強さ ---------------- */
   'grain.a11y': '粒子の強さ {label}',
   'grain.label': '粒子 GRAIN',
