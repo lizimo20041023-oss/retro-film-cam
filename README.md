@@ -1262,13 +1262,53 @@ const cameraFocusProps = useMemo<CameraViewProps & FocusPointProp>(
 而且特意放在"换相框"那层**里面**：单击不会被抢走（`FrameSwitcher` 只在移动时接管），
 横向滑动照样能换相框。
 
-### 19.7 ⚠️ 诚实说明：这个补丁没有编译验证过
+### 19.7 ⚠️ 踩过的大坑：expo-camera 默认用预编译产物，`ios/` 里的源码根本不参与编译
 
-Windows 上装不了 Swift / Xcode 工具链，所以**补丁本身从未在本机编译过**，
-首次真正的编译发生在 GitHub Actions 的 `xcodebuild`（见第 14 节）。
+补丁写完、CI 全绿、IPA 也打出来了，但**补丁等于没打**。差分比对可以确认：
+v1.0.0 与新 IPA 里的 `ExpoCamera.framework/ExpoCamera` 都是 859,952 字节、
+**逐字节相同**，连 `setFocusPointOfInterest:` 这个 selector 都搜不到。
 
-它**只在 JS 传了 `focusPoint` 时才有行为**，不传就完全等同原版。也就是说，
-它最坏的情况是"点了没反应"，**不会让相机本身坏掉**。
+原因：expo-camera 57 包里带 `prebuilds/output/release/xcframeworks/*.tar.gz`，
+`pod install` 期间 `expo-modules-autolinking` 的 `PrecompiledModules` 会把
+podspec 换成 vendored framework —— `ios/**/*.swift` 一行都不编译。
+（CI 日志里那句 `[Expo-precompiled] Precompiled modules:` 后面跟着 8 个 `📦`
+就是这件事；七个 Expo 模块全在里面。）
+
+**修法**：`package.json` 里点名让这一个 pod 回退到源码编译。
+
+```json
+"expo": {
+  "autolinking": {
+    "ios": { "buildFromSource": ["ExpoCamera"] }
+  }
+}
+```
+
+链路（都是读过源码的，不是推测）：`expo-modules-autolinking` 的
+`autolinkingOptions.js` 里 `parsePackageJsonOptions` 从
+`package.json → expo.autolinking.<platform>` 读出 `buildFromSource`
+→ `scripts/ios/autolinking_manager.rb` 把它交给 `PrecompiledModules.configure`
+→ `scripts/ios/precompiled_modules.rb` 里命中 pattern 的 pod 直接返回
+`{ available: false, reason: :build_from_source }` → 该 pod 走源码。
+其余 6 个 Expo 模块照旧吃预编译产物，编译时间基本不变。
+
+本机可以自证，不需要 Xcode：
+
+```
+npx expo-modules-autolinking resolve --platform apple
+# → configuration: { buildFromSource: [ 'ExpoCamera' ] }
+```
+
+⚠️ **判断补丁有没有生效，只能比二进制字节，不能搜字符串。** Swift 里的
+ObjC 属性名不会以裸名留在二进制里 —— `videoZoomFactor` 在新旧两个 IPA 里
+都搜不到（只有 `setVideoZoomFactor:`、`setFocusMode:` 这类 selector 在）。
+只看字符串会得出完全相反的结论。
+
+顺带一条：JS 多传的未知 prop 是**完全无害**的。
+`expo-modules-core` 的 `ExpoFabricView.updateProps` 是遍历原生自己的
+`viewManagerPropDict`、再用 `props[key]` 取值，JS 多传的键根本读不到。
+所以在补丁还没生效的那一版里，`focusPoint` 只是静默无效，
+**不会让相机报错**。
 
 落地方式是 `patch-package`：`package.json` 里有 `"postinstall": "patch-package"`，
 CI 的 `npm ci` 会自动套用。**注意 `patches/` 目录必须提交进 git** —— 漏了它，
@@ -1296,6 +1336,7 @@ node %LOCALAPPDATA%\npm-cache\_npx\<hash>\node_modules\patch-package\index.js ex
 | 文件 | 作用 |
 | --- | --- |
 | `patches/expo-camera+57.0.6.patch` | 唯一的原生改动（纯新增 204 行 / 0 删除，3 个 Swift 文件） |
+| `package.json` | `expo.autolinking.ios.buildFromSource: ["ExpoCamera"]` —— 让这个 pod 走源码编译，否则补丁不生效（见 19.7） |
 | `src/components/CameraScreen.tsx` | `focusTarget` state、`cameraFocusProps`、`handleTapFocus`、那层透明 `Pressable` |
 | `src/components/FocusReticle.tsx` | 对焦框（纯展示，`pointerEvents="none"`，不参与任何手势） |
 
