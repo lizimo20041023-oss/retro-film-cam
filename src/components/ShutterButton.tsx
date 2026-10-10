@@ -14,6 +14,7 @@
 import { useRef } from 'react';
 import { ActivityIndicator, Animated, Image, Pressable, StyleSheet, View } from 'react-native';
 import { UI_ASSETS } from '../constants/uiAssets';
+import { useI18n } from '../i18n';
 
 export interface ShutterButtonProps {
   onPress: () => void;
@@ -29,6 +30,7 @@ const RING_GAP = 7; // 外圈与中圈的间距
 const DISC_MARGIN = 6; // 中圈与内盘的间距
 
 export function ShutterButton({ onPress, disabled = false, busy = false, size = 82 }: ShutterButtonProps) {
+  const { t } = useI18n();
   const scale = useRef(new Animated.Value(1)).current;
   const inactive = disabled || busy;
 
@@ -47,7 +49,7 @@ export function ShutterButton({ onPress, disabled = false, busy = false, size = 
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={busy ? '正在显影' : '拍照'}
+      accessibilityLabel={busy ? t('camera.shutter.busy') : t('camera.shutter.a11y')}
       accessibilityState={{ disabled: inactive, busy }}
       disabled={inactive}
       hitSlop={12}

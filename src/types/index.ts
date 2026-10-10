@@ -6,6 +6,9 @@
  * - 不出现 `any`：需要"RN 支持的混合模式"这类联合类型时，直接从 RN 自带类型反推。
  */
 import type { ImageSourcePropType, TextStyle, ViewStyle } from 'react-native';
+// 只借一个**类型**：显示名怎么翻译。`import type` 编译后整行消失，
+// 所以 types ↔ i18n 之间不会产生任何运行时循环依赖。
+import type { MessageKey } from '../i18n/types';
 
 /* ==========================================================================
  * 1. 基础几何
@@ -61,8 +64,15 @@ export type TimestampAnchor = 'window' | 'frame';
 export interface FrameSpec {
   /** 唯一 id（英文小写短横线），用于持久化 / 调试。 */
   id: string;
-  /** 显示名，会出现在切换提示里。 */
+  /** 显示名。没有 `nameKey` 时它就是最终显示的文字。 */
   name: string;
+  /**
+   * 显示名的翻译键。有它时界面显示 `t(nameKey)`，否则原样显示 `name`。
+   *
+   * 内置相框都带键（界面得跟着语言走）；**你自己加的相框只写 `name` 就够了** ——
+   * 五种语言里都显示你写的那句原文。这是刻意的：配置文件不该逼你同时改 5 个语言包。
+   */
+  nameKey?: MessageKey;
   /** 相框 PNG；透明区域 = 照片可见窗口。 */
   source: ImageSourcePropType;
   /** 相框整体宽高比 = 宽 / 高，**必须与 PNG 实际像素比一致**。 */
@@ -96,6 +106,18 @@ export interface FrameLayout {
 /** 时间戳排版（相对舞台左上角）。 */
 export interface TimestampLayout {
   right: number;
+  bottom: number;
+  fontSize: number;
+  letterSpacing: number;
+}
+
+/**
+ * 定位水印排版。
+ * 和日期**共用同一条基线**（`bottom` 相同），但贴左边 —— 右下角归日期、
+ * 左下角归地名/坐标，两者永远不会撞在一起，也不用为"谁更长"做避让。
+ */
+export interface LocationLayout {
+  left: number;
   bottom: number;
   fontSize: number;
   letterSpacing: number;
@@ -240,8 +262,10 @@ export type GrainLevelId = 'off' | 'light' | 'std' | 'heavy' | 'max';
  */
 export interface GrainLevel {
   id: GrainLevelId;
-  /** 分段按钮上的短标签（1~2 个字，再窄的屏也不会换行）。 */
+  /** 分段按钮上的短标签（1~2 个字，再窄的屏也不会换行）。没有 `labelKey` 时用它。 */
   label: string;
+  /** 短标签的翻译键。自己加的档位不写它，就显示 `label` 原文。 */
+  labelKey?: MessageKey;
   /** LCD 状态条里的机器打印缩写。 */
   code: string;
   /** 乘在预设 `grain` / `grainChroma` 上的系数。0 = 关，1 = 预设原本的量。 */
@@ -347,6 +371,11 @@ export interface FilmStageInput {
   frame: FrameSpec;
   /** 拍摄时间（烧进照片的日期）。 */
   capturedAt: Date;
+  /**
+   * 定位水印那一行字（例如 `'上海市 · 中国'` / `'31.230°N 121.474°E'`）。
+   * `null` / 不填 = 这次不烧定位 —— 拍照前没拿到定位时就是这个样子。
+   */
+  locationText?: string | null;
 }
 
 /**
@@ -407,6 +436,51 @@ export type SaveFailureReason =
 export type SaveOutcome =
   | { ok: true; uri: string }
   | { ok: false; reason: SaveFailureReason; message: string };
+
+/* ==========================================================================
+ * 6. 用户设置（持久化在 AsyncStorage，见 `src/utils/settingsStore.ts`）
+ * ========================================================================== */
+
+/**
+ * 界面语言偏好。`'auto'` = 跟随系统；其余值必须和 `src/i18n/locales/index.ts`
+ * 里注册的 id 一一对应（`LocaleId` 就是 `Exclude<LocalePreference, 'auto'>`）。
+ */
+export type LocalePreference = 'auto' | 'zh-Hans' | 'zh-Hant' | 'ja' | 'en' | 'fr';
+
+/**
+ * 定位水印模式：
+ * - `off`    不写定位（**默认**，即使用户给了权限也要他主动开）；
+ * - `place`  写地名（城市 · 国家），走系统反查，苹果/谷歌会联网解析；
+ * - `coords` 写经纬度，纯离线计算，不联网也不上传。
+ */
+export type LocationMode = 'off' | 'place' | 'coords';
+
+/** 全部用户设置。**加字段必须同步改 `settingsStore.ts` 的默认值**。 */
+export interface AppSettings {
+  locale: LocalePreference;
+  locationMode: LocationMode;
+}
+
+/** 写字机里定位这一格的状态（只影响 LCD 显示，不影响能否拍照）。 */
+export type LocationStampState =
+  | { kind: 'off' }
+  | { kind: 'locating' }
+  | { kind: 'ready'; text: string }
+  | { kind: 'error'; reason: LocationFailureReason };
+
+/** 定位失败的原因，UI 层再翻译成文案。 */
+export type LocationFailureReason =
+  /** 系统"定位服务"总开关没开。 */
+  | 'services-off'
+  /** 用户拒绝了权限（或拒绝且不再询问）。 */
+  | 'denied'
+  /** 有权限但拿不到坐标 / 反查失败 / 超时。 */
+  | 'failed';
+
+/** 取一次定位水印的结果。 */
+export type LocationStampOutcome =
+  | { ok: true; text: string }
+  | { ok: false; reason: LocationFailureReason };
 
 /** 字体就绪状态。 */
 export interface FilmFontsState {

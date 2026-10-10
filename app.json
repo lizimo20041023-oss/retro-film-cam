@@ -12,7 +12,8 @@
       "bundleIdentifier": "com.canyerylee.fretrocam",
       "infoPlist": {
         "NSCameraUsageDescription": "需要使用相机来取景拍摄胶片风格照片。",
-        "NSPhotoLibraryAddUsageDescription": "需要把显影后的成片保存到你的相册。"
+        "NSPhotoLibraryAddUsageDescription": "需要把显影后的成片保存到你的相册。",
+        "NSLocationWhenInUseUsageDescription": "开启「定位水印」后，把拍摄地点烧进照片里。位置只写进这一张照片，App 不会上传。"
       }
     },
     "android": {
@@ -33,6 +34,12 @@
           "photosPermission": "允许 $(PRODUCT_NAME) 保存成片到相册。",
           "savePhotosPermission": "允许 $(PRODUCT_NAME) 把成片保存到相册。",
           "isAccessMediaLocationEnabled": false
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "允许 $(PRODUCT_NAME) 在拍摄时读取位置，用于把地名或坐标烧进成片。"
         }
       ]
     ]

@@ -11,6 +11,8 @@
     icon-torch.png        极细线性图标：补光（闪电）
     icon-torch-on.png     同上，琥珀色（点亮）
     icon-flip.png         极细线性图标：镜头反转（循环箭头）
+    icon-film.png         极细线性图标：预设（电影胶片条）
+    icon-settings.png     极细线性图标：设置（三档推子）
 
 为什么这些也要用 PNG：
     RN 在 iOS 上没有径向渐变（`backgroundImage` 的
@@ -340,6 +342,34 @@ def make_icon_film(size: int = 168) -> None:
     save(img, os.path.join(UI_DIR, "icon-film.png"))
 
 
+def make_icon_settings(size: int = 168) -> None:
+    """设置：三档推子（滑轨 + 错开的滑块）。
+
+    为什么不用齿轮：图标在界面上只占 21pt（`DialButton` 的 `size * 0.48`），
+    齿轮的齿缩到 21pt 会糊成一圈毛边，读起来像"太阳/加载中"。
+    三根横轨 + 三个错开的滑块，在 21pt 下仍然是"可调参数"的清晰轮廓，
+    而且和机身那几枚机械拨轮是同一套视觉语言。
+    """
+    img, _ = _icon_canvas(size)
+    s = size / 168.0
+
+    def draw(d: ImageDraw.ImageDraw) -> None:
+        w = int(9 * s)
+        # (滑轨 y, 滑块中心 x)：滑块刻意错开，比三根对齐的更像"各调各的"
+        rows = ((46, 104), (84, 58), (122, 116))
+        for y, kx in rows:
+            d.line([(32 * s, y * s), (136 * s, y * s)], fill=255, width=w)
+            hw, hh = 9 * s, 16 * s
+            d.rounded_rectangle(
+                [kx * s - hw, y * s - hh, kx * s + hw, y * s + hh],
+                radius=4 * s,
+                fill=255,
+            )
+
+    img = Image.alpha_composite(img, _stroke(img, draw, ICON_IDLE, 9))
+    save(img, os.path.join(UI_DIR, "icon-settings.png"))
+
+
 # --------------------------------------------------------------------------- #
 def main() -> None:
     os.makedirs(UI_DIR, exist_ok=True)
@@ -351,6 +381,7 @@ def main() -> None:
     make_icon_torch()
     make_icon_flip()
     make_icon_film()
+    make_icon_settings()
     print("done.")
 
 

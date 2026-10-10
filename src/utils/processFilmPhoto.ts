@@ -18,6 +18,8 @@
  * │              'multiply'、light-leak 拉伸 + 'screen'                      │
  * │ 3. 日期烧录  <Text> 叠在画面右下角（或相框下留白）：橙色 #FF8A00、         │
  * │              等宽数码字体、可配 letterSpacing / 格式串                   │
+ * │ 3.5 定位水印  同一基线的左下角，纸白色小字（地名或经纬度）。             │
+ * │              **取值在按快门那一刻完成**，见 input.locationText            │
  * │ 4. 套相框    相框 PNG `resizeMode="stretch"` 铺满合成舞台，压在照片之上   │
  * │ 5. 截图      react-native-view-shot 的 captureRef（Expo Go 内置）         │
  * │ 6. 存相册    expo-media-library 新 API：`Asset.create(uri)`               │
@@ -68,6 +70,14 @@ export interface ProcessFilmPhotoInput {
   capturedAt?: Date;
   /** 覆盖预设里的 `normalizeMaxLongEdge`；0 = 跳过归一化。 */
   maxLongEdge?: number;
+  /**
+   * 这次要烧进照片的定位文字（`'上海市 · 中国'` / `'31.230°N 121.474°E'`）。
+   *
+   * 由**调用方在按快门时**取好再传进来，这里不自己去问 expo-location：
+   * 管线要能在没有定位权限、甚至没装 expo-location 的环境里跑完，
+   * 单测也就不用造位置桩。不传 / `null` / 空串 = 这张不写定位。
+   */
+  locationText?: string | null;
   /** 进度回调：'normalizing' → 'capturing' → 'saving'。 */
   onStage?: (stage: DevelopStage) => void;
 }
@@ -111,6 +121,7 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     preset,
     frame,
     capturedAt,
+    locationText: input.locationText ?? null,
   };
   input.onStage?.('capturing');
   let uri = '';

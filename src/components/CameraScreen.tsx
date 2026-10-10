@@ -32,7 +32,6 @@ import {
   ActivityIndicator,
   Image,
   Linking,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -59,12 +58,16 @@ import {
   resolvePreset,
   wrapPresetIndex,
 } from '../constants/presets';
+import { INK, UI_MONO, compact } from '../constants/theme';
 import { UI_ASSETS } from '../constants/uiAssets';
+import { useI18n } from '../i18n';
 import { useFilmFonts } from '../hooks/useFilmFonts';
 import { useFilmStage } from '../hooks/useFilmStage';
+import { useLocationStamp } from '../hooks/useLocationStamp';
 import type { CapturedPhoto, DevelopStatus, Rect, Size } from '../types';
 import { describeError } from '../utils/describeError';
 import { computeFrameLayout } from '../utils/geometry';
+import { LOCATION_FAILURE_COPY } from '../utils/locationStamp';
 import { processAndSaveFilmPhoto } from '../utils/processFilmPhoto';
 import { DevelopOverlay, computeDevelopStageBox } from './DevelopOverlay';
 import { DialButton } from './DialButton';
@@ -72,28 +75,19 @@ import { FilmCompositor } from './FilmCompositor';
 import { FrameOverlay } from './FrameOverlay';
 import { FrameSwitcher } from './FrameSwitcher';
 import { PermissionNotice } from './PermissionNotice';
+import { SettingsScreen } from './SettingsScreen';
 import { ShutterButton } from './ShutterButton';
 
 /** 取景器里相框四周留白。 */
 const PREVIEW_PADDING = 10;
-
-/**
- * UI 专用等宽字体：微标签 / 预设卡 / LCD 状态条都用它。
- * 刻意不走 `useFilmFonts` —— 那个字体可能被换成七段数码管（中文会缺字），
- * 这里的机器印刷感需要的是"系统等宽 + 宽字距"，不是"德味数码管"。
- */
-const UI_MONO = Platform.select({ ios: 'Menlo', default: 'monospace' });
-
-/** 0.16 → ".16"。LCD 条里的紧凑数值写法（省掉前导 0，一行能多放两个参数）。 */
-function compact(value: number): string {
-  return `.${String(Math.round(value * 100)).padStart(2, '0')}`;
-}
 
 export function CameraScreen() {
   const insets = useSafeAreaInsets();
   const window = useWindowDimensions();
   const fonts = useFilmFonts();
   const filmStage = useFilmStage();
+  const locationStamp = useLocationStamp();
+  const { t } = useI18n();
   const [cameraPermission, requestCameraPermission, getCameraPermission] = useCameraPermissions();
 
   /* ---------------- 状态 ---------------- */
@@ -110,6 +104,8 @@ export function CameraScreen() {
   const [status, setStatus] = useState<DevelopStatus>({ kind: 'idle' });
   const [saveIssue, setSaveIssue] = useState<string | null>(null);
   const [previewBox, setPreviewBox] = useState<Size>({ width: 0, height: 0 });
+  /** 设置界面（整屏覆盖层，不是导航栈里的一个页面）。 */
+  const [settingsVisible, setSettingsVisible] = useState(false);
 
   /* ---------------- refs ---------------- */
   const cameraRef = useRef<ComponentRef<typeof CameraView>>(null);
@@ -130,6 +126,12 @@ export function CameraScreen() {
     [preset, grainLevel.scale],
   );
   const resolved = useMemo(() => resolvePreset(effectivePreset), [effectivePreset]);
+
+  /**
+   * 相框显示名。内置相框带 `nameKey`（跟着语言走），
+   * 用户自己加的相框没这个键，就直接显示配置里写的 `name`。
+   */
+  const frameName = frame.nameKey !== undefined ? t(frame.nameKey) : frame.name;
 
   const developing = status.kind === 'developing';
   const cameraGranted = cameraPermission?.granted === true;
@@ -160,14 +162,32 @@ export function CameraScreen() {
     [window.width, window.height],
   );
 
-  // 底部 LCD 状态条的两行文案（只是把 resolved 里的数字排成紧凑的机器打印格式）
+  // 底部 LCD 状态条的三行文案（只是把 resolved 里的数字排成紧凑的机器打印格式）
   const timestampAnchor = resolved.timestamp.anchor ?? frame.defaultTimestampAnchor ?? 'window';
   const lcdDateLine = resolved.timestamp.enabled
-    ? `日期 ${resolved.timestamp.format} · 锚点 ${timestampAnchor.toUpperCase()}`
-    : '日期 已关闭';
-  const lcdParamLine =
-    `颗粒 ${grainLevel.code} ${compact(resolved.grain)} · 暗角 ${compact(resolved.vignette)} · ` +
-    `漏光 ${compact(resolved.lightLeak)} · 字体 ${fonts.source === 'custom' ? '自定义' : '等宽'}`;
+    ? t('lcd.date.on', { format: resolved.timestamp.format, anchor: timestampAnchor.toUpperCase() })
+    : t('lcd.date.off');
+  const lcdParamLine = t('lcd.params', {
+    code: grainLevel.code,
+    grain: compact(resolved.grain),
+    vignette: compact(resolved.vignette),
+    leak: compact(resolved.lightLeak),
+    font: fonts.source === 'custom' ? t('lcd.font.custom') : t('lcd.font.mono'),
+  });
+  /**
+   * 定位那一行。三种失败都只把原因写出来，**绝不拦快门** ——
+   * 定位只是水印里的一行小字，没拿到就这张不写，不该耽误出片。
+   *
+   * 这里用 `LOCATION_FAILURE_COPY[...].short`：LCD 是单行，放不下完整句子。
+   */
+  const lcdLocationLine =
+    locationStamp.state.kind === 'ready'
+      ? t('lcd.location.on', { value: locationStamp.state.text })
+      : locationStamp.state.kind === 'locating'
+        ? t('location.locating')
+        : locationStamp.state.kind === 'error'
+          ? t(LOCATION_FAILURE_COPY[locationStamp.state.reason].short)
+          : t('lcd.location.off');
 
   /* ---------------- 权限：首次进来自动问一次 ---------------- */
   useEffect(() => {
@@ -241,8 +261,17 @@ export function CameraScreen() {
     setTorchOn((current) => !current);
   }, []);
 
-  const handleOpenSettings = useCallback(() => {
+  const handleOpenSystemSettings = useCallback(() => {
     void Linking.openSettings();
+  }, []);
+
+  const handleOpenSettingsScreen = useCallback(() => {
+    void Haptics.selectionAsync();
+    setSettingsVisible(true);
+  }, []);
+
+  const handleCloseSettingsScreen = useCallback(() => {
+    setSettingsVisible(false);
   }, []);
 
   const handleDismiss = useCallback(() => {
@@ -266,9 +295,14 @@ export function CameraScreen() {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     try {
+      // 定位和拍照**并行**：按快门那一刻就把定位请求发出去。
+      // 它有自己的截止时间（`useLocationStamp` 里的 SHOT_DEADLINE_MS），
+      // 到点拿不到就这张不写定位 —— 照片永远不等 GPS。
+      const locationPromise = locationStamp.resolveForShot();
+
       const shot = await camera.takePictureAsync({ quality: 1, exif: false });
       if (!shot || !shot.uri) {
-        throw new Error('相机没有返回照片，请重试（Expo Go 里偶尔会拿不到临时文件）');
+        throw new Error(t('error.noPhoto'));
       }
 
       const captured: CapturedPhoto = {
@@ -277,6 +311,8 @@ export function CameraScreen() {
         height: shot.height,
       };
 
+      const locationText = await locationPromise;
+
       const result = await processAndSaveFilmPhoto({
         photo: captured,
         frame,
@@ -284,6 +320,7 @@ export function CameraScreen() {
         preset: effectivePreset,
         stage: stageBox,
         host: filmStage.host,
+        locationText,
         onStage: (nextStage) => setStatus({ kind: 'developing', stage: nextStage }),
       });
 
@@ -299,7 +336,18 @@ export function CameraScreen() {
     } finally {
       shotLockRef.current = false;
     }
-  }, [cameraReady, developing, filmStage.host, frame, effectivePreset, stageBox]);
+  }, [
+    cameraReady,
+    developing,
+    filmStage.host,
+    frame,
+    effectivePreset,
+    stageBox,
+    // 只依赖这个稳定的 useCallback，不依赖整个 controller 对象
+    // （controller 每次渲染都是新对象，会把 handleShutter 也一起重建）
+    locationStamp.resolveForShot,
+    t,
+  ]);
 
   /* ---------------- 覆盖层内容（权限 / 加载 / 相机错误） ---------------- */
   let noticeNode: ReactNode = null;
@@ -308,17 +356,17 @@ export function CameraScreen() {
   } else if (!cameraPermission.granted) {
     noticeNode = (
       <PermissionNotice
-        title="需要相机权限"
-        message="App 只在本地取景和合成，不会上传任何照片。"
-        actionLabel={cameraPermission.canAskAgain ? '允许使用相机' : '去系统设置'}
+        title={t('perm.camera.title')}
+        message={t('perm.camera.message')}
+        actionLabel={cameraPermission.canAskAgain ? t('perm.camera.allow') : t('perm.camera.openSettings')}
         onAction={() => {
           if (cameraPermission.canAskAgain) {
             void requestCameraPermission();
           } else {
-            handleOpenSettings();
+            handleOpenSystemSettings();
           }
         }}
-        secondaryLabel={cameraPermission.canAskAgain ? undefined : '重新检测'}
+        secondaryLabel={cameraPermission.canAskAgain ? undefined : t('perm.camera.recheck')}
         onSecondary={
           cameraPermission.canAskAgain
             ? undefined
@@ -326,21 +374,17 @@ export function CameraScreen() {
                 void getCameraPermission();
               }
         }
-        hint={
-          cameraPermission.canAskAgain
-            ? undefined
-            : 'iOS：设置 → 隐私与安全性 → 相机；Android：设置 → 应用 → 权限。授权后回到 App 点"重新检测"。'
-        }
+        hint={cameraPermission.canAskAgain ? undefined : t('perm.camera.hint')}
       />
     );
   } else if (mountError !== null) {
     noticeNode = (
       <PermissionNotice
-        title="相机启动失败"
+        title={t('perm.mount.title')}
         message={mountError}
-        actionLabel="重试"
+        actionLabel={t('perm.mount.retry')}
         onAction={handleRetryCamera}
-        hint="如果一直失败：关掉 Expo Go 重新扫码，或改用 npx expo start --tunnel。"
+        hint={t('perm.mount.hint')}
       />
     );
   }
@@ -364,7 +408,7 @@ export function CameraScreen() {
         <View style={styles.topLabel}>
           <View style={styles.topLabelRule} />
           <Text style={styles.topLabelText} numberOfLines={1}>
-            {frame.name}
+            {frameName}
             <Text style={styles.topLabelDim}>{'  ·  '}</Text>
             <Text style={styles.topLabelIndex}>
               {frameIndex + 1}/{FRAMES.length}
@@ -386,18 +430,28 @@ export function CameraScreen() {
               active={torchOn}
               disabled={facing === 'front'}
               onPress={handleToggleTorch}
-              accessibilityLabel={torchOn ? '关闭补光' : '打开补光'}
+              accessibilityLabel={torchOn ? t('camera.torch.on') : t('camera.torch.off')}
             />
-            <Text style={styles.topActionLabel}>补光</Text>
+            <Text style={styles.topActionLabel}>{t('camera.torch.label')}</Text>
           </View>
           <View style={styles.topActionsGap} />
           <View style={styles.topActionItem}>
             <DialButton
               icon={UI_ASSETS.iconFlip}
               onPress={handleFlipCamera}
-              accessibilityLabel="切换前后摄像头"
+              accessibilityLabel={t('camera.flip.a11y')}
             />
-            <Text style={styles.topActionLabel}>翻转</Text>
+            <Text style={styles.topActionLabel}>{t('camera.flip.label')}</Text>
+          </View>
+          <View style={styles.topActionsGap} />
+          <View style={styles.topActionItem}>
+            <DialButton
+              icon={UI_ASSETS.iconSettings}
+              active={settingsVisible}
+              onPress={handleOpenSettingsScreen}
+              accessibilityLabel={t('camera.settings.a11y')}
+            />
+            <Text style={styles.topActionLabel}>{t('camera.settings.label')}</Text>
           </View>
         </View>
       </View>
@@ -449,15 +503,21 @@ export function CameraScreen() {
           <View style={[styles.banner, { bottom: 12 }]}>
             <Text style={styles.bannerText}>{saveIssue}</Text>
             <View style={styles.bannerActions}>
-              <Pressable accessibilityRole="button" onPress={handleOpenSettings} hitSlop={8}>
-                <Text style={styles.bannerAction}>去设置</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('banner.openSettings')}
+                onPress={handleOpenSystemSettings}
+                hitSlop={8}
+              >
+                <Text style={styles.bannerAction}>{t('banner.openSettings')}</Text>
               </Pressable>
               <Pressable
                 accessibilityRole="button"
+                accessibilityLabel={t('banner.dismiss')}
                 onPress={() => setSaveIssue(null)}
                 hitSlop={8}
               >
-                <Text style={styles.bannerAction}>知道了</Text>
+                <Text style={styles.bannerAction}>{t('banner.dismiss')}</Text>
               </Pressable>
             </View>
           </View>
@@ -471,17 +531,17 @@ export function CameraScreen() {
             icon={UI_ASSETS.iconFilm}
             onPress={handlePresetCycle}
             disabled={!interactive}
-            accessibilityLabel={`当前预设 ${preset.name}，轻触切换下一个`}
+            accessibilityLabel={t('camera.preset.a11y', { name: preset.name })}
           />
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`当前预设 ${preset.name}，轻触切换`}
+            accessibilityLabel={t('camera.preset.a11y', { name: preset.name })}
             onPress={handlePresetCycle}
             disabled={!interactive}
             hitSlop={6}
             style={({ pressed }) => [styles.presetCard, pressed ? styles.pressed : null]}
           >
-            <Text style={styles.presetCardHead}>预设 PRESET</Text>
+            <Text style={styles.presetCardHead}>{t('camera.preset.head')}</Text>
             <Text
               style={styles.presetCardName}
               numberOfLines={1}
@@ -493,7 +553,7 @@ export function CameraScreen() {
               {preset.name}
             </Text>
             <Text style={styles.presetCardHint}>
-              {presetIndex + 1}/{PRESETS.length} · 轻触切换
+              {t('camera.preset.hint', { index: presetIndex + 1, total: PRESETS.length })}
             </Text>
           </Pressable>
         </View>
@@ -507,11 +567,11 @@ export function CameraScreen() {
         />
 
         <View style={[styles.dashSide, styles.dashSideRight]}>
-          <Text style={styles.dashLabel}>相框</Text>
+          <Text style={styles.dashLabel}>{t('camera.frame.label')}</Text>
           <View style={styles.frameNav}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="上一个相框"
+              accessibilityLabel={t('camera.frame.prev')}
               disabled={!interactive}
               onPress={() => handleStepFrame(-1)}
               hitSlop={10}
@@ -524,7 +584,7 @@ export function CameraScreen() {
             </Text>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="下一个相框"
+              accessibilityLabel={t('camera.frame.next')}
               disabled={!interactive}
               onPress={() => handleStepFrame(1)}
               hitSlop={10}
@@ -533,22 +593,23 @@ export function CameraScreen() {
               <Text style={styles.frameArrow}>›</Text>
             </Pressable>
           </View>
-          <Text style={styles.dashHint}>滑动取景器</Text>
+          <Text style={styles.dashHint}>{t('camera.frame.hint')}</Text>
         </View>
       </View>
 
       {/* ============ ③.5 颗粒强度（用户级微调：乘在当前预设之上） ============ */}
       <View style={styles.grainBar}>
-        <Text style={styles.grainBarLabel}>颗粒 GRAIN</Text>
+        <Text style={styles.grainBarLabel}>{t('grain.label')}</Text>
         <View style={styles.grainSegments}>
           {GRAIN_LEVELS.map((level, index) => {
             const active = index === grainIndex;
+            const label = level.labelKey !== undefined ? t(level.labelKey) : level.label;
             return (
               <Pressable
                 key={level.id}
                 accessibilityRole="button"
                 accessibilityState={{ selected: active }}
-                accessibilityLabel={`颗粒强度 ${level.label}`}
+                accessibilityLabel={t('grain.a11y', { label })}
                 disabled={!interactive}
                 onPress={() => handleGrainSelect(index)}
                 hitSlop={2}
@@ -566,7 +627,7 @@ export function CameraScreen() {
                     active ? styles.grainSegmentTextActive : null,
                   ]}
                 >
-                  {level.label}
+                  {label}
                 </Text>
               </Pressable>
             );
@@ -595,6 +656,9 @@ export function CameraScreen() {
           <Text style={[styles.lcdText, styles.lcdTextIndent]} numberOfLines={1}>
             {lcdParamLine}
           </Text>
+          <Text style={[styles.lcdText, styles.lcdTextIndent]} numberOfLines={1}>
+            {lcdLocationLine}
+          </Text>
         </View>
       </View>
 
@@ -615,6 +679,17 @@ export function CameraScreen() {
       {noticeNode !== null ? (
         <View style={styles.noticeLayer}>{noticeNode}</View>
       ) : null}
+
+      {/*
+        设置界面压在**最顶上**（包括权限提示之上）：
+        它是一个显式打开的模态，用户按了"设置"就必须能看到它。
+        `visible=false` 时组件自己 return null，不占层级也不吃触摸。
+      */}
+      <SettingsScreen
+        visible={settingsVisible}
+        onClose={handleCloseSettingsScreen}
+        locationState={locationStamp.state}
+      />
     </View>
   );
 }
@@ -696,17 +771,8 @@ const RETICLE_GAP = 5;
  * 样式
  * ========================================================================== */
 
-const INK = {
-  /** 暗白 / 微灰：正文与图标 */
-  paper: 'rgba(232, 228, 220, 0.92)',
-  paperDim: 'rgba(226, 222, 214, 0.42)',
-  paperFaint: 'rgba(226, 222, 214, 0.20)',
-  /** 琥珀：LCD / 点亮态 / 纸质标签 */
-  amber: '#D28B2A',
-  amberSoft: '#D39E59',
-  amberDeep: '#C27A30',
-  hairline: 'rgba(255, 255, 255, 0.07)',
-};
+// INK / UI_MONO / compact 都搬到了 `src/constants/theme.ts` ——
+// 设置界面和取景屏幕必须共用同一套墨色，否则两边会慢慢漂成两个 App。
 
 const styles = StyleSheet.create({
   root: {

@@ -8,6 +8,8 @@
  *   ② 相框 PNG（resizeMode="stretch" 铺满整个合成舞台，透明处露出照片）
  *   ③ 日期水印（永远画在最后：烧在画面内部时相框在那里是透明的，
  *      烧在相框留白里时必须盖在相框之上，所以两种锚点都放最后最安全）
+ *   ④ 定位水印（左下角，和日期同一条基线；这张没拿到定位就整块不画 ——
+ *      绝不留一行"定位失败"，那是 UI 该说的话，不该烧进照片里）
  *
  * 为什么调色层要关在 `overflow: 'hidden'` 的窗口容器里？
  * RN 没有现成的 `isolation` 便捷写法可用（它是 layout prop 不是 style prop，写错会静默失效），
@@ -28,7 +30,7 @@ import { textureSource } from '../constants/textures';
 import type { FilmStageInput, GradeLayer } from '../types';
 import { formatTimestamp } from '../utils/formatTimestamp';
 import { planCapture } from '../utils/captureOptions';
-import { computeTimestampLayout, resolveTimestampAnchor } from '../utils/geometry';
+import { computeLocationLayout, computeTimestampLayout, resolveTimestampAnchor } from '../utils/geometry';
 import { buildGradeLayers } from '../utils/gradeLayers';
 
 export interface FilmCompositorProps {
@@ -53,7 +55,7 @@ export function FilmCompositor({
   timestampFontFamily,
   style,
 }: FilmCompositorProps) {
-  const { layout, preset, frame, rawUri, capturedAt } = stage;
+  const { layout, preset, frame, rawUri, capturedAt, locationText } = stage;
 
   // 调色层：纯函数算出来的声明式图层，渲染层只按 kind 分发
   const layers = useMemo(() => buildGradeLayers(preset), [preset]);
@@ -80,6 +82,13 @@ export function FilmCompositor({
   const timestampText = preset.timestamp.enabled
     ? formatTimestamp(capturedAt, preset.timestamp.format)
     : '';
+
+  // 定位水印：空串 / 全空格 / 没传 = 这张不写定位
+  const locationLine = typeof locationText === 'string' ? locationText.trim() : '';
+  const locationLayout = useMemo(
+    () => computeLocationLayout(layout, preset.timestamp, anchor),
+    [layout, preset.timestamp, anchor],
+  );
 
   return (
     <ViewShot
@@ -154,6 +163,28 @@ export function FilmCompositor({
           ]}
         >
           {timestampText}
+        </Text>
+      ) : null}
+
+      {/* ④ 定位水印（左下角） */}
+      {locationLine.length > 0 ? (
+        <Text
+          allowFontScaling={false}
+          numberOfLines={1}
+          ellipsizeMode="tail"
+          style={[
+            styles.location,
+            {
+              left: locationLayout.left,
+              bottom: locationLayout.bottom,
+              fontSize: locationLayout.fontSize,
+              letterSpacing: locationLayout.letterSpacing,
+              fontFamily: preset.timestamp.fontFamily ?? timestampFontFamily,
+              fontWeight: preset.timestamp.fontWeight,
+            },
+          ]}
+        >
+          {locationLine}
         </Text>
       ) : null}
     </ViewShot>
@@ -232,6 +263,9 @@ function GradeLayerView({ layer, rawUri, photoFit, onImageLoad }: GradeLayerView
 
 const FLIP_X = [{ scaleX: -1 }];
 
+/** 定位水印的纸白（比 UI 的 INK.paper 略暗一点，免得在相纸上显得发亮）。 */
+const LOCATION_INK = 'rgba(236, 232, 224, 0.88)';
+
 const styles = StyleSheet.create({
   stage: {
     overflow: 'hidden',
@@ -253,5 +287,22 @@ const styles = StyleSheet.create({
   },
   timestamp: {
     position: 'absolute',
+  },
+  /**
+   * 定位水印。
+   *
+   * 颜色刻意**不用**日期那支琥珀色：琥珀是"液晶数码管"的语义，只该出现在日期上；
+   * 地点是印在相纸上的小字，用略暗的纸白，和 35mm 相框上印的
+   * `36 EXP · PROCESS C-41` 是同一种东西。
+   *
+   * 那圈黑色投影也不是装饰：白边印刷框的锚点是 `window`，左下角下面是**照片本身**，
+   * 可能是白墙、雪地、过曝的天空 —— 没有投影这一行就直接消失了。
+   */
+  location: {
+    position: 'absolute',
+    color: LOCATION_INK,
+    textShadowColor: 'rgba(0, 0, 0, 0.55)',
+    textShadowRadius: 2,
+    textShadowOffset: { width: 0, height: 1 },
   },
 });

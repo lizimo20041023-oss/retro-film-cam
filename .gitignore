@@ -11,7 +11,9 @@ expo-env.d.ts
 .export-check/
 assets/ui/_mock-camera-screen.png
 assets/textures/_grade-*.png
+assets/frames/_*.png
 .ui-preview.png
+scripts/__pycache__/
 
 # 原生工程（本项目是纯 managed，用不到；prebuild 后才会出现）
 /ios/

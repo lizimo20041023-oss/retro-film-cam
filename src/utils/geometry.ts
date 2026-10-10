@@ -11,6 +11,7 @@
 import type {
   FrameLayout,
   FrameSpec,
+  LocationLayout,
   Rect,
   ResolvedTimestampConfig,
   Size,
@@ -112,5 +113,31 @@ export function computeTimestampLayout(
     bottom: layout.bottomStripHeight + inset,
     fontSize,
     letterSpacing,
+  };
+}
+
+/**
+ * 定位水印（地名 / 经纬度）的位置与字号。
+ *
+ * 三条刻意定死的规则：
+ * 1. **和日期共用同一条基线**（直接复用 `computeTimestampLayout` 的 `bottom`）：
+ *    一行在左下、一行在右下，永远齐平，也永远撞不上 —— 不用为"谁更长"做避让；
+ * 2. 左边距 = `window.left + inset`，正好是日期右边距的镜像（日期是
+ *    `rightMargin + inset`，而 `rightMargin` 就是窗口右沿到相框右沿的距离）；
+ * 3. 字号是日期的 **0.62 倍**：地点是"附注"，日期才是主角，
+ *    而且 35mm 那种窄幅相框里，等大的两行会显得很挤。
+ */
+export function computeLocationLayout(
+  layout: FrameLayout,
+  config: ResolvedTimestampConfig,
+  anchor: TimestampAnchor,
+): LocationLayout {
+  const timestamp = computeTimestampLayout(layout, config, anchor);
+  const inset = Math.max(2, Math.round(layout.width * config.insetRatio));
+  return {
+    left: layout.window.left + inset,
+    bottom: timestamp.bottom,
+    fontSize: Math.max(6, Math.round(timestamp.fontSize * 0.62)),
+    letterSpacing: timestamp.letterSpacing,
   };
 }

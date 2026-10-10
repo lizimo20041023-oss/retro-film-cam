@@ -32,6 +32,7 @@ export const GRAIN_LEVELS: GrainLevel[] = [
   {
     id: 'off',
     label: '关',
+    labelKey: 'grain.level.off',
     code: 'OFF',
     scale: 0,
     description: '不加颗粒也不加色噪。只剩调色、暗角和日期 —— 想当"数码净片"用这一档。',
@@ -39,6 +40,7 @@ export const GRAIN_LEVELS: GrainLevel[] = [
   {
     id: 'light',
     label: '轻',
+    labelKey: 'grain.level.light',
     code: 'LT',
     scale: 0.45,
     description: '约标准的一半。细颗粒，细节看得清，适合人像和想留解析力的场合。',
@@ -46,6 +48,7 @@ export const GRAIN_LEVELS: GrainLevel[] = [
   {
     id: 'std',
     label: '标准',
+    labelKey: 'grain.level.std',
     code: 'STD',
     scale: 1,
     description: '十支卷原本调好的量（开机默认）。每个预设的性格都是按这一档定的。',
@@ -53,6 +56,7 @@ export const GRAIN_LEVELS: GrainLevel[] = [
   {
     id: 'heavy',
     label: '重',
+    labelKey: 'grain.level.heavy',
     code: 'HV',
     scale: 1.5,
     description: '颗粒明显、开始吃细节，高感光夜拍和街头抓拍的味道。',
@@ -60,6 +64,7 @@ export const GRAIN_LEVELS: GrainLevel[] = [
   {
     id: 'max',
     label: '极重',
+    labelKey: 'grain.level.max',
     code: 'MAX',
     scale: 2.2,
     description: '颗粒糊脸，纯氛围向。配合 EXPIRED 64 / DIGICAM 2002 会非常脏（褒义）。',
@@ -83,7 +88,7 @@ export function findGrainLevelIndex(id: string): number {
 export function grainLevelAt(index: number): GrainLevel {
   if (GRAIN_LEVELS.length === 0) {
     // 配置被改空时的最后兜底：等价于"标准"，绝不返回 undefined 让 UI 崩
-    return { id: 'std', label: '标准', code: 'STD', scale: 1, description: '' };
+    return { id: 'std', label: '标准', labelKey: 'grain.level.std', code: 'STD', scale: 1, description: '' };
   }
   const clamped = Math.min(Math.max(Math.trunc(index), 0), GRAIN_LEVELS.length - 1);
   return GRAIN_LEVELS[clamped];

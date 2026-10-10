@@ -14,6 +14,7 @@
  * 并且没有出现 `any`。
  */
 import * as MediaLibrary from 'expo-media-library';
+import { t } from '../i18n';
 import type { SaveOutcome } from '../types';
 import { describeError } from './describeError';
 
@@ -59,9 +60,7 @@ export async function saveToLibrary(localUri: string): Promise<SaveOutcome> {
       return {
         ok: false,
         reason: 'permission-denied',
-        message: permission.canAskAgain
-          ? '没有相册写入权限，请再点一次保存并在弹窗里选择"允许"。'
-          : '相册权限被拒绝且不再询问，请到 系统设置 → 隐私与安全性 → 照片（或本 App）里打开权限。',
+        message: permission.canAskAgain ? t('save.denied.retry') : t('save.denied.settings'),
       };
     }
 
@@ -85,7 +84,7 @@ export async function saveToLibrary(localUri: string): Promise<SaveOutcome> {
     return {
       ok: false,
       reason: 'unsupported-api',
-      message: '当前 expo-media-library 版本没有可用的保存接口，请升级到 SDK 54+ 或手动保存。',
+      message: t('save.unsupported'),
     };
   } catch (error) {
     return { ok: false, reason: 'failed', message: describeError(error) };

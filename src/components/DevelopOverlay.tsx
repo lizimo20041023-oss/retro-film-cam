@@ -13,6 +13,8 @@
  */
 import type { ReactNode } from 'react';
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useI18n } from '../i18n';
+import type { MessageKey } from '../i18n';
 import type { DevelopStage, DevelopStatus, Size } from '../types';
 
 /** 舞台四周留白。 */
@@ -42,13 +44,16 @@ export interface DevelopOverlayProps {
   children?: ReactNode;
 }
 
-const STAGE_TEXT: Record<DevelopStage, string> = {
-  normalizing: '正在整理底片',
-  capturing: '正在曝光显影',
-  saving: '正在存入相册',
+/** 三个阶段各自的文案键 —— 翻译要跟着语言变，所以这里只存键，取文案在组件里做。 */
+const STAGE_TEXT: Record<DevelopStage, MessageKey> = {
+  normalizing: 'develop.stage.normalizing',
+  capturing: 'develop.stage.capturing',
+  saving: 'develop.stage.saving',
 };
 
 export function DevelopOverlay({ status, onDismiss, children }: DevelopOverlayProps) {
+  const { t } = useI18n();
+
   if (status.kind === 'idle') {
     return null;
   }
@@ -60,7 +65,7 @@ export function DevelopOverlay({ status, onDismiss, children }: DevelopOverlayPr
       // 始终吃掉触摸：显影中防止连点，结束后轻触继续
       onPress={dismissable ? onDismiss : undefined}
       accessibilityRole={dismissable ? 'button' : undefined}
-      accessibilityLabel={dismissable ? '轻触继续拍摄' : undefined}
+      accessibilityLabel={dismissable ? t('develop.tapToContinue') : undefined}
       style={styles.layer}
     >
       <View pointerEvents="none" style={styles.backdrop} />
@@ -72,7 +77,7 @@ export function DevelopOverlay({ status, onDismiss, children }: DevelopOverlayPr
         {status.kind === 'developing' ? (
           <View style={styles.row}>
             <ActivityIndicator color="#FFB562" />
-            <Text style={styles.title}>{STAGE_TEXT[status.stage]}…</Text>
+            <Text style={styles.title}>{t(STAGE_TEXT[status.stage])}…</Text>
           </View>
         ) : null}
 
@@ -80,17 +85,19 @@ export function DevelopOverlay({ status, onDismiss, children }: DevelopOverlayPr
           <View style={styles.row}>
             <Image source={{ uri: status.uri }} style={styles.thumb} resizeMode="cover" />
             <View style={styles.column}>
-              <Text style={styles.title}>{status.saved ? '已存入相册' : '成片已生成（未存相册）'}</Text>
-              <Text style={styles.hint}>轻触画面继续拍摄</Text>
+              <Text style={styles.title}>
+                {t(status.saved ? 'develop.done.saved' : 'develop.done.unsaved')}
+              </Text>
+              <Text style={styles.hint}>{t('develop.tapToContinue')}</Text>
             </View>
           </View>
         ) : null}
 
         {status.kind === 'error' ? (
           <View style={styles.column}>
-            <Text style={styles.errorTitle}>显影失败</Text>
+            <Text style={styles.errorTitle}>{t('develop.error.title')}</Text>
             <Text style={styles.message}>{status.message}</Text>
-            <Text style={styles.hint}>轻触画面继续拍摄</Text>
+            <Text style={styles.hint}>{t('develop.tapToContinue')}</Text>
           </View>
         ) : null}
       </View>

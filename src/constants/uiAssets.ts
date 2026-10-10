@@ -25,4 +25,6 @@ export const UI_ASSETS = {
   iconFlip: require('../../assets/ui/icon-flip.png'),
   /** 预设拨轮的图标：电影胶片条。 */
   iconFilm: require('../../assets/ui/icon-film.png'),
+  /** 设置入口的图标：三档推子。 */
+  iconSettings: require('../../assets/ui/icon-settings.png'),
 } as const;
