@@ -4,8 +4,9 @@
 # 为什么要未签名：正式签名要 99 美元/年的苹果开发者账号。
 #   未签名包下载到你 Windows 电脑后，用 iloader 配免费 Apple ID 现场签名安装。
 #
-# 怎么跑：把代码推到 GitHub → 网页上点 Actions → 选左边 "Build unsigned iOS IPA"
-#        → 点右边 "Run workflow" → 等 15~25 分钟 → 在最下面 Artifacts 里下载 ipa
+# 怎么跑：推到 main / master 会自动触发；
+#        也可以在网页上点 Actions → 选左边 "Build unsigned iOS IPA"
+#        → 点右边 "Run workflow" 手动触发 → 在最下面 Artifacts 里下载 ipa
 #
 # 产物：FretroCam-unsigned.ipa（Release 版，JS 已内嵌，装上后完全离线可用）
 # ─────────────────────────────────────────────────────────────────────────────
@@ -36,10 +37,10 @@ jobs:
 
     steps:
       - name: 1. 取出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: 2. 装 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '24'
 
@@ -50,6 +51,8 @@ jobs:
           echo "Node  : $(node -v)"
           echo "npm   : $(npm -v)"
           which pod && pod --version || echo "CocoaPods 尚未安装"
+          echo "磁盘剩余："
+          df -h /
 
       - name: 4. 装 JS 依赖
         # 本项目的 package-lock.json 是在国内装的，里面 500 条下载地址都指向
@@ -119,10 +122,42 @@ jobs:
             build
 
       - name: 9. 打成 .ipa
+        # 第 8 步用 -derivedDataPath build，产物理论上在
+        # build/Build/Products/Release-iphoneos/*.app。
+        # 这里不写死路径：先问 Xcode 要 BUILT_PRODUCTS_DIR，再全盘兜底搜索，
+        # 实在找不到就把目录树打出来报错 —— 免得又出现「exit code 1 但没有线索」。
         run: |
-          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -n 1)
+          set -e
+
+          echo "── Xcode 认为产物在哪 ──"
+          xcodebuild -workspace "${{ steps.scheme.outputs.workspace }}" \
+                     -scheme "${{ steps.scheme.outputs.scheme }}" \
+                     -configuration Release -sdk iphoneos \
+                     -showBuildSettings 2>/dev/null \
+            | grep -E " (BUILT_PRODUCTS_DIR|FULL_PRODUCT_NAME|WRAPPER_NAME|CONFIGURATION_BUILD_DIR) " \
+            || echo "(拿不到 build settings)"
+
+          echo "── build 目录的实际样子（前 40 行）──"
+          find build -maxdepth 3 -print 2>/dev/null | head -40 || echo "(没有 build 目录)"
+          echo "──────────────────────────────────"
+
+          APP=$(find build -type d -name "*.app" -print -quit 2>/dev/null || true)
+
+          if [ -z "$APP" ]; then
+            echo "::error::build 目录里找不到任何 .app —— 编译产物路径和预期不符"
+            echo "── build 下的目录树（前 80 行）──"
+            find build -maxdepth 5 -type d 2>/dev/null | head -80 || true
+            echo "── 磁盘占用 ──"
+            du -sh build 2>/dev/null || true
+            df -h /
+            exit 1
+          fi
+
           echo "找到 App：$APP"
-          rm -rf Payload *.ipa
+          du -sh "$APP"
+
+          rm -rf Payload
+          rm -f FretroCam-unsigned.ipa
           mkdir -p Payload
           cp -R "$APP" Payload/
           zip -qry FretroCam-unsigned.ipa Payload
