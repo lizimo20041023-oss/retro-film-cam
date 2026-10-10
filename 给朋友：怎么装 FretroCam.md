@@ -132,13 +132,25 @@ iOS 默认不允许随便装第三方 App，所以要用「**自己给自己签�
 
 ## 3. 把 `.ipa` 弄到手机上
 
-### 方式 A：点一个链接直接装（最省事，需要对方给你链接）
+### 方式 A：一个链接直接装（最省事）
 
-1. 在 **Safari** 里打开对方给你的那个链接（形如 `sidestore://install?url=...`）
-2. 系统会问「**在 "SideStore" 中打开？**」→ 点**打开**
-3. SideStore 会自动去下载并安装，跳到第 6 节
+**把下面这一整行复制下来**（包含开头的 `sidestore://` 全部要）：
 
-> 如果点链接没反应，说明 SideStore 还没装好 —— 先回去做完第 2 节。
+```
+sidestore://install?url=https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.0/FretroCam-unsigned.ipa
+```
+
+然后：
+
+1. 打开 **Safari**
+2. 点最上面的**地址栏**，把这一行**粘贴**进去，按回车
+3. 系统弹「**在 "SideStore" 中打开？**」→ 点「**打开**」
+4. SideStore 会自动去下载并安装 → 跳到第 4 节
+
+> ⚠️ **一定要「复制到 Safari 地址栏」，不要在微信/QQ 里直接点。**
+> 聊天软件会屏蔽 `sidestore://` 这种自定义链接，点了没反应。
+>
+> ⚠️ 前提是 **SideStore 已经装好**（第 2 节做完）。没装的话这一行不会有任何反应。
 
 ### 方式 B：对方直接发文件给你
 
@@ -218,22 +230,18 @@ A：手机上删掉 App 图标 ≠ 卸载 SideStore 里的记录。正确做法�
 
 ---
 
-## 8. 给"发文件的人"：怎么把它变成一个链接（可选，但很推荐）
+## 8. 给「发文件的人」：链接已经做好了
 
-如果你想把 `.ipa` 变成一个**点一下就装**的链接：
+`.ipa` 已经放在 **GitHub Releases** 上，公开可下载（**不需要登录**）：
 
-1. 打开自己的 GitHub 仓库 → 右侧 **Releases** → **Create a new release**
-2. Tag 填 `v1.0`，标题随便，把 `FretroCam-unsigned.ipa` **拖进附件区**，发布
-3. 得到直链形如：
-   `https://github.com/<用户名>/<仓库名>/releases/download/v1.0/FretroCam-unsigned.ipa`
-4. 把它拼成**一键安装链接**发给朋友（`url=` 后面建议做 URL 编码）：
+| 用途 | 链接 |
+|---|---|
+| 直接下载 `.ipa` | `https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.0/FretroCam-unsigned.ipa` |
+| **一键安装**（发给朋友） | `sidestore://install?url=https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.0/FretroCam-unsigned.ipa` |
+| Release 页面 | <https://github.com/lizimo20041023-oss/retro-film-cam/releases/tag/v1.0> |
 
-   ```
-   sidestore://install?url=https%3A%2F%2Fgithub.com%2F<用户名>%2F<仓库名>%2Freleases%2Fdownload%2Fv1.0%2FFretroCam-unsigned.ipa
-   ```
-
-   编码前的样子（方便对照）：
-   `sidestore://install?url=https://github.com/<用户名>/<仓库名>/releases/download/v1.0/FretroCam-unsigned.ipa`
+**发新版**：重新建一个 Release（tag 用 `v1.1`、`v1.2`…），把新 ipa 传上去，
+然后把链接里的 `v1.0` 换成新 tag 发给朋友。朋友直接装新的会**原地覆盖**，桌面图标位置不变。
 
 > 协议依据：SideStore 官方文档 [URL Schema](https://docs.sidestore.io/docs/advanced/url-schema) ——
 > `sidestore://install?url=[下载地址]` 表示从远程地址安装 App；
