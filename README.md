@@ -1274,11 +1274,28 @@ Windows 上装不了 Swift / Xcode 工具链，所以**补丁本身从未在本�
 CI 的 `npm ci` 会自动套用。**注意 `patches/` 目录必须提交进 git** —— 漏了它，
 CI 装出来的就是原版 expo-camera，点了没反应。
 
+**改完 expo-camera 怎么重新生成补丁**：把 `node_modules/expo-camera` 里那三个文件恢复到原版
+（原版可以从 `package-lock.json` 里那条 `resolved` 指向的 tarball 解出来），改好，
+跑 `npx patch-package expo-camera` 生成新补丁；然后用**不带参数的** `npx patch-package`
+从原版白盒复验一次能不能干净套上 —— 实测输出必须是 `expo-camera@57.0.6 ✔` 且 exit 0，
+三个文件的 sha256 要和改完的一致。套用这一步不调用 npm，所以不受下面这个坑影响。
+
+⚠️ 本机还有一个**只影响"生成"、不影响"套用"**的坑（2026-10 实测）：全局
+`C:\Users\lizim\.npmrc` 里的 `allow-scripts=true` 会被 `npx` 以环境变量
+`npm_config_allow_scripts=true` 传给它内部 spawn 的 `npm i --force`，而 npm 11 直接拒绝：
+`npm error code EALLOWSCRIPTS / --allow-scripts is not allowed in project-scoped installs`。
+**根因是 npx 的环境变量注入，不是 `.npmrc` 本身**（单独跑 `npm i --force` 是好的）。
+绕法是直接用 `node` 调它的入口、绕开 npx：
+
+```
+node %LOCALAPPDATA%\npm-cache\_npx\<hash>\node_modules\patch-package\index.js expo-camera
+```
+
 ### 19.8 相关文件
 
 | 文件 | 作用 |
 | --- | --- |
-| `patches/expo-camera+57.0.6.patch` | 唯一的原生改动（纯新增 175 行，3 个 Swift 文件） |
+| `patches/expo-camera+57.0.6.patch` | 唯一的原生改动（纯新增 204 行 / 0 删除，3 个 Swift 文件） |
 | `src/components/CameraScreen.tsx` | `focusTarget` state、`cameraFocusProps`、`handleTapFocus`、那层透明 `Pressable` |
 | `src/components/FocusReticle.tsx` | 对焦框（纯展示，`pointerEvents="none"`，不参与任何手势） |
 
