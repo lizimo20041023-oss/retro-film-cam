@@ -32,6 +32,8 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [10. 可测试性](#10-可测试性)
 - [11. 已知限制](#11-已知限制)
 - [12. 故障排查](#12-故障排查)
+  - [12.1 推不上去怎么办（github.com 443 连不上）](#121-推不上去怎么办githubcom-443-连不上)
+  - [12.2 把构建好的 IPA 抓到本机](#122-把构建好的-ipa-抓到本机scriptsfetch_ipaps1)
 - [13. 可选升级路径（默认代码不含）](#13-可选升级路径默认代码不含)
 - [14. 路线 B：打独立 App 的技术说明](#14-路线-b打独立-app-的技术说明)
 - [15. 界面设计：为什么"质感"是图片而不是样式](#15-界面设计为什么质感是图片而不是样式)
@@ -282,6 +284,8 @@ retro-film-cam/
 │   ├── generate_placeholder_assets.py   # 重生成 assets/textures/ 那 5 张贴图（**不含相框**）
 │   ├── generate_app_icon.py             # 重生成 App 图标（Python + Pillow）
 │   ├── generate_ui_assets.py            # 重生成界面质感素材（Python + Pillow + numpy）
+│   ├── fetch_ipa.ps1                    # ★ 从 GitHub Actions 抓最新一次的 IPA（见 §12.2）
+│   ├── fetch_ipa.cmd                    #   双击就跑的包装（绕过执行策略）
 │   ├── preview_frames.py                # ★ 把 8 张相框贴到同一张照片上做对照图
 │   ├── preview_ui_mock.py               # 把样式表"翻译"成一张排版示意图（本地看比例用）
 │   └── preview_grade.py                 # 模拟调色管线、打印每个预设的颗粒 σ（本地看质感用）
@@ -615,6 +619,35 @@ curl.exe -s -H "Accept: application/vnd.github+json" "https://api.github.com/rep
 curl.exe -s -H "Accept: application/vnd.github+json" "https://api.github.com/repos/lizimo20041023-oss/retro-film-cam/actions/runs/<run_id>/artifacts"
 curl.exe -s -H "Accept: application/vnd.github+json" "https://api.github.com/repos/lizimo20041023-oss/retro-film-cam/actions/runs/<run_id>/jobs"
 ```
+
+### 12.2 把构建好的 IPA 抓到本机（`scripts/fetch_ipa.ps1`）
+
+**artifacts 的下载端点必须带身份，匿名访问是 `401`**，所以上面那几条 `curl` 只能看状态、拿不到包。
+网页版 Actions 页面能下，但要点好几下，而且拿到的还是嵌套 zip（里面才是 `.ipa`）。
+一条命令搞定：
+
+```powershell
+cd retro-film-cam
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\fetch_ipa.ps1
+# 或直接双击 scripts\fetch_ipa.cmd
+```
+
+它做四件事：查**最新一次成功**的 run → 下载 artifact → 解出 `.ipa` → 打印路径、大小、sha256。
+`-Out` 换落地位置，`-Run <id>` 指定某一次构建。
+
+身份从哪来：和 `git push` 用的是同一份 —— `git credential fill` 里的 GitHub token
+（本机是 GitHub CLI 的 `gho_` 开头那个）。脚本只把它放进 `Authorization` 头，**不打印**。
+
+两个 Windows 特有的坑（都踩过，脚本头部注释里也写了）：
+
+| 症状 | 原因 | 处理 |
+|---|---|---|
+| `... is not digitally signed` | 本机 `CurrentUser` 执行策略是 `RemoteSigned`，没签名的 `.ps1` 直接被拒 | 加 `-ExecutionPolicy Bypass`（`.cmd` 里已经带了） |
+| `Missing expression after ','` / `The ampersand (&) character is not allowed` 一堆语法错 | **`.ps1` 的 UTF-8 BOM 被编辑器吃掉了**，PowerShell 5.1 按系统 ANSI（GBK）解码中文注释 | 确认文件前三个字节是 `EF BB BF`，没有就补回去 |
+
+> 为什么 `.ps1` 必须带 BOM：Windows PowerShell 5.1（本机就是）判断编码靠 BOM，
+> 没有 BOM 时用 `[System.Text.Encoding]::Default`，在中文 Windows 上就是 GBK。
+> 这个项目的脚本、文档全是中文，所以这条对每个 `.ps1` 都成立。
 
 ## 13. 可选升级路径（默认代码不含）
 
