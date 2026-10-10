@@ -234,18 +234,30 @@ A：手机上删掉 App 图标 ≠ 卸载 SideStore 里的记录。正确做法�
 
 ---
 
-## 8. 给「发文件的人」：链接已经做好了
+## 8. 给「发文件的人」：现在请直接发文件
 
-`.ipa` 已经放在 **GitHub Releases** 上，公开可下载（**不需要登录**）：
+> ❗ **2026-10-10 起公开链接没有了。** 仓库已经转成 **私有**，
+> 私有仓库的 Release 不登录下载不了，所以「一个链接直接装」这条路暂时走不通。
+>
+> **现在的发法：把 `.ipa` 文件本身发给朋友**（微信 / QQ / 网盘都行），
+> 然后一定要提醒他下面这一步 👇
+>
+> ⚠️ **微信 / QQ 收到的文件待在那个 App 自己的沙盒里，SideStore 的文件选择器根本看不到。**
+> 收到后必须：**点开那个文件 → 右上角「…」→ 用其他应用打开 → 存储到「文件」**，
+> 存进「我的 iPhone」或 iCloud 都行。然后才是 SideStore → My Apps → `+` → 选它。
 
-| 用途 | 链接 |
+**想要链接回来也有办法**：另建一个**只放 ipa 的公开仓库**（本仓库保持私有），
+把 ipa 传上去当 Release 资产，直链就有了，`sidestore://install?url=` 也就又能用了。
+这一步是一条命令的事。
+
+**原来那种链接长这样（留档，公开仓库时仍然可用）**：
+
+| 用途 | 格式 |
 |---|---|
-| 直接下载 `.ipa` | `https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.0/FretroCam-unsigned.ipa` |
-| **一键安装**（发给朋友） | `sidestore://install?url=https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.0/FretroCam-unsigned.ipa` |
-| Release 页面 | <https://github.com/lizimo20041023-oss/retro-film-cam/releases/tag/v1.0> |
+| 直接下载 `.ipa` | `https://github.com/<你的账号>/<仓库>/releases/download/<tag>/FretroCam-unsigned.ipa` |
+| **一键安装**（发给朋友） | `sidestore://install?url=<上面那条直链>` |
 
-**发新版**：重新建一个 Release（tag 用 `v1.1`、`v1.2`…），把新 ipa 传上去，
-然后把链接里的 `v1.0` 换成新 tag 发给朋友。朋友直接装新的会**原地覆盖**，桌面图标位置不变。
+**发新版**：把新 ipa 传上去，换掉链接里的 tag 就行。朋友直接装新的会**原地覆盖**，桌面图标位置不变。
 
 > 协议依据：SideStore 官方文档 [URL Schema](https://docs.sidestore.io/docs/advanced/url-schema) ——
 > `sidestore://install?url=[下载地址]` 表示从远程地址安装 App；
