@@ -1,4 +1,4 @@
-# Retro Film Cam 📷
+# FretroCam 📷
 
 一个 **纯 managed Expo** 的 iOS 复古胶片相机 App（类 Dazz 风格），自用练手向。
 Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac、不需要花钱买苹果开发者账号**。
@@ -590,13 +590,14 @@ SideStore 的无线续签靠 [LocalDevVPN](https://apps.apple.com/app/localdevvp
    规则是 `name.replace(/[\W_]+/g, '')`，改名清单见
    `@expo/cli/build/src/prebuild/renameTemplateAppName.js`，
    其中显式包含 `ios/**/*.xcodeproj/xcshareddata/xcschemes/*.xcscheme`）。
-   本项目 `expo.name = "Retro Film Cam"` → `RetroFilmCam`。
-   **但流水线仍然在第 7 步用 `xcodebuild -list` 自动探测一次**，探测不到才回落到 `RetroFilmCam`，
+   本项目 `expo.name = "FretroCam"` → `FretroCam`。
+   **但流水线仍然在第 7 步用 `xcodebuild -list` 自动探测一次**，探测不到才回落到 `FretroCam`，
    这样以后改 `app.json` 的 `name` 也不会把流水线弄坏。
+   （顺带一提：`sanitizedName` 会删掉空格，所以 `"Fretro Cam"` 和 `"FretroCam"` 得到的 scheme 都是 `FretroCam`。）
 
 5. **`app.json` 里 `ios.bundleIdentifier` 必须写死。**
    不写的话 `expo prebuild` 会**交互式**追问（非交互式环境直接失败）。
-   现在的值是 `com.canyerylee.retrofilmcam`。
+   现在的值是 `com.canyerylee.fretrocam`。
 
 ### 本机能验证到哪一步，验证不了什么
 

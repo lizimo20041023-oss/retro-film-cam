@@ -7,7 +7,7 @@
 # 怎么跑：把代码推到 GitHub → 网页上点 Actions → 选左边 "Build unsigned iOS IPA"
 #        → 点右边 "Run workflow" → 等 15~25 分钟 → 在最下面 Artifacts 里下载 ipa
 #
-# 产物：RetroFilmCam-unsigned.ipa（Release 版，JS 已内嵌，装上后完全离线可用）
+# 产物：FretroCam-unsigned.ipa（Release 版，JS 已内嵌，装上后完全离线可用）
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: Build unsigned iOS IPA
@@ -95,7 +95,7 @@ jobs:
           SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list 2>/dev/null \
             | awk '/Schemes:/{flag=1;next} /^$/{flag=0} flag' \
             | head -n 1 | tr -d '[:space:]')
-          if [ -z "$SCHEME" ]; then SCHEME="RetroFilmCam"; fi
+          if [ -z "$SCHEME" ]; then SCHEME="FretroCam"; fi
           echo "scheme = $SCHEME"
           echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
           echo "scheme=$SCHEME"       >> "$GITHUB_OUTPUT"
@@ -125,13 +125,13 @@ jobs:
           rm -rf Payload *.ipa
           mkdir -p Payload
           cp -R "$APP" Payload/
-          zip -qry RetroFilmCam-unsigned.ipa Payload
-          ls -lh RetroFilmCam-unsigned.ipa
+          zip -qry FretroCam-unsigned.ipa Payload
+          ls -lh FretroCam-unsigned.ipa
 
       - name: 10. 上传 ipa（在页面最下方 Artifacts 里下载）
         uses: actions/upload-artifact@v4
         with:
-          name: RetroFilmCam-unsigned-ipa
-          path: RetroFilmCam-unsigned.ipa
+          name: FretroCam-unsigned-ipa
+          path: FretroCam-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
