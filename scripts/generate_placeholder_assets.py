@@ -68,6 +68,71 @@ def print_window(name: str, size: tuple[int, int], window: tuple[int, int, int, 
     )
 
 
+def print_text(
+    text: str,
+    size: int,
+    tracking: int,
+    ink: tuple[int, int, int],
+    wear: float = 0.14,
+    seed: int = 7,
+) -> Image.Image:
+    """排一行"丝网印刷"字：等宽字距 + 随机磨损（做旧）。
+
+    为什么要自己排而不是 `d.text()`：
+      · Pillow 的默认字体没有"细体"字重，想做出"字重变轻"只能靠
+        **缩小字号 + 拉开字距 + 降低墨色对比度**三招组合；
+      · `tracking`（字距）必须逐字排版才能控制 —— 相框底部那行
+        "RETRO 400 · 36 EXP · C-41" 用的就是宽字距的胶片边缘字；
+      · `wear` 随机啃掉一小部分笔画，模拟油墨没印匀的旧印刷品
+        （真实做旧感来自"缺损"而不是"模糊"）。
+
+    返回 RGBA 图层，调用方 `img.alpha_composite(layer, (x, y))` 贴上去。
+    """
+    f = font(size)
+    probe = ImageDraw.Draw(Image.new("L", (1, 1)))
+    widths = [probe.textlength(ch, font=f) for ch in text]
+
+    total_w = int(sum(widths) + tracking * max(0, len(text) - 1)) + 6
+    mask = Image.new("L", (total_w, size * 2 + 10), 0)
+    md = ImageDraw.Draw(mask)
+
+    x = 2.0
+    for ch, w in zip(text, widths):
+        md.text((x, 5), ch, font=f, fill=255)
+        x += w + tracking
+
+    if wear > 0:
+        rnd = random.Random(seed)
+        px = mask.load()
+        W, H = mask.size
+        for _ in range(int(W * H * wear * 0.012)):
+            cx = rnd.randrange(W)
+            cy = rnd.randrange(H)
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    nx, ny = cx + dx, cy + dy
+                    if 0 <= nx < W and 0 <= ny < H and rnd.random() < 0.62:
+                        px[nx, ny] = 0
+
+    layer = Image.new("RGBA", mask.size, (ink[0], ink[1], ink[2], 255))
+    layer.putalpha(mask)
+    return layer
+
+
+def paste_text(
+    img: Image.Image,
+    xy: tuple[int, int],
+    text: str,
+    size: int,
+    tracking: int,
+    ink: tuple[int, int, int],
+    wear: float = 0.14,
+    seed: int = 7,
+) -> None:
+    """`print_text` 的糖：直接贴到相框上。"""
+    img.alpha_composite(print_text(text, size, tracking, ink, wear, seed), xy)
+
+
 # --------------------------------------------------------------------------- #
 # 相框
 # --------------------------------------------------------------------------- #
@@ -78,22 +143,26 @@ def make_classic_white() -> None:
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
-    d.rectangle([0, 0, W - 1, H - 1], fill=(252, 251, 248, 255))
+    d.rectangle([0, 0, W - 1, H - 1], fill=(250, 249, 245, 255))
     # 纸张边缘的极淡内阴影，避免死白
     d.rectangle([0, 0, W - 1, H - 1], outline=(236, 233, 226, 255), width=4)
 
     # 窗口外侧的细灰描边（模拟相纸裁切边）
     x, y, w, h = window
-    d.rectangle([x - 4, y - 4, x + w + 3, y + h + 3], outline=(214, 210, 201, 255), width=4)
+    d.rectangle([x - 4, y - 4, x + w + 3, y + h + 3], outline=(216, 212, 203, 255), width=4)
 
     punch_window(img, window)
 
-    # 底部边缘码（胶片边缘字）
-    d.text(
-        (x, H - 92),
-        "RETRO 400  ·  36 EXP  ·  C-41",
-        font=font(44),
-        fill=(168, 162, 152, 255),
+    # 底部边缘码：宽字距 + 做旧，颜色比原先更浅更灰（"字重变轻"）
+    paste_text(
+        img,
+        (x, H - 82),
+        "RETRO 400 · 36 EXP · C-41",
+        size=32,
+        tracking=8,
+        ink=(178, 172, 161),
+        wear=0.17,
+        seed=11,
     )
     save(img, os.path.join(FRAMES_DIR, "classic-white.png"))
     print_window("classic-white", (W, H), window)
@@ -106,19 +175,37 @@ def make_instant_square() -> None:
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
-    d.rectangle([0, 0, W - 1, H - 1], fill=(247, 245, 240, 255))
+    d.rectangle([0, 0, W - 1, H - 1], fill=(245, 243, 238, 255))
     d.rectangle([0, 0, W - 1, H - 1], outline=(228, 224, 216, 255), width=5)
 
     x, y, w, h = window
-    d.rectangle([x - 5, y - 5, x + w + 4, y + h + 4], outline=(206, 202, 194, 255), width=5)
+    d.rectangle([x - 5, y - 5, x + w + 4, y + h + 4], outline=(208, 204, 196, 255), width=5)
 
     punch_window(img, window)
 
-    # 下边框里的手写体标识
-    d.text((x + 8, H - 300), "RETRO FILM CAM", font=font(74), fill=(150, 145, 136, 255))
-    d.text((x + 8, H - 190), "instant  ·  iso 800", font=font(46), fill=(186, 181, 172, 255))
+    # 下边框里的印刷标识（App 已改名 FretroCam）
+    paste_text(
+        img,
+        (x + 10, H - 312),
+        "FRETROCAM",
+        size=62,
+        tracking=15,
+        ink=(160, 155, 146),
+        wear=0.13,
+        seed=23,
+    )
+    paste_text(
+        img,
+        (x + 10, H - 198),
+        "INSTANT · ISO 800",
+        size=36,
+        tracking=10,
+        ink=(190, 185, 176),
+        wear=0.18,
+        seed=29,
+    )
     # 一条极淡的分隔线
-    d.line([x + 8, H - 330, x + w + 2, H - 330], fill=(224, 220, 212, 255), width=3)
+    d.line([x + 10, H - 336, x + w + 2, H - 336], fill=(226, 222, 214, 255), width=2)
 
     save(img, os.path.join(FRAMES_DIR, "instant-square.png"))
     print_window("instant-square", (W, H), window)
@@ -155,10 +242,28 @@ def make_film_35mm() -> None:
             )
             top += 150
 
-    # 顶部/底部黑边上的片基标识
-    d.text((x, 150), "RETRO 400", font=font(58), fill=(206, 180, 120, 255))
-    d.text((x, 214), "35mm  ·  color negative", font=font(40), fill=(140, 138, 132, 255))
-    d.text((x, H - 200), "36 EXP  ·  process C-41", font=font(40), fill=(140, 138, 132, 255))
+    # 顶部/底部黑边上的片基标识（宽字距 + 做旧）
+    paste_text(img, (x, 142), "RETRO 400", size=50, tracking=13, ink=(198, 174, 118), wear=0.11, seed=41)
+    paste_text(
+        img,
+        (x, 208),
+        "35MM · COLOR NEGATIVE",
+        size=32,
+        tracking=9,
+        ink=(148, 145, 139),
+        wear=0.17,
+        seed=43,
+    )
+    paste_text(
+        img,
+        (x, H - 196),
+        "36 EXP · PROCESS C-41",
+        size=32,
+        tracking=9,
+        ink=(148, 145, 139),
+        wear=0.17,
+        seed=47,
+    )
 
     save(img, os.path.join(FRAMES_DIR, "film-35mm.png"))
     print_window("film-35mm", (W, H), window)

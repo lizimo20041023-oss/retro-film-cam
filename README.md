@@ -34,6 +34,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [12. 故障排查](#12-故障排查)
 - [13. 可选升级路径（默认代码不含）](#13-可选升级路径默认代码不含)
 - [14. 路线 B：打独立 App 的技术说明](#14-路线-b打独立-app-的技术说明)
+- [15. 界面设计：为什么"质感"是图片而不是样式](#15-界面设计为什么质感是图片而不是样式)
 
 ---
 
@@ -253,19 +254,31 @@ retro-film-cam/
 │   │   ├── vignette.png          #   512×512 径向暗角
 │   │   ├── light-leak.png        #   768×768 右上角暖色漏光
 │   │   └── README.md             #   ★ 换纹理看这里
+│   ├── ui/                       # ★ 界面质感素材（皮革底纹 / 拨轮 / 快门 / 细线图标）
+│   │   ├── leather-tile.png      #   320×320 无缝底纹（resizeMode="repeat"）
+│   │   ├── dial.png              #   176×176 滚花拨轮（未点亮）
+│   │   ├── dial-on.png           #   176×176 滚花拨轮（琥珀发光）
+│   │   ├── shutter-disc.png      #   240×240 快门内盘（径向渐变 + 内阴影）
+│   │   ├── icon-torch[-on].png   #   168×168 补光图标（灰 / 琥珀）
+│   │   ├── icon-flip.png         #   168×168 镜头反转图标
+│   │   ├── icon-film.png         #   168×168 预设（胶片条）图标
+│   │   └── README.md             #   ★ 改质感 / 加按钮看这里
 │   └── fonts/                    # 默认空目录（数码管字体可选，见 README）
 │       └── README.md             #   ★ 想用 DSEG7 数码管字体看这里
 │
 ├── scripts/
 │   ├── generate_placeholder_assets.py   # 程序化重生成占位相框/纹理（Python + Pillow）
-│   └── generate_app_icon.py             # 程序化重生成 App 图标（Python + Pillow）
+│   ├── generate_app_icon.py             # 程序化重生成 App 图标（Python + Pillow）
+│   ├── generate_ui_assets.py            # 程序化重生成界面质感素材（Python + Pillow + numpy）
+│   └── preview_ui_mock.py               # 把样式表"翻译"成一张排版示意图（本地看比例用）
 │
 └── src/
     ├── types/index.ts            # 全部类型（唯一类型来源，导出完整）
     ├── constants/
     │   ├── frames.ts             # ★ 相框纯数据（名称 / PNG / 比例 / 镂空窗口）
     │   ├── presets.ts            # ★ 预设纯数据（对比度/饱和度/色温/时间戳…）
-    │   └── textures.ts           # 纹理注册表
+    │   ├── textures.ts           # 纹理注册表
+    │   └── uiAssets.ts           # ★ 界面质感素材注册表（require 全部 assets/ui/*）
     ├── utils/
     │   ├── processFilmPhoto.ts   # ★ 后处理主管线（纯逻辑 + 依赖注入，可单测）
     │   ├── geometry.ts           # 取景比例 / 相框窗口 / 日期定位的几何计算
@@ -278,11 +291,12 @@ retro-film-cam/
     │   ├── useFilmStage.ts       # 合成视图的"挂载 → 就绪 → 截图"状态机
     │   └── useFilmFonts.ts       # 数码管字体加载 + 系统等宽兜底
     └── components/
-        ├── CameraScreen.tsx      # 主屏（取景 / 手势 / 快门 / 翻转 / 显影面板）
+        ├── CameraScreen.tsx      # 主屏（顶栏 / 取景 / 主控 / LCD 四段式布局）
+        ├── DialButton.tsx        # 滚花拨轮按钮（44pt，质感来自 PNG，无高亮填充色）
         ├── FilmCompositor.tsx    # 成片合成视图（被 ViewShot 截图的那块）
         ├── FrameOverlay.tsx      # 取景器上的相框预览
         ├── FrameSwitcher.tsx     # 左右滑动切相框（Animated + PanResponder + 震动）
-        ├── ShutterButton.tsx     # 快门（防连点 / 防抖 / 无障碍）
+        ├── ShutterButton.tsx     # 快门（三层同心圆 + 物理按压感）
         ├── DevelopOverlay.tsx    # "显影中/完成/失败"面板 + 成片预览
         └── PermissionNotice.tsx  # 权限被拒的引导卡片
 ```
@@ -635,6 +649,74 @@ SideStore 的无线续签靠 [LocalDevVPN](https://apps.apple.com/app/localdevvp
 如果以后想装更多 IPA，可以再套一层 [LiveContainer](https://github.com/LiveContainer/LiveContainer)
 （用一个宿主签名槽位跑多个 guest App）——但它是容器，**相机 / 相册这类系统能力不一定完整**，
 本项目要拍照，所以**适合用 SideStore 直接装成真 App**，不建议塞进 LiveContainer。
+
+---
+
+## 15. 界面设计：为什么"质感"是图片而不是样式
+
+### 四段式布局
+
+```
+┌───────────────────────────────────────┐
+│ ① topPanel   真实布局行（不是浮层）      │  ← 竖线 + "白边印刷 · 2/3 · RETRO 400" ｜ 两枚拨轮
+├───────────────────────────────────────┤
+│                                       │
+│ ② preview    flex:1, overflow:hidden  │  ← CameraView 实时原始画面
+│              └ FrameSwitcher          │     相框 PNG + 三分线 + 四角对焦框 + 准星
+│                                       │
+├───────────────────────────────────────┤
+│ ③ dashboard  拨轮+预设卡片 ｜ 快门 ｜ ‹ › │
+├───────────────────────────────────────┤
+│ ④ lcdWrap    琥珀等宽状态条             │  ← 日期锚点 / 颗粒 / 暗角 / 漏光
+└───────────────────────────────────────┘
+```
+
+**顶栏是真实布局行，不是绝对定位的浮层** —— 这是相对上一版最重要的改动。
+浮层会盖住取景器顶部，而"取景器保持完整实时画面"是本项目的硬约束。
+
+### 为什么用 PNG 而不是 StyleSheet
+
+RN 在 iOS 上没有径向渐变、没有内阴影、没有滚花纹理，而 `filter` 只有 brightness/opacity。
+要做出"实体相机"的观感只有两条路：引 `react-native-linear-gradient` / `react-native-svg`
+（**会引入原生依赖，Expo Go 直接跑不了**），或者用 Pillow 预渲染成 PNG。
+
+选了后者：`scripts/generate_ui_assets.py` 生成 `assets/ui/` 下的 8 张图，
+`src/constants/uiAssets.ts` 统一 `require`，`DialButton` 负责摆放。
+**改质感只要改 Python 再跑一次，JS 一行都不用动。**
+
+| 元素 | 实现 |
+| --- | --- |
+| 机身底纹 | `leather-tile.png` 320×320 无缝平铺 + `opacity: 0.95`。振幅 ±2.5/255，远看是 #171716 纯色 |
+| 拨轮按钮 | `dial.png` / `dial-on.png` 作底 + 细线图标叠在上面（`size * 0.48`）。**没有任何高亮填充色**，点亮只靠图里的琥珀内发光 |
+| 快门 | 三层同心圆：外圈 hairline `rgba(236,232,224,0.38)`、中圈 2pt `rgba(244,240,232,0.88)`、内盘 `shutter-disc.png` |
+| 预设卡片 | 暗橙边框（`rgba(194,122,48,0.55)`）+ 7.5% 琥珀底色，像一张纸质标签 |
+| LCD 状态条 | `rgba(210,139,42,0.20)` 细框，两行 `#D28B2A` 等宽字（`UI_MONO`），字距 1.1 |
+
+**为什么 LCD 用 `UI_MONO` 而不是 `useFilmFonts`**：`useFilmFonts` 可能加载 DSEG7 数码管字体，
+而 DSEG7 **没有中文字形**，LCD 那一行是中英混排的，会变成一堆方框。
+系统等宽字体（iOS `Menlo` / Android `monospace`）能自动回退到中文，才是这里要的。
+
+### 本地看排版：`scripts/preview_ui_mock.py`
+
+这台开发机是 Windows，**没有 iOS 模拟器**，所以写了这个脚本把样式表的数值"翻译"成一张
+786×1704 的静态示意图（`assets/ui/_mock-camera-screen.png`，已被 `.gitignore` 忽略）。
+
+```powershell
+python scripts/preview_ui_mock.py
+```
+
+它**不是真机渲染**，用来在没有 iPhone 时先看比例、对比度和配色。
+字体的真实度量、`resizeMode="repeat"` 的接缝、透明度叠加都和真机略有出入 —— 以 Expo Go 为准。
+改完 `CameraScreen.tsx` 的样式后跑一遍，能提前发现"预设名顶到快门""顶部标签太长"这类问题。
+
+### 这次重构踩到的两个坑
+
+1. **`pointerEvents` 不能写在 `<Image>` 上**。RN 0.86 的类型里它只属于 `ViewStyle`
+   （`StyleSheetTypes.d.ts:513`），写在 `Image` 上 tsc 会报
+   `Property 'pointerEvents' does not exist on type ... ImageProps`。
+   做法是外面包一层 `<View style={StyleSheet.absoluteFill} pointerEvents="none">`。
+2. **底纹 tile 不能太小**。最初用 160×160，在 393pt 宽的屏幕上会横向重复 2.5 次，
+   接缝看得出周期。改成 320×320（只重复 1.2 次）配合更低振幅才彻底隐形。
 
 ---
 
