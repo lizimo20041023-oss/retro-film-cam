@@ -228,7 +228,11 @@ export function ZoomBar({
         />
       </View>
 
-      <Text style={[styles.value, percent > 0 ? styles.valueOn : null]} numberOfLines={1}>
+      <Text
+        style={[styles.value, percent > 0 ? styles.valueOn : null]}
+        numberOfLines={1}
+        allowFontScaling={false}
+      >
         {`${percent}%`}
       </Text>
     </View>
