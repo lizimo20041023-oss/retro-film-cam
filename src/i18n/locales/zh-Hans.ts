@@ -35,6 +35,8 @@ export const zhHans = {
   'camera.frame.label': '相框',
   'camera.frame.next': '下一个相框',
   'camera.frame.prev': '上一个相框',
+  'camera.frame.switcher': '相框切换',
+  'camera.frame.switcherHint': '左右滑动切换相框',
   'camera.shutter.a11y': '拍照',
   'camera.shutter.busy': '正在显影',
 
@@ -88,7 +90,7 @@ export const zhHans = {
   'perm.camera.openSettings': '去系统设置',
   'perm.camera.recheck': '重新检测',
   'perm.camera.title': '需要相机权限',
-  'perm.mount.hint': '如果一直失败：彻底关掉 App 再重新打开；用数据线连电脑调试时，改用 npx expo start --tunnel。',
+  'perm.mount.hint': '如果一直失败：把 App 彻底关掉（上滑划掉）再重新打开；还不行就重启手机。相机被别的 App 占着（正在录像、视频通话）也会起不来。',
   'perm.mount.retry': '重试',
   'perm.mount.title': '相机启动失败',
 

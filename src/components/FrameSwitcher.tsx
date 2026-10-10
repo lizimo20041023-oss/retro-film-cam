@@ -19,6 +19,7 @@ import type { ReactNode } from 'react';
 import { Animated, Easing, PanResponder, StyleSheet } from 'react-native';
 import type { LayoutChangeEvent, StyleProp, ViewStyle } from 'react-native';
 import * as Haptics from 'expo-haptics';
+import { useI18n } from '../i18n';
 
 export interface FrameSwitcherProps {
   /** 当前相框下标（受控）。 */
@@ -44,6 +45,8 @@ export function FrameSwitcher({
   children,
   style,
 }: FrameSwitcherProps) {
+  // 无障碍文案必须跟着设置里的语言走 —— 这个组件在 <SettingsProvider> 之内。
+  const { t } = useI18n();
   const translateX = useRef(new Animated.Value(0)).current;
   const widthRef = useRef(0);
   /** 本次手势是否已经震动过（防止一次拖动震十几次）。 */
@@ -175,12 +178,12 @@ export function FrameSwitcher({
       onLayout={handleLayout}
       pointerEvents={enabled ? 'auto' : 'none'}
       accessibilityRole="adjustable"
-      accessibilityLabel="相框切换"
-      accessibilityHint="左右滑动切换相框"
+      accessibilityLabel={t('camera.frame.switcher')}
+      accessibilityHint={t('camera.frame.switcherHint')}
       accessibilityValue={{ text: `${index + 1} / ${count}` }}
       accessibilityActions={[
-        { name: 'increment', label: '下一个相框' },
-        { name: 'decrement', label: '上一个相框' },
+        { name: 'increment', label: t('camera.frame.next') },
+        { name: 'decrement', label: t('camera.frame.prev') },
       ]}
       onAccessibilityAction={(event) => {
         const action = event.nativeEvent.actionName;

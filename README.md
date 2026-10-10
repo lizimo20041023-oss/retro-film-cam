@@ -576,6 +576,45 @@ console.log(photo.warnings); // 没有原图时的降级提示也会出现在这
 | `npm error code EALLOWSCRIPTS` / `--allow-scripts is not allowed` | 全局 `.npmrc` 里的 `allow-scripts=true` 撞上 npm 脚本门禁 → 改用 `npm install 包名@版本` 直接装 |
 | 打包报 `Cannot find module 'babel-preset-expo'` | 它被嵌套装进了 `node_modules/expo/node_modules/` → 确认 `devDependencies` 里的 `babel-preset-expo` 没被删，重跑 `npm install` |
 | 类型报 `Property 'absoluteFillObject' does not exist` 或 `'mixBlendMode' does not exist in type 'ImageStyle'` | RN 0.86 收紧了类型。本项目代码已改好；你自己加样式时用 `StyleSheet.absoluteFill`，需要混合的层用 `<View>` 承载 |
+| `git push` 报 `Failed to connect to github.com port 443 after 21063 ms: Could not connect to server` | 见下面「12.1 push 不上去怎么办」 |
+
+### 12.1 推不上去怎么办（github.com 443 连不上）
+
+本机实测过的一种情况：**只有 `github.com` 这一个域名连不上，GitHub 其它域名全都正常。**
+诊断三步（在项目目录里跑）：
+
+```powershell
+# 1. 端口到底通不通（不通就是被网络环境挡了，不是凭据问题）
+Test-NetConnection github.com -Port 443 -InformationLevel Quiet
+# 2. 这几个域名通不通 —— 都通就说明只是 github.com 被挡
+curl.exe -s -o NUL -w "api=%{http_code}`n"  https://api.github.com/
+curl.exe -s -o NUL -w "raw=%{http_code}`n"  https://raw.githubusercontent.com/
+# 3. 换个 GitHub 边缘 IP 试试（DNS 给的那个 IP 可能正好不通）
+curl.exe -s -o NUL -w "%{http_code}`n" --resolve github.com:443:140.82.112.3 https://github.com/
+```
+
+`Test-NetConnection` 返回 `False`、而第 3 步返回 `200` → **是 DNS 解析到的那个 IP 不通**，
+换一个能通的 IP 就能推。Git 2.44+ 支持 `http.curloptResolve`，不用改 hosts（改 hosts 要管理员权限）：
+
+```powershell
+git -c http.curloptResolve=github.com:443:140.82.112.3 push origin master
+git -c http.curloptResolve=github.com:443:140.82.112.3 ls-remote --heads https://github.com/lizimo20041023-oss/retro-film-cam.git
+```
+
+`140.82.112.3` / `140.82.113.3` / `140.82.114.3` / `140.82.116.3` / `140.82.121.3` 实测都可用。
+**不要 `git config --global` 把它固化** —— IP 会变，今天能通的下个月可能就不通了，用一次性的 `-c` 参数最稳。
+
+另外：**`api.github.com` 是通的，而且不带 token 也能用**，看 CI 状态比爬网页靠谱得多：
+
+```powershell
+# 最近几次构建
+curl.exe -s -H "Accept: application/vnd.github+json" `
+  "https://api.github.com/repos/lizimo20041023-oss/retro-film-cam/actions/runs?per_page=3"
+# 某一次的详情 / 产物 / 步骤
+curl.exe -s -H "Accept: application/vnd.github+json" "https://api.github.com/repos/lizimo20041023-oss/retro-film-cam/actions/runs/<run_id>"
+curl.exe -s -H "Accept: application/vnd.github+json" "https://api.github.com/repos/lizimo20041023-oss/retro-film-cam/actions/runs/<run_id>/artifacts"
+curl.exe -s -H "Accept: application/vnd.github+json" "https://api.github.com/repos/lizimo20041023-oss/retro-film-cam/actions/runs/<run_id>/jobs"
+```
 
 ## 13. 可选升级路径（默认代码不含）
 

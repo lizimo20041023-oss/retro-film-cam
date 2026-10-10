@@ -26,6 +26,8 @@ export const zhHant: Messages = {
   'camera.frame.label': '相框',
   'camera.frame.next': '下一個相框',
   'camera.frame.prev': '上一個相框',
+  'camera.frame.switcher': '相框切換',
+  'camera.frame.switcherHint': '左右滑動切換相框',
   'camera.shutter.a11y': '拍照',
   'camera.shutter.busy': '正在顯影',
 
@@ -77,7 +79,7 @@ export const zhHant: Messages = {
   'perm.camera.recheck': '重新檢測',
   'perm.camera.title': '需要相機權限',
   'perm.mount.hint':
-    '如果一直失敗：徹底關掉 App 再重新打開；用傳輸線連電腦除錯時，改用 npx expo start --tunnel。',
+    '如果一直失敗：把 App 徹底關掉（往上滑掉）再重新打開；還是不行就重開手機。相機被別的 App 佔用（正在錄影、視訊通話）也會起不來。',
   'perm.mount.retry': '重試',
   'perm.mount.title': '相機啟動失敗',
 

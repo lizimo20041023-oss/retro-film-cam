@@ -27,6 +27,8 @@ export const fr: Messages = {
   'camera.frame.label': 'CADRE',
   'camera.frame.next': 'Cadre suivant',
   'camera.frame.prev': 'Cadre précédent',
+  'camera.frame.switcher': 'Changement de cadre',
+  'camera.frame.switcherHint': 'Balayez vers la gauche ou la droite pour changer de cadre',
   'camera.shutter.a11y': 'Prendre une photo',
   'camera.shutter.busy': 'Développement',
 
@@ -82,7 +84,7 @@ export const fr: Messages = {
   'perm.camera.recheck': 'Vérifier à nouveau',
   'perm.camera.title': "Accès à l'appareil photo requis",
   'perm.mount.hint':
-    "Si ça échoue toujours : fermez complètement l'app et relancez-la. En débogage par câble, essayez npx expo start --tunnel.",
+    "Si ça échoue toujours : fermez complètement l'app (balayez-la vers le haut) puis rouvrez-la ; sinon, redémarrez le téléphone. Une autre app qui utilise la caméra (enregistrement, appel vidéo) peut aussi la bloquer.",
   'perm.mount.retry': 'Réessayer',
   'perm.mount.title': "L'appareil photo n'a pas démarré",
 

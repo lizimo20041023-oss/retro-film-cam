@@ -27,6 +27,8 @@ export const en: Messages = {
   'camera.frame.label': 'FRAME',
   'camera.frame.next': 'Next frame',
   'camera.frame.prev': 'Previous frame',
+  'camera.frame.switcher': 'Frame switcher',
+  'camera.frame.switcherHint': 'Swipe left or right to change the frame',
   'camera.shutter.a11y': 'Take a photo',
   'camera.shutter.busy': 'Developing',
 
@@ -82,7 +84,7 @@ export const en: Messages = {
   'perm.camera.recheck': 'Check again',
   'perm.camera.title': 'Camera access needed',
   'perm.mount.hint':
-    'If it keeps failing: force-quit the app and open it again. If you are debugging over a cable, try npx expo start --tunnel.',
+    'If it keeps failing: force-quit the app (swipe it away) and open it again; if that does not help, restart the phone. Another app holding the camera (recording or on a video call) can block it too.',
   'perm.mount.retry': 'Retry',
   'perm.mount.title': 'Camera failed to start',
 

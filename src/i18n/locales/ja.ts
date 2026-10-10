@@ -26,6 +26,8 @@ export const ja: Messages = {
   'camera.frame.label': 'フレーム',
   'camera.frame.next': '次のフレーム',
   'camera.frame.prev': '前のフレーム',
+  'camera.frame.switcher': 'フレーム切り替え',
+  'camera.frame.switcherHint': '左右にスワイプしてフレームを切り替え',
   'camera.shutter.a11y': '撮影',
   'camera.shutter.busy': '現像中',
 
@@ -79,7 +81,7 @@ export const ja: Messages = {
   'perm.camera.recheck': '再確認',
   'perm.camera.title': 'カメラの権限が必要です',
   'perm.mount.hint':
-    '何度も失敗する場合：アプリを完全に終了して開き直してください。ケーブルで PC につないで開発中なら npx expo start --tunnel を試してください。',
+    '何度も失敗する場合：アプリを完全に終了（上にスワイプして閉じる）してから開き直してください。それでもだめなら端末を再起動。他のアプリがカメラを使用中（録画・ビデオ通話）でも起動できません。',
   'perm.mount.retry': '再試行',
   'perm.mount.title': 'カメラを起動できません',
 
