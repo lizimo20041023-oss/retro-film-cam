@@ -7,7 +7,9 @@
     assets/frames/classic-white.png    3:4 白边印刷相框
     assets/frames/instant-square.png   1:1 拍立得相框（下方留白）
     assets/frames/film-35mm.png        35mm 胶片条（两侧齿孔）
-    assets/textures/grain.png          颗粒噪点平铺 tile
+    assets/textures/grain.png          颗粒噪点平铺 tile（512×512，彩度中性）
+    assets/textures/chroma-noise.png   CCD 彩色噪点 tile（256×256，块状色斑）
+    assets/textures/dust.png           灰尘与划痕（screen 混合图层）
     assets/textures/vignette.png       暗角（径向 alpha 遮罩）
     assets/textures/light-leak.png     漏光（screen 混合图层）
 
@@ -24,7 +26,7 @@ import math
 import os
 import random
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -272,20 +274,109 @@ def make_film_35mm() -> None:
 # --------------------------------------------------------------------------- #
 # 纹理
 # --------------------------------------------------------------------------- #
-def make_grain(size: int = 192, spread: int = 46) -> None:
-    """单色颗粒 tile：RGB 均值 128 的噪点，配合 mixBlendMode:'overlay' 使用。
+def make_grain(size: int = 512, sigma: float = 62.0, seed: int = 20261010) -> None:
+    """单色颗粒 tile：围绕中灰 128 的噪点，配合 mixBlendMode:'overlay' 使用。
 
-    一个 tile = size×size 逻辑点。改 size 就等于改颗粒粗细。
+    为什么是 512×512：贴图的一个像素 = 屏幕上的一个**逻辑点**，所以 192 的 tile 在照片窗口
+    （约 349×466 pt）里会横着重复 2 遍、竖着 4 遍 —— 同一片噪点反复出现，
+    眼睛能认出"花纹"，看起来就不是颗粒而是脏。512 比窗口还大，铺一次就够。
+
+    为什么 σ 要取到 62（不是 40 上下）：
+    捕获发生在 3x 屏幕上，所以 1 个贴图像素最终占 3×3 个输出像素，iOS 会做平滑插值。
+    实测（scripts/preview_grade.py 量的）：纯白噪声被放大 3 倍后标准差只剩 **0.35 倍**，
+    σ=42 落到画面上只有约 15 级，配 opacity 0.16 后中间调只剩 ±2.5 级 —— 等于没有。
+    σ=62 补偿到约 22 级，预设里再用 0.2~0.5 的 opacity，中间调有 ±5~11 级，才看得出颗粒。
+    （代价是约 5% 的像素被裁到 [8,248] 两端，那点"椒盐"反而更像银盐团簇。）
+
+    为什么不是纯白噪声：真实胶片颗粒是"银盐团簇"，有粗有细。
+    这里把逐像素高频噪声和 1/3 分辨率的团簇噪声按 78:22 掺起来再拉伸到目标 σ。
+    团簇那部分被插值抹掉的少，负责"结块感"；高频那部分负责"沙沙感"。
     """
-    rnd = random.Random(20261010)
-    lum = Image.new("L", (size, size))
-    px = lum.load()
-    for y in range(size):
-        for x in range(size):
-            v = 128 + rnd.randint(-spread, spread)
-            px[x, y] = 0 if v < 0 else (255 if v > 255 else v)
-    rgb = Image.merge("RGB", (lum, lum, lum)).convert("RGBA")
-    save(rgb, os.path.join(TEXTURES_DIR, "grain.png"))
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    fine = rng.normal(0.0, 1.0, (size, size)).astype(np.float32)
+
+    coarse_size = max(2, size // 3)
+    coarse_small = rng.normal(0.0, 1.0, (coarse_size, coarse_size)).astype(np.float32)
+    coarse = np.asarray(
+        Image.fromarray(coarse_small, mode="F").resize((size, size), Image.BICUBIC),
+        dtype=np.float32,
+    )
+
+    noise = 0.78 * fine + 0.22 * coarse
+    std = float(np.std(noise))
+    if std > 1e-6:
+        noise /= std
+    values = np.clip(128.0 + noise * sigma, 8.0, 248.0).astype(np.uint8)
+
+    # 存成 8 位灰度（L）而不是 RGB：噪点压不掉，RGB 会白白多占 2/3 体积
+    save(Image.fromarray(values, mode="L"), os.path.join(TEXTURES_DIR, "grain.png"))
+
+
+def make_chroma_noise(
+    size: int = 512,
+    block: int = 2,
+    sigma: float = 34.0,
+    seed: int = 90210,
+) -> None:
+    """CCD 特有的彩色噪点：品红 / 绿交替的色斑，围绕中灰 128，配合 'overlay'。
+
+    为什么和亮度颗粒分开做：CCD 的色度通道采样率远低于亮度通道，所以它的色噪
+    **更粗、更块状**（这里是 block×block 个逻辑点的块），而胶片没有这种东西。
+    想要"CCD 味"就靠它 + 分离色调 + 硬高光，而不是靠把颗粒调大。
+
+    tile 取 512（和颗粒一样大于照片窗口）→ 不重复；块尺寸 2 pt = 6 个输出像素，
+    这正是小 DC 色噪的粗细。
+
+    存成 48 色调色板 PNG：24 位真彩的彩色噪点会撑到 700 KB 以上，调色板只要几十 KB。
+    """
+    import numpy as np
+
+    cells = max(2, size // block)
+    rng = np.random.default_rng(seed)
+    d = np.clip(rng.normal(0.0, sigma, (cells, cells)), -70.0, 70.0)
+    d = np.repeat(np.repeat(d, block, axis=0), block, axis=1)[:size, :size]
+
+    base = np.full((size, size), 128.0, dtype=np.float32)
+    r = np.clip(base + d, 0.0, 255.0)
+    g = np.clip(base - d * 0.85, 0.0, 255.0)
+    b = np.clip(base + d * 0.45, 0.0, 255.0)
+    rgb = np.dstack([r, g, b]).astype(np.uint8)
+
+    paletted = Image.fromarray(rgb, mode="RGB").convert("P", palette=Image.ADAPTIVE, colors=48)
+    save(paletted, os.path.join(TEXTURES_DIR, "chroma-noise.png"))
+
+
+def make_dust(size: int = 512, seed: int = 4242) -> None:
+    """胶片扫描的灰尘与划痕：稀疏白点 + 几条细划痕，配合 mixBlendMode:'screen'。
+
+    只有 alpha > 0 的地方会提亮，所以图层 opacity 就是"灰尘多少"的总开关。
+    存 RGBA：RGB 固定暖白，信息全在 alpha 上 —— 这样 PNG 压得极小。
+    """
+    rnd = random.Random(seed)
+
+    speck = Image.new("L", (size, size), 0)
+    sd = ImageDraw.Draw(speck)
+    for _ in range(260):
+        x = rnd.randrange(size)
+        y = rnd.randrange(size)
+        r = 1 if rnd.random() < 0.75 else rnd.randint(2, 3)
+        sd.ellipse([x, y, x + r, y + r], fill=rnd.randint(120, 240))
+
+    scratch = Image.new("L", (size, size), 0)
+    sc = ImageDraw.Draw(scratch)
+    for _ in range(7):
+        if rnd.random() < 0.6:
+            x = rnd.randrange(size)
+            sc.line([(x, 0), (x + rnd.randint(-14, 14), size)], fill=rnd.randint(40, 90), width=1)
+        else:
+            y = rnd.randrange(size)
+            sc.line([(0, y), (size, y + rnd.randint(-10, 10))], fill=rnd.randint(30, 70), width=1)
+
+    dust = Image.new("RGBA", (size, size), (255, 250, 240, 0))
+    dust.putalpha(ImageChops.lighter(speck, scratch))
+    save(dust, os.path.join(TEXTURES_DIR, "dust.png"))
 
 
 def make_vignette(size: int = 512, inner: float = 0.42, gamma: float = 1.75, max_alpha: int = 210) -> None:
@@ -344,6 +435,8 @@ def main() -> None:
     make_film_35mm()
     print("textures:")
     make_grain()
+    make_chroma_noise()
+    make_dust()
     make_vignette()
     make_light_leak()
     print("done.")

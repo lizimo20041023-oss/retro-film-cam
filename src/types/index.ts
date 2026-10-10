@@ -122,6 +122,16 @@ export interface ColorGradeConfig {
   fade?: number;
   /** 曝光：-1 压暗 ~ 0 原样 ~ +1 提亮。 */
   exposure?: number;
+  /**
+   * 分离色调：0 无 ~ 1 极强。暗部压成青蓝、高光提成暖白，中间调基本不动。
+   * 这是"数码味 → 胶片味"最有效的一层，老 CCD 小 DC 尤其明显。
+   */
+  splitTone?: number;
+  /**
+   * 光晕 / 泛光：0 无 ~ 1 极强。把画面自身的亮部模糊后叠回去，
+   * 模拟高光在胶片乳剂层里散射（halation）。
+   */
+  bloom?: number;
 }
 
 /** 填满默认值之后的调色参数。 */
@@ -178,6 +188,10 @@ export interface FilmPreset {
   color: ColorGradeConfig;
   /** 颗粒强度 0~1。 */
   grain?: number;
+  /** 彩色噪点强度 0~1（CCD / 高感光的块状色斑，和黑白颗粒是两回事）。 */
+  grainChroma?: number;
+  /** 灰尘与划痕强度 0~1（胶片扫描件的"不干净"感）。 */
+  dust?: number;
   /** 暗角强度 0~1。 */
   vignette?: number;
   /** 漏光强度 0~1。 */
@@ -188,8 +202,13 @@ export interface FilmPreset {
   timestamp?: Partial<TimestampConfig>;
   /** 取景器是否显示九宫格 + 水平仪。 */
   showGuide?: boolean;
-  /** 保存前把原图最长边压到多少像素（默认 2048；0 = 跳过归一化）。 */
+  /** 保存前把原图最长边压到多少像素（默认 0 = 不压缩，直接用相机原图）。 */
   normalizeMaxLongEdge?: number;
+  /**
+   * 成片长边目标像素数（默认 2048）；0 = 用屏幕原生分辨率。
+   * 见 `presets.ts` 里 `PRESET_DEFAULTS.captureLongEdge` 的说明。
+   */
+  captureLongEdge?: number;
 }
 
 /** 填满默认值之后的预设，合成管线只认这个。 */
@@ -199,12 +218,15 @@ export interface ResolvedFilmPreset {
   description: string;
   color: ResolvedColorGrade;
   grain: number;
+  grainChroma: number;
+  dust: number;
   vignette: number;
   lightLeak: number;
   lightLeakFlip: boolean;
   timestamp: ResolvedTimestampConfig;
   showGuide: boolean;
   normalizeMaxLongEdge: number;
+  captureLongEdge: number;
 }
 
 /* ==========================================================================
@@ -212,7 +234,7 @@ export interface ResolvedFilmPreset {
  * ========================================================================== */
 
 /** 纹理贴图 id。 */
-export type TextureId = 'grain' | 'vignette' | 'lightLeak';
+export type TextureId = 'grain' | 'chromaNoise' | 'dust' | 'vignette' | 'lightLeak';
 
 /** 纹理铺法：`repeat` 平铺（颗粒）/ `stretch` 拉伸（暗角、漏光）。 */
 export type TextureResizeMode = 'repeat' | 'stretch';

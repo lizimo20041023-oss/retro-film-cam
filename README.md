@@ -35,6 +35,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [13. 可选升级路径（默认代码不含）](#13-可选升级路径默认代码不含)
 - [14. 路线 B：打独立 App 的技术说明](#14-路线-b打独立-app-的技术说明)
 - [15. 界面设计：为什么"质感"是图片而不是样式](#15-界面设计为什么质感是图片而不是样式)
+- [16. 成片质感：颗粒 / CCD / 分辨率天花板](#16-成片质感颗粒--ccd--分辨率天花板)
 
 ---
 
@@ -249,8 +250,10 @@ retro-film-cam/
 │   │   ├── instant-square.png    #   拍立得 1425×1800（1:1 窗口）
 │   │   ├── film-35mm.png         #   35mm 胶片条 1350×1950（含透明齿孔）
 │   │   └── README.md             #   ★ 自己加相框看这里
-│   ├── textures/                 # 颗粒 / 暗角 / 漏光贴图
-│   │   ├── grain.png             #   192×192 无缝平铺噪点
+│   ├── textures/                 # 颗粒 / 色噪 / 灰尘 / 暗角 / 漏光贴图
+│   │   ├── grain.png             #   512×512 无缝平铺颗粒（8 位灰度，σ=62）
+│   │   ├── chroma-noise.png      #   512×512 CCD 块状色噪（调色板 PNG）
+│   │   ├── dust.png              #   512×512 灰尘与划痕（screen 混合）
 │   │   ├── vignette.png          #   512×512 径向暗角
 │   │   ├── light-leak.png        #   768×768 右上角暖色漏光
 │   │   └── README.md             #   ★ 换纹理看这里
@@ -270,7 +273,8 @@ retro-film-cam/
 │   ├── generate_placeholder_assets.py   # 程序化重生成占位相框/纹理（Python + Pillow）
 │   ├── generate_app_icon.py             # 程序化重生成 App 图标（Python + Pillow）
 │   ├── generate_ui_assets.py            # 程序化重生成界面质感素材（Python + Pillow + numpy）
-│   └── preview_ui_mock.py               # 把样式表"翻译"成一张排版示意图（本地看比例用）
+│   ├── preview_ui_mock.py               # 把样式表"翻译"成一张排版示意图（本地看比例用）
+│   └── preview_grade.py                 # 模拟调色管线、打印每个预设的颗粒 σ（本地看质感用）
 │
 └── src/
     ├── types/index.ts            # 全部类型（唯一类型来源，导出完整）
@@ -282,8 +286,9 @@ retro-film-cam/
     ├── utils/
     │   ├── processFilmPhoto.ts   # ★ 后处理主管线（纯逻辑 + 依赖注入，可单测）
     │   ├── geometry.ts           # 取景比例 / 相框窗口 / 日期定位的几何计算
-    │   ├── gradeLayers.ts        # 预设数值 → 图层数组（声明式调色）
-    │   ├── normalizePhoto.ts     # 原图降采样（内存优化）
+    │   ├── gradeLayers.ts        # 预设数值 → 图层数组（声明式调色，13 层）
+    │   ├── captureOptions.ts     # 成片分辨率规划（成片长边 → captureRef 参数 + 像素数）
+    │   ├── normalizePhoto.ts     # 原图降采样（内存优化；默认已关，直接用原图）
     │   ├── saveToLibrary.ts      # 存相册（新 API 优先 + 旧 API 兜底）
     │   ├── formatTimestamp.ts    # 日期格式化（YY MM DD / YY-MM-DD…）
     │   └── describeError.ts      # unknown → 用户可读文案
@@ -318,10 +323,12 @@ CameraView.takePictureAsync({ quality: 1, exif: false })   → 原图 { uri, wid
         │
         ▼  processAndSaveFilmPhoto()
 ① normalizing  ImageManipulator.manipulate(uri).resize(...) → renderAsync() → saveAsync(JPEG 0.95)
-                把长边压到 2048（避免两张全分辨率图同时上屏导致内存峰值），失败自动退回原图
-② 组装图层      buildGradeLayers(preset) → GradeLayer[]（纯函数，声明的顺序 = 叠加顺序）
-③ capturing    合成视图挂载到屏幕外层的"显影面板"里（必须真的上屏，iOS renderInContext 截不到未上屏视图）
-                → onLayout + 所有 Image onLoad 双就绪（1.5s 超时兜底）→ captureRef
+                **默认已跳过**（normalizeMaxLongEdge = 0，保留相机原图全部像素）；
+                老机器上若偶发闪退，把它改回 2048 可把内存峰值从约 96 MB 压到约 24 MB
+② 组装图层      buildGradeLayers(preset) → GradeLayer[]（纯函数，声明的顺序 = 叠加顺序，共 13 层）
+③ capturing     planCapture() 按预设的 captureLongEdge 算出 captureRef 要的 width/height（单位：逻辑点）
+                合成视图挂载到屏幕外层的"显影面板"里（必须真的上屏，iOS renderInContext 截不到未上屏视图）
+                → onLayout + 所有 Image onLoad 双就绪（1.5s 超时兜底）→ captureRef（默认成片长边 2048 px）
 ④ saving        Asset.create(uri) 存进相册（新 API；旧 SDK 自动走 legacy 分支）
         │
         ▼
@@ -349,18 +356,24 @@ iOS 上 RN 的 `filter` **只支持 `brightness` 和 `opacity`**
 | --- | --- | --- | --- |
 | `temperature` | -1 ~ 1 | 暖/冷色纯色层，`mixBlendMode: 'soft-light'`，`opacity = |值| × 0.9`（暖 `#FF9640` / 冷 `#4C8DFF`） | 正值偏暖，负值偏冷 |
 | `tint` | -1 ~ 1 | 绿/品红纯色层，`soft-light`，`opacity = |值| × 0.55`（绿 `#38A85C` / 品红 `#C05BD8`） | 正值偏绿，负值偏品红 |
+| `splitTone` | 0 ~ 1 | **分离色调**，两层：暗部 `#182E3E` + `'lighten'`（只把比它更暗的像素抬成青蓝）；高光 `#FFF2D9` + `'darken'`（只把更亮的像素压成暖白）。第二层 `opacity = 值 × 0.9` | 中间调几乎不动，得到"冷暗部 + 暖高光"的胶片基调 |
+| `bloom` | 0 ~ 1 | 深暖色 `#1A0A00` + `mixBlendMode: 'color-dodge'`，`opacity = 值` | 光晕/泛光。`color-dodge` 的偏移量正比于底色，所以暗部不动、高光被推暖推亮 —— 近似 halation（RN 的 `<Image>` 没有 `blurRadius`，做不了真·模糊泛光） |
 | `saturation` | 0 ~ 2 | `<1`：中灰 `#808080` 层 `'saturation'`，`opacity = 1 - 值`；`>1`：高饱和红 `#FF3B30` 层 `'saturation'`，`opacity = (值 - 1) × 0.85` | `1` = 不动；`0` = 完全去色（黑白预设就这么实现的） |
 | `contrast` | 0 ~ 2 | `>1`：**同一张照片再叠一层，`mixBlendMode: 'overlay'`**，`opacity = 值 - 1`；`<1`：中灰层 `'normal'`，`opacity = (1 - 值) × 0.9` | RN 没有真正的对比度调整，这是视觉等价近似 |
 | `fade` | 0 ~ 1 | 深灰 `#1C1C1C` 层，`mixBlendMode: 'lighten'`，`opacity = 值` | 只抬黑场、不动高光 = 褪色/过期胶片感 |
 | `exposure` | -1 ~ 1 | 正值：白色层 `'screen'`，`opacity = 值 × 0.35`；负值：黑色层 `'multiply'`，`opacity = |值| × 0.45` | 整体提亮/压暗 |
-| `grain` | 0 ~ 1 | `grain.png` 平铺（`resizeMode: 'repeat'`），`mixBlendMode: 'overlay'`，`opacity = 值` | 颗粒粗细换 tile 大小 |
+| `grainChroma` | 0 ~ 1 | `chroma-noise.png` 平铺，`mixBlendMode: 'overlay'`，`opacity = 值` | CCD 特有的**块状色噪**（品红 ↔ 绿交替），是"小 DC 味"的主力 |
+| `grain` | 0 ~ 1 | `grain.png` 平铺（`resizeMode: 'repeat'`），`mixBlendMode: 'overlay'`，`opacity = 值` | 胶片颗粒强度；粗细由贴图决定，见 [`assets/textures/README.md`](assets/textures/README.md) |
+| `dust` | 0 ~ 1 | `dust.png` 平铺，`mixBlendMode: 'screen'`，`opacity = 值` | 底片灰尘与划痕，只在暗部显形 |
 | `vignette` | 0 ~ 1 | `vignette.png` 拉伸，`mixBlendMode: 'multiply'`，`opacity = 值` | 四角压暗 |
 | `lightLeak` | 0 ~ 1 | `light-leak.png` 拉伸，`mixBlendMode: 'screen'`，`opacity = 值` | `lightLeakFlip: true` 时水平镜像换边 |
 | `timestamp` | 见下 | 右下角 `<Text>`（不是图层） | 见下方"时间戳" |
 | `showGuide` | bool | 取景器九宫格 | 只影响取景，不进成片 |
 
-**图层顺序 = 数组顺序**（色温 → 色调 → 饱和度 → 对比度 → 褪色 → 曝光 → 颗粒 → 暗角 → 漏光），
+**图层顺序 = 数组顺序**（色温 → 色调 → **分离色调** → 饱和度 → 对比度 → 褪色 → 曝光 → **光晕** → **色噪** → 颗粒 → **灰尘** → 暗角 → 漏光，共 13 层），
 想调整顺序就改 `buildGradeLayers` 里的 `push` 次序；想加一种新效果，就在 `GradeLayer` 联合类型里加一个成员。
+顺序是有讲究的：分离色调放在饱和度**之前**，才能让后面的调色在同一个基调上做；
+色噪放在颗粒**之前**，让颗粒压在色噪上面，看起来才像"胶片盖在传感器噪点上"。
 
 > **两个实现细节（改 `FilmCompositor` 前务必看）**
 >
@@ -500,9 +513,11 @@ console.log(photo.warnings); // 没有原图时的降级提示也会出现在这
    取景器里看到的多一点或少一点是正常的。要完全一致需要把预览也按输出比例裁切，属于下一步优化。
 2. **无实时滤镜**：这是刻意的（硬约束 #2）。所见即"原始画面 + 相框"，调色只在按下快门后发生。
    好处是取景帧率永远是原生的，代价是按下快门后要等 ~1 秒才看到成片。
-3. **分辨率受屏幕限制**：成片 ≈ 合成视图逻辑尺寸 × PixelRatio（iPhone 上约 1170 × 1600）。
-   想要 4000 × 5000 的"数码底片"必须给 `captureRef` 传放大后的 `width`/`height`，那会插值软化 ——
-   真要高分辨率得换 Skia 离屏渲染（第 13 节）。
+3. **分辨率有天花板**：成片的像素数由 `captureLongEdge` 决定（默认长边 2048 px ≈ 2.9 MP）。
+   传放大后的 `width`/`height` 给 `captureRef` **不是简单插值** —— iOS 会把整棵图层树重绘到更大的矩形上，
+   照片从原图重采样，所以能拿到真像素；但**上限受"舞台只有屏幕那么大"约束**：
+   再往上顶，颗粒也会被一起放大成 6~9 像素的斑块，就不像胶片了。
+   真要 12 MP + 真实胶片模拟，得换 Skia / `expo-gl` 离屏渲染（第 13 节和第 16.4 节）。
 4. **调色是图层模拟，不是真 LUT**：`contrast` 用同图 `overlay` 叠加近似，`contrast` 拉到 2.0 这类极值时
    高光/阴影会有轻微色偏；数码胶片味的"真"实现要靠 LUT。
 5. **`filter` 在 iOS 上不可用**，所以同一套参数在 Android 上也不会去用它 —— 两个平台走同一条渲染路径，
@@ -732,6 +747,97 @@ python scripts/preview_ui_mock.py
    做法是外面包一层 `<View style={StyleSheet.absoluteFill} pointerEvents="none">`。
 2. **底纹 tile 不能太小**。最初用 160×160，在 393pt 宽的屏幕上会横向重复 2.5 次，
    接缝看得出周期。改成 320×320（只重复 1.2 次）配合更低振幅才彻底隐形。
+
+---
+
+## 16. 成片质感：颗粒 / CCD / 分辨率天花板
+
+### 16.1 为什么以前"拍出来像自带的相机加了个框"
+
+不是参数不够多，是**颗粒的调制量只有几个灰阶**。
+
+`scripts/preview_grade.py` 会算出每个预设成片里"平滑天空的高频标准差"（单位：8 位灰阶）。
+改造前实测：
+
+| 预设 | 改造前 σ | 改造后 σ |
+| --- | --- | --- |
+| retro-400 | 2.49 级 | **6.71 级** |
+| gold-200 | 2.00 级 | **5.63 级** |
+| superia-x | 2.05 级 | **5.57 级** |
+| tri-x-400 | 4.03 级 | **6.98 级** |
+| expired-64 | 4.18 级 | **8.24 级** |
+
+2~4 级是什么概念：JPEG 压缩和屏幕抖动的幅度就在这个量级，等于白加。
+原因是**贴图被放大后对比度掉了 0.35 倍**（贴图 1 px = 1 逻辑点 = 捕获后 3×3 像素，
+iOS 平滑插值把纯白噪声的 σ 从 42 抹到约 15），再乘 0.16 的 opacity 就只剩 ±2.5 级。
+
+### 16.2 这一轮改了什么
+
+| 改动 | 内容 |
+| --- | --- |
+| **颗粒贴图** | `grain.png` 从 192×192 / σ=26 换成 **512×512 / σ=62**（8 位灰度），掺入 22% 的低频团簇做"结块感" |
+| **新增 CCD 色噪** | `chroma-noise.png` 512×512，品红 ↔ 绿交替的 **2×2 块状**色斑（小 DC 的色噪是块状的，逐像素彩噪只是脏） |
+| **新增灰尘划痕** | `dust.png` 512×512，配 `screen` 混合，只在暗部显形 |
+| **新增 3 个图层** | 分离色调（`splitTone`，冷暗部 + 暖高光）、光晕（`bloom`，`color-dodge` 近似 halation）、色噪 / 灰尘 |
+| **预设 5 个 → 10 个** | 见下 |
+| **不再压缩原图** | `normalizeMaxLongEdge` 2048 → **0**（直接用相机原图，不再先缩到 2048 再合成） |
+| **成片分辨率旋钮** | 新增 `captureLongEdge`（见 16.3） |
+
+预设顺序：`retro-400` → `portra-400`（柔和低对比暖肤色）→ `gold-200` → `superia-x` →
+`velvia-50`（高饱和风光正片）→ **`ccd-cyber`**（CCD 味主力）→ `cinestill-800t`（钨丝灯光晕）→
+**`digicam-2002`**（早期数码相机）→ `tri-x-400` → `expired-64`。
+
+想自己加第 11 个预设，看第 7 节；想调颗粒强弱，改 `presets.ts` 里的 `grain`，
+然后用 `python scripts/preview_grade.py` 看 σ 有没有落在 5~9 级之间。
+
+### 16.3 分辨率：`captureLongEdge` 能做什么
+
+`presets.ts` 里的 `captureLongEdge`（默认 **2048**）是成片**长边的目标像素数**：
+
+- `captureLongEdge: 0` → 不传 `width`/`height`，成片 = 舞台逻辑尺寸 × 设备像素比 ≈ **1119 × 1488**（约 1.7 MP）；
+- `captureLongEdge: 2048` → 截图时把 `captureRef` 的 `width`/`height`（**单位是逻辑点**）按 `2048 / 原生长边` 放大，
+  由 iOS 把整棵图层树**重绘**到更大的矩形上 —— 照片是从原图重采样的，日期文字是矢量的，
+  所以放大拿到的是**真像素**，不是把 1.7 MP 拉皮。
+
+代价是内存：RGBA 上下文长边 2048 ≈ 12 MB、3024 ≈ 27 MB、4032 ≈ 48 MB（还要再加一张解码后的原图）。
+
+> ⚠️ **相框 PNG 只有 1350~1425 px 宽**。`captureLongEdge` 超过约 1800 之后，
+> 奶白边框和印刷字会开始变软（照片本身不受影响）。要往上顶的话，
+> 得先把 `scripts/generate_placeholder_assets.py` 里三个相框生成器整体加倍。
+
+### 16.4 为什么拿不到 iPhone 原图的 12 MP
+
+因为整条调色管线**依赖 `mixBlendMode`**，而 RN 在 iOS 上把 `mixBlendMode` 实现成
+`layer.compositingFilter`（见 `node_modules/react-native/.../RCTViewComponentView.mm`）。
+这带来一个硬约束：
+
+- 截图必须走 `drawViewHierarchyInRect`（截"屏幕上的样子"），它**不渲染 `compositingFilter`** 的替代路线
+  `renderInContext` 反而**会丢掉全部调色**（源码注释自己写着 "this comes with some trade-offs such as
+  inability to capture gradients"）；
+- 于是成片像素 = 舞台在屏幕上的逻辑尺寸 × 你要求的放大倍率，**舞台本身是屏幕尺寸**。
+  把 `captureLongEdge` 一路顶到 4032 也能出图，但那是把一块 393pt 宽的布局重绘到 4032 px ——
+  照片有真细节，**颗粒的"每颗粒子"也一起被放大成 6~9 像素的斑块**，看起来就不再是胶片颗粒。
+
+三条路，按代价排序：
+
+| 方案 | 成片 | 代价 |
+| --- | --- | --- |
+| **保持现状**（`captureLongEdge: 2048`） | 约 2.9 MP | 无。日常发朋友圈、冲印 6 寸都够 |
+| **顶到 3024 / 4032** | 约 9 / 12 MP | 相框要先做 2×；颗粒变粗；内存 27 / 48 MB，老机器有被杀的风险 |
+| **换成 GPU 渲染**（`expo-gl` / Skia 片元着色器） | 真 12 MP + 真实胶片模拟 | 需要**自定义原生模块** → Expo Go 跑不了，只能走第 14 节的 `.ipa`（GitHub Actions 打的就是 dev build，不受 Expo Go 限制）。等于把整个调色管线重写一遍 |
+
+**当前选择：保持现状。** 如果你要冲印或者就是想要 12 MP，告诉我，走第三条路。
+
+### 16.5 改完记得跑这两个脚本
+
+```powershell
+python scripts/generate_placeholder_assets.py   # 重新生成相框 + 5 张贴图
+python scripts/preview_grade.py                 # 模拟调色结果，打印每个预设的颗粒 σ
+```
+
+`preview_grade.py` 会用与 CoreImage 同源的混合公式，把 `presets.ts` 里的数值**解析出来重放一遍**
+（不抄第二份参数表，避免两边漂移），输出两张九宫格临时图 —— 这是在没有 iPhone 的情况下
+唯一能"看到"成片效果的办法。
 
 ---
 

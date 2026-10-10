@@ -32,7 +32,6 @@
  * 可单测性：本文件不直接调用任何原生模块 —— 截图通过 `FilmStageHost` 注入，
  * 单测时传一个假 host（`capture()` 返回固定 uri）即可跑完整条管线。
  */
-import { PixelRatio } from 'react-native';
 import { resolvePreset } from '../constants/presets';
 import type {
   CapturedPhoto,
@@ -45,6 +44,7 @@ import type {
   SaveOutcome,
   Size,
 } from '../types';
+import { planCapture } from './captureOptions';
 import { computeFrameLayout } from './geometry';
 import { buildGradeLayers } from './gradeLayers';
 import { normalizePhoto } from './normalizePhoto';
@@ -123,14 +123,20 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     host.unmount();
   }
 
-  const pixelRatio = PixelRatio.get();
+  // 和 FilmCompositor 用同一个纯函数推尺寸，保证报告的像素数和真截出来的文件一致
+  const capture = planCapture({
+    width: layout.width,
+    height: layout.height,
+    targetLongEdge: preset.captureLongEdge,
+  });
+
   return {
     uri,
     width: layout.width,
     height: layout.height,
-    pixelRatio,
-    pixelWidth: Math.round(layout.width * pixelRatio),
-    pixelHeight: Math.round(layout.height * pixelRatio),
+    pixelRatio: capture.pixelRatio,
+    pixelWidth: capture.pixelWidth,
+    pixelHeight: capture.pixelHeight,
     frameId: frame.id,
     presetId: preset.id,
     capturedAtIso: capturedAt.toISOString(),

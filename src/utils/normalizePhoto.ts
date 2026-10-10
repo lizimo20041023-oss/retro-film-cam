@@ -1,10 +1,11 @@
 /**
- * 原图归一化：把最长边压到 `maxLongEdge`（默认 2048 px）。
+ * 原图归一化：把最长边压到 `maxLongEdge`。**默认（预设里的 `normalizeMaxLongEdge: 0`）是关掉的。**
  *
- * 为什么要这一步？
+ * 为什么要留这一步？
  * 12MP 的 iPhone 照片解码成位图约 4000×3000×4B ≈ 48 MB。合成阶段照片要被 draw 两次
- * （一次原图、一次"自叠加提对比度"），峰值直接翻倍；先降到 2048 长边，
- * 位图降到约 2048×1536×4B ≈ 12 MB，成片依然有 2000+ px，肉眼无损。
+ * （一次原图、一次"自叠加提对比度"），峰值直接翻倍。老机器上如果觉得拍照后偶发闪退，
+ * 把预设里的 `normalizeMaxLongEdge` 改回 2048 就能把峰值压到约 12 MB —— 代价是照片被降采样。
+ * 默认不压缩，是为了让成片尽量吃到原图细节（成片像素数另由 `captureLongEdge` 决定）。
  *
  * 用 `expo-image-manipulator` 的**新 API**（`manipulate` → `renderAsync` → `saveAsync`）；
  * 旧的 `manipulateAsync` 已被官方标为 Deprecated。

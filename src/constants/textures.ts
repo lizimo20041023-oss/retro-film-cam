@@ -1,5 +1,5 @@
 /**
- * 纹理贴图注册表（颗粒 / 暗角 / 漏光）。
+ * 纹理贴图注册表（颗粒 / 色噪 / 灰尘 / 暗角 / 漏光）。
  *
  * 为什么用 PNG 贴图而不是 `filter` 或渐变？
  * - RN 的 `filter` 在 **iOS 上只支持 brightness / opacity**（官方原文见 README 的兼容性核实），
@@ -9,6 +9,14 @@
  * - 静态 PNG + `mixBlendMode` 是 100% 跨平台稳定的做法，而且把"滤镜长什么样"变成了可以随便换的美术资源。
  *
  * 替换规范见 `assets/textures/README.md`。换图不用改代码。
+ *
+ * ⚠️ **尺寸那些事（决定颗粒看起来什么样，2026-10-10 实测）**：
+ * 贴图 1 px = 1 逻辑点，而截图发生在 3x 屏幕上 → **1 个贴图像素会变成 3×3 个输出像素**，
+ * iOS 会在放大时做平滑插值，纯白噪声的对比度会掉到约 0.35 倍。
+ * 所以：
+ *   1. tile 必须**大于照片窗口**（窗口最大约 352×466 pt）才不会露出重复花纹 → 512 起步；
+ *   2. 想得到可见的颗粒，脚本里的 σ 和预设里的 opacity 都要按"放大后掉 65%"来补偿；
+ *   3. 别指望 1 像素级的细颗粒 —— 那在这个架构下必然被插值抹平（要更细只能换渲染技术栈）。
  */
 import type { TextureId, TextureSpec } from '../types';
 
@@ -16,10 +24,24 @@ export const TEXTURES: Record<TextureId, TextureSpec> = {
   grain: {
     id: 'grain',
     name: '颗粒',
-    // 192×192 无缝平铺 tile：单色（中灰）+ 噪点 alpha
+    // 512×512：比照片窗口（最大约 352×466 pt）大 → 完全不重复
     source: require('../../assets/textures/grain.png'),
     defaultResizeMode: 'repeat',
-    note: '单色噪点 tile，平铺铺满画面，用 overlay 混合。tile 越小 → 颗粒越细（192 = 中等颗粒）。',
+    note: '单色噪点 tile（512×512 8 位灰度），平铺铺满画面，用 overlay 混合。tile 越大越不会看出重复。',
+  },
+  chromaNoise: {
+    id: 'chromaNoise',
+    name: '色噪',
+    source: require('../../assets/textures/chroma-noise.png'),
+    defaultResizeMode: 'repeat',
+    note: 'CCD / 高感光的块状彩色斑点（2×2 逻辑点的块），平铺 + overlay。和黑白颗粒叠加才有"小 DC"味。',
+  },
+  dust: {
+    id: 'dust',
+    name: '灰尘',
+    source: require('../../assets/textures/dust.png'),
+    defaultResizeMode: 'repeat',
+    note: '稀疏白点 + 划痕，平铺 + screen（只加亮点）。模拟胶片扫描件的"不干净"。',
   },
   vignette: {
     id: 'vignette',

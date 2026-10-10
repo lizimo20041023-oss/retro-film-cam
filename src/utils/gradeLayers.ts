@@ -9,6 +9,11 @@
  * - `filter` 在 iOS 上**只有 brightness / opacity**，所以对比度/饱和度不能靠它；
  * - 因此对比度用"同一画面再叠一层 overlay"实现（自叠 = 提对比），
  *   饱和度用"中灰/高饱和色 + saturation 混合"实现，色温色调用 soft-light 色层实现。
+ *
+ * 图层顺序（= 绘制顺序，改顺序会改结果）：
+ *   ① 色温 ② 色调 ③ 分离色调 ④ 饱和度 ⑤ 对比度 ⑥ 褪色 ⑦ 曝光
+ *   ⑧ 光晕 ⑨ 色噪 ⑩ 颗粒 ⑪ 灰尘 ⑫ 暗角 ⑬ 漏光
+ * 前七层负责"色"，后六层负责"质"。
  */
 import type { GradeLayer, ResolvedFilmPreset } from '../types';
 
@@ -29,6 +34,20 @@ const SATURATE_ACCENT = '#FF3B30';
 const FADE_LIFT = '#1C1C1C';
 const WHITE = '#FFFFFF';
 const BLACK = '#000000';
+/**
+ * 分离色调的暗部色：极深的青蓝。配 lighten 混合 → 只把**比它更暗**的像素抬成这个色，
+ * 所以中间调和高光完全不受影响。
+ */
+const COOL_SHADOW = '#182E3E';
+/** 分离色调的高光色：暖白。配 darken 混合 → 只把比它更亮的像素压成暖白。 */
+const WARM_HIGHLIGHT = '#FFF2D9';
+/**
+ * 光晕用的深暖色。配 color-dodge：`out = base / (1 - src)`，
+ * 于是偏移量正比于 base —— 暗部几乎不动、高光被推暖推亮，正是 halation 的样子。
+ * （RN 的 Image 没有 blurRadius，所以用不了"模糊后叠回去"那种真泛光；
+ *   色层版只保留"高光变暖发亮"这个最关键的观感。）
+ */
+const HALATION = '#1A0A00';
 
 function clamp01(value: number): number {
   return Math.min(Math.max(value, 0), 1);
@@ -40,7 +59,7 @@ function round2(value: number): number {
 
 /**
  * 把一个已解析的预设展开成有序图层数组。
- * 顺序 = 绘制顺序：调色 → 对比度自叠 → 褪色/曝光 → 颗粒 → 暗角 → 漏光。
+ * 顺序 = 绘制顺序：调色 → 密度 → 质感（颗粒/灰尘）→ 光学（暗角/漏光）。
  * 中性参数不会产生图层，所以"没调的项"零开销。
  */
 export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
@@ -73,7 +92,29 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  // ③ 饱和度：saturation 混合会"取颜色的饱和度、保留底图明度"
+  // ③ 分离色调：暗部压青蓝（lighten 只碰暗部）+ 高光提暖白（darken 只碰高光）。
+  //    这一层是"数码味 → 胶片/CCD 味"性价比最高的一步，中间调几乎不动。
+  if (color.splitTone > 0.01) {
+    const tone = clamp01(color.splitTone);
+    layers.push({
+      kind: 'color',
+      key: 'split-shadow',
+      label: `暗部青蓝 ${round2(tone)}`,
+      color: COOL_SHADOW,
+      blendMode: 'lighten',
+      opacity: clamp01(tone),
+    });
+    layers.push({
+      kind: 'color',
+      key: 'split-highlight',
+      label: `高光暖白 ${round2(tone)}`,
+      color: WARM_HIGHLIGHT,
+      blendMode: 'darken',
+      opacity: clamp01(tone * 0.9),
+    });
+  }
+
+  // ④ 饱和度：saturation 混合会"取颜色的饱和度、保留底图明度"
   if (color.saturation < 0.99) {
     layers.push({
       kind: 'color',
@@ -94,7 +135,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  // ④ 对比度：> 1 用"同一张原图再叠一层 overlay"（自叠就是提对比度），
+  // ⑤ 对比度：> 1 用"同一张原图再叠一层 overlay"（自叠就是提对比度），
   //    < 1 用中灰 normal 把画面往灰里压
   if (color.contrast > 1.01) {
     layers.push({
@@ -115,7 +156,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  // ⑤ 褪色：lighten 只抬黑场（暗部变灰、高光不动）—— 真·过期胶片感
+  // ⑥ 褪色：lighten 只抬黑场（暗部变灰、高光不动）—— 真·过期胶片感
   if (color.fade > 0.01) {
     layers.push({
       kind: 'color',
@@ -127,7 +168,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  // ⑥ 曝光：白 screen 提亮 / 黑 multiply 压暗
+  // ⑦ 曝光：白 screen 提亮 / 黑 multiply 压暗
   if (color.exposure > 0.01) {
     layers.push({
       kind: 'color',
@@ -148,7 +189,32 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  // ⑦ 颗粒：PNG 平铺 + overlay
+  // ⑧ 光晕：深暖色 + color-dodge，只在高光显形（见 HALATION 注释）
+  if (color.bloom > 0.01) {
+    layers.push({
+      kind: 'color',
+      key: 'bloom',
+      label: `光晕 ${round2(color.bloom)}`,
+      color: HALATION,
+      blendMode: 'color-dodge',
+      opacity: clamp01(color.bloom),
+    });
+  }
+
+  // ⑨ 色噪：CCD / 高感光的块状彩色斑点（和下面黑白颗粒是两回事，色噪更粗更花）
+  if (preset.grainChroma > 0.01) {
+    layers.push({
+      kind: 'texture',
+      key: 'chroma-noise',
+      label: `色噪 ${round2(preset.grainChroma)}`,
+      textureId: 'chromaNoise',
+      resizeMode: 'repeat',
+      blendMode: 'overlay',
+      opacity: clamp01(preset.grainChroma),
+    });
+  }
+
+  // ⑩ 颗粒：PNG 平铺 + overlay（overlay 在中间调最强、暗部高光自然变弱，和胶片一致）
   if (preset.grain > 0.01) {
     layers.push({
       kind: 'texture',
@@ -161,7 +227,20 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  // ⑧ 暗角：PNG 拉伸 + multiply
+  // ⑪ 灰尘与划痕：screen 只加亮点，暗部什么都不加 —— 老扫描件那种"不干净"
+  if (preset.dust > 0.01) {
+    layers.push({
+      kind: 'texture',
+      key: 'dust',
+      label: `灰尘 ${round2(preset.dust)}`,
+      textureId: 'dust',
+      resizeMode: 'repeat',
+      blendMode: 'screen',
+      opacity: clamp01(preset.dust),
+    });
+  }
+
+  // ⑫ 暗角：PNG 拉伸 + multiply
   if (preset.vignette > 0.01) {
     layers.push({
       kind: 'texture',
@@ -174,7 +253,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  // ⑨ 漏光：PNG 拉伸 + screen（可左右翻转换边）
+  // ⑬ 漏光：PNG 拉伸 + screen（可左右翻转换边）
   if (preset.lightLeak > 0.01) {
     layers.push({
       kind: 'texture',

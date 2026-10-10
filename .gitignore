@@ -10,6 +10,7 @@ expo-env.d.ts
 # 检查用临时产物
 .export-check/
 assets/ui/_mock-camera-screen.png
+assets/textures/_grade-*.png
 .ui-preview.png
 
 # 原生工程（本项目是纯 managed，用不到；prebuild 后才会出现）

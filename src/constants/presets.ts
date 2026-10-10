@@ -44,13 +44,35 @@ export const PRESET_DEFAULTS = {
   contrast: 1,
   fade: 0,
   exposure: 0,
-  grain: 0.08,
+  /** 分离色调：暗部青蓝 + 高光暖白。0 = 关。 */
+  splitTone: 0,
+  /** 光晕：高光变暖发亮。0 = 关。 */
+  bloom: 0,
+  grain: 0.22,
+  /** CCD 式块状彩色噪点。0 = 关。 */
+  grainChroma: 0,
+  /** 灰尘与划痕。0 = 关。 */
+  dust: 0,
   vignette: 0.18,
   lightLeak: 0,
   lightLeakFlip: false,
   showGuide: true,
-  /** 保存前把原图最长边压到 2048 px（省内存，肉眼几乎无损）。0 = 不压缩。 */
-  normalizeMaxLongEdge: 2048,
+  /**
+   * 保存前把原图最长边压到多少像素。**0 = 不压缩**（用相机原图，约 12 MP）。
+   * 注意：0 会让合成期间多占约 48 MB 内存，但成片画质只受 captureLongEdge 限制。
+   */
+  normalizeMaxLongEdge: 0,
+  /**
+   * 成片的长边目标像素数。0 = 用屏幕原生分辨率（舞台逻辑尺寸 × 设备像素比，约 1119×1488）。
+   *
+   * 为什么要有这个旋钮：调色全部靠 `mixBlendMode`（= iOS 的 `layer.compositingFilter`），
+   * 而截图走的是 `drawViewHierarchyInRect`，默认只按"视图在屏幕上的逻辑尺寸 × 设备像素比"出图。
+   * 传给 `captureRef` 一个更大的 `width/height`（单位是**点**）会让 iOS 把整棵图层树
+   * 重绘到更大的画布上 —— 照片、相框 PNG、日期文字都会从各自的源图重新采样，
+   * 所以只要源图分辨率够（相框已生成到 2700×3600），就能真的拿到更多像素。
+   * 代价是内存：2048 约 +12 MB，3024 约 +30 MB。
+   */
+  captureLongEdge: 2048,
 } as const;
 
 /** 日期水印默认值（经典橙色液晶）。 */
@@ -77,11 +99,29 @@ export const PRESETS: FilmPreset[] = [
       contrast: 1.12,
       fade: 0.18,
       exposure: 0.02,
+      splitTone: 0.22,
     },
-    grain: 0.16,
+    grain: 0.3,
     vignette: 0.28,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
     showGuide: true,
+  },
+  {
+    id: 'portra-400',
+    name: 'PORTRA 400',
+    description: '柔和人像卷：低对比、暖肤色、细颗粒，几乎不动结构',
+    color: {
+      temperature: 0.2,
+      tint: 0.06,
+      saturation: 0.94,
+      contrast: 0.96,
+      fade: 0.2,
+      exposure: 0.06,
+      splitTone: 0.16,
+    },
+    grain: 0.2,
+    vignette: 0.14,
+    timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
   },
   {
     id: 'gold-200',
@@ -94,8 +134,9 @@ export const PRESETS: FilmPreset[] = [
       contrast: 1.08,
       fade: 0.08,
       exposure: 0.06,
+      splitTone: 0.18,
     },
-    grain: 0.12,
+    grain: 0.24,
     vignette: 0.16,
     lightLeak: 0.22,
     lightLeakFlip: false,
@@ -112,9 +153,86 @@ export const PRESETS: FilmPreset[] = [
       contrast: 1.06,
       fade: 0.1,
       exposure: -0.02,
+      splitTone: 0.24,
     },
-    grain: 0.14,
+    grain: 0.26,
     vignette: 0.2,
+    timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
+  },
+  {
+    id: 'velvia-50',
+    name: 'VELVIA 50',
+    description: '反转片：浓艳、暗部结实、颗粒细，适合风景和花',
+    color: {
+      temperature: 0.06,
+      tint: 0.08,
+      saturation: 1.34,
+      contrast: 1.24,
+      fade: 0,
+      exposure: -0.04,
+      splitTone: 0.12,
+    },
+    grain: 0.2,
+    vignette: 0.22,
+    timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
+  },
+  {
+    id: 'ccd-cyber',
+    name: 'CCD CYBER',
+    description: '千禧年 CCD 小 DC：青蓝暗部 + 暖高光 + 重色噪，夜景和闪光灯最像',
+    color: {
+      temperature: -0.12,
+      tint: -0.08,
+      saturation: 1.18,
+      contrast: 1.26,
+      fade: 0.08,
+      exposure: -0.06,
+      splitTone: 0.52,
+      bloom: 0.2,
+    },
+    grain: 0.3,
+    grainChroma: 0.46,
+    vignette: 0.34,
+    timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
+  },
+  {
+    id: 'cinestill-800t',
+    name: 'CINESTILL 800T',
+    description: '钨丝灯电影卷：冷调 + 强烈高光晕开（halation），夜里霓虹最出味',
+    color: {
+      temperature: -0.34,
+      tint: 0.04,
+      saturation: 1.06,
+      contrast: 1.12,
+      fade: 0.14,
+      exposure: 0.04,
+      splitTone: 0.34,
+      bloom: 0.52,
+    },
+    grain: 0.3,
+    vignette: 0.22,
+    lightLeak: 0.18,
+    lightLeakFlip: true,
+    timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
+  },
+  {
+    id: 'digicam-2002',
+    name: 'DIGICAM 2002',
+    description: '2002 年的卡片机：发灰、偏绿、色噪和暗角都很重，糊得刚刚好',
+    color: {
+      temperature: 0.12,
+      tint: 0.22,
+      saturation: 0.82,
+      contrast: 1.1,
+      fade: 0.34,
+      exposure: 0.02,
+      splitTone: 0.4,
+      bloom: 0.24,
+    },
+    grain: 0.38,
+    grainChroma: 0.34,
+    dust: 0.16,
+    vignette: 0.44,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
   },
   {
@@ -125,11 +243,13 @@ export const PRESETS: FilmPreset[] = [
       temperature: 0,
       tint: 0,
       saturation: 0,
-      contrast: 1.22,
+      contrast: 1.3,
       fade: 0.06,
       exposure: 0.02,
+      splitTone: 0.14,
     },
-    grain: 0.3,
+    grain: 0.38,
+    dust: 0.12,
     vignette: 0.4,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#E6E6E6' },
     showGuide: true,
@@ -145,8 +265,10 @@ export const PRESETS: FilmPreset[] = [
       contrast: 0.92,
       fade: 0.42,
       exposure: 0.1,
+      splitTone: 0.3,
     },
-    grain: 0.24,
+    grain: 0.34,
+    dust: 0.2,
     vignette: 0.36,
     lightLeak: 0.34,
     lightLeakFlip: true,
@@ -186,6 +308,8 @@ export function resolvePreset(preset: FilmPreset): ResolvedFilmPreset {
     contrast: color.contrast ?? PRESET_DEFAULTS.contrast,
     fade: color.fade ?? PRESET_DEFAULTS.fade,
     exposure: color.exposure ?? PRESET_DEFAULTS.exposure,
+    splitTone: color.splitTone ?? PRESET_DEFAULTS.splitTone,
+    bloom: color.bloom ?? PRESET_DEFAULTS.bloom,
   };
 
   const timestamp = preset.timestamp;
@@ -210,11 +334,14 @@ export function resolvePreset(preset: FilmPreset): ResolvedFilmPreset {
     description: preset.description ?? '',
     color: resolvedColor,
     grain: preset.grain ?? PRESET_DEFAULTS.grain,
+    grainChroma: preset.grainChroma ?? PRESET_DEFAULTS.grainChroma,
+    dust: preset.dust ?? PRESET_DEFAULTS.dust,
     vignette: preset.vignette ?? PRESET_DEFAULTS.vignette,
     lightLeak: preset.lightLeak ?? PRESET_DEFAULTS.lightLeak,
     lightLeakFlip: preset.lightLeakFlip ?? PRESET_DEFAULTS.lightLeakFlip,
     timestamp: resolvedTimestamp,
     showGuide: preset.showGuide ?? PRESET_DEFAULTS.showGuide,
     normalizeMaxLongEdge: preset.normalizeMaxLongEdge ?? PRESET_DEFAULTS.normalizeMaxLongEdge,
+    captureLongEdge: preset.captureLongEdge ?? PRESET_DEFAULTS.captureLongEdge,
   };
 }

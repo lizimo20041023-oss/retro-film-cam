@@ -22,8 +22,10 @@ export const DEVELOP_PANEL_RESERVE = 172;
 
 /**
  * 合成舞台能用的逻辑尺寸。
- * **这个值同时决定成片分辨率**：captureRef 不传 width/height，
- * 输出像素 = 该尺寸 × PixelRatio，所以别把它设得比屏幕还小很多，否则成片会偏软。
+ * 这个值决定舞台在屏幕上的**排版尺寸**（也是相框在取景器里的排版尺寸，两边共用一套几何，
+ * 所以"所见即所得"）；成片的像素数则由预设里的 `captureLongEdge` 单独决定
+ * （见 `src/utils/captureOptions.ts`）。别把这个尺寸设得比屏幕小很多，否则舞台上的
+ * 颗粒会被挤得更糊。
  */
 export function computeDevelopStageBox(viewport: Size): Size {
   return {

@@ -27,6 +27,7 @@ import type { ViewShotRef } from 'react-native-view-shot';
 import { textureSource } from '../constants/textures';
 import type { FilmStageInput, GradeLayer } from '../types';
 import { formatTimestamp } from '../utils/formatTimestamp';
+import { planCapture } from '../utils/captureOptions';
 import { computeTimestampLayout, resolveTimestampAnchor } from '../utils/geometry';
 import { buildGradeLayers } from '../utils/gradeLayers';
 
@@ -44,13 +45,6 @@ export interface FilmCompositorProps {
   style?: StyleProp<ViewStyle>;
 }
 
-/** 截图输出设置：jpg + 高质量 + 临时文件；不传 width/height = 逻辑尺寸 × PixelRatio。 */
-const CAPTURE_OPTIONS = {
-  format: 'jpg',
-  quality: 0.95,
-  result: 'tmpfile',
-} as const;
-
 export function FilmCompositor({
   stage,
   viewShotRef,
@@ -63,6 +57,17 @@ export function FilmCompositor({
 
   // 调色层：纯函数算出来的声明式图层，渲染层只按 kind 分发
   const layers = useMemo(() => buildGradeLayers(preset), [preset]);
+
+  // 截图尺寸：预设的 captureLongEdge 决定成片长边有多少像素
+  const captureOptions = useMemo(
+    () =>
+      planCapture({
+        width: layout.width,
+        height: layout.height,
+        targetLongEdge: preset.captureLongEdge,
+      }).options,
+    [layout.width, layout.height, preset.captureLongEdge],
+  );
 
   const anchor = useMemo(
     () => resolveTimestampAnchor(frame, preset.timestamp),
@@ -80,7 +85,7 @@ export function FilmCompositor({
     <ViewShot
       // 截图目标：iOS 的 renderInContext 要求视图真的在屏幕上（CameraScreen 会铺一层显影遮罩挡住它）
       ref={viewShotRef}
-      options={CAPTURE_OPTIONS}
+      options={captureOptions}
       // 不用也不能传 collapsable：ViewShot 组件内部已经写死 collapsable={false}
       // （防止 Android 展平这个视图导致截不到），而且它不透传任何未声明的 props。
       style={[styles.stage, { width: layout.width, height: layout.height }, style]}
