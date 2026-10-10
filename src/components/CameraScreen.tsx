@@ -46,6 +46,13 @@ import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex, wrapIndex } from '../constants/frames';
 import {
+  DEFAULT_GRAIN_LEVEL_ID,
+  GRAIN_LEVELS,
+  applyGrainLevel,
+  findGrainLevelIndex,
+  grainLevelAt,
+} from '../constants/grain';
+import {
   DEFAULT_PRESET_ID,
   PRESETS,
   findPresetIndex,
@@ -92,6 +99,9 @@ export function CameraScreen() {
   /* ---------------- 状态 ---------------- */
   const [frameIndex, setFrameIndex] = useState<number>(() => findFrameIndex(DEFAULT_FRAME_ID));
   const [presetIndex, setPresetIndex] = useState<number>(() => findPresetIndex(DEFAULT_PRESET_ID));
+  const [grainIndex, setGrainIndex] = useState<number>(() =>
+    findGrainLevelIndex(DEFAULT_GRAIN_LEVEL_ID),
+  );
   const [facing, setFacing] = useState<CameraType>('back');
   const [torchOn, setTorchOn] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
@@ -110,7 +120,16 @@ export function CameraScreen() {
   /* ---------------- 派生数据（全部来自纯数据常量） ---------------- */
   const frame = FRAMES[frameIndex] ?? FRAMES[0];
   const preset = PRESETS[presetIndex] ?? PRESETS[0];
-  const resolved = useMemo(() => resolvePreset(preset), [preset]);
+  const grainLevel = grainLevelAt(grainIndex);
+  /**
+   * 颗粒档位是**乘在预设之上**的，所以顺序必须是「先乘档位 → 再补默认值」。
+   * 这样 LCD 状态条显示的数字、和真正进 `buildGradeLayers` 的数字，永远是同一个。
+   */
+  const effectivePreset = useMemo(
+    () => applyGrainLevel(preset, grainLevel.scale),
+    [preset, grainLevel.scale],
+  );
+  const resolved = useMemo(() => resolvePreset(effectivePreset), [effectivePreset]);
 
   const developing = status.kind === 'developing';
   const cameraGranted = cameraPermission?.granted === true;
@@ -147,7 +166,7 @@ export function CameraScreen() {
     ? `日期 ${resolved.timestamp.format} · 锚点 ${timestampAnchor.toUpperCase()}`
     : '日期 已关闭';
   const lcdParamLine =
-    `颗粒 ${compact(resolved.grain)} · 暗角 ${compact(resolved.vignette)} · ` +
+    `颗粒 ${grainLevel.code} ${compact(resolved.grain)} · 暗角 ${compact(resolved.vignette)} · ` +
     `漏光 ${compact(resolved.lightLeak)} · 字体 ${fonts.source === 'custom' ? '自定义' : '等宽'}`;
 
   /* ---------------- 权限：首次进来自动问一次 ---------------- */
@@ -203,6 +222,13 @@ export function CameraScreen() {
     setPresetIndex((current) => wrapPresetIndex(current + 1));
   }, []);
 
+  /** 颗粒分段按钮：直接跳到第 index 档（越界夹回边界，不循环）。 */
+  const handleGrainSelect = useCallback((next: number) => {
+    void Haptics.selectionAsync();
+    const last = Math.max(0, GRAIN_LEVELS.length - 1);
+    setGrainIndex(Math.min(Math.max(Math.trunc(next), 0), last));
+  }, []);
+
   const handleFlipCamera = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setFacing((current) => (current === 'back' ? 'front' : 'back'));
@@ -254,7 +280,8 @@ export function CameraScreen() {
       const result = await processAndSaveFilmPhoto({
         photo: captured,
         frame,
-        preset,
+        // 传乘过颗粒档位的预设：LCD 上显示什么数字，出片就是什么力度
+        preset: effectivePreset,
         stage: stageBox,
         host: filmStage.host,
         onStage: (nextStage) => setStatus({ kind: 'developing', stage: nextStage }),
@@ -272,7 +299,7 @@ export function CameraScreen() {
     } finally {
       shotLockRef.current = false;
     }
-  }, [cameraReady, developing, filmStage.host, frame, preset, stageBox]);
+  }, [cameraReady, developing, filmStage.host, frame, effectivePreset, stageBox]);
 
   /* ---------------- 覆盖层内容（权限 / 加载 / 相机错误） ---------------- */
   let noticeNode: ReactNode = null;
@@ -507,6 +534,43 @@ export function CameraScreen() {
             </Pressable>
           </View>
           <Text style={styles.dashHint}>滑动取景器</Text>
+        </View>
+      </View>
+
+      {/* ============ ③.5 颗粒强度（用户级微调：乘在当前预设之上） ============ */}
+      <View style={styles.grainBar}>
+        <Text style={styles.grainBarLabel}>颗粒 GRAIN</Text>
+        <View style={styles.grainSegments}>
+          {GRAIN_LEVELS.map((level, index) => {
+            const active = index === grainIndex;
+            return (
+              <Pressable
+                key={level.id}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={`颗粒强度 ${level.label}`}
+                disabled={!interactive}
+                onPress={() => handleGrainSelect(index)}
+                hitSlop={2}
+                style={({ pressed }) => [
+                  styles.grainSegment,
+                  index > 0 ? styles.grainSegmentDivider : null,
+                  active ? styles.grainSegmentActive : null,
+                  pressed ? styles.pressed : null,
+                ]}
+              >
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    styles.grainSegmentText,
+                    active ? styles.grainSegmentTextActive : null,
+                  ]}
+                >
+                  {level.label}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
       </View>
 
@@ -894,6 +958,54 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.6,
+  },
+
+  /* ---------------- ③.5 颗粒强度分段条 ---------------- */
+  grainBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingTop: 9,
+  },
+  grainBarLabel: {
+    marginRight: 9,
+    color: INK.paperDim,
+    fontSize: 9,
+    letterSpacing: 1.6,
+    fontFamily: UI_MONO,
+  },
+  grainSegments: {
+    flex: 1,
+    flexDirection: 'row',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(210, 139, 42, 0.30)',
+    borderRadius: 3,
+    /* 让首尾分段的底色跟着圆角一起被裁掉 */
+    overflow: 'hidden',
+  },
+  grainSegment: {
+    flex: 1,
+    paddingVertical: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(210, 139, 42, 0.035)',
+  },
+  grainSegmentDivider: {
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: 'rgba(210, 139, 42, 0.22)',
+  },
+  grainSegmentActive: {
+    backgroundColor: 'rgba(210, 139, 42, 0.24)',
+  },
+  grainSegmentText: {
+    color: INK.paperDim,
+    fontSize: 10.5,
+    letterSpacing: 0.6,
+    fontFamily: UI_MONO,
+  },
+  grainSegmentTextActive: {
+    color: INK.amberSoft,
+    fontWeight: '700',
   },
 
   /* ---------------- ④ LCD 状态条 ---------------- */

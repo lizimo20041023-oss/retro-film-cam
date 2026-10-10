@@ -229,6 +229,27 @@ export interface ResolvedFilmPreset {
   captureLongEdge: number;
 }
 
+/** 颗粒强度档位 id（数据在 `src/constants/grain.ts`）。 */
+export type GrainLevelId = 'off' | 'light' | 'std' | 'heavy' | 'max';
+
+/**
+ * 一档颗粒强度 —— 相机屏幕底部那排分段按钮的一项。
+ *
+ * 注意它**不覆盖**预设的 grain，而是**乘上去**（见 `constants/grain.ts` 顶部说明），
+ * 这样每个预设的颗粒性格都还在，只是整体浓淡可拧。
+ */
+export interface GrainLevel {
+  id: GrainLevelId;
+  /** 分段按钮上的短标签（1~2 个字，再窄的屏也不会换行）。 */
+  label: string;
+  /** LCD 状态条里的机器打印缩写。 */
+  code: string;
+  /** 乘在预设 `grain` / `grainChroma` 上的系数。0 = 关，1 = 预设原本的量。 */
+  scale: number;
+  /** 一句话说明，写在配置里方便日后改。 */
+  description: string;
+}
+
 /* ==========================================================================
  * 4. 合成图层（声明式调色）
  * ========================================================================== */
