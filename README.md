@@ -1,0 +1,524 @@
+# Retro Film Cam 📷
+
+一个 **纯 managed Expo + Expo Go** 的 iOS 复古胶片相机 App（类 Dazz 风格），自用练手向。
+Windows 电脑开发 → iPhone 真机 Expo Go 扫码跑，**不需要 Xcode、不需要 Mac、不需要自定义原生构建**。
+
+**核心流程**：全屏实时取景 → 左右滑动换相框（带震感）→ 按快门 → 后台"显影"（调色 → 颗粒/暗角/漏光 → 右下角橙色液晶日期 → 套相框）→ 存进相册。
+
+> 🐣 **第一次用、看不懂下面这些技术内容？** 直接看 [新手操作指南.md](新手操作指南.md) —— 照着点就行，不需要懂任何技术。
+
+---
+
+## 目录
+
+- [1. 前提](#1-前提)
+- [2. 从零跑通（PowerShell，逐条照抄）](#2-从零跑通powershell逐条照抄)
+- [3. 真机 Expo Go 运行 & 连不上怎么办](#3-真机-expo-go-运行--连不上怎么办)
+- [4. 目录结构](#4-目录结构)
+- [5. 拍摄管线（按下快门之后发生了什么）](#5-拍摄管线按下快门之后发生了什么)
+- [6. 调色参数 → 图层映射表](#6-调色参数--图层映射表)
+- [7. 新增相框 / 新增预设（不改核心逻辑）](#7-新增相框--新增预设不改核心逻辑)
+- [8. 权限](#8-权限)
+- [9. 兼容性核实结论与来源](#9-兼容性核实结论与来源)
+- [10. 可测试性](#10-可测试性)
+- [11. 已知限制](#11-已知限制)
+- [12. 故障排查](#12-故障排查)
+- [13. 可选升级路径（默认代码不含）](#13-可选升级路径默认代码不含)
+
+---
+
+## 1. 前提
+
+| 需要 | 说明 |
+| --- | --- |
+| Windows 10/11 | 开发机，本文所有命令都在 **PowerShell** 里跑 |
+| Node.js LTS | 建议 20 或 22（`node -v` 能看到版本即可） |
+| iPhone + **Expo Go** | 从 App Store 装最新版 Expo Go |
+| 同一个 Wi-Fi | 电脑和手机连同一个局域网（连不上时用 `--tunnel` 兜底） |
+
+> 手机端**不需要**装 Xcode、不需要数据线、不需要 Apple 开发者账号。
+
+## 2. 从零跑通（PowerShell，逐条照抄）
+
+### 方案 A（推荐）：直接把本目录当成项目
+
+本目录已经是**一个完整的 Expo 项目**（`package.json` / `app.json` / `index.ts` / `src/` / `assets/` 都在），
+只差 `node_modules`。所以只要装依赖、解析版本，就能直接跑。
+
+```powershell
+# ① 进项目目录
+cd C:\Users\lizim\Documents\deepseek-harness\default-workspace\retro-film-cam
+
+# ② 装依赖：**一条命令装完**。
+#    expo / react-native / 相机 / 相册 / 图片处理 / 截图 / 安全区 / babel 预设
+#    全部依赖都已经写进 package.json 了，不需要再 expo install 任何东西。
+#    国内务必带镜像参数，否则会卡死（原因见下面"装依赖踩过的坑"）。
+npm install --registry=https://registry.npmmirror.com --no-audit --no-fund
+
+# ③ 类型检查，应该 0 error（已实测通过）
+npm run typecheck
+
+# ④ 起开发服务器
+npm start
+```
+
+> `package.json` 里那条 `npm run deps` 脚本保留着，但它走的是 `npx expo install`，
+> 在本机会撞上你全局 `.npmrc` 的脚本门禁（`EALLOWSCRIPTS`）。**本项目所有包版本都已经写死，
+> 平时用不到它**；以后要加新包时看下面"装依赖踩过的坑"第 2 条。
+
+### 方案 B：从官方模板新建项目，再把文件拷进去
+
+```powershell
+# ① 在你想放项目的地方创建（本仓库之外，例如 D:\code）
+cd D:\code
+npx create-expo-app@latest retro-film-cam --template blank-typescript
+cd .\retro-film-cam
+
+# ② 把本仓库里除 package.json 之外的所有源码/资源拷过来，覆盖同名文件
+#    （package.json 建议保留模板生成的，避免版本冲突；只把 "main" 改成 "index.ts" 即可）
+$src = "C:\Users\lizim\Documents\deepseek-harness\default-workspace\retro-film-cam"
+Copy-Item "$src\App.tsx","$src\index.ts" -Destination . -Force
+Copy-Item "$src\app.json" -Destination . -Force
+Copy-Item "$src\tsconfig.json" -Destination . -Force
+Copy-Item "$src\babel.config.js" -Destination . -Force
+Copy-Item "$src\src" -Destination . -Recurse -Force
+Copy-Item "$src\assets" -Destination . -Recurse -Force
+Copy-Item "$src\scripts" -Destination . -Recurse -Force
+# 检查 package.json 里有 "main": "index.ts"，没有就手动加上
+
+# ③ 装依赖（和方案 A 的第 ③ 步相同）
+npx expo install expo-camera expo-media-library expo-image-manipulator expo-haptics expo-font react-native-view-shot react-native-safe-area-context
+
+# ④ 起服务
+npx expo start
+```
+
+**要拷的文件清单**（方案 B 用得着）：
+
+```
+App.tsx
+index.ts
+app.json           ← 含相机/相册权限文案，别漏
+tsconfig.json
+babel.config.js
+src/types/index.ts
+src/constants/frames.ts
+src/constants/presets.ts
+src/constants/textures.ts
+src/utils/processFilmPhoto.ts
+src/utils/geometry.ts
+src/utils/gradeLayers.ts
+src/utils/normalizePhoto.ts
+src/utils/saveToLibrary.ts
+src/utils/formatTimestamp.ts
+src/utils/describeError.ts
+src/hooks/useFilmStage.ts
+src/hooks/useFilmFonts.ts
+src/components/CameraScreen.tsx
+src/components/FilmCompositor.tsx
+src/components/FrameOverlay.tsx
+src/components/FrameSwitcher.tsx
+src/components/ShutterButton.tsx
+src/components/DevelopOverlay.tsx
+src/components/PermissionNotice.tsx
+assets/frames/*.png  + assets/frames/README.md
+assets/textures/*.png + assets/textures/README.md
+assets/fonts/README.md     （目录默认是空的，见第 7 节）
+```
+
+**版本策略**：`package.json` 里已经写死了全部依赖版本 —— 4 个来自官方空白模板的
+（`expo ~57.0.27` / `expo-status-bar ~57.0.1` / `react 19.2.3` / `react-native 0.86.3`），
+7 个原生包（`expo-camera ~57.0.6` / `expo-media-library ~57.0.5` / `expo-image-manipulator ~57.0.21` /
+`expo-haptics ~57.0.3` / `expo-font ~57.0.4` / `react-native-view-shot 5.1.0` / `react-native-safe-area-context ~5.7.0`），
+devDeps 四个（`@types/react ~19.2.2` / `typescript ~6.0.3` / `@babel/core` / `babel-preset-expo ~57.0.14`）。
+这是**实测跑通的组合**（`npm install` → `tsc` → `expo export` 全绿），所以不做 `expo install` 的版本解析。
+
+### 装依赖踩过的三个坑（本机实测 2026-10-10，出问题先看这里）
+
+**1. 默认 registry 在国内会卡死。** `npm install` 打 `registry.npmjs.org` 跑了 **20 分钟**都没建出
+`node_modules`：只有 1.4KB 级的元数据文件在慢慢写，tarball 一个没下。加镜像参数后 **15 秒**装完 490 个包：
+
+```powershell
+npm install --registry=https://registry.npmmirror.com --no-audit --no-fund
+```
+
+想一劳永逸，把它写进用户级 `.npmrc`（`notepad $env:USERPROFILE\.npmrc`，加一行）：
+
+```
+registry=https://registry.npmmirror.com
+```
+
+**2. `npm run deps`（即 `npx expo install ...`）在本机会直接失败**，报：
+
+```
+npm error code EALLOWSCRIPTS
+npm error --allow-scripts is not allowed in project-scoped installs.
+npm error Add the entries to the "allowScripts" field in package.json, or to .npmrc, instead.
+```
+
+原因是你的用户级 `.npmrc` 里有 `allow-scripts=true`，和这个 npm 版本的脚本门禁冲突 ——
+**不是项目的问题**。因为所有版本都已经写死在 `package.json` 里，`npm install` 就是等价操作，
+所以这条脚本平时用不到。真要加新包时，两个办法选一个：
+
+```powershell
+# 办法一（推荐）：直接按版本装，不用 expo install
+npm install 新包名@版本 --registry=https://registry.npmmirror.com
+
+# 办法二：临时注掉 .npmrc 里那行 allow-scripts=true，跑完 expo install 再改回来
+```
+
+**3. `babel-preset-expo` 必须能在项目根被 require 到。** 它本来是 `expo` 的依赖，但 npm 会把它
+**嵌套装进 `node_modules/expo/node_modules/`**，而 Babel 只从项目根解析预设，于是打包直接报：
+
+```
+Failed to construct transformer: Error: Cannot find module 'babel-preset-expo'
+```
+
+所以 `devDependencies` 里**显式写了** `babel-preset-expo` 和 `@babel/core`（官方模板也这么干），
+**别删**。删了就会出现"依赖明明装好了却打不了包"。
+
+## 3. 真机 Expo Go 运行 & 连不上怎么办
+
+```powershell
+cd C:\Users\lizim\Documents\deepseek-harness\default-workspace\retro-film-cam
+npm start
+```
+
+终端里会出现一个二维码（和 `exp://192.168.x.x:8081` 这样的地址）：
+
+1. iPhone 打开**相机** App，对着终端二维码扫 → 点弹出的横幅，会用 Expo Go 打开；
+   （或者在 Expo Go 里点 "Scan QR code"）
+2. 首次加载要等 Metro 打包，几十秒正常；
+3. 手机上首次会弹**相机权限** → 允许；拍完第一张会弹**相册"添加照片"权限** → 允许。
+
+### 连不上 / 一直 "Connecting…" 的排查顺序
+
+1. **确认同一个 Wi-Fi**（手机别连 5G 热点、别连访客网络；有 AP 隔离的路由器会挡）。
+2. **Windows 防火墙放行 Node.js**：第一次 `npm start` 时弹的"允许访问"对话框要勾**专用网络**并允许。
+   已经点过"取消"的话，去 `Windows 安全中心 → 防火墙和网络保护 → 允许应用通过防火墙`，
+   把 **Node.js: Server-side JavaScript** 的**专用**和**公用**都勾上。
+3. **换成 tunnel 模式**（走公网中转，绕过一切局域网问题，会慢一点）：
+
+   ```powershell
+   npm run tunnel
+   # 等价于 npx expo start --tunnel
+   ```
+   首次会提示需要装 `@expo/ngrok`，回 `y` 即可。
+4. **清缓存重启**（改过 `app.json` / 装过新包后推荐）：
+
+   ```powershell
+   npx expo start --clear
+   ```
+5. 确认 PC 和手机时间差不太大；代理/VPN 全局模式有时会干扰局域网连接，可临时关掉。
+
+> **改代码后**：存盘 → 手机自动热重载。改了 `app.json` 或装了新原生包 → 需要重启 dev server（Expo Go 里下拉刷新不够）。
+
+## 4. 目录结构
+
+```
+retro-film-cam/
+├── App.tsx                       # 应用根：SafeAreaProvider + 状态栏 + 单屏
+├── index.ts                      # registerRootComponent(App)（package.json 的 "main"）
+├── app.json                      # Expo 配置：权限文案、深色 UI、expo-camera/media-library 插件
+├── package.json                  # 依赖 + 脚本（start / tunnel / typecheck / deps）
+├── tsconfig.json                 # extends expo/tsconfig.base + strict
+├── babel.config.js               # 只用 babel-preset-expo（不需要 reanimated 插件）
+│
+├── assets/
+│   ├── frames/                   # 相框 PNG（透明镂空）+ 规范文档
+│   │   ├── classic-white.png     #   白边印刷 1350×1800
+│   │   ├── instant-square.png    #   拍立得 1425×1800（1:1 窗口）
+│   │   ├── film-35mm.png         #   35mm 胶片条 1350×1950（含透明齿孔）
+│   │   └── README.md             #   ★ 自己加相框看这里
+│   ├── textures/                 # 颗粒 / 暗角 / 漏光贴图
+│   │   ├── grain.png             #   192×192 无缝平铺噪点
+│   │   ├── vignette.png          #   512×512 径向暗角
+│   │   ├── light-leak.png        #   768×768 右上角暖色漏光
+│   │   └── README.md             #   ★ 换纹理看这里
+│   └── fonts/                    # 默认空目录（数码管字体可选，见 README）
+│       └── README.md             #   ★ 想用 DSEG7 数码管字体看这里
+│
+├── scripts/
+│   └── generate_placeholder_assets.py   # 程序化重生成占位相框/纹理（Python + Pillow）
+│
+└── src/
+    ├── types/index.ts            # 全部类型（唯一类型来源，导出完整）
+    ├── constants/
+    │   ├── frames.ts             # ★ 相框纯数据（名称 / PNG / 比例 / 镂空窗口）
+    │   ├── presets.ts            # ★ 预设纯数据（对比度/饱和度/色温/时间戳…）
+    │   └── textures.ts           # 纹理注册表
+    ├── utils/
+    │   ├── processFilmPhoto.ts   # ★ 后处理主管线（纯逻辑 + 依赖注入，可单测）
+    │   ├── geometry.ts           # 取景比例 / 相框窗口 / 日期定位的几何计算
+    │   ├── gradeLayers.ts        # 预设数值 → 图层数组（声明式调色）
+    │   ├── normalizePhoto.ts     # 原图降采样（内存优化）
+    │   ├── saveToLibrary.ts      # 存相册（新 API 优先 + 旧 API 兜底）
+    │   ├── formatTimestamp.ts    # 日期格式化（YY MM DD / YY-MM-DD…）
+    │   └── describeError.ts      # unknown → 用户可读文案
+    ├── hooks/
+    │   ├── useFilmStage.ts       # 合成视图的"挂载 → 就绪 → 截图"状态机
+    │   └── useFilmFonts.ts       # 数码管字体加载 + 系统等宽兜底
+    └── components/
+        ├── CameraScreen.tsx      # 主屏（取景 / 手势 / 快门 / 翻转 / 显影面板）
+        ├── FilmCompositor.tsx    # 成片合成视图（被 ViewShot 截图的那块）
+        ├── FrameOverlay.tsx      # 取景器上的相框预览
+        ├── FrameSwitcher.tsx     # 左右滑动切相框（Animated + PanResponder + 震动）
+        ├── ShutterButton.tsx     # 快门（防连点 / 防抖 / 无障碍）
+        ├── DevelopOverlay.tsx    # "显影中/完成/失败"面板 + 成片预览
+        └── PermissionNotice.tsx  # 权限被拒的引导卡片
+```
+
+> 设计原则：**相框和滤镜是纯数据**（`src/constants/*`），**渲染是通用代码**（`FilmCompositor` 只认类型）。
+> 加相框/加预设不需要碰任何渲染逻辑。
+
+## 5. 拍摄管线（按下快门之后发生了什么）
+
+```
+[取景] CameraView 实时原始画面
+   + 半透明九宫格引导
+   + 相框 PNG 遮罩（FrameOverlay，按窗口比例对齐）
+   ❌ 没有实时滤镜 / 没有 GLSL / 没有逐帧像素处理
+        │
+        │  按快门
+        ▼
+CameraView.takePictureAsync({ quality: 1, exif: false })   → 原图 { uri, width, height }
+        │
+        ▼  processAndSaveFilmPhoto()
+① normalizing  ImageManipulator.manipulate(uri).resize(...) → renderAsync() → saveAsync(JPEG 0.95)
+                把长边压到 2048（避免两张全分辨率图同时上屏导致内存峰值），失败自动退回原图
+② 组装图层      buildGradeLayers(preset) → GradeLayer[]（纯函数，声明的顺序 = 叠加顺序）
+③ capturing    合成视图挂载到屏幕外层的"显影面板"里（必须真的上屏，iOS renderInContext 截不到未上屏视图）
+                → onLayout + 所有 Image onLoad 双就绪（1.5s 超时兜底）→ captureRef
+④ saving        Asset.create(uri) 存进相册（新 API；旧 SDK 自动走 legacy 分支）
+        │
+        ▼
+DevelopOverlay 展示成片缩略图 + "已存入相册 / 保存失败"，点一下关闭
+```
+
+**为什么用"可见的显影面板"而不是隐藏的离屏视图？**
+`react-native-view-shot` 在 iOS 上走 `renderInContext`，截不到没上屏的视图；截到黑屏或空图是经典坑。
+所以合成视图是**真的挂在屏幕上**的，只是被一块暖黑色遮罩盖住（`DevelopOverlay`），截图时它就在画面里
+—— 遮罩本身在 `ViewShot` **外面**，不会被截进去。
+
+**为什么不用 Skia？** 用户硬约束：默认代码不依赖 `@shopify/react-native-skia`。
+（核实结果：它其实**在 Expo Go 内置清单里**，所以第 13 节的升级路径是可行的，只是没必要。）
+
+## 6. 调色参数 → 图层映射表
+
+iOS 上 RN 的 `filter` **只支持 `brightness` 和 `opacity`**
+（官方原文："Due to issues with performance and spec compliance, these are the only two filter functions available on iOS"），
+所以**不能**写 `filter: 'contrast(1.2) saturate(0.8)'`。本项目改用
+**`mixBlendMode` + 半透明叠层 + PNG 贴图**：这些在新架构（Expo Go 唯一支持的架构）上 100% 可用。
+
+`presets.ts` 里的每个数值都由 `src/utils/gradeLayers.ts` 的 `buildGradeLayers()` 翻译成图层：
+
+| 预设字段 | 取值范围 | 实现（图层） | 说明 |
+| --- | --- | --- | --- |
+| `temperature` | -1 ~ 1 | 暖/冷色纯色层，`mixBlendMode: 'soft-light'`，`opacity = |值| × 0.9`（暖 `#FF9640` / 冷 `#4C8DFF`） | 正值偏暖，负值偏冷 |
+| `tint` | -1 ~ 1 | 绿/品红纯色层，`soft-light`，`opacity = |值| × 0.55`（绿 `#38A85C` / 品红 `#C05BD8`） | 正值偏绿，负值偏品红 |
+| `saturation` | 0 ~ 2 | `<1`：中灰 `#808080` 层 `'saturation'`，`opacity = 1 - 值`；`>1`：高饱和红 `#FF3B30` 层 `'saturation'`，`opacity = (值 - 1) × 0.85` | `1` = 不动；`0` = 完全去色（黑白预设就这么实现的） |
+| `contrast` | 0 ~ 2 | `>1`：**同一张照片再叠一层，`mixBlendMode: 'overlay'`**，`opacity = 值 - 1`；`<1`：中灰层 `'normal'`，`opacity = (1 - 值) × 0.9` | RN 没有真正的对比度调整，这是视觉等价近似 |
+| `fade` | 0 ~ 1 | 深灰 `#1C1C1C` 层，`mixBlendMode: 'lighten'`，`opacity = 值` | 只抬黑场、不动高光 = 褪色/过期胶片感 |
+| `exposure` | -1 ~ 1 | 正值：白色层 `'screen'`，`opacity = 值 × 0.35`；负值：黑色层 `'multiply'`，`opacity = |值| × 0.45` | 整体提亮/压暗 |
+| `grain` | 0 ~ 1 | `grain.png` 平铺（`resizeMode: 'repeat'`），`mixBlendMode: 'overlay'`，`opacity = 值` | 颗粒粗细换 tile 大小 |
+| `vignette` | 0 ~ 1 | `vignette.png` 拉伸，`mixBlendMode: 'multiply'`，`opacity = 值` | 四角压暗 |
+| `lightLeak` | 0 ~ 1 | `light-leak.png` 拉伸，`mixBlendMode: 'screen'`，`opacity = 值` | `lightLeakFlip: true` 时水平镜像换边 |
+| `timestamp` | 见下 | 右下角 `<Text>`（不是图层） | 见下方"时间戳" |
+| `showGuide` | bool | 取景器九宫格 | 只影响取景，不进成片 |
+
+**图层顺序 = 数组顺序**（色温 → 色调 → 饱和度 → 对比度 → 褪色 → 曝光 → 颗粒 → 暗角 → 漏光），
+想调整顺序就改 `buildGradeLayers` 里的 `push` 次序；想加一种新效果，就在 `GradeLayer` 联合类型里加一个成员。
+
+> **两个实现细节（改 `FilmCompositor` 前务必看）**
+>
+> 1. **混合层是"`<View>` 包 `<Image>`"，不是把 `mixBlendMode` 直接写在 `<Image>` 上。**
+>    RN 0.86 把 `mixBlendMode` 只声明在 `ViewStyle` 里，`ImageStyle` 没有这个属性（类型会直接报错）。
+>    外层 `<View>` 承载 `mixBlendMode` + `opacity` + `transform`，内层 `<Image>` 用
+>    `StyleSheet.absoluteFill` 填满它 —— 混合的语义是"这一层跟底下已有的东西怎么合"，
+>    套一个同尺寸容器、里面放一张不透明图，结果完全一致。
+> 2. **只有底图和纹理图挂 `onImageLoad`，同图自叠的对比度层不挂。**
+>    它和底图是同一张图，重复计数会让"全部图片 onLoad"这个就绪条件永远凑不齐。
+>    `gradeLayers.ts` 的 `countStageImages()` 就是按这个约定算出期望图片数的。
+
+### 时间戳（右下角橙色液晶日期）
+
+- **颜色**：`preset.timestamp.color`，默认 `#FF8A00`（经典橙色液晶）；黑白预设 `tri-x-400` 用浅灰 `#E6E6E6`。
+- **格式**：`preset.timestamp.format`，token 支持 `YYYY` `YY` `MM` `M` `DD` `D`。
+  默认 `'YY MM DD'` → `26 10 10`；`expired-64` 预设用 `'YY-MM-DD'` → `26-10-10`。
+- **字号 / 字距**：`fontSizeRatio`（默认 0.055，相对相框宽度）、`letterSpacingRatio`（默认 0.14）—— 都是比例值，
+  所以换相框比例也不会跑版。
+- **位置**：`anchor: 'window'`（烧在画面里）或 `'frame'`（烧在相框留白里），
+  由 `geometry.ts` 的 `computeTimestampLayout()` 结合相框的 `bottomStripHeight` / `rightMargin` 算出 right/bottom。
+  没写就用相框自己的 `defaultTimestampAnchor`。
+- **字体**：默认 **iOS `Menlo` / Android `monospace`**（系统等宽，零依赖）；
+  想要真·数码管就放一个 DSEG7 ttf 进 `assets/fonts/` 并改 `useFilmFonts.ts` 一行 —— 见
+  [`assets/fonts/README.md`](assets/fonts/README.md)。加载失败会自动降级，不会白屏。
+  取景器底部那行参数会显示当前用的是 `自定义` 还是 `系统等宽`。
+- **开关**：`preset.timestamp.enabled = false` 就完全不烧日期。
+- **辉光**：`glow: true` 用同色 `textShadow` 做液晶屏的发光溢出感。
+
+## 7. 新增相框 / 新增预设（不改核心逻辑）
+
+### 加一个相框
+
+1. 把 PNG 丢进 `assets/frames/`（**必须带透明通道**，镂空窗口 alpha = 0）；
+2. 在 `src/constants/frames.ts` 的 `FRAMES` 数组里加一条（照抄现有条目的形状，字段含义写在注释里）；
+3. 存盘热重载 —— 取景器和成片同时生效。
+
+规范、量窗口的 Python 片段、常见坑：**[`assets/frames/README.md`](assets/frames/README.md)**。
+
+### 加一个预设
+
+在 `src/constants/presets.ts` 的 `PRESETS` 数组里加一条，只写你想改的字段即可
+（`resolvePreset()` 会用 `PRESET_DEFAULTS` 逐字段补全）：
+
+```ts
+{
+  id: 'my-look',
+  name: '我的调子',
+  color: { contrast: 1.15, saturation: 0.85, temperature: 0.3, fade: 0.2 },
+  grain: 0.12,
+  vignette: 0.25,
+  lightLeak: 0.3,
+  timestamp: { format: 'YY-MM-DD', color: '#FFB03A' },
+},
+```
+
+取景器底部胶囊左右轻触即可循环切换（`wrapPresetIndex`），无需注册表。
+
+## 8. 权限
+
+| 权限 | 何时请求 | 被拒时 |
+| --- | --- | --- |
+| 相机（`NSCameraUsageDescription`） | App 启动后自动请求一次；未授权时取景区显示引导卡片 | 卡片上有"去设置"按钮 → `Linking.openSettings()`；回到 App 时用 `getCameraPermission()` 重新检测 |
+| 相册"添加照片"（`NSPhotoLibraryAddUsageDescription`） | 第一次保存成片时（`writeOnly` + `granularPermissions: ['photo']`，只要写入权限，不要读取） | 成片仍然生成并显示，但提示"未存相册" + 顶部"去设置"横幅 |
+
+权限文案写在 `app.json` 的 `ios.infoPlist` 与 `plugins` 里（Expo Go 里也会生效）。
+
+## 9. 兼容性核实结论与来源
+
+核实时间：**2026-10-10**，全部来自官方文档（版本以 `npx expo install` 解析为准）。
+
+| 结论 | 依据 / 来源 |
+| --- | --- |
+| 当前稳定的 Expo SDK 是 **57**（`expo ~57.0.27`，RN 0.86.3，React 19.2.3） | <https://docs.expo.dev/versions/latest/> · <https://unpkg.com/expo-template-blank-typescript/package.json>（官方空白 TS 模板，入口是 `index.ts`） |
+| **Expo Go 只支持新架构**；SDK 55 起完全跑在新架构上 | <https://docs.expo.dev/guides/new-architecture/>（原文："SDK 55 and later run entirely on the New Architecture." / "Expo Go only supports the New Architecture."） |
+| **`react-native-view-shot` 内置在 Expo Go 里**（`inExpoGo: true`）→ 后处理方案成立 | <https://docs.expo.dev/versions/latest/sdk/captureRef.md> |
+| 截图输出尺寸 = 视图**逻辑尺寸 × PixelRatio**；不传 `width`/`height` 就是原始像素尺寸 | 同上（官方原文提醒要自己乘 `PixelRatio`）· <https://unpkg.com/react-native-view-shot/lib/index.d.ts> |
+| `mixBlendMode` 需要新架构（Android 10+ 才支持 Android 侧）→ iOS 在 Expo Go 上可用 | <https://reactnative.dev/docs/view-style-props> |
+| RN 的 `filter` 在 **iOS 上只有 `brightness` / `opacity`** → 对比度/饱和度必须用叠层实现 | 同上（原文："Due to issues with performance and spec compliance, these are the only two filter functions available on iOS"） |
+| `expo-camera` 用 `CameraView` / `useCameraPermissions` / `takePictureAsync()` | <https://docs.expo.dev/versions/latest/sdk/camera/> |
+| `expo-media-library` **新 API 是类式**的：`Asset.create(uri)`；旧的 `saveToLibraryAsync` / `createAssetAsync` 会在运行时抛错（要 `expo-media-library/legacy`） | <https://docs.expo.dev/versions/latest/sdk/media-library/> · <https://docs.expo.dev/guides/sdk-libraries-migration/media-library/> |
+| `expo-image-manipulator` 新 API：`ImageManipulator.manipulate(uri)` → `renderAsync()` → `saveAsync()` | <https://docs.expo.dev/versions/latest/sdk/imagemanipulator/> |
+| Expo Go 里 `expo-font` **只能用运行时 `useFonts()`**（config plugin 要 prebuild，Expo Go 无效） | <https://docs.expo.dev/versions/latest/sdk/font/> |
+| Expo Go 内置的第三方原生库清单（含 `react-native-view-shot`、`react-native-reanimated`、`@shopify/react-native-skia`、`react-native-svg` 等） | <https://docs.expo.dev/versions/latest/sdk/third-party-overview/> |
+| Expo 自带 Metro `require` 的类型声明（`expo/types` 引用 `./metro-require`）→ `require('../../assets/x.png')` 在 TS 下可用 | <https://unpkg.com/expo/types/index.d.ts> · <https://unpkg.com/expo/tsconfig.base.json> |
+
+**本机实测复核（2026-10-10，实际跑出来的，不是转述文档）**
+
+| 结论 | 怎么验的 |
+| --- | --- |
+| `npx tsc --noEmit` **0 error** | 全量装上依赖后真跑，退出码 0 |
+| Metro **能完整打出 iOS bundle**（660 个模块 → 996KB）+ 6 个素材（3 相框 + 3 纹理）都被正确收集 | `npx expo export --platform ios --no-bytecode`，退出码 0 |
+| `react-native-view-shot@5.1.0` **确实导出 `ViewShotRef` 类型** | 读 `node_modules/react-native-view-shot/src/index.tsx:292`：`export type ViewShotRef = View & { capture: () => Promise<string> }` |
+| `ViewShot` **内部已经写死 `collapsable={false}`**，而且不透传任何未声明的 props | 同文件 `src/index.tsx:419-428`。所以调用处再传 `collapsable` 是**既无效又报错**，已删 |
+| `StyleSheet.absoluteFillObject` **在 RN 0.86 已被移除**，只剩 `StyleSheet.absoluteFill`（一个被 `Object.freeze` 的对象，可直接 `...` 展开） | `node_modules/react-native/Libraries/StyleSheet/StyleSheetExports.js:21-29` + `Libraries/StyleSheet/StyleSheet.d.ts:116-129` |
+| `mixBlendMode` **只声明在 `ViewStyle` 上**，`ImageStyle` 里没有 → 混合层改用 `<View>` 承载，`<Image>` 填满它 | `node_modules/react-native/Libraries/StyleSheet/StyleSheetTypes.d.ts:519` |
+
+> 后面这四条都是"文档上看不出来、只有真跑才炸"的坑，代码里已经改好了。
+
+## 10. 可测试性
+
+`processFilmPhoto()` **不直接依赖任何原生模块**：合成/截图由外部注入的 `FilmStageHost` 完成
+（`{ mount, unmount, whenReady, capture }`），所以在 Node 环境里塞一个假 host 就能测编排逻辑：
+
+```ts
+import { processFilmPhoto } from './src/utils/processFilmPhoto';
+import { FRAMES } from './src/constants/frames';
+import { PRESETS } from './src/constants/presets';
+
+const fakeHost = {
+  mount: () => {},
+  unmount: () => {},
+  whenReady: async () => {},
+  capture: async () => 'file:///tmp/fake.jpg',
+};
+
+const photo = await processFilmPhoto({
+  photo: { uri: 'file:///tmp/raw.jpg', width: 4032, height: 3024 },
+  frame: FRAMES[0],
+  preset: PRESETS[0],
+  stage: { width: 358, height: 470 },
+  host: fakeHost,
+});
+
+console.log(photo.layers);   // ['色温 0', '饱和度 …', '颗粒 …', …] 实际生效的图层
+console.log(photo.warnings); // 没有原图时的降级提示也会出现在这里
+```
+
+没有原生环境时 `normalizePhoto` 会失败**但不抛错**，而是退回原图并把原因塞进 `warnings` ——
+这也是线上排查"为什么这张照片没被压缩"的线索。纯函数（`geometry` / `gradeLayers` / `formatTimestamp`）
+可以直接单测。
+
+## 11. 已知限制
+
+1. **取景器和成片的构图会有轻微差异**。取景器显示的是相机预览的中心裁切，而成片是"整张照片按相框窗口
+   比例中心裁切"。两者比例接近时看不出来，窗口比例很怪（比如 3:4 的 35mm 相框对着 4:3 传感器）时，
+   取景器里看到的多一点或少一点是正常的。要完全一致需要把预览也按输出比例裁切，属于下一步优化。
+2. **无实时滤镜**：这是刻意的（硬约束 #2）。所见即"原始画面 + 相框"，调色只在按下快门后发生。
+   好处是取景帧率永远是原生的，代价是按下快门后要等 ~1 秒才看到成片。
+3. **分辨率受屏幕限制**：成片 ≈ 合成视图逻辑尺寸 × PixelRatio（iPhone 上约 1170 × 1600）。
+   想要 4000 × 5000 的"数码底片"必须给 `captureRef` 传放大后的 `width`/`height`，那会插值软化 ——
+   真要高分辨率得换 Skia 离屏渲染（第 13 节）。
+4. **调色是图层模拟，不是真 LUT**：`contrast` 用同图 `overlay` 叠加近似，`contrast` 拉到 2.0 这类极值时
+   高光/阴影会有轻微色偏；数码胶片味的"真"实现要靠 LUT。
+5. **`filter` 在 iOS 上不可用**，所以同一套参数在 Android 上也不会去用它 —— 两个平台走同一条渲染路径，
+   行为一致（代价是 Android 上本来能用的 `saturate()` 也没用上，但保证了一致性）。
+6. **Expo Go 的固有约束**：不能用 config plugin 嵌字体（用运行时 `useFonts`）；`expo-camera` 的
+   `ratio` 属性仅 Android 有效、`active` 仅 iOS 有效；不能加任何需要自定义原生代码的库。
+7. **占位素材是程序化生成的**，能用但不够好看。真机感来自相框美术（`assets/frames/README.md` 教你换）。
+8. **未做**：闪光灯自动策略、连拍、多张选片、EXIF 保留、iPad 布局适配、i18n。
+9. `asset/fonts/` 默认空目录 —— 不装自定义字体时日期用系统等宽字体（`Menlo` / `monospace`）。
+
+## 12. 故障排查
+
+| 现象 | 原因 / 解决 |
+| --- | --- |
+| 手机一直 "Connecting…" | 见第 3 节：同 Wi-Fi → 放行防火墙 → `npm run tunnel` |
+| `Unable to resolve module ../../assets/fonts/DSEG7Classic-Bold.ttf` | `useFilmFonts.ts` 里解开了 `CUSTOM_FONT` 的 require，但 ttf 没放进 `assets/fonts/`。要么放文件，要么改回 `= null` |
+| 打开就白屏 / 红屏 | 多半是 `app.json` 被改坏了（比如加了不存在的 `icon` 文件路径）。本仓库故意不写 `icon`/`splash` 字段 |
+| 成片是纯黑 / 没有画面 | 合成视图没就绪就截了图。本项目已经用"onLayout + 所有 Image onLoad 双就绪 + 1.5s 超时"防这个；如果你改过 `FilmCompositor` 结构，注意别破坏这个约定 |
+| 相框把照片整块盖住 | PNG 的窗口不是透明的（用了 JPG，或导出时丢了 alpha）。见 `assets/frames/README.md` |
+| 相机一片黑 | 权限被拒（卡片会提示）→ 去设置；或者 Expo Go 退到后台再回来，需要重挂 `CameraView`（代码里已做 `cameraKey` 重挂） |
+| 快门点了没反应 | 相机还没 `onCameraReady`，或上一张还在显影（`busy` 时快门是禁用的，中间会转菊花） |
+| 提示"保存失败：权限被拒绝" | 设置 → Expo Go → 照片 → 允许"添加照片"。iOS 的新权限弹窗只弹一次，之后只能去设置 |
+| 日期看不见 | 日期颜色和相框太接近，或 `anchor: 'frame'` 但相框没有下留白 → 改成 `'window'` 或换颜色 |
+| 改了 `app.json` 不生效 | Expo Go 里下拉刷新不够，重启 dev server：`npx expo start --clear` |
+| 提示 SDK 版本不匹配 | App Store 的 Expo Go 升到了更新的 SDK → `npx expo install expo@latest` 再 `npx expo install --fix` |
+| `npm install` 卡住不动、`node_modules` 迟迟不出现 | 官方 registry 在国内太慢（本机实测卡 20 分钟）→ 加 `--registry=https://registry.npmmirror.com`，见第 2 节"踩过的坑" |
+| `npm error code EALLOWSCRIPTS` / `--allow-scripts is not allowed` | 全局 `.npmrc` 里的 `allow-scripts=true` 撞上 npm 脚本门禁 → 改用 `npm install 包名@版本` 直接装 |
+| 打包报 `Cannot find module 'babel-preset-expo'` | 它被嵌套装进了 `node_modules/expo/node_modules/` → 确认 `devDependencies` 里的 `babel-preset-expo` 没被删，重跑 `npm install` |
+| 类型报 `Property 'absoluteFillObject' does not exist` 或 `'mixBlendMode' does not exist in type 'ImageStyle'` | RN 0.86 收紧了类型。本项目代码已改好；你自己加样式时用 `StyleSheet.absoluteFill`，需要混合的层用 `<View>` 承载 |
+
+## 13. 可选升级路径（默认代码不含）
+
+1. **真 LUT / 实时滤镜**：`@shopify/react-native-skia` **在 Expo Go 内置清单里**（已核实），
+   可以用 `Skia.Image` + `ColorMatrix` / Runtime Shader 做真调色，甚至给取景器加实时预览。
+   代价是取景帧率和电量，以及 Skia 版本随 SDK 变动的适配成本。
+2. **更高分辨率成片**：Skia 离屏 `Surface` 渲染 + `makeImageSnapshot()` 可以按任意像素尺寸出图，
+   绕开"截图 = 屏幕分辨率"的限制（也不用真的把视图挂到屏幕上）。
+3. **真数码管字体**：放 DSEG7 ttf + 改 `useFilmFonts.ts` 一行（见 `assets/fonts/README.md`），
+   颜色/格式/字距都已经是 preset 字段，不用改渲染代码。
+4. **相框素材**：`assets/frames/README.md` 里的规范接得住任意 PNG —— 磨砂纸边、漏光边、
+   手写日期标签、品牌 logo 都能做，改的只是美术资源。
+5. **多屏 / 相册页 / 设置页**：现在是单屏（`App.tsx` 直接渲染 `CameraScreen`），
+   要加导航就装 `@react-navigation/native` + `native-stack`（都在 Expo Go 支持范围内）。
+6. **Android 专属滤镜**：Android 上 RN 的 `filter` 支持 `saturate` / `sepia` / `contrast` 等，
+   想在 Android 上更进一步可以按 `Platform.OS` 分支（当前为了一致性故意没做）。
+7. **设备能力**：`expo-haptics` 已经用上了（切相框的轻震），还可以加"显影完成"的成功震感
+   （`Haptics.notificationAsync`）、快门声（`takePictureAsync({ shutterSound: false })` 反向控制）。
+
+---
+
+**改代码前请先读 `src/types/index.ts`** —— 所有数据结构都在那一个文件里，
+`constants`（纯数据）→ `utils`（纯逻辑）→ `components`（渲染）的单向依赖是刻意设计的。

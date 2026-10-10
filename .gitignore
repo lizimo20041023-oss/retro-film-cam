@@ -1,0 +1,31 @@
+# 依赖
+node_modules/
+
+# Expo / Metro
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# 原生工程（本项目是纯 managed，用不到；prebuild 后才会出现）
+/ios/
+/android/
+
+# 日志
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 签名文件千万别提交
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision

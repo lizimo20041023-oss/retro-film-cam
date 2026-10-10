@@ -1,0 +1,248 @@
+"""生成 retro-film-cam 的占位相框与胶片纹理。
+
+用法（在项目根目录）：
+    python scripts/generate_placeholder_assets.py
+
+产物：
+    assets/frames/classic-white.png    3:4 白边印刷相框
+    assets/frames/instant-square.png   1:1 拍立得相框（下方留白）
+    assets/frames/film-35mm.png        35mm 胶片条（两侧齿孔）
+    assets/textures/grain.png          颗粒噪点平铺 tile
+    assets/textures/vignette.png       暗角（径向 alpha 遮罩）
+    assets/textures/light-leak.png     漏光（screen 混合图层）
+
+设计约定（与 src/constants/frames.ts 中的 window 归一化数值一一对应）：
+    相框 PNG 的"镂空窗口"必须完全透明（alpha = 0），
+    window = (x/W, y/H, w/W, h/H) 全部是相对整张相框的 0~1 归一化值。
+
+脚本会在结束时打印每个相框的归一化 window 数值，方便和 frames.ts 校对。
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import random
+
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+FRAMES_DIR = os.path.join(ROOT, "assets", "frames")
+TEXTURES_DIR = os.path.join(ROOT, "assets", "textures")
+
+TRANSPARENT = (0, 0, 0, 0)
+
+
+def ensure_dirs() -> None:
+    os.makedirs(FRAMES_DIR, exist_ok=True)
+    os.makedirs(TEXTURES_DIR, exist_ok=True)
+
+
+def font(size: int) -> ImageFont.ImageFont:
+    """Pillow >= 10.1 支持 load_default(size=...)，老版本回退到默认位图字体。"""
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:  # pragma: no cover - 老 Pillow
+        return ImageFont.load_default()
+
+
+def save(img: Image.Image, path: str) -> None:
+    img.save(path, "PNG", optimize=True)
+    print(f"  -> {os.path.relpath(path, ROOT)}  {img.size[0]}x{img.size[1]}  {os.path.getsize(path) / 1024:.1f} KB")
+
+
+def punch_window(img: Image.Image, window: tuple[int, int, int, int]) -> None:
+    """把窗口区域挖成完全透明。window = (x, y, w, h)。"""
+    x, y, w, h = window
+    ImageDraw.Draw(img).rectangle([x, y, x + w - 1, y + h - 1], fill=TRANSPARENT)
+
+
+def print_window(name: str, size: tuple[int, int], window: tuple[int, int, int, int]) -> None:
+    x, y, w, h = window
+    W, H = size
+    print(
+        f"  # {name}: canvas {W}x{H} aspect={W / H:.5f} | window px {window} "
+        f"aspect={w / h:.5f}\n"
+        f"  #   window: {{ x: {x / W:.6f}, y: {y / H:.6f}, width: {w / W:.6f}, height: {h / H:.6f} }}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 相框
+# --------------------------------------------------------------------------- #
+def make_classic_white() -> None:
+    """3:4 白色印刷相框：四周留白，底部略宽，窗口内完全透明。"""
+    W, H = 1350, 1800
+    window = (75, 90, 1200, 1599)
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+
+    d.rectangle([0, 0, W - 1, H - 1], fill=(252, 251, 248, 255))
+    # 纸张边缘的极淡内阴影，避免死白
+    d.rectangle([0, 0, W - 1, H - 1], outline=(236, 233, 226, 255), width=4)
+
+    # 窗口外侧的细灰描边（模拟相纸裁切边）
+    x, y, w, h = window
+    d.rectangle([x - 4, y - 4, x + w + 3, y + h + 3], outline=(214, 210, 201, 255), width=4)
+
+    punch_window(img, window)
+
+    # 底部边缘码（胶片边缘字）
+    d.text(
+        (x, H - 92),
+        "RETRO 400  ·  36 EXP  ·  C-41",
+        font=font(44),
+        fill=(168, 162, 152, 255),
+    )
+    save(img, os.path.join(FRAMES_DIR, "classic-white.png"))
+    print_window("classic-white", (W, H), window)
+
+
+def make_instant_square() -> None:
+    """拍立得：1:1 窗口 + 很宽的下边框。"""
+    W, H = 1425, 1800
+    window = (75, 90, 1275, 1275)
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+
+    d.rectangle([0, 0, W - 1, H - 1], fill=(247, 245, 240, 255))
+    d.rectangle([0, 0, W - 1, H - 1], outline=(228, 224, 216, 255), width=5)
+
+    x, y, w, h = window
+    d.rectangle([x - 5, y - 5, x + w + 4, y + h + 4], outline=(206, 202, 194, 255), width=5)
+
+    punch_window(img, window)
+
+    # 下边框里的手写体标识
+    d.text((x + 8, H - 300), "RETRO FILM CAM", font=font(74), fill=(150, 145, 136, 255))
+    d.text((x + 8, H - 190), "instant  ·  iso 800", font=font(46), fill=(186, 181, 172, 255))
+    # 一条极淡的分隔线
+    d.line([x + 8, H - 330, x + w + 2, H - 330], fill=(224, 220, 212, 255), width=3)
+
+    save(img, os.path.join(FRAMES_DIR, "instant-square.png"))
+    print_window("instant-square", (W, H), window)
+
+
+def make_film_35mm() -> None:
+    """35mm 胶片条：两侧为齿孔（透明），窗口 3:4。"""
+    W, H = 1350, 1950
+    window = (210, 270, 930, 1240)
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+
+    # 片基：近黑，边缘略深
+    d.rectangle([0, 0, W - 1, H - 1], fill=(26, 27, 30, 255))
+    d.rectangle([0, 0, W - 1, H - 1], outline=(12, 13, 15, 255), width=8)
+    # 两侧齿孔带底色
+    d.rectangle([0, 0, 190, H - 1], fill=(19, 20, 23, 255))
+    d.rectangle([W - 191, 0, W - 1, H - 1], fill=(19, 20, 23, 255))
+
+    x, y, w, h = window
+    # 窗口内侧的一圈压痕
+    d.rectangle([x - 6, y - 6, x + w + 5, y + h + 5], outline=(58, 60, 64, 255), width=6)
+    punch_window(img, window)
+
+    # 齿孔：透明矩形，露出 App 的深色背景 → 像真孔
+    hole_w, hole_h = 104, 74
+    for cy in (105, W - 105):
+        top = 120
+        while top + hole_h < H - 90:
+            d.rounded_rectangle(
+                [cy - hole_w // 2, top, cy + hole_w // 2, top + hole_h],
+                radius=16,
+                fill=TRANSPARENT,
+            )
+            top += 150
+
+    # 顶部/底部黑边上的片基标识
+    d.text((x, 150), "RETRO 400", font=font(58), fill=(206, 180, 120, 255))
+    d.text((x, 214), "35mm  ·  color negative", font=font(40), fill=(140, 138, 132, 255))
+    d.text((x, H - 200), "36 EXP  ·  process C-41", font=font(40), fill=(140, 138, 132, 255))
+
+    save(img, os.path.join(FRAMES_DIR, "film-35mm.png"))
+    print_window("film-35mm", (W, H), window)
+
+
+# --------------------------------------------------------------------------- #
+# 纹理
+# --------------------------------------------------------------------------- #
+def make_grain(size: int = 192, spread: int = 46) -> None:
+    """单色颗粒 tile：RGB 均值 128 的噪点，配合 mixBlendMode:'overlay' 使用。
+
+    一个 tile = size×size 逻辑点。改 size 就等于改颗粒粗细。
+    """
+    rnd = random.Random(20261010)
+    lum = Image.new("L", (size, size))
+    px = lum.load()
+    for y in range(size):
+        for x in range(size):
+            v = 128 + rnd.randint(-spread, spread)
+            px[x, y] = 0 if v < 0 else (255 if v > 255 else v)
+    rgb = Image.merge("RGB", (lum, lum, lum)).convert("RGBA")
+    save(rgb, os.path.join(TEXTURES_DIR, "grain.png"))
+
+
+def make_vignette(size: int = 512, inner: float = 0.42, gamma: float = 1.75, max_alpha: int = 210) -> None:
+    """径向黑色 alpha 遮罩；配合 mixBlendMode:'multiply'，强度由图层 opacity 控制。"""
+    img = Image.new("RGBA", (size, size), TRANSPARENT)
+    px = img.load()
+    c = (size - 1) / 2.0
+    max_r = math.hypot(c, c)
+    for y in range(size):
+        for x in range(size):
+            r = math.hypot(x - c, y - c) / max_r
+            t = (r - inner) / (1.0 - inner)
+            t = 0.0 if t < 0 else (1.0 if t > 1 else t)
+            a = int((t ** gamma) * max_alpha)
+            if a:
+                px[x, y] = (0, 0, 0, a)
+    save(img, os.path.join(TEXTURES_DIR, "vignette.png"))
+
+
+def make_light_leak(w: int = 768, h: int = 768) -> None:
+    """右上角渗入的暖色漏光；配合 mixBlendMode:'screen'。"""
+    img = Image.new("RGBA", (w, h), TRANSPARENT)
+    px = img.load()
+    rnd = random.Random(1987)
+    for y in range(h):
+        v = y / h
+        for x in range(w):
+            u = x / w
+            # 角落光晕
+            glow = math.exp(-(((u - 1.02) ** 2) / 0.30 + ((v - 0.02) ** 2) / 0.42))
+            # 两条斜向 streak
+            d1 = abs(v - (0.10 + 0.70 * u)) / 0.20
+            s1 = max(0.0, 1.0 - d1 * d1)
+            d2 = abs(v - (0.58 + 0.34 * u)) / 0.30
+            s2 = max(0.0, 1.0 - d2 * d2) * 0.45
+            a = min(1.0, glow + s1 * 0.8 + s2)
+            if a <= 0.004:
+                continue
+            a *= 0.55 + 0.45 * rnd.random()   # 斑驳感
+            a *= max(0.0, 1.0 - 0.62 * u)     # 越往左越淡（从右上渗入）
+            if a <= 0.004:
+                continue
+            r = 255
+            g = int(120 + 78 * a)
+            b = int(18 + 96 * a)
+            px[x, y] = (r, g, b, int(min(255.0, a * 235)))
+    img = img.filter(ImageFilter.GaussianBlur(5))
+    save(img, os.path.join(TEXTURES_DIR, "light-leak.png"))
+
+
+def main() -> None:
+    ensure_dirs()
+    print("frames:")
+    make_classic_white()
+    make_instant_square()
+    make_film_35mm()
+    print("textures:")
+    make_grain()
+    make_vignette()
+    make_light_leak()
+    print("done.")
+
+
+if __name__ == "__main__":
+    main()
