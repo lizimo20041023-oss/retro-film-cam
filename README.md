@@ -12,9 +12,9 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 | 路线 | 怎么跑 | 适合什么时候 | 看哪份文档 |
 | --- | --- | --- | --- |
 | **A. Expo Go**（开发调试用） | 电脑 `npm start`，手机扫码 | 改代码、加相框、调参数时边改边看 | [新手操作指南.md](新手操作指南.md) |
-| **B. 独立 App**（日常拍照用） | GitHub 免费 Mac 机器打 `.ipa`，Sideloadly 签进手机 | 想要桌面图标、出门不用带电脑 | [如何装到手机上.md](如何装到手机上.md) |
+| **B. 独立 App**（日常拍照用） | GitHub 免费 Mac 机器打 `.ipa`，电脑用 iloader 装 SideStore，再由 SideStore 签进手机 | 想要桌面图标、出门不用带电脑 | [如何装到手机上.md](如何装到手机上.md) |
 
-路线 B 是**免费自签**：0 元，但签名每 7 天要续签一次（苹果的限制，不是本项目的限制）。两条路线可以并存，改代码时用 A，改好了再走 B 出一版装到手机上。
+路线 B 是**免费自签**：0 元，但签名每 7 天要续签一次（苹果的限制，不是本项目的限制）。选 SideStore 而不是 Sideloadly/AltStore 的原因很实际：**SideStore 的续签在手机上完成**（Wi-Fi + LocalDevVPN），电脑只在第一次安装时用一次，之后可以一直关着。两条路线可以并存，改代码时用 A，改好了再走 B 出一版装到手机上。
 
 ---
 
@@ -552,8 +552,18 @@ console.log(photo.warnings); // 没有原图时的降级提示也会出现在这
 | EAS Build 打真机包需要**苹果开发者账号出证书**（$99/年） | 免费路线用不了 EAS 的签名构建 |
 | 免费 Apple ID 能签名，但**签名只有 7 天**，且必须先有 `.ipa` | 所以：**先弄出未签名的 ipa，再在 Windows 上现场签名** |
 
-结论：**借 GitHub Actions 的免费 macOS 机器编译，产出未签名 ipa，再在 Windows 用 Sideloadly/AltStore 配免费 Apple ID 签名安装。**
-（这也是 [Altux](https://github.com/samay15jan/Altux) 等项目的通行做法。）
+结论：**借 GitHub Actions 的免费 macOS 机器编译，产出未签名 ipa；电脑上装 iTunes + [iloader](https://iloader.app) 把 [SideStore](https://sidestore.io/) 塞进手机，之后所有签名/安装/续签都在手机上的 SideStore 里完成。**
+（GitHub Actions 编译未签名包是 [Altux](https://github.com/samay15jan/Altux) 等项目的通行做法；iloader + SideStore 是 SideStore 官方推荐的一键安装路径。）
+
+选 SideStore 而不是 Sideloadly / AltStore 的唯一理由是**续签**：
+
+| 方案 | 首次安装 | 每 7 天续签 | 需要官网版 iTunes |
+| --- | --- | --- | --- |
+| **SideStore**（本文推荐） | 电脑 + 数据线，一步到位 | **手机上点一下，电脑可关机** | 否，用微软商店版 |
+| Sideloadly | 电脑 + 数据线，最简单 | 电脑开机 + 插线点 Start | **是** |
+| AltStore | 电脑 + 数据线，步骤最多 | 电脑开着 + 同一 Wi-Fi 自动签 | **是** |
+
+SideStore 的无线续签靠 [LocalDevVPN](https://apps.apple.com/app/localdevvpn/id6755608044)：它在本机建一条回环 VPN 通道，让 SideStore 能直接跟设备内部的 `minimuxer` / AFC 服务通信，从而不需要外部电脑。这也是为什么 **装/更新/续签前必须先连上它**。
 
 ### 流水线的 10 步在干什么
 
@@ -566,7 +576,7 @@ console.log(photo.warnings); // 没有原图时的降级提示也会出现在这
 
 2. **`CODE_SIGNING_ALLOWED=NO`** 是能编出包的关键。
    没有开发者证书时，加上它 Xcode 才肯完成编译，产出的是「未签名 .app」。
-   AltStore / Sideloadly 会**重新签整个 bundle**，所以未签名包正是它们要的输入。
+   SideStore / iloader / Sideloadly 都会**重新签整个 bundle**，所以未签名包正是它们要的输入。
 
 3. **`package-lock.json` 里的 500 条下载地址写的是 `registry.npmmirror.com`**（本机在国内装的）。
    流水线第 4 步用 `sed` 换成 `registry.npmjs.org`（GitHub 机器在国外，官方源更快），
@@ -610,6 +620,20 @@ console.log(photo.warnings); // 没有原图时的降级提示也会出现在这
 - **换 macOS 镜像**：`runs-on` 现在是 `macos-latest`，报 Xcode 版本问题就改成 `macos-15` / `macos-26`。
 - **想要 1 年签名**：买 $99/年的 Apple Developer Program，然后把流水线从 `CODE_SIGNING_ALLOWED=NO`
   换成用 `.p12` 证书 + provisioning profile 直接出签名包（证书存 GitHub Secrets）。
+
+### 走不通的那些「更省事」的路（已核实，别再花时间）
+
+| 方案 | 声称的好处 | 为什么用不了 |
+| --- | --- | --- |
+| **TrollStore（巨魔）** | 永久签名，彻底不用续签 | 只支持 **iOS 14.0 ~ 17.0**。本机对应的手机是 **iOS 27**，范围外 |
+| **AltStore PAL** | 苹果官方第三方商店，不用续签 | 要求设备**实际位于欧盟 / 日本 / 巴西**并登录对应地区 Apple 账号 |
+| **EAS Build 直接出真机包** | 不用自己配 Xcode | 打真机包需要**付费开发者账号**出证书；免费账号路线走不通 |
+| **淘宝/闲鱼「企业签名 / 永久证书」** | 花钱省事 | 证书随时被吊销；装的是别人重签过的包，**有夹带私货风险** |
+
+补充：SideStore 的免费账号额度是**同时最多 3 个自签 App**（SideStore 自己占 1 个），所以本项目实际可再装 2 个。
+如果以后想装更多 IPA，可以再套一层 [LiveContainer](https://github.com/LiveContainer/LiveContainer)
+（用一个宿主签名槽位跑多个 guest App）——但它是容器，**相机 / 相册这类系统能力不一定完整**，
+本项目要拍照，所以**适合用 SideStore 直接装成真 App**，不建议塞进 LiveContainer。
 
 ---
 
