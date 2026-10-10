@@ -97,7 +97,8 @@ jobs:
           echo "workspace = $WORKSPACE"
           SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list 2>/dev/null \
             | awk '/Schemes:/{flag=1;next} /^$/{flag=0} flag' \
-            | head -n 1 | tr -d '[:space:]')
+            | tr -d '[:space:]' | grep -v '^$' | grep -v '^Pods-' \
+            | head -n 1)
           if [ -z "$SCHEME" ]; then SCHEME="FretroCam"; fi
           echo "scheme = $SCHEME"
           echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
@@ -121,6 +122,25 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS="" \
             build 2>&1 | tee xcodebuild.log | tail -n 120
+
+      - name: 8.2 侦察：scheme 选对了吗、产物落在哪
+        # 用 ::notice:: 而不是 ::error::，这样成功的运行也是绿的。
+        # 说明：GitHub 的「作业摘要」和完整日志在【未登录】的网页上读不到，
+        # 只有注解（Annotations）一定能看到，所以侦察结果全部走注解。
+        if: always()
+        run: |
+          note() {
+            local key="$1"
+            local body
+            body=$(head -c 2500 | awk '{printf "%s%%0A", $0}')
+            echo "::notice::${key}%0A${body}"
+          }
+          echo "SCHEME=${{ steps.scheme.outputs.scheme }}" | note "选中的 scheme"
+          echo "WORKSPACE=${{ steps.scheme.outputs.workspace }}" | note "选中的 workspace"
+          xcodebuild -workspace "${{ steps.scheme.outputs.workspace }}" -list 2>&1 | head -n 30 | note "xcodebuild -list 全量"
+          ls -la "$PWD/build/Build/Products/" 2>&1 | note "Products 目录"
+          ls -la "$PWD/build/Build/Products/Release-iphoneos/" 2>&1 | head -n 45 | note "Release-iphoneos 里的东西"
+          find "$PWD/build" -maxdepth 6 -name "*.app" 2>/dev/null | head -n 20 | note "build 里找到的 .app"
 
       - name: 9. 打成 .ipa
         # ⚠️ 这里有个踩过的坑：不能随便 find 一个 *.app 就用！
