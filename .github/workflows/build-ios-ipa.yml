@@ -103,43 +103,11 @@ jobs:
           echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
           echo "scheme=$SCHEME"       >> "$GITHUB_OUTPUT"
 
-      - name: 7.5 问 Xcode：产物到底会放在哪
-        id: prod
-        # 先单独问一次，把答案存进 output 给第 8、9 步用
-        # （-derivedDataPath 用绝对路径，省得相对路径被解析到别处去）
-        run: |
-          WS="${{ steps.scheme.outputs.workspace }}"
-          SC="${{ steps.scheme.outputs.scheme }}"
-          DD="$PWD/build"
-
-          echo "workspace=$WS"
-          echo "scheme=$SC"
-          echo "derivedData=$DD"
-
-          SETTINGS=$(xcodebuild -workspace "$WS" -scheme "$SC" \
-                       -configuration Release -sdk iphoneos -showBuildSettings 2>&1 \
-                     | grep -E "(BUILT_PRODUCTS_DIR|CONFIGURATION_BUILD_DIR|TARGET_BUILD_DIR|SYMROOT|OBJROOT|FULL_PRODUCT_NAME|WRAPPER_NAME) " \
-                     || true)
-          echo "── showBuildSettings ──"
-          echo "$SETTINGS"
-
-          # 一并写进「作业摘要」，网页上不登录也能看
-          {
-            echo "## 🔍 产物路径侦察"
-            echo ""
-            echo "\`workspace\` = \`$WS\` ｜ \`scheme\` = \`$SC\`"
-            echo ""
-            echo '```'
-            echo "$SETTINGS"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "derivedData=$DD" >> "$GITHUB_OUTPUT"
-
       - name: 8. 编译（Release，不做签名）
         # CODE_SIGNING_ALLOWED=NO 是重点：没有苹果开发者证书也能编出 .app。
         # Release 配置会在 "Bundle React Native code and images" 阶段把 JS 打包进 App 内部，
         # 所以装到手机上之后完全离线可用，不需要电脑开着 Metro。
+        # 全量日志留一份 xcodebuild.log 给下一步做诊断（出问题时能直接看到结论）。
         run: |
           set -o pipefail
           xcodebuild \
@@ -147,74 +115,64 @@ jobs:
             -scheme "${{ steps.scheme.outputs.scheme }}" \
             -configuration Release \
             -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath "${{ steps.prod.outputs.derivedData }}" \
+            -derivedDataPath "$PWD/build" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS="" \
-            build
+            build 2>&1 | tee xcodebuild.log | tail -n 120
+
+      - name: 8.5 诊断：编译到底干了什么、产物在哪
+        # 注解（::error::）在网页上【不用登录也能看到】，而作业摘要和日志都不行。
+        # 所以这里把关键信息全部塞进注解里。
+        if: always()
+        run: |
+          anno() {
+            local key="$1"
+            local body
+            body=$(head -c 3500 | awk '{printf "%s%%0A", $0}')
+            echo "::error::${key}%0A${body}"
+          }
+
+          echo "===== 1) xcodebuild 的结论 ====="
+          grep -E "BUILD SUCCEEDED|BUILD FAILED|The following build commands failed|^error:| error: " xcodebuild.log 2>/dev/null | head -n 25 | anno "XCODE_结果"
+          echo "===== 2) xcodebuild 日志最后 40 行 ====="
+          tail -n 40 xcodebuild.log 2>/dev/null | anno "XCODE_日志尾部"
+          echo "===== 3) 仓库根目录 ====="
+          ls -la | anno "仓库根"
+          echo "===== 4) build/ 目录树 ====="
+          find build -maxdepth 5 2>/dev/null | head -n 50 | anno "build目录树"
+          echo "===== 5) 家目录里所有 .app ====="
+          find "$HOME" -type d -name "*.app" -not -path "*/Xcode.app/*" 2>/dev/null | head -n 20 | anno "家目录的app"
+          echo "===== 6) 磁盘 ====="
+          df -h / | anno "磁盘"
+          echo "(诊断完成)"
 
       - name: 9. 打成 .ipa
-        # 不再猜路径：第 7.5 步已经问过 Xcode。这里先查它说的位置，
-        # 再依次兜底（build 全目录 → DerivedData 默认位置 → 家目录），
-        # 同时把整个现场写进「作业摘要」，失败也不会再「没有线索」。
+        # 在整个工作区 + 家目录里找 .app（不猜路径），找到就打，
+        # 找不到就把已有的现场再报一次。
         run: |
           set -e
-
-          DD="${{ steps.prod.outputs.derivedData }}"
-
-          {
-            echo "## 📦 打包现场"
-            echo ""
-            echo "### 仓库根目录"
-            echo '```'
-            ls -la
-            echo '```'
-            echo "### build/ 目录树（前 40 行）"
-            echo '```'
-            ls -la build 2>&1 | head -20 || true
-            find build -maxdepth 4 -type d 2>&1 | head -40 || true
-            echo '```'
-            echo "### 家目录里所有 .app（排除 Xcode 自带的）"
-            echo '```'
-            find "$HOME" -type d -name "*.app" -not -path "*/Xcode.app/*" 2>/dev/null | head -30 || true
-            echo '```'
-            echo "### 磁盘"
-            echo '```'
-            df -h /
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
           echo "── 开始找 .app ──"
-          APP=""
-          for DIR in "$DD/Build/Products/Release-iphoneos" "$DD" \
-                     "$HOME/Library/Developer/Xcode/DerivedData"; do
-            if [ -d "$DIR" ]; then
-              echo "查 $DIR …"
-              CAND=$(find "$DIR" -type d -name "*.app" 2>/dev/null | head -n 1 || true)
-              if [ -n "$CAND" ]; then
-                APP="$CAND"
-                echo "✅ 在这里找到：$APP"
-                break
-              fi
-            else
-              echo "（$DIR 不存在）"
-            fi
-          done
+          APP=$(find "$GITHUB_WORKSPACE" "$HOME" -type d -name "*.app" \
+                  -not -path "*/Xcode.app/*" -not -path "*/node_modules/*" 2>/dev/null \
+                | head -n 1 || true)
 
           if [ -z "$APP" ]; then
-            echo "::error::所有候选位置都没有 .app —— 请看本次运行的「作业摘要」里的目录树"
+            echo "::error::工作区和家目录里都没有 .app —— 看第 8.5 步的注解"
             exit 1
           fi
 
-          echo "打包的 App：$APP"
+          echo "✅ 找到：$APP"
+          ls -la "$APP" | head -n 10
+
           rm -rf Payload
           rm -f FretroCam-unsigned.ipa
           mkdir -p Payload
           cp -R "$APP" Payload/
           zip -qry FretroCam-unsigned.ipa Payload
           ls -lh FretroCam-unsigned.ipa
+          echo "::notice::打包成功：FretroCam-unsigned.ipa"
 
       - name: 10. 上传 ipa（在页面最下方 Artifacts 里下载）
         uses: actions/upload-artifact@v4
