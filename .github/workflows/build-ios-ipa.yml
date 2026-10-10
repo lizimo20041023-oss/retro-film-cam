@@ -6,7 +6,7 @@
 #
 # 怎么跑：推到 main / master 会自动触发；
 #        也可以在网页上点 Actions → 选左边 "Build unsigned iOS IPA"
-#        → 点右边 "Run workflow" 手动触发 → 在最下面 Artifacts 里下载 ipa
+#        → 点右边 "Run workflow" 手动触发 → 在本次运行页面最下面 Artifacts 里下载 ipa
 #
 # 产物：FretroCam-unsigned.ipa（Release 版，JS 已内嵌，装上后完全离线可用）
 # ─────────────────────────────────────────────────────────────────────────────
@@ -107,7 +107,7 @@ jobs:
         # CODE_SIGNING_ALLOWED=NO 是重点：没有苹果开发者证书也能编出 .app。
         # Release 配置会在 "Bundle React Native code and images" 阶段把 JS 打包进 App 内部，
         # 所以装到手机上之后完全离线可用，不需要电脑开着 Metro。
-        # 全量日志留一份 xcodebuild.log 给下一步做诊断（出问题时能直接看到结论）。
+        # 全量日志留一份 xcodebuild.log 给失败时的诊断步用。
         run: |
           set -o pipefail
           xcodebuild \
@@ -122,10 +122,57 @@ jobs:
             CODE_SIGN_ENTITLEMENTS="" \
             build 2>&1 | tee xcodebuild.log | tail -n 120
 
-      - name: 8.5 诊断：编译到底干了什么、产物在哪
-        # 注解（::error::）在网页上【不用登录也能看到】，而作业摘要和日志都不行。
-        # 所以这里把关键信息全部塞进注解里。
-        if: always()
+      - name: 9. 打成 .ipa
+        # ⚠️ 这里有个踩过的坑：不能随便 find 一个 *.app 就用！
+        # macOS 上有一堆名字以 .app 结尾的【普通文件夹】，例如
+        #   ~/Library/Application Scripts/group.is.workflow.my.app
+        #   ~/Library/Group Containers/group.is.workflow.my.app
+        # 一旦被选中，就会打出一个只有几百字节的假 ipa（artifact 上传照样"成功"）。
+        # 所以这里逐个用 plutil 验证它真的是 iPhoneOS 的 App，最后再核对文件大小。
+        run: |
+          set -e
+          APP=""
+          for base in "$GITHUB_WORKSPACE/build" "$HOME/Library/Developer/Xcode/DerivedData" "$GITHUB_WORKSPACE"; do
+            [ -d "$base" ] || continue
+            echo "── 在 $base 里找 ──"
+            while IFS= read -r c; do
+              [ -n "$c" ] || continue
+              [ -f "$c/Info.plist" ] || continue
+              plat=$(plutil -extract CFBundleSupportedPlatforms.0 raw "$c/Info.plist" 2>/dev/null || echo "?")
+              echo "   候选：$c  （平台=$plat）"
+              if [ "$plat" = "iPhoneOS" ]; then APP="$c"; break; fi
+            done < <(find "$base" -type d -name "*.app" -not -path "*/Xcode.app/*" 2>/dev/null || true)
+            if [ -n "$APP" ]; then break; fi
+          done
+
+          if [ -z "$APP" ]; then
+            echo "::error::没找到任何 iPhoneOS 的 .app —— 请看下面「诊断」那一步的注解"
+            exit 1
+          fi
+
+          echo "✅ 选中的 App：$APP"
+          ls -la "$APP" | head -n 12
+          du -sh "$APP"
+
+          rm -rf Payload
+          rm -f FretroCam-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry FretroCam-unsigned.ipa Payload
+
+          SIZE=$(stat -f%z FretroCam-unsigned.ipa)
+          echo "ipa 大小：$SIZE 字节"
+          if [ "$SIZE" -lt 3000000 ]; then
+            echo "::error::打出来的 ipa 只有 $SIZE 字节（正常应 20MB 以上）—— 说明选错了 .app"
+            exit 1
+          fi
+          ls -lh FretroCam-unsigned.ipa
+          echo "::notice::打包成功：FretroCam-unsigned.ipa（$SIZE 字节）"
+
+      - name: 9.5 诊断（只有真的失败时才会执行）
+        # 说明：GitHub 的「作业摘要」和完整日志在【未登录】的网页上读不到，
+        # 只有 ::error:: 注解一定能看到。所以失败时把现场全部塞进注解。
+        if: failure()
         run: |
           anno() {
             local key="$1"
@@ -133,7 +180,6 @@ jobs:
             body=$(head -c 3500 | awk '{printf "%s%%0A", $0}')
             echo "::error::${key}%0A${body}"
           }
-
           echo "===== 1) xcodebuild 的结论 ====="
           grep -E "BUILD SUCCEEDED|BUILD FAILED|The following build commands failed|^error:| error: " xcodebuild.log 2>/dev/null | head -n 25 | anno "XCODE_结果"
           echo "===== 2) xcodebuild 日志最后 40 行 ====="
@@ -146,35 +192,8 @@ jobs:
           find "$HOME" -type d -name "*.app" -not -path "*/Xcode.app/*" 2>/dev/null | head -n 20 | anno "家目录的app"
           echo "===== 6) 磁盘 ====="
           df -h / | anno "磁盘"
-          echo "(诊断完成)"
 
-      - name: 9. 打成 .ipa
-        # 在整个工作区 + 家目录里找 .app（不猜路径），找到就打，
-        # 找不到就把已有的现场再报一次。
-        run: |
-          set -e
-          echo "── 开始找 .app ──"
-          APP=$(find "$GITHUB_WORKSPACE" "$HOME" -type d -name "*.app" \
-                  -not -path "*/Xcode.app/*" -not -path "*/node_modules/*" 2>/dev/null \
-                | head -n 1 || true)
-
-          if [ -z "$APP" ]; then
-            echo "::error::工作区和家目录里都没有 .app —— 看第 8.5 步的注解"
-            exit 1
-          fi
-
-          echo "✅ 找到：$APP"
-          ls -la "$APP" | head -n 10
-
-          rm -rf Payload
-          rm -f FretroCam-unsigned.ipa
-          mkdir -p Payload
-          cp -R "$APP" Payload/
-          zip -qry FretroCam-unsigned.ipa Payload
-          ls -lh FretroCam-unsigned.ipa
-          echo "::notice::打包成功：FretroCam-unsigned.ipa"
-
-      - name: 10. 上传 ipa（在页面最下方 Artifacts 里下载）
+      - name: 10. 上传 ipa（在本次运行页面最下方 Artifacts 里下载）
         uses: actions/upload-artifact@v4
         with:
           name: FretroCam-unsigned-ipa
