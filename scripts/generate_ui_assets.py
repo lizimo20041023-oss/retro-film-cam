@@ -273,38 +273,46 @@ def make_icon_torch(size: int = 168) -> None:
 
 
 def make_icon_flip(size: int = 168) -> None:
-    """镜头反转：中心镜头圆 + 两段循环箭头（细线）。"""
+    """镜头反转：两段带箭头的循环弧。
+
+    早前的版本中间还套了一个"镜头圆"，但图标在界面上只占 21pt
+    （`DialButton` 的 `size * 0.48`），圆 + 弧 + 两个箭头挤在一起，
+    缩到真实尺寸后会读成"刷新"而不是"翻转"。去掉内圈、加粗弧线、
+    把箭头做大，让它在 21pt 下的轮廓仍然清楚。
+    """
     img, _ = _icon_canvas(size)
     s = size / 168.0
     c = 84 * s
+    r_ring = 47 * s
+    w = int(12 * s)
 
     def draw(d: ImageDraw.ImageDraw) -> None:
-        r_lens = 22 * s
-        d.ellipse([c - r_lens, c - r_lens, c + r_lens, c + r_lens], outline=255, width=int(9 * s))
-
-        r_ring = 48 * s
         box = [c - r_ring, c - r_ring, c + r_ring, c + r_ring]
-        w = int(9 * s)
-        # 上方那一段（从右上绕到左上）
-        d.arc(box, start=196, end=330, fill=255, width=w)
-        # 下方那一段
-        d.arc(box, start=16, end=150, fill=255, width=w)
+        # 上下两段弧，左右各留出箭头的位置
+        d.arc(box, start=204, end=338, fill=255, width=w)
+        d.arc(box, start=24, end=158, fill=255, width=w)
 
         def arrowhead(angle_deg: float, along: float) -> None:
             a = math.radians(angle_deg)
             tipx, tipy = c + math.cos(a) * r_ring, c + math.sin(a) * r_ring
             tang = a + math.pi / 2.0 * along
-            span = 15 * s
-            back = 20 * s
+            span = 19 * s
+            back = 26 * s
             p1 = (tipx, tipy)
-            p2 = (tipx - math.cos(tang) * back + math.cos(a) * span, tipy - math.sin(tang) * back + math.sin(a) * span)
-            p3 = (tipx - math.cos(tang) * back - math.cos(a) * span, tipy - math.sin(tang) * back - math.sin(a) * span)
+            p2 = (
+                tipx - math.cos(tang) * back + math.cos(a) * span,
+                tipy - math.sin(tang) * back + math.sin(a) * span,
+            )
+            p3 = (
+                tipx - math.cos(tang) * back - math.cos(a) * span,
+                tipy - math.sin(tang) * back - math.sin(a) * span,
+            )
             d.polygon([p1, p2, p3], fill=255)
 
-        arrowhead(330, 1)
-        arrowhead(150, -1)
+        arrowhead(338, 1)
+        arrowhead(158, -1)
 
-    img = Image.alpha_composite(img, _stroke(img, draw, ICON_IDLE, 9))
+    img = Image.alpha_composite(img, _stroke(img, draw, ICON_IDLE, w))
     save(img, os.path.join(UI_DIR, "icon-flip.png"))
 
 

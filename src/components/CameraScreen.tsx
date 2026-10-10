@@ -347,20 +347,31 @@ export function CameraScreen() {
           </Text>
         </View>
 
+        {/*
+          拨轮下面补一行"蚀刻"小字。图标在盘面上只占 21pt，
+          纯图形认不出功能（真机身也是靠刻字说明的），
+          所以这里不用 tooltip、不弹提示，就把字刻在按钮底下。
+        */}
         <View style={styles.topActions}>
-          <DialButton
-            icon={torchOn ? UI_ASSETS.iconTorchOn : UI_ASSETS.iconTorch}
-            active={torchOn}
-            disabled={facing === 'front'}
-            onPress={handleToggleTorch}
-            accessibilityLabel={torchOn ? '关闭补光' : '打开补光'}
-          />
+          <View style={styles.topActionItem}>
+            <DialButton
+              icon={torchOn ? UI_ASSETS.iconTorchOn : UI_ASSETS.iconTorch}
+              active={torchOn}
+              disabled={facing === 'front'}
+              onPress={handleToggleTorch}
+              accessibilityLabel={torchOn ? '关闭补光' : '打开补光'}
+            />
+            <Text style={styles.topActionLabel}>补光</Text>
+          </View>
           <View style={styles.topActionsGap} />
-          <DialButton
-            icon={UI_ASSETS.iconFlip}
-            onPress={handleFlipCamera}
-            accessibilityLabel="切换前后摄像头"
-          />
+          <View style={styles.topActionItem}>
+            <DialButton
+              icon={UI_ASSETS.iconFlip}
+              onPress={handleFlipCamera}
+              accessibilityLabel="切换前后摄像头"
+            />
+            <Text style={styles.topActionLabel}>翻转</Text>
+          </View>
         </View>
       </View>
 
@@ -683,6 +694,16 @@ const styles = StyleSheet.create({
   topActions: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  topActionItem: {
+    alignItems: 'center',
+  },
+  topActionLabel: {
+    marginTop: 2,
+    color: INK.paperFaint,
+    fontSize: 8,
+    letterSpacing: 0.6,
+    fontFamily: UI_MONO,
   },
   topActionsGap: {
     width: 6,

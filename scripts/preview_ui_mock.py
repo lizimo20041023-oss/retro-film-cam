@@ -30,7 +30,9 @@ TOP_INSET, BOT_INSET = 59, 34
 PREVIEW_PADDING = 10
 DIAL = 44
 SHUTTER = 82
-TOP_PANEL_H = TOP_INSET + 4 + DIAL + 9
+# 拨轮底下那行"蚀刻"小字（fontSize 8 + marginTop 2 ≈ 12pt）
+ACTION_LABEL_H = 12
+TOP_PANEL_H = TOP_INSET + 4 + DIAL + ACTION_LABEL_H + 9
 DASH_H = 14 + SHUTTER + 4
 LCD_PANEL_H = 6 + 13 + 3 + 13 + 6
 LCD_WRAP_H = 9 + LCD_PANEL_H + max(BOT_INSET, 10)
@@ -132,7 +134,11 @@ def draw_top_panel(img: Image.Image) -> None:
     )
     img.alpha_composite(panel, (0, 0))
 
-    cy = TOP_INSET + 4 + DIAL / 2
+    row_top = TOP_INSET + 4
+    row_h = DIAL + ACTION_LABEL_H
+    # 左侧标签跟"拨轮 + 底下刻字"这一整列垂直居中，所以用 row_h 而不是 DIAL
+    cy = row_top + row_h / 2
+    dial_cy = row_top + DIAL / 2
     left = 14
 
     # 2pt 琥珀竖线 + 等宽微标签
@@ -147,11 +153,22 @@ def draw_top_panel(img: Image.Image) -> None:
         anchor="lm",
     )
 
-    # 右侧两枚拨轮
+    # 右侧两枚拨轮 + 底下的"蚀刻"小字
     flip_cx = W - 14 - DIAL / 2
     torch_cx = flip_cx - DIAL - 6
-    _dial(img, torch_cx, cy, active=False, icon="icon-torch.png")
-    _dial(img, flip_cx, cy, active=False, icon="icon-flip.png")
+    for cx, icon, label in (
+        (torch_cx, "icon-torch.png", "补光"),
+        (flip_cx, "icon-flip.png", "翻转"),
+    ):
+        _dial(img, cx, dial_cy, active=False, icon=icon)
+        _text(
+            img,
+            (cx, dial_cy + DIAL / 2 + 2),
+            label,
+            cjk(8),
+            rgba(PAPER, PAPER_FAINT),
+            anchor="ma",
+        )
 
 
 def _paste_at(img: Image.Image, layer: Image.Image, x: float, y: float) -> None:
