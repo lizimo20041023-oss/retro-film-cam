@@ -8,6 +8,13 @@
 #        也可以在网页上点 Actions → 选左边 "Build unsigned iOS IPA"
 #        → 点右边 "Run workflow" 手动触发 → 在本次运行页面最下面 Artifacts 里下载 ipa
 #
+# ⚠️ 仓库已经转成私有，Actions 额度开始计费了：
+#    GitHub Free 账号私有仓库每月 2000 分钟，而 macOS 机器按 **10 倍** 计费 ——
+#    一次约 5 分钟的构建会记掉约 50 分钟，一个月只够跑 4 次。
+#    所以下面 push 触发器加了 paths-ignore：只改文档不会构建。
+#    真要省额度，可以在 Actions 页面把本 workflow 整个 Disable 掉，
+#    需要时再手动 "Run workflow"。
+#
 # 产物：FretroCam-unsigned.ipa（Release 版，JS 已内嵌，装上后完全离线可用）
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -19,6 +26,14 @@ on:
   # 推到主分支时自动构建（main 和 master 都写上了，省得因为分支名不同白等一场）
   push:
     branches: [main, master]
+    # 只改文档、许可证这类文件就别烧额度了。
+    # 注意：改本文件自身（.yml）不在忽略范围内，仍会触发一次构建，
+    #      纯文档/配置提交可以在 commit message 里写 [skip ci]。
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - 'THIRD-PARTY-NOTICES.md'
+      - '.gitignore'
 
 # 同时只跑一个，避免排队浪费额度
 concurrency:
