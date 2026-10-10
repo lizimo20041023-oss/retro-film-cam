@@ -2,7 +2,7 @@
 # 在 GitHub 的免费 macOS 机器上，把本项目打成一个【未签名】的 iOS .ipa
 #
 # 为什么要未签名：正式签名要 99 美元/年的苹果开发者账号。
-#   未签名包下载到你 Windows 电脑后，用 AltStore / Sideloadly 配免费 Apple ID 现场签名安装。
+#   未签名包下载到你 Windows 电脑后，用 iloader 配免费 Apple ID 现场签名安装。
 #
 # 怎么跑：把代码推到 GitHub → 网页上点 Actions → 选左边 "Build unsigned iOS IPA"
 #        → 点右边 "Run workflow" → 等 15~25 分钟 → 在最下面 Artifacts 里下载 ipa
@@ -15,9 +15,9 @@ name: Build unsigned iOS IPA
 on:
   # 允许在网页上手动点按钮触发
   workflow_dispatch:
-  # 推到 main 分支时自动构建
+  # 推到主分支时自动构建（main 和 master 都写上了，省得因为分支名不同白等一场）
   push:
-    branches: [main]
+    branches: [main, master]
 
 # 同时只跑一个，避免排队浪费额度
 concurrency:
