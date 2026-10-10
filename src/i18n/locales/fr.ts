@@ -11,9 +11,9 @@ export const fr: Messages = {
   'common.unknownError': 'Erreur inconnue',
 
   /* ---------------- ① barre du haut ---------------- */
-  'camera.torch.on': 'Éteindre la lampe',
-  'camera.torch.off': 'Allumer la lampe',
-  'camera.torch.label': 'LAMPE',
+  'camera.flash.on': 'Éteindre le flash',
+  'camera.flash.off': 'Allumer le flash',
+  'camera.flash.label': 'FLASH',
   'camera.flip.a11y': 'Basculer entre la caméra avant et arrière',
   'camera.flip.label': 'INVERSER',
   'camera.settings.a11y': 'Ouvrir les réglages',
@@ -45,8 +45,21 @@ export const fr: Messages = {
   'frame.archiveCard': 'ARCHIVE',
 
   /* ---------------- ② rail de zoom sur le viseur ---------------- */
-  'zoom.a11y': 'Zoom {percent} %, faites glisser vers le haut ou le bas',
+  'zoom.a11y': 'Zoom {percent} %, faites glisser vers la gauche ou la droite',
   'zoom.label': 'ZOOM',
+  'zoom.role.ultraWide': 'ultra grand-angle',
+  'zoom.role.wide': 'standard',
+  'zoom.stop.a11y': 'Passer à {label}',
+  'camera.gallery.a11y': 'Ouvrir l’album de l’app',
+  'camera.gallery.label': 'ALBUM',
+  'gallery.title': 'ALBUM',
+  'gallery.close': 'Terminé',
+  'gallery.empty': 'Aucune photo',
+  'gallery.emptyHint': 'Vos prises apparaissent ici — inutile d’ouvrir Photos.',
+  'gallery.photo': 'Photo {index}, {date}',
+  'gallery.delete': 'Supprimer cette photo',
+  'gallery.cancel': 'Annuler',
+  'camera.focus.a11y': 'Touchez l’image pour faire le point',
 
   /* ---------------- ③.5 grain ---------------- */
   'grain.a11y': 'Intensité du grain {label}',

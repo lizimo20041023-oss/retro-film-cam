@@ -39,6 +39,10 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [15. 界面设计：为什么"质感"是图片而不是样式](#15-界面设计为什么质感是图片而不是样式)
 - [16. 成片质感：颗粒 / CCD / 分辨率天花板](#16-成片质感颗粒--ccd--分辨率天花板)
 - [17. 变焦：数码变焦怎么接、为什么读数写百分比](#17-变焦数码变焦怎么接为什么读数写百分比)
+- [18. 变焦条挪到快门上方 + 双指捏合 + 13/26/35 三档](#18-变焦条挪到快门上方--双指捏合--132635-三档)
+- [19. 点画面对焦：给 expo-camera 打了一个原生补丁](#19-点画面对焦给-expo-camera-打了一个原生补丁)
+- [20. App 内相册：沙盒里的第二份拷贝](#20-app-内相册沙盒里的第二份拷贝)
+- [21. 补光改成闪光灯：一次改名、零行改图](#21-补光改成闪光灯一次改名零行改图)
 
 ---
 
@@ -247,6 +251,9 @@ retro-film-cam/
 │   └── workflows/
 │       └── build-ios-ipa.yml     # ★ GitHub 免费 Mac 机器上打未签名 .ipa 的流水线
 │
+├── patches/
+│   └── expo-camera+57.0.6.patch  # ★ 给 iOS 原生加 focusPoint（点画面对焦）—— 必须提交进 git
+│
 ├── assets/
 │   ├── icon.png                  # App 图标 1024×1024（由 scripts/generate_app_icon.py 生成）
 │   ├── frames/                   # 相框 PNG（透明镂空）+ 规范文档 —— 共 8 款
@@ -271,10 +278,11 @@ retro-film-cam/
 │   │   ├── dial.png              #   176×176 滚花拨轮（未点亮）
 │   │   ├── dial-on.png           #   176×176 滚花拨轮（琥珀发光）
 │   │   ├── shutter-disc.png      #   240×240 快门内盘（径向渐变 + 内阴影）
-│   │   ├── icon-torch[-on].png   #   168×168 补光图标（灰 / 琥珀）
+│   │   ├── icon-flash[-on].png   #   168×168 闪光灯图标（灰 / 琥珀；原 icon-torch，只改名没重画）
 │   │   ├── icon-flip.png         #   168×168 镜头反转图标
 │   │   ├── icon-film.png         #   168×168 预设（胶片条）图标
 │   │   ├── icon-settings.png     #   168×168 设置（三条滑轨 + 旋钮）图标
+│   │   ├── icon-album.png        #   168×168 App 内相册图标（装了山和太阳的照片）
 │   │   └── README.md             #   ★ 改质感 / 加按钮看这里
 │   └── fonts/                    # 默认空目录（数码管字体可选，见 README）
 │       └── README.md             #   ★ 想用 DSEG7 数码管字体看这里
@@ -307,6 +315,7 @@ retro-film-cam/
     │   ├── presets.ts            # ★ 预设纯数据（对比度/饱和度/色温/时间戳…）
     │   ├── grain.ts              # ★ 颗粒强度 5 档（关 / 轻 / 标准 / 重 / 极重）
     │   ├── zoom.ts               # 变焦量程 / 步长 / 量化 / 百分比换算（纯函数）
+    │   ├── lenses.ts             # ★ 13/26/35 三个焦段档位 + 镜头名分类（毫米 → zoom 的换算都在这）
     │   ├── theme.ts              # 全局墨水色 + 等宽字体（设置界面与取景器共用一套）
     │   ├── textures.ts           # 纹理注册表
     │   └── uiAssets.ts           # ★ 界面质感素材注册表（require 全部 assets/ui/*）
@@ -320,19 +329,24 @@ retro-film-cam/
     │   ├── formatTimestamp.ts    # 日期格式化（YY MM DD / YY-MM-DD…）
     │   ├── locationStamp.ts      # 定位取点 + 坐标格式化 + 地名反查（各自带超时）
     │   ├── settingsStore.ts      # 设置持久化（AsyncStorage；失败只 warn，绝不抛）
+    │   ├── galleryStore.ts       # ★ App 内相册的存储层（串行队列 + 索引 + 缩略图，纯逻辑）
     │   └── describeError.ts      # unknown → 用户可读文案
     ├── hooks/
     │   ├── useFilmStage.ts       # 合成视图的"挂载 → 就绪 → 截图"状态机
     │   ├── useFilmFonts.ts       # 数码管字体加载 + 系统等宽兜底
     │   ├── useSettings.tsx       # SettingsProvider + useSettings()（语言 / 定位）
-    │   └── useLocationStamp.ts   # 定位状态 + 每次快门的 2.5s 死线
+    │   ├── useLocationStamp.ts   # 定位状态 + 每次快门的 2.5s 死线
+    │   ├── usePinchZoom.ts       # ★ 取景器上的双指捏合变焦（capture 阶段抢响应）
+    │   └── useGallery.ts         # ★ App 内相册的 React 层（乐观更新 + 静默对账）
     └── components/
         ├── CameraScreen.tsx      # 主屏（顶栏 / 取景 / 主控 / LCD 四段式布局）
         ├── SettingsScreen.tsx    # 设置面板（5 语言 + 定位三档），全屏覆盖层
-        ├── ZoomRail.tsx          # 取景器右缘那根变焦竖条
+        ├── GalleryScreen.tsx     # ★ App 内相册（三列网格 + 大图 + 删除），同样是全屏覆盖层
+        ├── ZoomBar.tsx           # ★ 快门上方那条横向变焦轨道 + 13/26/35 三个档位
         ├── DialButton.tsx        # 滚花拨轮按钮（44pt，质感来自 PNG，无高亮填充色）
         ├── FilmCompositor.tsx    # 成片合成视图（被 ViewShot 截图的那块）
         ├── FrameOverlay.tsx      # 取景器上的相框预览
+        ├── FocusReticle.tsx      # ★ 点画面对焦时闪一下的对焦框（纯展示，不接手势）
         ├── FrameSwitcher.tsx     # 左右滑动切相框（Animated + PanResponder + 震动）
         ├── ShutterButton.tsx     # 快门（三层同心圆 + 物理按压感）
         ├── DevelopOverlay.tsx    # "显影中/完成/失败"面板 + 成片预览
@@ -558,7 +572,8 @@ console.log(photo.warnings); // 没有原图时的降级提示也会出现在这
 6. **Expo Go 的固有约束**：不能用 config plugin 嵌字体（用运行时 `useFonts`）；`expo-camera` 的
    `ratio` 属性仅 Android 有效、`active` 仅 iOS 有效；不能加任何需要自定义原生代码的库。
 7. **占位素材是程序化生成的**，能用但不够好看。真机感来自相框美术（`assets/frames/README.md` 教你换）。
-8. **未做**：闪光灯自动策略、连拍、多张选片、EXIF 保留、iPad 布局适配、i18n。
+8. **未做**：闪光灯自动策略（现在只有手动开/关，没有 auto）、连拍、多张选片、EXIF 保留、
+   iPad 布局适配。（i18n、设置页、App 内相册原先列在这一条里，后来都做了 —— 见下面 §18–§21。）
 9. `asset/fonts/` 默认空目录 —— 不装自定义字体时日期用系统等宽字体（`Menlo` / `monospace`）。
 
 ## 12. 故障排查
@@ -660,8 +675,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\fetch_ipa.ps1
    颜色/格式/字距都已经是 preset 字段，不用改渲染代码。
 4. **相框素材**：`assets/frames/README.md` 里的规范接得住任意 PNG —— 磨砂纸边、漏光边、
    手写日期标签、品牌 logo 都能做，改的只是美术资源。
-5. **多屏 / 相册页 / 设置页**：现在是单屏（`App.tsx` 直接渲染 `CameraScreen`），
-   要加导航就装 `@react-navigation/native` + `native-stack`（都在 Expo Go 支持范围内）。
+5. **多屏 / 相册页 / 设置页**：现在是单屏（`App.tsx` 直接渲染 `CameraScreen`），相册和设置
+   都是**绝对定位的覆盖层**而不是路由页（`GalleryScreen.tsx` / `SettingsScreen.tsx`）——
+   两条路各自只有一个入口，引一套导航框架不划算。真要加第三个、第四个真正的屏，
+   再装 `@react-navigation/native` + `native-stack`（都在 Expo Go 支持范围内）。
 6. **Android 专属滤镜**：Android 上 RN 的 `filter` 支持 `saturate` / `sepia` / `contrast` 等，
    想在 Android 上更进一步可以按 `Platform.OS` 分支（当前为了一致性故意没做）。
 7. **设备能力**：`expo-haptics` 已经用上了（切相框的轻震），还可以加"显影完成"的成功震感
@@ -774,16 +791,20 @@ SideStore 的无线续签靠 [LocalDevVPN](https://apps.apple.com/app/localdevvp
 
 ```
 ┌───────────────────────────────────────┐
-│ ① topPanel   真实布局行（不是浮层）      │  ← 竖线 + "白边印刷 · 2/3 · RETRO 400" ｜ 两枚拨轮
+│ ① topPanel   真实布局行（不是浮层）      │  ← 竖线 + "白边印刷 · 2/3 · RETRO 400" ｜ 四枚拨轮
 ├───────────────────────────────────────┤
 │                                       │
-│ ② preview    flex:1, overflow:hidden  │  ← CameraView 实时原始画面
-│              └ FrameSwitcher          │     相框 PNG + 三分线 + 四角对焦框 + 准星
+│ ② preview    flex:1, overflow:hidden  │  ← CameraView 实时原始画面（双指捏合变焦）
+│              └ FrameSwitcher          │     相框 PNG + 三分线 + 点按对焦层 + 对焦框
 │                                       │
 ├───────────────────────────────────────┤
-│ ③ dashboard  拨轮+预设卡片 ｜ 快门 ｜ ‹ › │
+│ ③ zoomBar    变焦 ｜ 13 26 35 ｜ ▬▬▬ 41% │
 ├───────────────────────────────────────┤
-│ ④ lcdWrap    琥珀等宽状态条             │  ← 日期锚点 / 颗粒 / 暗角 / 漏光
+│ ④ dashboard  拨轮+预设卡片 ｜ 快门 ｜ ‹ › │
+├───────────────────────────────────────┤
+│ ⑤ grainBar   颗粒强度五档                │
+├───────────────────────────────────────┤
+│ ⑥ lcdWrap    琥珀等宽状态条             │  ← 日期锚点 / 颗粒 / 暗角 / 漏光
 └───────────────────────────────────────┘
 ```
 
@@ -796,7 +817,7 @@ RN 在 iOS 上没有径向渐变、没有内阴影、没有滚花纹理，而 `f
 要做出"实体相机"的观感只有两条路：引 `react-native-linear-gradient` / `react-native-svg`
 （**会引入原生依赖，Expo Go 直接跑不了**），或者用 Pillow 预渲染成 PNG。
 
-选了后者：`scripts/generate_ui_assets.py` 生成 `assets/ui/` 下的 8 张图，
+选了后者：`scripts/generate_ui_assets.py` 生成 `assets/ui/` 下的 10 张图，
 `src/constants/uiAssets.ts` 统一 `require`，`DialButton` 负责摆放。
 **改质感只要改 Python 再跑一次，JS 一行都不用动。**
 
@@ -804,7 +825,7 @@ RN 在 iOS 上没有径向渐变、没有内阴影、没有滚花纹理，而 `f
 | --- | --- |
 | 机身底纹 | `leather-tile.png` 320×320 无缝平铺 + `opacity: 0.95`。振幅 ±2.5/255，远看是 #171716 纯色 |
 | 拨轮按钮 | `dial.png` / `dial-on.png` 作底 + 细线图标叠在上面（`size * 0.48`）。**没有任何高亮填充色**，点亮只靠图里的琥珀内发光 |
-| 顶栏刻字 | 两枚拨轮底下各有一行 8pt 的"补光" / "翻转"（`INK.paperFaint`，几乎看不见但凑近能读） |
+| 顶栏刻字 | 四枚拨轮底下各有一行 8pt 的"闪光灯" / "翻转" / "设置" / "相册"（`INK.paperFaint`，几乎看不见但凑近能读） |
 | 快门 | 三层同心圆：外圈 hairline `rgba(236,232,224,0.38)`、中圈 2pt `rgba(244,240,232,0.88)`、内盘 `shutter-disc.png` |
 | 预设卡片 | 暗橙边框（`rgba(194,122,48,0.55)`）+ 7.5% 琥珀底色，像一张纸质标签 |
 | LCD 状态条 | `rgba(210,139,42,0.20)` 细框，两行 `#D28B2A` 等宽字（`UI_MONO`），字距 1.1 |
@@ -813,7 +834,7 @@ RN 在 iOS 上没有径向渐变、没有内阴影、没有滚花纹理，而 `f
 而 DSEG7 **没有中文字形**，LCD 那一行是中英混排的，会变成一堆方框。
 系统等宽字体（iOS `Menlo` / Android `monospace`）能自动回退到中文，才是这里要的。
 
-### 顶栏那两枚拨轮：为什么图标底下还有字
+### 顶栏那几枚拨轮：为什么图标底下还有字
 
 图标在盘面上只占 **21pt**（`44 × 0.48`），这个尺寸下再精致的图形也认不出功能 ——
 最初"镜头反转"用的是"中心镜头圆 + 两段循环箭头"，缩到 21pt 后读起来像**刷新按钮**，
@@ -821,7 +842,7 @@ RN 在 iOS 上没有径向渐变、没有内阴影、没有滚花纹理，而 `f
 
 1. **图标减负**：去掉内圈镜头圆，弧线从 9px 加粗到 12px、箭头放大到 26px，
    只留"两段带箭头的循环弧"这一个轮廓（见 `scripts/generate_ui_assets.py` 的 `make_icon_flip`）。
-2. **加蚀刻小字**：拨轮底下补一行 8pt 的"补光"/"翻转"。真机身上这类按钮也都有刻字，
+2. **加蚀刻小字**：拨轮底下补一行 8pt 的"闪光灯"/"翻转"（后来"设置""相册"也照这个规矩加）。真机身上这类按钮也都有刻字，
    放进这个界面并不违和 —— 颜色用 `INK.paperFaint`（alpha 0.20），远看几乎不存在，需要时又找得到。
 
 不想保留刻字的话，删掉 `CameraScreen.tsx` 里那两处 `<Text style={styles.topActionLabel}>`
@@ -987,7 +1008,10 @@ node_modules/expo-camera/ios/Current/CameraSessionManager.swift:221
 16 倍机型上就是 16 倍 —— 而本 App 拍完还要把长边缩到 2048px（见 16.3），
 拉满的成片全是糊的。**宁可少给，也不给一个"看起来能拉、拉完不能用"的档位。**
 
-### 17.3 为什么轨道是竖的、贴在取景器右缘
+### 17.3 为什么当初把轨道做成竖的、贴在取景器右缘
+
+> ⚠️ **本节讲的是已废弃的做法。** 竖条后来被挪到了快门上方（横向），原因见 **第 18 节**。
+> 下面这段保留下来，是因为其中"两个手势怎么不打架"的机制仍然成立，也是 18.3 的前提。
 
 取景器上已经有一个**横向** PanResponder：`FrameSwitcher`（左右滑动换相框）。
 竖直方向是空的 —— 用竖条是刻意的（真实变焦环就是转，不是推）。
@@ -999,8 +1023,9 @@ node_modules/expo-camera/ios/Current/CameraSessionManager.swift:221
   `nativeEvent.locationY` 才是相对轨道的坐标（否则会相对被点到的那个子节点）。
 - 外层是 `pointerEvents="box-none"` 的绝对定位容器，轨道以外的区域触摸照常穿透给取景器。
 
-放在取景器上而不是底部控制区，是因为变焦是**边看边调**的动作：
+当初决定放在取景器上而不是底部控制区，是因为变焦是**边看边调**的动作：
 手指离画面只有几毫米，视线不用在"画面"和"滑块"之间来回跳。
+后来放弃这个理由，是因为取景器上又多了双指捏合 —— 三个手势挤一块玻璃的代价更大。
 
 ### 17.4 两个小决定
 
@@ -1016,12 +1041,342 @@ node_modules/expo-camera/ios/Current/CameraSessionManager.swift:221
 | 文件 | 作用 |
 | --- | --- |
 | `src/constants/zoom.ts` | 量程、步长、量化、百分比换算 —— 全是纯函数 |
-| `src/components/ZoomRail.tsx` | 那根竖条 + PanResponder + 无障碍 `adjustable` |
+| `src/components/ZoomBar.tsx` | **现在**是快门上方那条横向轨道 + PanResponder + 无障碍 `adjustable`（见第 18 节） |
 | `src/components/CameraScreen.tsx` | `zoom` state、`<CameraView zoom={zoom}>`、翻转时归零 |
 
-无障碍：轨道是 `accessibilityRole="adjustable"`，
+无障碍：读数那一条是 `accessibilityRole="adjustable"`，
 带 `accessibilityValue={{ min: 0, max: 100, now: percent }}` 和
 `accessibilityActions` 的 increment / decrement（标签用 RN 默认，不额外造词）。
+
+---
+
+## 18. 变焦条挪到快门上方 + 双指捏合 + 13/26/35 三档
+
+需求原话：「把变焦滑块放到快门上方。」
+
+### 18.1 为什么竖条要挪走：取景器上挤不下第三个手势
+
+竖条原本贴在取景器右缘（见 17.3），理由是"变焦是边看边调的动作"。问题是取景器那一块玻璃
+同时还要接**左右滑动换相框**和**双指捏合变焦** —— 三个手势挤在一起，误触率比手感收益大。
+
+挪到快门正上方之后，各回各家：
+
+- **对着画面做的动作留在取景器上**：滑动换相框、双指捏合变焦；
+- **看着读数做的动作留在轨道上**：精确微调；
+- 轨道已经完全不在 `FrameSwitcher` 的覆盖范围内，三者不再抢手势。
+
+**为什么跟着改成横的**：轨道现在是页面流里的一行，横向与它所在那一行同向；而且 13 / 26 / 35
+按数字从小到大从左往右排，滑块从左往右递增，读数和刻度方向一致。竖条那句"越往上越大"在页面流里
+反而会让人下意识去往上推整页。
+
+### 18.2 三种调法，一个真值来源
+
+现在有三种方式改变焦，**它们都走同一个 `handleZoomChange`**：
+
+| 调法 | 在哪 | 适合什么 |
+| --- | --- | --- |
+| 双指捏合 | 取景器上（`usePinchZoom`） | 一边看画面一边粗调 |
+| 拖轨道 | 快门上方那根横向轨道 | 看着百分比精确微调 |
+| 点档位 | 轨道左边的 `13` `26` `35` | "我就是要 35mm"这种明确意图 |
+
+`handleZoomChange` 里除了写 `zoom`，还会**把档位灯灭掉**（`setActiveStopId(null)`）：
+手动调出来的读数已经不在任何一档上了，灯还亮着就会出现「亮着 35mm、读数却是 12%」这种
+自相矛盾的显示。
+
+### 18.3 双指捏合：为什么是"起始值 + log2 增量"
+
+`usePinchZoom` 里核心就是一行：
+
+```
+const next = start.zoom + Math.log2(distance / start.distance) * PINCH_PER_OCTAVE;
+```
+
+`PINCH_PER_OCTAVE = 0.5`（两指间距翻倍时，`zoom` 加 0.5；量程 0~0.75 大概是 1.5 个八度）。
+
+**绝对不能写成乘法**（`start.zoom * k`）：`zoom` 的起始值是 **0**，0 乘任何数还是 0，
+永远捏不动。而加法之所以对，是因为 `zoom` 本身已经是指数刻度
+（原生 `videoZoomFactor = M ^ zoom`），手指间距翻倍 = `zoom` 加一个固定的量。
+
+**手势怎么抢到的**：`onStartShouldSetPanResponderCapture` / `onMoveShouldSetPanResponderCapture`
+里判 `touches.length === 2`，走**捕获阶段**（父 → 子）。能这么干的前提是 `FrameSwitcher` 的
+`onStartShouldSetPanResponder` **恒为 `false`**（它只在移动时接管）—— 所以第二根手指落下时，
+祖先还来得及先抢。唯一的漏网场景是"先横向滑了一段、再放第二根手指"：那时 `FrameSwitcher`
+已经拿到响应权，而且它的 `onPanResponderTerminationRequest` 恒为 `false`，抢不回来。
+这是可接受的边界 —— **想捏合就两根手指一起放下去**。
+
+视觉反馈由 `ZoomBar` 负责（读数 + 滑块位置），捏合本身只改数字，不画任何东西。
+
+### 18.4 13 / 26 / 35：三档是怎么落到原生上的
+
+档位定义在 `src/constants/lenses.ts` 的 `FOCAL_STOPS`：
+
+| 档位 | 做法 | `factor` | `zoom` |
+| --- | --- | --- | --- |
+| `13mm 超广角` | 切到超广角镜头 | 1 | 0 |
+| `26mm 标准` | 切到主摄 | 1 | 0 |
+| `35mm 人文` | 主摄 × 1.346 | 1.3461538461538463 | 0.10721 |
+
+**26mm 那一档是切镜头，不是数码放大。** 想从超广角"放大 2 倍"凑到 26mm 走不通：
+超广角格式的 `videoMaxZoomFactor` 通常只有 2 上下，正好卡在边界；而且数码放大比直接切到主摄
+糊得多。切镜头让主摄用满整个传感器，是这里唯一正确的做法。
+
+**原生只认"数码倍率"**：`CameraView` 的 `zoom` prop 实际换算成
+`videoZoomFactor = 主摄最大倍率 ^ zoom`（见 17.1 那段源码），所以反过来
+`zoom = ln(目标倍率) / ln(最大倍率)`。问题在于**那个"最大倍率"JS 读不到**
+（`activeFormat.videoMaxZoomFactor` 只有原生侧有），代码里只能按 **16** 假定：
+`ASSUMED_MAX_ZOOM_FACTOR = 16`。
+
+**这个假定猜错了影响很小** —— 因为它被对数压扁了。同样一条 35mm 档，真正最大倍率不同时：
+
+| 真实最大倍率 | 35mm 档该用的 `zoom` |
+| --- | --- |
+| 8 倍 | 0.14295 |
+| **16 倍（代码里的假定）** | **0.10721** |
+| 24 倍 | 0.09353 |
+| 32 倍 | 0.08577 |
+
+8 倍到 32 倍差 4 倍，落在 `zoom` 上只差 0.057 —— 而且 **13mm / 26mm 两档完全不依赖这个数**
+（factor = 1 → `ln(1) = 0` → zoom 恒为 0，假定错到天上去也不影响）。
+
+35mm 档准度的真正命门是另一个假定：**主摄原生就是 26mm**。
+iPhone 主摄在各代之间 24 / 26 / 28mm 都出现过，JS 没有接口能读，只能假定。
+假定 26 而真机是 24 的话，这一档实际拍出来是 `24 × 1.3462 ≈ 32.3mm`，差约 8% 视角。
+（`ASSUMED_LENS_NATIVE_MM` 那个表就是本模块最大的一处"谎"，改它的后果写在文件头注释里。）
+
+### 18.5 镜头名字是一锅粥，只能按名字分类
+
+`getAvailableLenses()` 返回的是**本地化名字列表**，而且原生侧还按名字排过序
+（`CameraSessionManager.swift`：`.sorted { $0 < $1 }`）。三个必须记住的后果：
+
+1. 名字跟着系统语言走 —— 中文「后置超广角镜头」、英文「Back Ultra Wide Camera」、
+   法语「Caméra arrière ultra grand-angle」都出现过，只能靠关键词匹配；
+2. **`lenses[0]` 没有任何物理含义**，不能"拿第一个当主摄"；
+3. **列表里混着物理镜头和虚拟多摄设备**（TripleCamera / DualCamera），
+   **长度不等于镜头数**。
+
+所以 `classifyLens()` 的匹配顺序是 `multi → ultraWide → telephoto → wide`，
+两个非直觉的地方：`multi` 必须排第一（虚拟设备的 localizedName 里同样带焦距词，
+比如「后置双广角相机」含「广角」，不先拦下来就会被 wide 抢走）；`ultraWide` 必须排在
+wide 前面（「超广角」这三个字里**就包含「广角」**，让 wide 先跑则超广角永远被判成广角）。
+拿不准一律返回 `unknown`，`findLensByRole` 找不到就返回 `null` —— **不猜**。
+
+> ⚠️ 这张关键词表**没有实机验证过**，只做了保守的双向匹配。已知两种可能误判：
+> 繁体中文下 Apple 在部分机型把主摄叫「後置相機」（不带焦距词）→ 落到 `unknown`；
+> 法语「grand-angle」是宽角度通用说法，理论上有被误匹配的可能（靠 `multi` 优先级兜住大部分）。
+
+### 18.6 档位按钮什么时候变灰
+
+只有两种情况会变灰：
+
+- **镜头列表还没回来**（`lenses.length === 0`）：这时**刻意不画灰** —— 不然刚进相机那三个档
+  全是灰的，看着像坏了。此时点下去会退化成"只设 zoom、不切镜头"，行为仍然是对的。
+- **这台设备 / 这个朝向确实没有那支镜头**：前摄没有超广角，所以**前摄下 13mm 档是灰的** ——
+  这是对的，不是 bug。
+
+### 18.7 相关文件
+
+| 文件 | 作用 |
+| --- | --- |
+| `src/components/ZoomBar.tsx` | 横向轨道 + 三个档位按钮 + 百分比读数 + PanResponder |
+| `src/hooks/usePinchZoom.ts` | 双指捏合（capture 阶段抢响应 + log2 增量） |
+| `src/constants/lenses.ts` | 三档定义、镜头分类、毫米 → `zoom` 的换算与那两处假定 |
+| `src/constants/zoom.ts` | 量程 `ZOOM_MAX = 0.75`、步长、量化、百分比换算（纯函数，没变） |
+| `src/components/CameraScreen.tsx` | `handleZoomChange` / `handleStopPress` / `zoomStops`，以及三者的接线 |
+
+无障碍：读数那一条是 `accessibilityRole="adjustable"`，带
+`accessibilityValue={{ min: 0, max: 100, now: percent }}` 和 increment / decrement 两个动作；
+三个档位按钮是 `accessibilityRole="button"` + `accessibilityState={{ selected, disabled }}`。
+
+> **§17.3 已经被本节取代**（那根竖条没了）。17.1 / 17.2 / 17.4 讲的底层机制仍然成立。
+
+---
+
+## 19. 点画面对焦：给 expo-camera 打了一个原生补丁
+
+需求原话：「点画面对焦。」
+
+### 19.1 先说清楚：这是相机库的能力缺口，不是本项目的 bug
+
+`expo-camera` 57.0.6 **完全没有"点画面对焦"这个 API**。翻它的 iOS 源码：
+只有一个 `autoFocus` prop（映射到 `AVCaptureDevice.FocusMode`），而
+`focusPointOfInterest` 在整个库的源码里**零命中**。也就是说，光靠 JS 侧无论怎么调都做不出来。
+
+### 19.2 补丁做了什么
+
+`patches/expo-camera+57.0.6.patch` —— **纯新增，`+175 / -0`**，只改 3 个 Swift 文件：
+
+| 文件 | 加了什么 |
+| --- | --- |
+| `ios/CameraViewModule.swift` | 注册一个 `focusPoint` prop，转发给下面的 `CameraView` |
+| `ios/Current/CameraView.swift` | `var focusPoint: CGPoint? { didSet { ... } }` —— 和库原有的 `var zoom` 是同一个写法 |
+| `ios/Current/CameraSessionManager.swift` | `setFocusPoint()`：设 `focusPointOfInterest` + `.autoFocus`（**曝光也一起设**），并排一个 4 秒后的复位 |
+
+**JS 侧一行都没改库**：`node_modules/expo-camera/build/utils/props.js` 里的
+`convertNativeProps()` 是 `Object.entries(props)` **全量透传**，只对 `type` / `flash` 两张表
+做转换，不做白名单过滤。所以运行期直接传就行，**只有 TS 类型上缺一块** ——
+代码里用一次交叉类型（`type FocusPointProp = { focusPoint?: { x: number; y: number } }`）
+补上，全项目仅此一处。
+
+### 19.3 坐标系不在 JS 里算（这条最重要）
+
+`focusPointOfInterest` 是**设备坐标系**：竖屏要旋转、前摄要镜像，还要补偿预览
+`resizeAspectFill` 的裁切。手写 x/y 交换迟早会在某一个朝向上指错地方 ——
+而对焦点错了是**无声的**：照片照样能拍，只是焦点落在别处，用户根本不会知道是坐标算错了。
+
+所以做法是把 **0~1 的视图坐标直接交给原生**：
+
+```
+AVCaptureVideoPreviewLayer.captureDevicePointConverted(fromLayerPoint:)
+```
+
+`CameraView` 自己的 `layerClass` 就是 `AVCaptureVideoPreviewLayer`，这个转换函数替我们把
+旋转、镜像、裁切一起处理掉了。JS 这侧只做一件事：`locationX / 取景器宽`、`locationY / 取景器高`
+（那一层透明接收层和 `CameraView` 完全重合，所以这个除法就是它要的归一化坐标）。
+
+### 19.4 补丁是命令式的：代价是必须传 memo 化的对象
+
+原生那个 prop **刻意不做"值没变就不转发"的短路** —— 这样同一个点连点两次也能重新对焦。
+代价落在 JS 侧：
+
+```tsx
+const cameraFocusProps = useMemo<CameraViewProps & FocusPointProp>(
+  () => (focusTarget === null ? {} : { focusPoint: { x: focusTarget.x, y: focusTarget.y } }),
+  [focusTarget],
+);
+```
+
+**写成内联字面量的话，每一次 re-render 都会变成一次对焦** —— 比如手指在变焦条上拖一下。
+另外没有手动对焦点时返回的是**空对象**，不是 `{ focusPoint: undefined }`：`convertNativeProps`
+用的是 `Object.entries`，值为 `undefined` 的键也会被算进去。
+
+### 19.5 两个"别骗用户"的决定
+
+- **点下去 4 秒后镜头自动交回连续自动对焦**（`manualFocusResetDelay`）。一直锁在点上，
+  后面拍的所有东西都会是虚的，而用户不会意识到是自己 4 秒前点了一下。
+- **对焦框闪一下就淡出**（张开 130ms → 停 820ms → 淡出 340ms），不留着。
+  一个永远亮着的框会让人以为"还锁着"，反而误导。
+
+### 19.6 怎么触发的
+
+**点取景器上任意一点**。那一层是透明的、铺满整个取景器（`focusCatcher`），
+而且特意放在"换相框"那层**里面**：单击不会被抢走（`FrameSwitcher` 只在移动时接管），
+横向滑动照样能换相框。
+
+### 19.7 ⚠️ 诚实说明：这个补丁没有编译验证过
+
+Windows 上装不了 Swift / Xcode 工具链，所以**补丁本身从未在本机编译过**，
+首次真正的编译发生在 GitHub Actions 的 `xcodebuild`（见第 14 节）。
+
+它**只在 JS 传了 `focusPoint` 时才有行为**，不传就完全等同原版。也就是说，
+它最坏的情况是"点了没反应"，**不会让相机本身坏掉**。
+
+落地方式是 `patch-package`：`package.json` 里有 `"postinstall": "patch-package"`，
+CI 的 `npm ci` 会自动套用。**注意 `patches/` 目录必须提交进 git** —— 漏了它，
+CI 装出来的就是原版 expo-camera，点了没反应。
+
+### 19.8 相关文件
+
+| 文件 | 作用 |
+| --- | --- |
+| `patches/expo-camera+57.0.6.patch` | 唯一的原生改动（纯新增 175 行，3 个 Swift 文件） |
+| `src/components/CameraScreen.tsx` | `focusTarget` state、`cameraFocusProps`、`handleTapFocus`、那层透明 `Pressable` |
+| `src/components/FocusReticle.tsx` | 对焦框（纯展示，`pointerEvents="none"`，不参与任何手势） |
+
+---
+
+## 20. App 内相册：沙盒里的第二份拷贝
+
+需求原话：「创造一个 APP 内相册，不用每次都去系统相册查看。」
+
+### 20.1 它是第二份拷贝，不是系统相册的镜像
+
+照片**仍然照常存系统相册**，另外**再存一份到 App 自己的目录**。两个理由：
+
+- **给别人看照片时**，不用在系统相册几千张里翻；
+- **别人拿到你手机翻相册时**，不会在系统相册里就看到你 App 拍的全部片子。
+
+删 App 内相册里的照片**不会**删掉系统相册里的原片 —— 它是拷贝，不是链接。
+
+入口是顶部操作栏的**第 4 枚拨轮**（补光 / 翻转 / 设置 / 相册）。拍完自动进相册：
+`handleShutter` 里存完系统相册之后调一次 `addShot()`，而且**故意不 `await`** ——
+成片此刻已经落盘了，这一步只是拷一份到沙盒，慢几百毫秒不该让"冲洗完成"多等。
+
+### 20.2 存哪儿、存多大
+
+| 项目 | 值 | 为什么 |
+| --- | --- | --- |
+| 目录 | `Paths.document` 下的 `gallery/` | **刻意不用 cache** —— 系统清缓存不能把用户的照片清掉。代价是会进 iCloud 备份 |
+| 索引 | AsyncStorage，键 `fretrocam.gallery.v1` | 改这个键 = 老用户的相册凭空消失，非必要不动 |
+| 成片 | 长边 **2048** / JPEG 质量 **0.92** | 和预设里 `captureLongEdge` 的默认值一致，看不出二次压缩 |
+| 缩略图 | 长边 **400** / 质量 **0.72** | 网格一屏二三十格，铺成片每张约 12 MB 位图，会把内存吃穿 |
+
+网格里挂的**只是缩略图**；成片只在"点开看大图"那一步用，而且永远只有一张同时存在。
+
+### 20.3 每次打开都重新读一次索引
+
+**为什么不是"空了才刷"**：拍照那一侧是直接调 `galleryStore.addShot()` 写盘的，
+**不走 `useGallery()` 这个 hook**（`CameraScreen` 用 `useGallery()` 会平白多一个跟取景毫无关系的
+re-render 源）。所以 hook 的 state 并不知道刚拍了一张 —— 只要列表非空，
+"空了才刷"就会让**最新那张永远差一次刷新才出现**，而那恰恰是用户要避免的事。
+
+删除有二次确认（`Alert`），确认后**先落索引、再删文件**：反过来会留下一条指向不存在文件的
+幽灵记录（网格里一块裂图）；现在最坏只是一个孤儿文件，清空相册时会被顺手扫掉。
+
+### 20.4 ⚠️ 踩坑记录：`expo-file-system` 57 的旧 API 是"运行时抛错"，不是"过时警告"
+
+`expo-file-system@57.0.7` 的 `package.json` 里 `exports` 只有两个入口
+（`"."` 新 API / `"./legacy"` 旧 API），而主入口为了"看起来兼容"**又导出了一组同名旧函数** ——
+`build/legacyWarnings.d.ts` 里 `copyAsync` / `documentDirectory` / `getInfoAsync` 每一行都写着
+`This method will throw in runtime.`。所以在 57 上从主入口调 `copyAsync` **不是警告，是直接抛错**。
+必须全程走新 API：`Paths.document` / `new File()` / `new Directory()`。
+
+第二个陷阱：`exists` / `size` / `delete()` / `copy()` / `list()` 这些**实例方法不在 `File.d.ts` 里**，
+它们写在原生基类的类型定义上 —— 只看 `File.d.ts` 会以为这些方法根本不存在。
+
+`expo-image-manipulator` 57 同理：`manipulateAsync` 已废弃，要走
+`manipulate(uri)` → `context.resize({...})` → `renderAsync()` → `saveAsync({...})` 这条新链。
+**`resize` 只能给一个维度** —— 给两个维度会**拉伸变形**。
+
+### 20.5 相关文件
+
+| 文件 | 作用 |
+| --- | --- |
+| `src/utils/galleryStore.ts` | 存储层：串行队列、索引校验、成片 + 缩略图落盘、删除 / 清空 / 占用统计 |
+| `src/hooks/useGallery.ts` | React 层：乐观更新 + 静默对账，把"失败"翻译成 `error` 诊断文案 |
+| `src/components/GalleryScreen.tsx` | 三列缩略图网格 + 点开看大图 + 删除二次确认（绝对定位覆盖层，不引 react-navigation） |
+| `src/components/CameraScreen.tsx` | 顶栏第 4 枚拨轮、`galleryVisible`、拍完那次 `addShot()` |
+
+---
+
+## 21. 补光改成闪光灯：一次改名、零行改图
+
+需求原话：「补光模式改为闪光灯闪烁，不要一直亮着手电筒。」
+
+以前是 `enableTorch`（**长亮的手电筒**），现在是拍照瞬间闪一下的闪光灯：
+
+```tsx
+flash={flashOn && facing === 'back' ? 'on' : 'off'}
+```
+
+### 21.1 前置摄像头下这个按钮是禁用的
+
+iOS 的 `AVCapturePhotoOutput` 在**前置上没有闪光灯档位**（Retina Flash 是系统相机自己做的，
+第三方拿不到）。原生侧有 guard 不会崩，但**按钮亮着却什么都不发生**比直接禁用更糟 ——
+所以 `disabled={facing === 'front'}`，而且翻转摄像头时会顺手强制关掉
+（`handleFlipCamera` 里的 `setFlashOn(false)`）。
+
+### 21.2 一个诚实的细节：图标一直是闪电
+
+那个图标**从它叫 `icon-torch` 的时候起，画的一直就是闪电**。所以这次只是把文件
+从 `icon-torch.png` 改名成 `icon-flash.png`（`assets/ui/icon-flash.png` / `icon-flash-on.png`），
+**重画前后字节完全一致** —— 没有一行图形代码变过。
+
+| 元素 | 实现 |
+| --- | --- |
+| 图标 | `assets/ui/icon-flash.png`（灰）/ `icon-flash-on.png`（琥珀），注册在 `src/constants/uiAssets.ts` 的 `iconFlash` / `iconFlashOn` |
+| 状态 | `flashOn` + `flash` prop（见上）；**不再有** `enableTorch` |
+| 刻字 | 拨轮底下那行小字从「补光」改成「闪光灯」 |
+| 无障碍 | 标签写的是**动作**：「打开闪光灯」/「关闭闪光灯」 |
 
 ---
 

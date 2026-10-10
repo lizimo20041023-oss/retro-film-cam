@@ -157,7 +157,7 @@ def draw_top_panel(img: Image.Image) -> None:
     flip_cx = W - 14 - DIAL / 2
     torch_cx = flip_cx - DIAL - 6
     for cx, icon, label in (
-        (torch_cx, "icon-torch.png", "补光"),
+        (torch_cx, "icon-flash.png", "闪光灯"),
         (flip_cx, "icon-flip.png", "翻转"),
     ):
         _dial(img, cx, dial_cy, active=False, icon=icon)

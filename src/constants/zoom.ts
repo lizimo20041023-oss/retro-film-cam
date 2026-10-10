@@ -21,9 +21,13 @@
  * ## 为什么量程上限只到 0.75
  *
  * `zoom = 1` 的含义是「设备允许的最大数码变焦」。iPhone 后置广角这个值普遍在
- * 16 倍上下（部分机型更高），而本项目拍完还要把长边缩到 2048px ——
+ * 十几倍（部分机型更高），而本项目拍完还要把长边缩到 2048px ——
  * 拉满就是一坨糊掉的颜色，没有任何可用画面。
- * 0.75 在 16 倍的机型上大约是 8 倍，已经够用。宁可少给一段，不要给一段全是噪点的行程。
+ *
+ * 具体数字只能靠假定：JS 读不到 `videoMaxZoomFactor`（见下节），`src/constants/lenses.ts`
+ * 里按 **16** 算（`ASSUMED_MAX_ZOOM_FACTOR`）。按 16 算，0.75 大约是 8 倍，已经够用；
+ * 就算真机是 8 倍或 32 倍，因为这个刻度和倍率之间是**对数**关系，差别也只有一档左右。
+ * 宁可少给一段，不要给一段全是噪点的行程。
  *
  * ## 为什么显示的是百分比，而不是「×N 倍」
  *
@@ -71,7 +75,7 @@ export function zoomPercent(value: number): number {
   return Math.round((clampZoom(value) / ZOOM_MAX) * 100);
 }
 
-/** 刻度的归一化位置（0~1，不含两端），从下往上。 */
+/** 刻度的归一化位置（0~1，不含两端），从左往右。 */
 export function zoomTickRatios(): number[] {
   return Array.from({ length: ZOOM_TICKS }, (_, index) => (index + 1) / (ZOOM_TICKS + 1));
 }

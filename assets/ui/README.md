@@ -28,10 +28,12 @@ React Native 在 iOS 上**没有径向渐变**（`experimental_background*` 是 
 | `dial.png` | 176×176 | 顶部/底部拨轮按钮 | 48 齿滚花 + 顶缘高光 + 盘心柔光。渲染成 44pt |
 | `dial-on.png` | 176×176 | 同上（点亮态） | 顶缘改成琥珀色弧 + 盘心琥珀内发光。用于"补光已开" |
 | `shutter-disc.png` | 240×240 | 快门键内盘 | 奶油色 + 左上偏移的径向渐变 + 底缘内阴影，模拟物理按键 |
-| `icon-torch.png` | 168×168 | 补光拨轮的图标 | 只描边的细线闪电（`ICON_IDLE = (196,192,184)`） |
-| `icon-torch-on.png` | 168×168 | 同上（点亮态） | 琥珀色描边 |
+| `icon-flash.png` | 168×168 | 闪光灯拨轮的图标 | 只描边的细线闪电（`ICON_IDLE = (196,192,184)`）。**原来叫 `icon-torch.png`** —— 那个图形从它叫 torch 起画的一直就是闪电，所以只是改名，重画前后字节完全一致 |
+| `icon-flash-on.png` | 168×168 | 同上（点亮态） | 琥珀色描边 |
 | `icon-flip.png` | 168×168 | 镜头反转拨轮 | 中心镜头圆 + 两段循环箭头 |
 | `icon-film.png` | 168×168 | 预设拨轮 | 细线胶片条 + 两侧齿孔 |
+| `icon-settings.png` | 168×168 | 设置拨轮 | 三档推子（三条横线 + 三个滑块） |
+| `icon-album.png` | 168×168 | App 内相册拨轮 | 圆角矩形相框 + 实心太阳 + 实心山 |
 
 `_mock-camera-screen.png` 是 `scripts/preview_ui_mock.py` 吐出来的**排版示意图**，
 只在本地看比例用，已被 `.gitignore` 忽略。

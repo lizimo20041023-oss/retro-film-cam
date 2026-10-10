@@ -10,9 +10,9 @@ export const zhHant: Messages = {
   'common.unknownError': '未知錯誤',
 
   /* ---------------- ① 頂部操作列 ---------------- */
-  'camera.torch.on': '關閉補光',
-  'camera.torch.off': '打開補光',
-  'camera.torch.label': '補光',
+  'camera.flash.on': '關閉閃光燈',
+  'camera.flash.off': '打開閃光燈',
+  'camera.flash.label': '閃光燈',
   'camera.flip.a11y': '切換前後鏡頭',
   'camera.flip.label': '翻轉',
   'camera.settings.a11y': '打開設定',
@@ -42,8 +42,21 @@ export const zhHant: Messages = {
   'frame.archiveCard': '檔案卡',
 
   /* ---------------- ② 取景器右緣的變焦軌道 ---------------- */
-  'zoom.a11y': '變焦 {percent}%，上下拖動調整',
+  'zoom.a11y': '變焦 {percent}%，左右拖動調整',
   'zoom.label': '變焦',
+  'zoom.role.ultraWide': '超廣角',
+  'zoom.role.wide': '標準',
+  'zoom.stop.a11y': '切換到 {label}',
+  'camera.gallery.a11y': '打開 App 相簿',
+  'camera.gallery.label': '相簿',
+  'gallery.title': '相簿',
+  'gallery.close': '完成',
+  'gallery.empty': '還沒有照片',
+  'gallery.emptyHint': '拍一張就會出現在這裡，不用再去系統相簿找。',
+  'gallery.photo': '第 {index} 張，{date}',
+  'gallery.delete': '刪除這張',
+  'gallery.cancel': '取消',
+  'camera.focus.a11y': '點擊畫面手動對焦',
 
   /* ---------------- ③.5 顆粒強度 ---------------- */
   'grain.a11y': '顆粒強度 {label}',

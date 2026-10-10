@@ -10,9 +10,9 @@ export const ja: Messages = {
   'common.unknownError': '不明なエラー',
 
   /* ---------------- ① 上部バー ---------------- */
-  'camera.torch.on': 'ライトを消す',
-  'camera.torch.off': 'ライトを点ける',
-  'camera.torch.label': 'ライト',
+  'camera.flash.on': 'フラッシュを切る',
+  'camera.flash.off': 'フラッシュを点ける',
+  'camera.flash.label': 'フラッシュ',
   'camera.flip.a11y': 'カメラを切り替え',
   'camera.flip.label': '反転',
   'camera.settings.a11y': '設定を開く',
@@ -43,8 +43,21 @@ export const ja: Messages = {
   'frame.archiveCard': '台帳',
 
   /* ---------------- ② ファインダー右端のズームレール ---------------- */
-  'zoom.a11y': 'ズーム {percent}%、上下にドラッグして調整',
+  'zoom.a11y': 'ズーム {percent}%、左右にドラッグして調整',
   'zoom.label': 'ズーム',
+  'zoom.role.ultraWide': '超広角',
+  'zoom.role.wide': '標準',
+  'zoom.stop.a11y': '{label} に切り替え',
+  'camera.gallery.a11y': 'アプリ内アルバムを開く',
+  'camera.gallery.label': 'アルバム',
+  'gallery.title': 'アルバム',
+  'gallery.close': '完了',
+  'gallery.empty': 'まだ写真がありません',
+  'gallery.emptyHint': '撮影するとここに並びます。写真アプリを開く必要はありません。',
+  'gallery.photo': '{index} 枚目、{date}',
+  'gallery.delete': 'この写真を削除',
+  'gallery.cancel': 'キャンセル',
+  'camera.focus.a11y': '画面をタップしてピントを合わせる',
 
   /* ---------------- ③.5 粒子の強さ ---------------- */
   'grain.a11y': '粒子の強さ {label}',

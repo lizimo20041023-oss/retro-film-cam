@@ -19,9 +19,9 @@ export const zhHans = {
   'common.unknownError': '未知错误',
 
   /* ---------------- ① 顶部操作栏（拨轮底下的蚀刻小字） ---------------- */
-  'camera.torch.on': '关闭补光',
-  'camera.torch.off': '打开补光',
-  'camera.torch.label': '补光',
+  'camera.flash.on': '关闭闪光灯',
+  'camera.flash.off': '打开闪光灯',
+  'camera.flash.label': '闪光灯',
   'camera.flip.a11y': '切换前后摄像头',
   'camera.flip.label': '翻转',
   'camera.settings.a11y': '打开设置',
@@ -52,9 +52,22 @@ export const zhHans = {
   'frame.cropMarks': '打样张',
   'frame.archiveCard': '档案卡',
 
-  /* ---------------- ② 取景器右缘的变焦轨道 ---------------- */
-  'zoom.a11y': '变焦 {percent}%，上下拖动调整',
+  /* ---------------- ② 变焦条 / 相册 / 手动对焦 ---------------- */
+  'zoom.a11y': '变焦 {percent}%，左右拖动调整',
   'zoom.label': '变焦',
+  'zoom.role.ultraWide': '超广角',
+  'zoom.role.wide': '标准',
+  'zoom.stop.a11y': '切换到 {label}',
+  'camera.gallery.a11y': '打开 App 相册',
+  'camera.gallery.label': '相册',
+  'gallery.title': '相册',
+  'gallery.close': '完成',
+  'gallery.empty': '还没有照片',
+  'gallery.emptyHint': '拍一张就会出现在这里，不用再去系统相册找。',
+  'gallery.photo': '第 {index} 张，{date}',
+  'gallery.delete': '删除这张',
+  'gallery.cancel': '取消',
+  'camera.focus.a11y': '点击画面手动对焦',
 
   /* ---------------- ③.5 颗粒强度 ---------------- */
   'grain.a11y': '颗粒强度 {label}',

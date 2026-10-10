@@ -38,9 +38,9 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import type { LayoutChangeEvent } from 'react-native';
+import type { GestureResponderEvent, LayoutChangeEvent } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import type { CameraType } from 'expo-camera';
+import type { CameraType, CameraViewProps } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex, wrapIndex } from '../constants/frames';
@@ -58,30 +58,56 @@ import {
   resolvePreset,
   wrapPresetIndex,
 } from '../constants/presets';
+import { FOCAL_STOPS, resolveStop } from '../constants/lenses';
 import { INK, UI_MONO, compact } from '../constants/theme';
 import { UI_ASSETS } from '../constants/uiAssets';
-import { DEFAULT_ZOOM, toCameraZoom } from '../constants/zoom';
+import { DEFAULT_ZOOM, ZOOM_MAX, toCameraZoom } from '../constants/zoom';
 import { useI18n } from '../i18n';
 import { useFilmFonts } from '../hooks/useFilmFonts';
 import { useFilmStage } from '../hooks/useFilmStage';
 import { useLocationStamp } from '../hooks/useLocationStamp';
+import { usePinchZoom } from '../hooks/usePinchZoom';
 import type { CapturedPhoto, DevelopStatus, Rect, Size } from '../types';
 import { describeError } from '../utils/describeError';
+import { addShot } from '../utils/galleryStore';
 import { computeFrameLayout } from '../utils/geometry';
 import { LOCATION_FAILURE_COPY } from '../utils/locationStamp';
 import { processAndSaveFilmPhoto } from '../utils/processFilmPhoto';
 import { DevelopOverlay, computeDevelopStageBox } from './DevelopOverlay';
 import { DialButton } from './DialButton';
 import { FilmCompositor } from './FilmCompositor';
+import { FocusReticle } from './FocusReticle';
+import type { FocusTarget } from './FocusReticle';
 import { FrameOverlay } from './FrameOverlay';
 import { FrameSwitcher } from './FrameSwitcher';
+import { GalleryScreen } from './GalleryScreen';
 import { PermissionNotice } from './PermissionNotice';
 import { SettingsScreen } from './SettingsScreen';
 import { ShutterButton } from './ShutterButton';
-import { ZoomRail } from './ZoomRail';
+import { ZoomBar } from './ZoomBar';
+import type { ZoomStopView } from './ZoomBar';
 
 /** 取景器里相框四周留白。 */
 const PREVIEW_PADDING = 10;
+
+/**
+ * expo-camera 57.0.6 的 `CameraViewProps` 里**没有** `focusPoint` —— 它是
+ * `patches/expo-camera+57.0.6.patch` 往 iOS 原生加的 prop。
+ *
+ * 之所以不用改库的 JS/TS 就能用：`node_modules/expo-camera/build/utils/props.js`
+ * 的 `convertNativeProps()` 是 `Object.entries(props)` **全量透传**，只对
+ * `type` / `flash` 两张表做转换，不做白名单过滤。运行期直接传就行，
+ * 只有类型上缺一块 —— 用一次交叉类型补上，全项目仅此一处。
+ */
+type FocusPointProp = { focusPoint?: { x: number; y: number } };
+
+/** 夹到 0~1。 */
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(1, Math.max(0, value));
+}
 
 export function CameraScreen() {
   const insets = useSafeAreaInsets();
@@ -99,12 +125,28 @@ export function CameraScreen() {
     findGrainLevelIndex(DEFAULT_GRAIN_LEVEL_ID),
   );
   const [facing, setFacing] = useState<CameraType>('back');
-  const [torchOn, setTorchOn] = useState(false);
+  const [flashOn, setFlashOn] = useState(false);
   /**
    * 变焦。值就是传给 `<CameraView zoom={...}>` 的那个数（0 = 不放大），
    * 不是倍数 —— 为什么见 `src/constants/zoom.ts` 的文件头。
    */
   const [zoom, setZoom] = useState<number>(DEFAULT_ZOOM);
+  /**
+   * 点亮的焦段档位。只在"点了档位按钮"时非空 —— 手动拖轨道或捏合之后清空，
+   * 因为那时候读数已经不在任何一档上了，还亮着会骗人。
+   */
+  const [activeStopId, setActiveStopId] = useState<string | null>(null);
+  /** `getAvailableLenses()` 的结果（异步，初值是空数组）。 */
+  const [lenses, setLenses] = useState<readonly string[]>([]);
+  /** 要写给 `<CameraView selectedLens>` 的名字。`undefined` = 不传这个 prop。 */
+  const [lens, setLens] = useState<string | undefined>(undefined);
+  /**
+   * 手动对焦点。x / y 是**取景器上的 0~1 归一化坐标**（原点左上，和
+   * `Pressable` 的 `locationX` / `locationY` 同向），`at` 是时间戳 ——
+   * 同一个点连点两次也要重新对焦，所以它必须是新对象。
+   * `null` = 还没点过。
+   */
+  const [focusTarget, setFocusTarget] = useState<FocusTarget>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraKey, setCameraKey] = useState(0);
   const [mountError, setMountError] = useState<string | null>(null);
@@ -113,6 +155,11 @@ export function CameraScreen() {
   const [previewBox, setPreviewBox] = useState<Size>({ width: 0, height: 0 });
   /** 设置界面（整屏覆盖层，不是导航栈里的一个页面）。 */
   const [settingsVisible, setSettingsVisible] = useState(false);
+  /**
+   * App 内相册。同样是整屏覆盖层 —— 用户的原话是「不用每次都去系统相册查看」，
+   * 所以它是**本机沙盒里的第二份拷贝**，不是系统相册的镜像。
+   */
+  const [galleryVisible, setGalleryVisible] = useState(false);
 
   /* ---------------- refs ---------------- */
   const cameraRef = useRef<ComponentRef<typeof CameraView>>(null);
@@ -143,6 +190,49 @@ export function CameraScreen() {
   const developing = status.kind === 'developing';
   const cameraGranted = cameraPermission?.granted === true;
   const interactive = !developing && cameraGranted;
+  /**
+   * 镜头列表还没回来时**不要**把按钮画成禁用 —— 不然回到相机那一刻
+   * 三个档位全是灰的，看着像坏了。这时候点了会退化成"只设 zoom、不切镜头"，
+   * 行为仍然是对的（26mm 本来就是主摄的原生焦距）。
+   */
+  const lensesKnown = lenses.length > 0;
+
+  /**
+   * 三个焦段按钮的展示数据。`resolveStop` 是保守的：拿不到镜头列表，
+   * 或者这台设备没有超广角（前摄是常客）时，那一档会报 `available: false`。
+   */
+  const zoomStops = useMemo<readonly ZoomStopView[]>(
+    () =>
+      FOCAL_STOPS.map((stop) => {
+        const role = t(stop.lens === 'ultraWide' ? 'zoom.role.ultraWide' : 'zoom.role.wide');
+        const stopResolved = resolveStop(stop, { lenses, facing });
+        return {
+          id: stop.id,
+          short: String(stop.mm),
+          a11y: t('zoom.stop.a11y', { label: `${stop.mm}mm ${role}` }),
+          disabled: lensesKnown && !stopResolved.available,
+        };
+      }),
+    [lenses, lensesKnown, facing, t],
+  );
+
+  /**
+   * 传给 `<CameraView>` 的 `focusPoint`。
+   *
+   * **必须是 memo 化的对象**：原生那个 prop 是命令式的，刻意没做等值短路
+   * （这样同一个点连点两次也能重新对焦），所以只要这个对象的引用变了，
+   * 原生就会重新对焦一次。写成内联字面量的话，每一次 re-render ——
+   * 比如手指在变焦条上拖一下 —— 都会变成一次对焦。
+   *
+   * 没有手动对焦点时返回**空对象**，而不是 `{ focusPoint: undefined }`：
+   * `convertNativeProps` 用的是 `Object.entries`，值为 `undefined` 的键也会被算进去，
+   * 展开一个空对象才是真的什么都没传。
+   */
+  const cameraFocusProps = useMemo<CameraViewProps & FocusPointProp>(
+    () =>
+      focusTarget === null ? {} : { focusPoint: { x: focusTarget.x, y: focusTarget.y } },
+    [focusTarget],
+  );
 
   // 取景器里相框的排版（和成片用同一个 computeFrameLayout，所以构图一致）
   const previewLayout = useMemo(() => {
@@ -216,10 +306,33 @@ export function CameraScreen() {
     );
   }, []);
 
+  /**
+   * 问一次可用镜头列表。`onAvailableLensesChanged` 是主路径，这个是兜底：
+   * 有的机型要等 `onCameraReady` 之后镜头才登记进 discovery session。
+   * 两个来源写同一个 state，谁先回来算谁的。
+   */
+  const refreshLenses = useCallback(async () => {
+    const camera = cameraRef.current;
+    if (camera === null) {
+      return;
+    }
+    try {
+      setLenses(await camera.getAvailableLensesAsync());
+    } catch {
+      // 拿不到就当没有 —— `zoomStops` 会退化成"只调 zoom、不切镜头"
+      setLenses([]);
+    }
+  }, []);
+
+  const handleLensesChanged = useCallback((event: { lenses: string[] }) => {
+    setLenses(event.lenses ?? []);
+  }, []);
+
   const handleCameraReady = useCallback(() => {
     setCameraReady(true);
     setMountError(null);
-  }, []);
+    void refreshLenses();
+  }, [refreshLenses]);
 
   const handleMountError = useCallback((event: { message: string }) => {
     setCameraReady(false);
@@ -259,20 +372,101 @@ export function CameraScreen() {
   const handleFlipCamera = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setFacing((current) => (current === 'back' ? 'front' : 'back'));
-    // 前置没有补光灯，翻转时顺手关掉，避免状态残留
-    setTorchOn(false);
+    // iOS 的 AVCapturePhotoOutput 在前置上没有闪光灯档位（Retina Flash 是系统相机
+    // 自己做的，第三方拿不到），翻转时顺手关掉，避免按钮亮着但什么也没发生。
+    setFlashOn(false);
     // 前后摄的镜头模组不一样（后置广角的最大数码变焦和前置差很多），
     // 沿用旧值会让翻转后突然变成另一档放大，直接归零最不容易出意外。
     setZoom(DEFAULT_ZOOM);
+    // 镜头列表是**按摄像头**给的，不清掉会拿着后摄的超广角去点前摄的档位按钮。
+    setLens(undefined);
+    setActiveStopId(null);
+    setLenses([]);
+    // 手动对焦点是上一个摄像头的坐标，换摄像头之后它没有任何意义
+    setFocusTarget(null);
   }, []);
 
+  /**
+   * 拖轨道 / 双指捏合。手动调出来的读数不在任何一档上，顺手把档位灯灭掉 ——
+   * 否则会出现「亮着 35mm，读数却是 12%」这种自相矛盾的显示。
+   */
   const handleZoomChange = useCallback((next: number) => {
     setZoom(toCameraZoom(next));
+    setActiveStopId(null);
   }, []);
 
-  const handleToggleTorch = useCallback(() => {
+  /**
+   * 点焦段按钮：切镜头 + 设 zoom。
+   *
+   * 13mm / 26mm 两档的 zoom 都是 0（靠换镜头而不是数码放大 —— 主摄本来就是 26mm）；
+   * 35mm 那档是主摄 × 1.346。为什么不真的切长焦、`factor` 为什么要写死，
+   * 见 `src/constants/lenses.ts` 的文件头。
+   *
+   * 镜头列表还没回来时（`lensesKnown === false`）不拦着：`resolveStop` 会
+   * 返回 `lens: undefined`，这时就只设 zoom、不切镜头，行为仍然是对的。
+   */
+  const handleStopPress = useCallback(
+    (id: string) => {
+      const stop = FOCAL_STOPS.find((candidate) => candidate.id === id);
+      if (stop === undefined) {
+        return;
+      }
+      const stopResolved = resolveStop(stop, { lenses, facing });
+      if (lensesKnown && !stopResolved.available) {
+        return;
+      }
+      setLens(stopResolved.lens);
+      setZoom(stopResolved.zoom);
+      setActiveStopId(stop.id);
+    },
+    [lenses, lensesKnown, facing],
+  );
+
+  /**
+   * 点画面对焦。
+   *
+   * `locationX` / `locationY` 是相对那层透明接收层的坐标，而它和 `CameraView`
+   * 完全重合，所以除以取景器宽高就是原生要的 0~1 归一化坐标。
+   *
+   * **竖屏旋转、前摄镜像、`resizeAspectFill` 的裁切都不在这里算** —— 那一层交给
+   * `AVCaptureVideoPreviewLayer.captureDevicePointConverted(fromLayerPoint:)`
+   * 在原生侧做（见 `patches/expo-camera+57.0.6.patch`）。手写的 x/y 交换迟早会在
+   * 某一个朝向上指向错误的地方，而对焦点错了是**无声的**：照片照样能拍，
+   * 只是焦点落在别处，用户根本不会知道是坐标算错了。
+   */
+  const handleTapFocus = useCallback(
+    (event: GestureResponderEvent) => {
+      const { width, height } = previewLayout;
+      if (width <= 0 || height <= 0) {
+        return;
+      }
+      const { locationX, locationY } = event.nativeEvent;
+      void Haptics.selectionAsync();
+      setFocusTarget({
+        x: clamp01(locationX / width),
+        y: clamp01(locationY / height),
+        // 时间戳是身份的一部分：同一点连点两次必须是新对象，否则原生收不到通知
+        at: Date.now(),
+      });
+    },
+    [previewLayout],
+  );
+
+  /**
+   * 取景器上的双指捏合。和轨道、档位按钮走同一个 `handleZoomChange`，
+   * 所以三种调法（捏合 / 拖轨道 / 点档位）永远只有一个真值来源。
+   * 为什么要用 capture 阶段的细节见 `src/hooks/usePinchZoom.ts` 的文件头。
+   */
+  const pinchHandlers = usePinchZoom({
+    enabled: interactive,
+    zoom,
+    maxZoom: ZOOM_MAX,
+    onChange: handleZoomChange,
+  });
+
+  const handleToggleFlash = useCallback(() => {
     void Haptics.selectionAsync();
-    setTorchOn((current) => !current);
+    setFlashOn((current) => !current);
   }, []);
 
   const handleOpenSystemSettings = useCallback(() => {
@@ -286,6 +480,15 @@ export function CameraScreen() {
 
   const handleCloseSettingsScreen = useCallback(() => {
     setSettingsVisible(false);
+  }, []);
+
+  const handleOpenGalleryScreen = useCallback(() => {
+    void Haptics.selectionAsync();
+    setGalleryVisible(true);
+  }, []);
+
+  const handleCloseGalleryScreen = useCallback(() => {
+    setGalleryVisible(false);
   }, []);
 
   const handleDismiss = useCallback(() => {
@@ -339,6 +542,22 @@ export function CameraScreen() {
       });
 
       setStatus({ kind: 'done', uri: result.photo.uri, saved: result.save.ok });
+      /*
+        再往 App 内相册存一份。**故意不 await**：成片此刻已经落盘了，
+        这一步只是拷一份到沙盒，慢几百毫秒不该让"冲洗完成"多等。
+        也不用 `useGallery()` —— 那会给这个组件引入一个跟取景毫无关系的
+        re-render 源；相册界面每次打开自己重新读索引。
+      */
+      void addShot({
+        sourceUri: result.photo.uri,
+        width: result.photo.width,
+        height: result.photo.height,
+        frameId: frame.id,
+        presetId: effectivePreset.id,
+      }).catch((error: unknown) => {
+        // `addShot` 按约定不抛（失败返回 null），这里是最后一道兜底
+        console.warn('[retro-film-cam] 存进 App 相册失败：', describeError(error));
+      });
       if (!result.save.ok) {
         setSaveIssue(result.save.message);
       }
@@ -440,13 +659,13 @@ export function CameraScreen() {
         <View style={styles.topActions}>
           <View style={styles.topActionItem}>
             <DialButton
-              icon={torchOn ? UI_ASSETS.iconTorchOn : UI_ASSETS.iconTorch}
-              active={torchOn}
+              icon={flashOn ? UI_ASSETS.iconFlashOn : UI_ASSETS.iconFlash}
+              active={flashOn}
               disabled={facing === 'front'}
-              onPress={handleToggleTorch}
-              accessibilityLabel={torchOn ? t('camera.torch.on') : t('camera.torch.off')}
+              onPress={handleToggleFlash}
+              accessibilityLabel={flashOn ? t('camera.flash.on') : t('camera.flash.off')}
             />
-            <Text style={styles.topActionLabel}>{t('camera.torch.label')}</Text>
+            <Text style={styles.topActionLabel}>{t('camera.flash.label')}</Text>
           </View>
           <View style={styles.topActionsGap} />
           <View style={styles.topActionItem}>
@@ -467,11 +686,21 @@ export function CameraScreen() {
             />
             <Text style={styles.topActionLabel}>{t('camera.settings.label')}</Text>
           </View>
+          <View style={styles.topActionsGap} />
+          <View style={styles.topActionItem}>
+            <DialButton
+              icon={UI_ASSETS.iconAlbum}
+              active={galleryVisible}
+              onPress={handleOpenGalleryScreen}
+              accessibilityLabel={t('camera.gallery.a11y')}
+            />
+            <Text style={styles.topActionLabel}>{t('camera.gallery.label')}</Text>
+          </View>
         </View>
       </View>
 
       {/* ================= ② 取景器 ================= */}
-      <View style={styles.preview} onLayout={handlePreviewLayout}>
+      <View style={styles.preview} onLayout={handlePreviewLayout} {...pinchHandlers}>
         {cameraGranted ? (
           <CameraView
             key={cameraKey}
@@ -479,8 +708,10 @@ export function CameraScreen() {
             style={StyleSheet.absoluteFill}
             facing={facing}
             mode="picture"
-            flash="off"
-            enableTorch={torchOn && facing === 'back'}
+            {...cameraFocusProps}
+            flash={flashOn && facing === 'back' ? 'on' : 'off'}
+            selectedLens={lens}
+            onAvailableLensesChanged={handleLensesChanged}
             zoom={zoom}
             animateShutter
             onCameraReady={handleCameraReady}
@@ -510,15 +741,36 @@ export function CameraScreen() {
               <FocusBrackets rect={previewLayout.window} />
               <FrameOverlay frame={frame} layout={previewLayout} />
             </View>
+
+            {/*
+              点画面对焦。这一层是**透明**的，铺满整个取景器（和 `CameraView` 同尺寸，
+              所以 `locationX / 取景器宽` 就是原生要的 0~1 归一化坐标）。
+
+              特意放在 FrameSwitcher **里面**：手势路径于是是
+              `Pressable → FrameSwitcher → preview`。单击不会被它抢走
+              （它的 `onStartShouldSetPanResponder` 恒为 false，只在移动时接管），
+              而横向滑动换相框时它照样能接管过去（Pressable 默认允许被终止）。
+            */}
+            {interactive ? (
+              <Pressable
+                style={styles.focusCatcher}
+                onPress={handleTapFocus}
+                accessibilityRole="button"
+                accessibilityLabel={t('camera.focus.a11y')}
+              />
+            ) : null}
           </FrameSwitcher>
         ) : null}
 
-        {/* 变焦：取景器右缘那根竖条。用的是原生 videoZoomFactor，
-            预览和成片一起变，所以「看到多大就是多大」。
-            竖着放是因为取景器的横向手势已经被 FrameSwitcher 占了。 */}
-        {cameraGranted ? (
-          <ZoomRail value={zoom} onChange={handleZoomChange} enabled={interactive} />
-        ) : null}
+        {/*
+          对焦框。纯展示（`pointerEvents="none"`），所以放在取景器这一层 ——
+          不参与任何手势，也不会挡住上面那层点击区域。
+        */}
+        <FocusReticle
+          target={focusTarget}
+          width={previewLayout.width}
+          height={previewLayout.height}
+        />
 
         {/* 保存失败（通常是相册权限）：不阻塞拍摄，给一次"去设置" */}
         {saveIssue !== null ? (
@@ -546,7 +798,21 @@ export function CameraScreen() {
         ) : null}
       </View>
 
-      {/* ================= ③ 底部主控 ================= */}
+      {/* ================= ③ 变焦条 =================
+          放在取景器和主控之间：上面是"看画面调"的手势（滑动换相框 / 捏合变焦），
+          这里是"看读数调"的精确控制。详见 ZoomBar 的文件头。 */}
+      {cameraGranted ? (
+        <ZoomBar
+          value={zoom}
+          onChange={handleZoomChange}
+          enabled={interactive}
+          stops={zoomStops}
+          activeStopId={activeStopId}
+          onStopPress={handleStopPress}
+        />
+      ) : null}
+
+      {/* ================= ④ 底部主控 ================= */}
       <View style={styles.dashboard}>
         <View style={styles.dashSide}>
           <DialButton
@@ -619,7 +885,7 @@ export function CameraScreen() {
         </View>
       </View>
 
-      {/* ============ ③.5 颗粒强度（用户级微调：乘在当前预设之上） ============ */}
+      {/* ============ ⑤ 颗粒强度（用户级微调：乘在当前预设之上） ============ */}
       <View style={styles.grainBar}>
         <Text style={styles.grainBarLabel}>{t('grain.label')}</Text>
         <View style={styles.grainSegments}>
@@ -657,7 +923,7 @@ export function CameraScreen() {
         </View>
       </View>
 
-      {/* ================= ④ 底部 LCD 状态条 ================= */}
+      {/* ================= ⑥ 底部 LCD 状态条 ================= */}
       <View style={[styles.lcdWrap, { paddingBottom: Math.max(insets.bottom, 10) }]}>
         <View style={styles.lcdPanel}>
           <View style={styles.lcdRow}>
@@ -701,6 +967,12 @@ export function CameraScreen() {
       {noticeNode !== null ? (
         <View style={styles.noticeLayer}>{noticeNode}</View>
       ) : null}
+
+      {/*
+        App 内相册。（和设置界面同级，都在最顶上；两个都 `visible=false`
+        时自己 return null，不占层级也不吃触摸。）
+      */}
+      <GalleryScreen visible={galleryVisible} onClose={handleCloseGalleryScreen} />
 
       {/*
         设置界面压在**最顶上**（包括权限提示之上）：
@@ -869,6 +1141,18 @@ const styles = StyleSheet.create({
   },
   canvas: {
     position: 'absolute',
+  },
+  /**
+   * 点画面对焦的透明接收层。写死四边而不是用 `StyleSheet.absoluteFillObject`，
+   * 免得跟着 RN 版本的 API 变动走。它和 `CameraView` 完全重合，
+   * 所以 `locationX / previewLayout.width` 直接就是 0~1。
+   */
+  focusCatcher: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
   },
   guide: {
     position: 'absolute',
@@ -1048,7 +1332,7 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
 
-  /* ---------------- ③.5 颗粒强度分段条 ---------------- */
+  /* ---------------- ⑤ 颗粒强度分段条 ---------------- */
   grainBar: {
     flexDirection: 'row',
     alignItems: 'center',

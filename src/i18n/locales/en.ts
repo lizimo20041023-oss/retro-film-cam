@@ -11,9 +11,9 @@ export const en: Messages = {
   'common.unknownError': 'Unknown error',
 
   /* ---------------- ① top bar ---------------- */
-  'camera.torch.on': 'Turn the light off',
-  'camera.torch.off': 'Turn the light on',
-  'camera.torch.label': 'LIGHT',
+  'camera.flash.on': 'Turn the flash off',
+  'camera.flash.off': 'Turn the flash on',
+  'camera.flash.label': 'FLASH',
   'camera.flip.a11y': 'Switch between front and back camera',
   'camera.flip.label': 'FLIP',
   'camera.settings.a11y': 'Open settings',
@@ -45,8 +45,21 @@ export const en: Messages = {
   'frame.archiveCard': 'ARCHIVE',
 
   /* ---------------- ② zoom rail on the viewfinder ---------------- */
-  'zoom.a11y': 'Zoom {percent} percent, drag up or down to adjust',
+  'zoom.a11y': 'Zoom {percent} percent, drag left or right to adjust',
   'zoom.label': 'ZOOM',
+  'zoom.role.ultraWide': 'ultra wide',
+  'zoom.role.wide': 'standard',
+  'zoom.stop.a11y': 'Switch to {label}',
+  'camera.gallery.a11y': 'Open the in-app album',
+  'camera.gallery.label': 'ALBUM',
+  'gallery.title': 'ALBUM',
+  'gallery.close': 'Done',
+  'gallery.empty': 'No photos yet',
+  'gallery.emptyHint': 'Anything you shoot shows up here — no need to open Photos.',
+  'gallery.photo': 'Photo {index}, {date}',
+  'gallery.delete': 'Delete this photo',
+  'gallery.cancel': 'Cancel',
+  'camera.focus.a11y': 'Tap the frame to focus',
 
   /* ---------------- ③.5 grain ---------------- */
   'grain.a11y': 'Grain strength {label}',

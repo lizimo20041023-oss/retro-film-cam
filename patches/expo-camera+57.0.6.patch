@@ -1,0 +1,279 @@
+diff --git a/node_modules/expo-camera/ios/CameraViewModule.swift b/node_modules/expo-camera/ios/CameraViewModule.swift
+index e199463..5a2e26b 100644
+--- a/node_modules/expo-camera/ios/CameraViewModule.swift
++++ b/node_modules/expo-camera/ios/CameraViewModule.swift
+@@ -207,6 +207,15 @@ public final class CameraViewModule: Module, ScannerResultHandler {
+         }
+       }
+ 
++      Prop("focusPoint") { (view, focusPoint: CGPoint?) in
++        // Unlike the other props this one is command-like: tapping the same spot twice has to
++        // refocus, so a value equal to the current one is still forwarded. Passing `null`
++        // clears the point and hands the camera back to continuous autofocus.
++        // The value is in **view coordinates** (0...1) — the view converts it to device
++        // coordinates, because only it knows the preview layer's orientation and crop.
++        view.applyFocusPointFromViewSpace(focusPoint)
++      }
++
+       Prop("responsiveOrientationWhenOrientationLocked") { (view, responsiveOrientation: Bool?) in
+         if let responsiveOrientation, view.responsiveWhenOrientationLocked != responsiveOrientation {
+           view.responsiveWhenOrientationLocked = responsiveOrientation
+diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/node_modules/expo-camera/ios/Current/CameraSessionManager.swift
+index 7a6568c..07b95cb 100644
+--- a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift
++++ b/node_modules/expo-camera/ios/Current/CameraSessionManager.swift
+@@ -13,6 +13,7 @@ protocol CameraSessionManagerDelegate: AnyObject {
+   var selectedLens: String? { get }
+   var torchEnabled: Bool { get }
+   var autoFocus: AVCaptureDevice.FocusMode { get }
++  var focusPoint: CGPoint? { get }
+   var zoom: CGFloat { get }
+   var onMountError: EventDispatcher { get }
+   var onCameraReady: EventDispatcher { get }
+@@ -34,6 +35,14 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+   private var photoOutput: AVCapturePhotoOutput?
+   private var videoFileOutput: AVCaptureMovieFileOutput?
+   private var runtimeErrorTask: Task<Void, Never>?
++  private var focusResetWorkItem: DispatchWorkItem?
++  private var isManualFocusActive = false
++  private var didOverrideExposureForFocusPoint = false
++
++  /// How long a manually picked focus point is held before the camera returns to
++  /// continuous autofocus. Without this the camera would stay locked on the tapped
++  /// spot for the rest of the session.
++  private static let manualFocusResetDelay: TimeInterval = 4.0
+ 
+   init(delegate: CameraSessionManagerDelegate) {
+     self.delegate = delegate
+@@ -198,6 +207,11 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+       return
+     }
+ 
++    // An explicit mode coming from the `autoFocus` prop wins over a manual focus
++    // point and over its pending reset to continuous autofocus.
++    cancelPendingFocusReset()
++    isManualFocusActive = false
++
+     do {
+       try device.lockForConfiguration()
+       defer { device.unlockForConfiguration() }
+@@ -209,6 +223,132 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+     }
+   }
+ 
++  /// Applies the point of interest coming from the `focusPoint` prop.
++  /// A `nil` value means the manual point was cleared and the camera should go back to
++  /// continuous autofocus. Both cases are no-ops when the device supports neither.
++  func setFocusPoint() {
++    guard let delegate else {
++      return
++    }
++
++    // Every new request invalidates the reset scheduled by the previous one.
++    cancelPendingFocusReset()
++
++    guard let device = captureDeviceInput?.device, let focusPoint = delegate.focusPoint else {
++      // Nothing to point at: only undo a manual focus that is actually in effect, so a
++      // `focusPoint={null}` on mount cannot clobber the `autoFocus` prop.
++      if isManualFocusActive {
++        isManualFocusActive = false
++        didOverrideExposureForFocusPoint = false
++        restoreContinuousFocus()
++      }
++      return
++    }
++
++    let point = CGPoint(
++      x: min(max(focusPoint.x, 0.0), 1.0),
++      y: min(max(focusPoint.y, 0.0), 1.0)
++    )
++
++    do {
++      try device.lockForConfiguration()
++      defer { device.unlockForConfiguration() }
++
++      if device.isFocusPointOfInterestSupported {
++        device.focusPointOfInterest = point
++        if device.isFocusModeSupported(.autoFocus) {
++          device.focusMode = .autoFocus
++          isManualFocusActive = true
++        } else {
++          log.info("\(#function): .autoFocus is not supported by this device")
++        }
++      } else {
++        log.info("\(#function): focus point of interest is not supported by this device")
++      }
++
++      if device.isExposurePointOfInterestSupported {
++        device.exposurePointOfInterest = point
++        if device.isExposureModeSupported(.autoExpose) {
++          device.exposureMode = .autoExpose
++          didOverrideExposureForFocusPoint = true
++        } else {
++          log.info("\(#function): .autoExpose is not supported by this device")
++        }
++      } else {
++        log.info("\(#function): exposure point of interest is not supported by this device")
++      }
++    } catch {
++      log.info("\(#function): \(error.localizedDescription)")
++      return
++    }
++
++    guard isManualFocusActive || didOverrideExposureForFocusPoint else {
++      return
++    }
++    scheduleFocusReset(for: device)
++  }
++
++  private func scheduleFocusReset(for device: AVCaptureDevice) {
++    focusResetWorkItem?.cancel()
++
++    let deviceID = device.uniqueID
++    let workItem = DispatchWorkItem { [weak self] in
++      // The camera may have been swapped since this was scheduled; never reconfigure a
++      // device we no longer own.
++      guard let self, self.captureDeviceInput?.device.uniqueID == deviceID else {
++        return
++      }
++      self.focusResetWorkItem = nil
++      self.isManualFocusActive = false
++      self.didOverrideExposureForFocusPoint = false
++      self.restoreContinuousFocus()
++    }
++    focusResetWorkItem = workItem
++
++    // Queued on the session queue so the device configuration stays serialized with every
++    // other `lockForConfiguration` call site. A cancelled item never runs its block.
++    delegate?.sessionQueue.asyncAfter(deadline: .now() + Self.manualFocusResetDelay, execute: workItem)
++  }
++
++  private func cancelPendingFocusReset() {
++    focusResetWorkItem?.cancel()
++    focusResetWorkItem = nil
++  }
++
++  /// Returns the device to continuous autofocus, and to continuous auto exposure only when
++  /// the manual focus point had taken exposure over.
++  private func restoreContinuousFocus() {
++    guard let device = captureDeviceInput?.device else {
++      return
++    }
++
++    do {
++      try device.lockForConfiguration()
++      defer { device.unlockForConfiguration() }
++
++      if device.isFocusPointOfInterestSupported {
++        device.focusPointOfInterest = CGPoint(x: 0.5, y: 0.5)
++      }
++      if device.isFocusModeSupported(.continuousAutoFocus) {
++        device.focusMode = .continuousAutoFocus
++      } else {
++        log.info("\(#function): .continuousAutoFocus is not supported by this device")
++      }
++
++      if didOverrideExposureForFocusPoint {
++        didOverrideExposureForFocusPoint = false
++        if device.isExposurePointOfInterestSupported {
++          device.exposurePointOfInterest = CGPoint(x: 0.5, y: 0.5)
++        }
++        if device.isExposureModeSupported(.continuousAutoExposure) {
++          device.exposureMode = .continuousAutoExposure
++        }
++      }
++    } catch {
++      log.info("\(#function): \(error.localizedDescription)")
++    }
++  }
++
+   func updateZoom() {
+     guard let device = captureDeviceInput?.device, let delegate else {
+       return
+@@ -278,6 +418,10 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+     runtimeErrorTask?.cancel()
+     runtimeErrorTask = nil
+ 
++    cancelPendingFocusReset()
++    isManualFocusActive = false
++    didOverrideExposureForFocusPoint = false
++
+     // Stop before deconfiguring. Removing inputs and outputs from a session that is still
+     // running rebuilds the capture graph just to tear it down, and that rebuild waits out
+     // its own deadline when the graph never started in the first place.
+@@ -323,6 +467,7 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+ 
+   deinit {
+     runtimeErrorTask?.cancel()
++    focusResetWorkItem?.cancel()
+   }
+ 
+   var currentPhotoOutput: AVCapturePhotoOutput? { photoOutput }
+@@ -340,6 +485,12 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+       return
+     }
+ 
++    // A reset scheduled for the previous camera must not touch the new one, and the new
++    // device starts from its own automatic defaults anyway.
++    cancelPendingFocusReset()
++    isManualFocusActive = false
++    didOverrideExposureForFocusPoint = false
++
+     session.beginConfiguration()
+     defer {
+       session.commitConfiguration()
+diff --git a/node_modules/expo-camera/ios/Current/CameraView.swift b/node_modules/expo-camera/ios/Current/CameraView.swift
+index 4692d00..2dc332e 100644
+--- a/node_modules/expo-camera/ios/Current/CameraView.swift
++++ b/node_modules/expo-camera/ios/Current/CameraView.swift
+@@ -98,6 +98,50 @@ public class CameraView: ExpoView, EXAppLifecycleListener, EXCameraInterface, Ca
+     }
+   }
+ 
++  /// Manual point of interest in the **capture device's** coordinate space (0...1).
++  /// `nil` returns the camera to continuous autofocus. The session manager reverts to
++  /// continuous autofocus on its own after a while.
++  ///
++  /// Never set this directly from the `focusPoint` prop — the prop carries *view*
++  /// coordinates, so it goes through `applyFocusPointFromViewSpace(_:)` first.
++  var focusPoint: CGPoint? {
++    didSet {
++      sessionQueue.async {
++        self.sessionManager.setFocusPoint()
++      }
++    }
++  }
++
++  /// Entry point for the `focusPoint` prop. `point` is in **view coordinates**: 0...1
++  /// relative to this view's bounds, origin at the top-left, x to the right, y downwards —
++  /// exactly what a `Pressable`'s `locationX` / `locationY` give you.
++  ///
++  /// The rotation, mirroring and aspect-fill crop maths is left to
++  /// `AVCaptureVideoPreviewLayer` (this view's `layerClass`, see above): it already knows
++  /// the connection's video orientation, whether the camera is mirrored, and how
++  /// `videoGravity = .resizeAspectFill` crops the sensor. Hand-written x/y swapping gets
++  /// at least one of those wrong, and a wrong point of interest silently focuses on the
++  /// wrong part of the frame.
++  func applyFocusPointFromViewSpace(_ point: CGPoint?) {
++    guard let point else {
++      focusPoint = nil
++      return
++    }
++
++    let viewBounds = bounds
++    guard viewBounds.width > 0, viewBounds.height > 0, previewLayer.connection != nil else {
++      // Not laid out yet, or the session is not connected: dropping this is strictly
++      // better than locking focus on whatever (0, 0) happens to mean here.
++      return
++    }
++
++    let layerPoint = CGPoint(
++      x: point.x * viewBounds.width,
++      y: point.y * viewBounds.height
++    )
++    focusPoint = previewLayer.captureDevicePointConverted(fromLayerPoint: layerPoint)
++  }
++
+   var pictureSize = PictureSize.photo {
+     didSet {
+       updatePictureSize()

@@ -19,12 +19,14 @@ export const UI_ASSETS = {
   dialOn: require('../../assets/ui/dial-on.png'),
   /** 快门内盘：奶油色 + 左上偏移的径向渐变 + 底缘内阴影。 */
   shutterDisc: require('../../assets/ui/shutter-disc.png'),
-  /** 极细线性图标（42pt 画布）：补光 / 补光点亮 / 镜头反转。 */
-  iconTorch: require('../../assets/ui/icon-torch.png'),
-  iconTorchOn: require('../../assets/ui/icon-torch-on.png'),
+  /** 极细线性图标（42pt 画布）：闪光灯 / 闪光灯点亮 / 镜头反转。 */
+  iconFlash: require('../../assets/ui/icon-flash.png'),
+  iconFlashOn: require('../../assets/ui/icon-flash-on.png'),
   iconFlip: require('../../assets/ui/icon-flip.png'),
   /** 预设拨轮的图标：电影胶片条。 */
   iconFilm: require('../../assets/ui/icon-film.png'),
   /** 设置入口的图标：三档推子。 */
   iconSettings: require('../../assets/ui/icon-settings.png'),
+  /** App 内相册入口的图标：装了山和太阳的照片。 */
+  iconAlbum: require('../../assets/ui/icon-album.png'),
 } as const;

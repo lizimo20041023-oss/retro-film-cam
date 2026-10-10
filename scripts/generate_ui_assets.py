@@ -8,11 +8,12 @@
     dial.png              44pt 机械防滑拨轮（关闭态）
     dial-on.png           44pt 机械防滑拨轮（点亮态，琥珀色）
     shutter-disc.png      快门内盘：径向渐变 + 内阴影（"物理按键"手感）
-    icon-torch.png        极细线性图标：补光（闪电）
-    icon-torch-on.png     同上，琥珀色（点亮）
+    icon-flash.png        极细线性图标：闪光灯（闪电）
+    icon-flash-on.png     同上，琥珀色（点亮）
     icon-flip.png         极细线性图标：镜头反转（循环箭头）
     icon-film.png         极细线性图标：预设（电影胶片条）
     icon-settings.png     极细线性图标：设置（三档推子）
+    icon-album.png        极细线性图标：App 内相册（装了山和太阳的照片）
 
 为什么这些也要用 PNG：
     RN 在 iOS 上没有径向渐变（`backgroundImage` 的
@@ -252,9 +253,14 @@ def _stroke(img: Image.Image, draw_fn, color: tuple[int, int, int], width: int) 
     return tinted
 
 
-def make_icon_torch(size: int = 168) -> None:
-    """补光：细线闪电（只描边、不填充）。"""
-    for lit, filename in ((False, "icon-torch.png"), (True, "icon-torch-on.png")):
+def make_icon_flash(size: int = 168) -> None:
+    """闪光灯：细线闪电（只描边、不填充）。
+
+    图形从它叫 `icon-torch` 的那会儿起就是一个闪电，一直没改过 ——
+    所以行为从「常亮手电筒」改成「拍摄瞬间闪一下」时，图形不用动，
+    只是名字和语义终于对上了（旧的两张 `icon-torch*.png` 已删除）。
+    """
+    for lit, filename in ((False, "icon-flash.png"), (True, "icon-flash-on.png")):
         img, _ = _icon_canvas(size)
         s = size / 168.0
         pts = [
@@ -370,6 +376,40 @@ def make_icon_settings(size: int = 168) -> None:
     save(img, os.path.join(UI_DIR, "icon-settings.png"))
 
 
+def make_icon_album(size: int = 168) -> None:
+    """App 内相册入口：一张装了山和太阳的照片（通用的"照片"图形）。
+
+    为什么不用"叠起来的几张相纸"：叠影靠的是几条互相压住的描边，
+    缩到 21pt 就糊成一团了。"外框 + 实心山 + 实心太阳"只有三个形状，
+    缩小后轮廓依然分得开，而且和机身其它图标一样是"只描边不填充"的细线。
+    """
+    img, _ = _icon_canvas(size)
+    s = size / 168.0
+
+    def draw(d: ImageDraw.ImageDraw) -> None:
+        w = int(9 * s)
+        d.rounded_rectangle(
+            [34 * s, 42 * s, 134 * s, 126 * s], radius=12 * s, outline=255, width=w
+        )
+        r = 10 * s
+        cx, cy = 62 * s, 68 * s
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=255)
+        # 山脚压在框底边上：照片里"山连着地平线"本来就是这么回事
+        d.polygon(
+            [
+                (44 * s, 120 * s),
+                (76 * s, 84 * s),
+                (98 * s, 108 * s),
+                (110 * s, 96 * s),
+                (126 * s, 120 * s),
+            ],
+            fill=255,
+        )
+
+    img = Image.alpha_composite(img, _stroke(img, draw, ICON_IDLE, 9))
+    save(img, os.path.join(UI_DIR, "icon-album.png"))
+
+
 # --------------------------------------------------------------------------- #
 def main() -> None:
     os.makedirs(UI_DIR, exist_ok=True)
@@ -378,10 +418,11 @@ def main() -> None:
     make_dial(lit=False)
     make_dial(lit=True)
     make_shutter_disc()
-    make_icon_torch()
+    make_icon_flash()
     make_icon_flip()
     make_icon_film()
     make_icon_settings()
+    make_icon_album()
     print("done.")
 
 
