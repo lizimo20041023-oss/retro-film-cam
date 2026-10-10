@@ -1,11 +1,20 @@
 # Retro Film Cam 📷
 
-一个 **纯 managed Expo + Expo Go** 的 iOS 复古胶片相机 App（类 Dazz 风格），自用练手向。
-Windows 电脑开发 → iPhone 真机 Expo Go 扫码跑，**不需要 Xcode、不需要 Mac、不需要自定义原生构建**。
+一个 **纯 managed Expo** 的 iOS 复古胶片相机 App（类 Dazz 风格），自用练手向。
+Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac、不需要花钱买苹果开发者账号**。
 
 **核心流程**：全屏实时取景 → 左右滑动换相框（带震感）→ 按快门 → 后台"显影"（调色 → 颗粒/暗角/漏光 → 右下角橙色液晶日期 → 套相框）→ 存进相册。
 
 > 🐣 **第一次用、看不懂下面这些技术内容？** 直接看 [新手操作指南.md](新手操作指南.md) —— 照着点就行，不需要懂任何技术。
+
+### 两条跑法，按需要选
+
+| 路线 | 怎么跑 | 适合什么时候 | 看哪份文档 |
+| --- | --- | --- | --- |
+| **A. Expo Go**（开发调试用） | 电脑 `npm start`，手机扫码 | 改代码、加相框、调参数时边改边看 | [新手操作指南.md](新手操作指南.md) |
+| **B. 独立 App**（日常拍照用） | GitHub 免费 Mac 机器打 `.ipa`，Sideloadly 签进手机 | 想要桌面图标、出门不用带电脑 | [如何装到手机上.md](如何装到手机上.md) |
+
+路线 B 是**免费自签**：0 元，但签名每 7 天要续签一次（苹果的限制，不是本项目的限制）。两条路线可以并存，改代码时用 A，改好了再走 B 出一版装到手机上。
 
 ---
 
@@ -24,6 +33,7 @@ Windows 电脑开发 → iPhone 真机 Expo Go 扫码跑，**不需要 Xcode、�
 - [11. 已知限制](#11-已知限制)
 - [12. 故障排查](#12-故障排查)
 - [13. 可选升级路径（默认代码不含）](#13-可选升级路径默认代码不含)
+- [14. 路线 B：打独立 App 的技术说明](#14-路线-b打独立-app-的技术说明)
 
 ---
 
@@ -219,12 +229,20 @@ npm start
 retro-film-cam/
 ├── App.tsx                       # 应用根：SafeAreaProvider + 状态栏 + 单屏
 ├── index.ts                      # registerRootComponent(App)（package.json 的 "main"）
-├── app.json                      # Expo 配置：权限文案、深色 UI、expo-camera/media-library 插件
+├── app.json                      # Expo 配置：图标、bundleId、权限文案、深色 UI、插件
 ├── package.json                  # 依赖 + 脚本（start / tunnel / typecheck / deps）
 ├── tsconfig.json                 # extends expo/tsconfig.base + strict
 ├── babel.config.js               # 只用 babel-preset-expo（不需要 reanimated 插件）
+├── .gitignore                    # 忽略 node_modules / .expo / ios / android / 签名文件
+├── 新手操作指南.md                # ★ 零基础：用 Expo Go 跑起来（路线 A）
+├── 如何装到手机上.md              # ★ 零基础：打成独立 App 装到 iPhone（路线 B）
+│
+├── .github/
+│   └── workflows/
+│       └── build-ios-ipa.yml     # ★ GitHub 免费 Mac 机器上打未签名 .ipa 的流水线
 │
 ├── assets/
+│   ├── icon.png                  # App 图标 1024×1024（由 scripts/generate_app_icon.py 生成）
 │   ├── frames/                   # 相框 PNG（透明镂空）+ 规范文档
 │   │   ├── classic-white.png     #   白边印刷 1350×1800
 │   │   ├── instant-square.png    #   拍立得 1425×1800（1:1 窗口）
@@ -239,7 +257,8 @@ retro-film-cam/
 │       └── README.md             #   ★ 想用 DSEG7 数码管字体看这里
 │
 ├── scripts/
-│   └── generate_placeholder_assets.py   # 程序化重生成占位相框/纹理（Python + Pillow）
+│   ├── generate_placeholder_assets.py   # 程序化重生成占位相框/纹理（Python + Pillow）
+│   └── generate_app_icon.py             # 程序化重生成 App 图标（Python + Pillow）
 │
 └── src/
     ├── types/index.ts            # 全部类型（唯一类型来源，导出完整）
@@ -517,6 +536,80 @@ console.log(photo.warnings); // 没有原图时的降级提示也会出现在这
    想在 Android 上更进一步可以按 `Platform.OS` 分支（当前为了一致性故意没做）。
 7. **设备能力**：`expo-haptics` 已经用上了（切相框的轻震），还可以加"显影完成"的成功震感
    （`Haptics.notificationAsync`）、快门声（`takePictureAsync({ shutterSound: false })` 反向控制）。
+
+---
+
+## 14. 路线 B：打独立 App 的技术说明
+
+> 操作步骤在 [如何装到手机上.md](如何装到手机上.md)，这一节只讲**为什么这么做**，方便以后改流水线。
+
+### 为什么必须绕这么大一圈
+
+| 事实 | 后果 |
+| --- | --- |
+| iOS 的 `.ipa` **只能在 macOS 上编译** | Windows 开发机自己打不了包 |
+| `expo prebuild --platform ios` **在 Windows 上被硬拦**（报 `Skipping generating the iOS native project files`） | 连生成原生工程都做不了，更不能本地验证 |
+| EAS Build 打真机包需要**苹果开发者账号出证书**（$99/年） | 免费路线用不了 EAS 的签名构建 |
+| 免费 Apple ID 能签名，但**签名只有 7 天**，且必须先有 `.ipa` | 所以：**先弄出未签名的 ipa，再在 Windows 上现场签名** |
+
+结论：**借 GitHub Actions 的免费 macOS 机器编译，产出未签名 ipa，再在 Windows 用 Sideloadly/AltStore 配免费 Apple ID 签名安装。**
+（这也是 [Altux](https://github.com/samay15jan/Altux) 等项目的通行做法。）
+
+### 流水线的 10 步在干什么
+
+见 `.github/workflows/build-ios-ipa.yml`。几个**不显然但关键**的点：
+
+1. **必须打 Release，不能打 Debug。**
+   Release 配置会在 Xcode 的 "Bundle React Native code and images" 阶段自动跑 `expo export:embed`，
+   把 JS bundle **内嵌进 .app**。装到手机后**完全离线可用**。
+   Debug 包仍然要去连 Metro 服务器，等于没脱离电脑，达不到目的。
+
+2. **`CODE_SIGNING_ALLOWED=NO`** 是能编出包的关键。
+   没有开发者证书时，加上它 Xcode 才肯完成编译，产出的是「未签名 .app」。
+   AltStore / Sideloadly 会**重新签整个 bundle**，所以未签名包正是它们要的输入。
+
+3. **`package-lock.json` 里的 500 条下载地址写的是 `registry.npmmirror.com`**（本机在国内装的）。
+   流水线第 4 步用 `sed` 换成 `registry.npmjs.org`（GitHub 机器在国外，官方源更快），
+   如果校验失败就 `git checkout` 还原 lockfile 走镜像兜底。
+   两个源的 tarball 路径规则相同、内容一致，所以单纯换域名是安全的。
+
+4. **Xcode 的 scheme 名不是猜的。**
+   `expo prebuild` 会把模板里的 `HelloWorld` 全部替换成
+   `IOSConfig.XcodeUtils.sanitizedName(expo.name)`（源码见
+   `@expo/config-plugins/build/ios/utils/Xcodeproj.js` 的 `sanitizedName`，
+   规则是 `name.replace(/[\W_]+/g, '')`，改名清单见
+   `@expo/cli/build/src/prebuild/renameTemplateAppName.js`，
+   其中显式包含 `ios/**/*.xcodeproj/xcshareddata/xcschemes/*.xcscheme`）。
+   本项目 `expo.name = "Retro Film Cam"` → `RetroFilmCam`。
+   **但流水线仍然在第 7 步用 `xcodebuild -list` 自动探测一次**，探测不到才回落到 `RetroFilmCam`，
+   这样以后改 `app.json` 的 `name` 也不会把流水线弄坏。
+
+5. **`app.json` 里 `ios.bundleIdentifier` 必须写死。**
+   不写的话 `expo prebuild` 会**交互式**追问（非交互式环境直接失败）。
+   现在的值是 `com.canyerylee.retrofilmcam`。
+
+### 本机能验证到哪一步，验证不了什么
+
+| 能本地验证 | 命令 | 结果 |
+| --- | --- | --- |
+| 配置插件能否正常求值 | `npx expo config --type prebuild` | ✅ exit 0，无警告，icon / bundleId / scheme 均已生效 |
+| TypeScript | `npm run typecheck` | ✅ exit 0 |
+| JS 打包 + 素材收集 | `npx expo export --platform ios --no-bytecode` | ✅ exit 0，660 模块，6 个素材全部收集 |
+| **不能**验证：真实 Xcode 编译 | —— | 只能在 macOS 上跑，**这是唯一剩下的风险点** |
+
+> 已知非项目问题：不加 `--no-bytecode` 时，Hermes 字节码那一步会因为写系统临时目录被拒而失败
+> （`hermesc.exe ... exited with non-zero code: 6`）。JS 打包本身已经成功，这是本机环境限制。
+
+### 改了代码之后
+
+推到 `main` 就自动重新构建（`on: push`）。想手动触发就 Actions → Run workflow（`workflow_dispatch`）。
+如果哪天免费额度用完了，把仓库改成 public 即可——**公开仓库的 Actions 完全不限量**。
+
+### 以后想升级的选项
+
+- **换 macOS 镜像**：`runs-on` 现在是 `macos-latest`，报 Xcode 版本问题就改成 `macos-15` / `macos-26`。
+- **想要 1 年签名**：买 $99/年的 Apple Developer Program，然后把流水线从 `CODE_SIGNING_ALLOWED=NO`
+  换成用 `.p12` 证书 + provisioning profile 直接出签名包（证书存 GitHub Secrets）。
 
 ---
 

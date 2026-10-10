@@ -1,0 +1,137 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 在 GitHub 的免费 macOS 机器上，把本项目打成一个【未签名】的 iOS .ipa
+#
+# 为什么要未签名：正式签名要 99 美元/年的苹果开发者账号。
+#   未签名包下载到你 Windows 电脑后，用 AltStore / Sideloadly 配免费 Apple ID 现场签名安装。
+#
+# 怎么跑：把代码推到 GitHub → 网页上点 Actions → 选左边 "Build unsigned iOS IPA"
+#        → 点右边 "Run workflow" → 等 15~25 分钟 → 在最下面 Artifacts 里下载 ipa
+#
+# 产物：RetroFilmCam-unsigned.ipa（Release 版，JS 已内嵌，装上后完全离线可用）
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Build unsigned iOS IPA
+
+on:
+  # 允许在网页上手动点按钮触发
+  workflow_dispatch:
+  # 推到 main 分支时自动构建
+  push:
+    branches: [main]
+
+# 同时只跑一个，避免排队浪费额度
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-ipa:
+    # 用 GitHub 免费提供的 macOS 机器。如果这行报「runner not found」，
+    # 改成 macos-15 或 macos-14 即可（见 如何装到手机上.md 的排错一节）。
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 1. 取出代码
+        uses: actions/checkout@v4
+
+      - name: 2. 装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 3. 打印构建环境（出问题时方便对照）
+        run: |
+          echo "macOS : $(sw_vers -productVersion)"
+          echo "Xcode : $(xcodebuild -version | tr '\n' ' ')"
+          echo "Node  : $(node -v)"
+          echo "npm   : $(npm -v)"
+          which pod && pod --version || echo "CocoaPods 尚未安装"
+
+      - name: 4. 装 JS 依赖
+        # 本项目的 package-lock.json 是在国内装的，里面 500 条下载地址都指向
+        # registry.npmmirror.com。GitHub 的机器在国外，先换成官方源（更快）。
+        # 万一官方源的包校验值对不上，自动还原 lockfile 走国内镜像兜底。
+        run: |
+          set -e
+          sed -i.bak 's|https://registry.npmmirror.com|https://registry.npmjs.org|g' package-lock.json
+          rm -f package-lock.json.bak
+          if npm ci --no-audit --no-fund; then
+            echo "✅ 用官方源装好了"
+          else
+            echo "::warning::官方源安装失败，回退到国内镜像重试"
+            rm -rf node_modules
+            git checkout -- package-lock.json
+            npm ci --no-audit --no-fund
+            echo "✅ 用国内镜像装好了"
+          fi
+          echo "── node_modules 顶层条目数 ──"
+          ls node_modules | wc -l
+
+      - name: 5. 生成原生 iOS 工程（prebuild）
+        # 这一步会读取 app.json，应用 expo-camera / expo-media-library 的配置，
+        # 并生成 ios/ 目录（Windows 上没法做，只能在 macOS 上做）。
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: 6. 装 CocoaPods 依赖
+        # GitHub 的 macOS 机器自带 CocoaPods；万一哪天镜像里没有了，这里兜底装一次。
+        run: |
+          if ! command -v pod >/dev/null 2>&1; then
+            echo "机器上没有 CocoaPods，现场安装……"
+            brew install cocoapods
+          fi
+          pod --version
+          cd ios
+          pod install
+
+      - name: 7. 自动识别 scheme 名
+        id: scheme
+        run: |
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -n 1)
+          echo "workspace = $WORKSPACE"
+          SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list 2>/dev/null \
+            | awk '/Schemes:/{flag=1;next} /^$/{flag=0} flag' \
+            | head -n 1 | tr -d '[:space:]')
+          if [ -z "$SCHEME" ]; then SCHEME="RetroFilmCam"; fi
+          echo "scheme = $SCHEME"
+          echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
+          echo "scheme=$SCHEME"       >> "$GITHUB_OUTPUT"
+
+      - name: 8. 编译（Release，不做签名）
+        # CODE_SIGNING_ALLOWED=NO 是重点：没有苹果开发者证书也能编出 .app。
+        # Release 配置会在 "Bundle React Native code and images" 阶段把 JS 打包进 App 内部，
+        # 所以装到手机上之后完全离线可用，不需要电脑开着 Metro。
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace "${{ steps.scheme.outputs.workspace }}" \
+            -scheme "${{ steps.scheme.outputs.scheme }}" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build
+
+      - name: 9. 打成 .ipa
+        run: |
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -n 1)
+          echo "找到 App：$APP"
+          rm -rf Payload *.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry RetroFilmCam-unsigned.ipa Payload
+          ls -lh RetroFilmCam-unsigned.ipa
+
+      - name: 10. 上传 ipa（在页面最下方 Artifacts 里下载）
+        uses: actions/upload-artifact@v4
+        with:
+          name: RetroFilmCam-unsigned-ipa
+          path: RetroFilmCam-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30

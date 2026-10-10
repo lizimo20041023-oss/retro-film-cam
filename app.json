@@ -16,8 +16,7 @@
       }
     },
     "android": {
-      "package": "com.canyerylee.retrofilmcam",
-      "edgeToEdgeEnabled": true
+      "package": "com.canyerylee.retrofilmcam"
     },
     "plugins": [
       [
