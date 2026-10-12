@@ -7,13 +7,20 @@
  * 语言一换重排即可 —— 这也意味着这里所有函数都必须是纯函数，才能在渲染期随时调用。
  *
  * 两条容易写错的规则，都收在本文件的表里，不要在别处再拼一遍字符串：
- * 1. 港澳台必须带「中国」前缀（见 `CHINA_PREFIX` / `GREATER_CHINA`）；
+ * 1. 港澳台**在任何语言、两档详细度下都必须带国家**（中文档靠"国家在最前"，
+ *    英文档靠 ` / CN` 后缀，见 `formatChinesePlace` / `formatLatinPlace` 上方的红线注释）；
  * 2. 英文界面要求罗马字大写（见 `romanizeForEnglish`，**已知做不到完整**，注释里写清了）。
+ *
+ * 本版（水印改造 v1.3.0）按新规格重排了两档详细度，上一版的格式全部作废：
+ *   · `archive` 中文 `国家 · 省 · 市`、拉丁 `CITY, REGION / CC`；
+ *   · `full`    中文 `国家省市区`（无分隔符、补行政级别词）、拉丁 `CITY, REGION, COUNTRY`。
+ * 旧版的 `上海 · CHN`（alpha-3 尾巴）与 `台北 · 中国台湾` 不再出现。
  *
  * 单位说明：本文件只处理字符串，不涉及任何长度单位。
  */
 import type { PlaceDetail, ResolvedPlace } from '../types';
 import type { LocaleId } from '../i18n/types';
+import { pad2 } from './formatTimestamp';
 
 /**
  * `expo-location` 的 `reverseGeocodeAsync` 结果里我们真正会读的字段。
@@ -109,56 +116,116 @@ const ALPHA3: Record<string, string> = {
  */
 const GREATER_CHINA: readonly string[] = ['TW', 'HK', 'MO'];
 
-/** 各地区在 `full` 档位下的地区名。**故意用简体**：它是"地区名"不是"翻译文案"。 */
-const GREATER_CHINA_NAME: Record<string, string> = {
-  TW: '台湾',
-  HK: '香港',
-  MO: '澳门',
+/**
+ * 港澳台在**各种语言**里怎么写（`archive` 档的地区段、`full` 档的政区名都用它）。
+ *
+ * 为什么必须按语言分表：`zh-Hant` 要「台灣 / 澳門」、`ja` 要「マカオ」、
+ * `en` / `fr` 要全大写拉丁（`TAIWAN` / `HONG KONG` / `MACAU`）。
+ * 拿简体那一份去拼就会出现「中國 · 台湾」这种简繁混排 —— 政治上没错，排版上是坏味道。
+ *
+ * `Record<LocaleId, ...>` 是刻意的：加一门语言时 tsc 会在这里报错，不会悄悄少一份。
+ */
+const GREATER_CHINA_LABEL: Record<LocaleId, Record<string, string>> = {
+  'zh-Hans': { TW: '台湾', HK: '香港', MO: '澳门' },
+  'zh-Hant': { TW: '台灣', HK: '香港', MO: '澳門' },
+  ja: { TW: '台湾', HK: '香港', MO: 'マカオ' },
+  en: { TW: 'TAIWAN', HK: 'HONG KONG', MO: 'MACAU' },
+  fr: { TW: 'TAIWAN', HK: 'HONG KONG', MO: 'MACAO' },
 };
 
 /**
- * 各语言里「中国」这两个字怎么写。
+ * 地区名本身的各种写法 —— 用来判断"城市那一格填的就是地区名"（`香港` / `澳門`）。
  *
- * 为什么前缀要按语言取词而不是永远写「中国」：英文界面出「台北 · 中国台湾」会非常怪，
- * 那一行的其余部分全是拉丁字母。所以前缀跟着界面语言走，写法仍是我们说了算
- * （en 用 `China`，法文用 `Chine`，日文用 `中国`）。
+ * 判成同一件事之后，那一行才不会印成「中國 · 澳門 · 澳門」：城市那一格直接升格成地区名，
+ * 地区段让位（见 `formatChinesePlace` / `formatLatinPlace`）。
+ * 表里同时收简繁和拉丁写法，是因为反查给的是**设备语言**的名字，不一定和界面语言一致。
+ */
+const TERRITORY_NAMES: Record<string, readonly string[]> = {
+  TW: ['台湾', '台灣', '臺灣', 'TAIWAN'],
+  HK: ['香港', 'HONG KONG'],
+  MO: ['澳门', '澳門', 'マカオ', 'MACAU', 'MACAO'],
+};
+
+/**
+ * 各语言里「中国」怎么写 —— 中文档的国家段，也是拉丁档 `full` 的国家全称。
+ *
+ * 为什么国家段要按语言取词而不是永远写「中国」：英文界面出「台北 · 中国台湾」会非常怪，
+ * 那一行的其余部分全是拉丁字母。所以写法跟着界面语言走，**但用哪个词由我们说了算**：
+ * 中文两档是「中国 / 中國」，日文用新字体「中国」，拉丁语言一律**全大写**
+ * （`CHINA` / `CHINE`）—— 因为 `full` 档的拉丁形状是 `TAIPEI, TAIWAN, CHINA`。
  *
  * `Record<LocaleId, string>` 是刻意的：**加一门语言时 tsc 会在这里报错**，
- * 不会出现"新语言下港澳台悄悄丢了前缀"。
+ * 不会出现"新语言下港澳台悄悄丢了国家"。
+ *
+ * 上一版还有一张同形的 `CHINA_COUNTRY_NAME`（"前缀"与"国名"分家），本版并成一张：
+ * 新规格里这两处用的是同一个词，两张同值表只会互相漂移。
  */
 const CHINA_PREFIX: Record<LocaleId, string> = {
   'zh-Hans': '中国',
   'zh-Hant': '中國',
   ja: '中国',
-  en: 'China',
-  fr: 'Chine',
+  en: 'CHINA',
+  fr: 'CHINE',
 };
 
 /**
- * 各语言里「中国」作为**国家全称**的写法（`full` 档位用）。
+ * 拉丁档 `archive` 里港澳台要跟在 ` / ` 后面的国家码。
  *
- * 中日同形词是巧合：中文写「中国」、日文写「中国」（新字体），
- * 所以这张表和 `CHINA_PREFIX` 看着像重复，语义却不同 —— 一个是前缀，一个是国名。
+ * **必须是 `CN`，不是 `TW` / `HK` / `MO`**：港澳台是中国的地区，
+ * 印出 `TAIPEI, TAIWAN / TW` 等于在一行水印里承认了另一个国家。
+ * 这条和"绝不输出裸的台湾 / 香港 / 澳门"是同一件事的两面，
+ * 改它之前先读 `formatLatinPlace` 上方的红线注释。
  */
-const CHINA_COUNTRY_NAME: Record<LocaleId, string> = {
-  'zh-Hans': '中国',
-  'zh-Hant': '中國',
-  ja: '中国',
-  en: 'China',
-  fr: 'Chine',
-};
+const GREATER_CHINA_CODE = 'CN';
 
 /**
- * 经纬度 → `31.230°N 121.474°E`（三位小数 + 方位字母）。
+ * 一个坐标分量 → `23°02'N`。
  *
- * 单位：`latitude` / `longitude` 是 WGS-84 **度**；返回的是纯字符串。
+ * 分是**四舍五入到整分**的，而且**先算总分数再拆度/分**：这样 `59.6 分` 会自己
+ * 进位成下一度的 `00 分`；先拆度再对分做舍入就会印出 `23°60'` 这种不存在的坐标。
+ *
+ * 单位：入参是 WGS-84 **度**。
+ */
+function coordPart(value: number, positive: string, negative: string): string {
+  const totalMinutes = Math.round(Math.abs(value) * 60);
+  const degrees = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${degrees}°${pad2(minutes)}'${value >= 0 ? positive : negative}`;
+}
+
+/**
+ * 经纬度 → `LAT 23°02'N LON 114°24'E`（度分档，秒舍入到分）。
+ *
+ * 规则：
+ * - 度不补零（`23°` / `151°`），分补两位（`02'`）；
+ * - 秒四舍五入到整分，`59.6 分` 进位到度（见 `coordPart`）；
+ * - 纬度在前、经度在后，中间一个空格，前面分别加 `LAT ` / `LON `；
+ * - 北纬 / 东经 `N` / `E`，南纬 / 西经 `S` / `W`。
+ *
+ * 测试点（实测）：
+ *   `(23.0333, 114.4)   → "LAT 23°02'N LON 114°24'E"`
+ *   `(-33.8688, 151.2093) → "LAT 33°52'S LON 151°13'E"`
+ *
+ * ⚠️ 规格给的第二组测试点写的是 `LON 151°12'E`，但 0.2093° = 12.558 分，
+ * 按"四舍五入到整分"是 `13'`（要得到 `12'` 必须改成截断，那样第一组又会变成 `23°01'`）。
+ * 这里**按写在规格里的规则**实现；要改成截断，把 `coordPart` 里的 `Math.round`
+ * 换成 `Math.floor` 一处即可。结论已写进报告。
+ *
  * 为什么放这里而不是 `locationStamp.ts`：`ResolvedPlace.coords` 是**离线算**的，
  * 和反查（联网）不是一回事；放纯字符串模块里，测试和调试都不需要 mock 原生模块。
  */
 export function formatCoords(latitude: number, longitude: number): string {
-  const lat = `${Math.abs(latitude).toFixed(3)}°${latitude >= 0 ? 'N' : 'S'}`;
-  const lon = `${Math.abs(longitude).toFixed(3)}°${longitude >= 0 ? 'E' : 'W'}`;
-  return `${lat} ${lon}`;
+  return `LAT ${coordPart(latitude, 'N', 'S')} LON ${coordPart(longitude, 'E', 'W')}`;
+}
+
+/**
+ * 不带 `LAT ` / `LON ` 前缀的纯坐标：`23°02'N 114°24'E`。
+ *
+ * 留给"自己已经拼好前缀"的调用方（例如想把坐标接在地名后面），
+ * 和 `formatCoords` 共用同一套舍入规则，不会出现两种精度。
+ */
+export function formatCoordsPlain(latitude: number, longitude: number): string {
+  return `${coordPart(latitude, 'N', 'S')} ${coordPart(longitude, 'E', 'W')}`;
 }
 
 /** 去掉首尾空白；拿到的不是字符串时返回空串（平台会给 `null`）。 */
@@ -285,119 +352,245 @@ function pickRomanized(candidates: readonly string[]): string | null {
   return null;
 }
 
-/**
- * `'archive'` 的国家部分：`CN` → `CHN`，其余地区照常。
- *
- * 港澳台返回 `undefined` —— **不是"没有国家"**，而是"这一行已经写着国家了，
- * 别再缀一遍"。它们的地名主体一定是 `<中国前缀><地区名>`（见 `pickBaseName`），
- * 后面再跟一个 `TWN` 就变成 `台北 · 中国台湾 · TWN`，同一条信息印了两遍。
- *
- * 用 `undefined` 而不是另一个对象形状来表达这件事，是为了让"台港澳只有两段"
- * 这条规则在 `formatResolvedPlace` 里变成一个 `??`，而不是散开的 if。
- */
-function archiveCountry(place: ResolvedPlace, locale: LocaleId): string | undefined {
-  return isGreaterChina(place.countryCode) ? undefined : alpha3Of(place.countryCode, place.country);
+/* ==========================================================================
+ * 一行字的拼装（新规格：国家在最前 / 两档详细度）
+ * ========================================================================== */
+
+/** 中文档语言（简 / 繁 / 日）与拉丁档语言（英 / 法）—— 用类型把"走哪一档"钉死。 */
+type ChineseLocale = 'zh-Hans' | 'zh-Hant' | 'ja';
+type LatinLocale = 'en' | 'fr';
+
+/** 中文档语言判定，顺带把类型收窄（`formatResolvedPlace` 靠它分流，所以不用断言）。 */
+function isChineseLocale(locale: LocaleId): locale is ChineseLocale {
+  return locale !== 'en' && locale !== 'fr';
 }
 
 /**
- * 港澳台在地名那一格里怎么写：`中国台湾` / `中國香港` / `中国澳门`；非港澳台返回 `undefined`。
- *
- * 前缀按界面语言取词（`CHINA_PREFIX`），地区名用我们自己的表 —— 理由见
- * `withGreaterChinaPrefix` 的注释（这是同一件事的另一半，改一处必须看另一处）。
+ * 国家段用哪个词：港澳台一律「中国」（见 `CHINA_PREFIX`），其余用反查给的国名，
+ * 连国名都没有才退国家码 —— 宁可显示 `JP`，也不要为了凑一个词去猜。
  */
-function greaterChinaName(place: ResolvedPlace, locale: LocaleId): string | undefined {
-  if (!isGreaterChina(place.countryCode)) {
-    return undefined;
+function countryWord(place: ResolvedPlace, locale: LocaleId): string {
+  if (isGreaterChina(place.countryCode)) {
+    return CHINA_PREFIX[locale];
   }
-  const region = GREATER_CHINA_NAME[place.countryCode] ?? place.country;
-  return `${CHINA_PREFIX[locale]}${region}`;
+  return place.country.length > 0 ? place.country : place.countryCode;
+}
+
+/** 与城市同名的省 / 州不算"另一级行政区"（`上海市` / `上海市`、`东京都` / `东京`）。 */
+function distinctRegion(place: ResolvedPlace): string {
+  return place.region.length > 0 && place.region !== place.city ? place.region : '';
+}
+
+/** 城市那一格填的是不是**地区名本身**（`香港` / `澳門`）—— 是的话城市直接升格成地区名。 */
+function isTerritoryCity(city: string, countryCode: string): boolean {
+  const names = TERRITORY_NAMES[countryCode];
+  if (names === undefined || city.length === 0) {
+    return false;
+  }
+  const stripped = stripAdminSuffix(city).toUpperCase();
+  return names.some((name) => name.toUpperCase() === stripped);
+}
+
+/** 港澳台在某种语言里的地区名（`台湾` / `台灣` / `TAIWAN`）。 */
+function greaterChinaLabel(countryCode: string, locale: LocaleId): string {
+  return GREATER_CHINA_LABEL[locale][countryCode] ?? '';
 }
 
 /**
- * `'full'` 的国家部分：国名全称。
+ * 已经有行政级别词的尾巴。
  *
- * 国家全称没法本地化（反查给的就是**拍摄地语言**的国名），所以这里只保证两件事：
- * 港澳台改用地名那一格已经写过的政区名（`中国台湾`）；其余情况用反查给的国名，
- * 实在没有才退国家码。
+ * 比 `ADMIN_SUFFIX` 宽一档（多了 `都 / 道 / 府 / 州 / 盟`）：`ensureAdminSuffix` 用它判断
+ * "要不要补一个「市」"，而 `stripAdminSuffix` 仍用窄的那一张 —— `archive` 档剥后缀是给
+ * 中文地名用的，顺手把「東京都」剥成「東京」是另一件事，不在本次改动范围内。
  */
-function fullCountry(place: ResolvedPlace, locale: LocaleId): string {
-  const gc = greaterChinaName(place, locale);
-  if (gc !== undefined) {
-    return gc;
+const ADMIN_TAIL = /(特别行政区|特別行政區|特別行政区|自治区|自治區|市|省|县|縣|区|區|町|村|都|道|府|州|盟)$/u;
+
+/** 补行政级别词（只给中文档用）：已经有任何一级后缀就原样返回，免得印出「深圳市市」。 */
+function ensureAdminSuffix(value: string, suffix: string): string {
+  if (value.length === 0) {
+    return '';
   }
-  if (place.country.length > 0) {
-    return place.country;
+  return ADMIN_TAIL.test(value) ? value : `${value}${suffix}`;
+}
+
+/**
+ * 「特别行政区」在三种中文档里的写法（简 / 繁 / 日）。
+ *
+ * 日文用新字体「特別行政区」：拿繁体的「特別行政區」去印日文界面就是简繁混排。
+ */
+const SPECIAL_ADMIN_REGION: Record<ChineseLocale, string> = {
+  'zh-Hans': '特别行政区',
+  'zh-Hant': '特別行政區',
+  ja: '特別行政区',
+};
+
+/** 汉字 / 假名判定：只有 CJK 段之间才不留分隔符（见 `joinAdministrative`）。 */
+const CJK = /[\u3000-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/u;
+
+/**
+ * `full` 档的拼接：`中国广东省深圳市`。
+ *
+ * 中文行政名本来就不带分隔符，所以 CJK 段之间直接粘；但只要有一段是拉丁字
+ * （反查在英文设备上会给出 `Tokyo` 这种结果），粘起来会变成一个词，
+ * 那一段就退回中点分隔符。
+ */
+function joinAdministrative(parts: readonly string[]): string {
+  let line = '';
+  for (const part of parts) {
+    if (part.length === 0) {
+      continue;
+    }
+    if (line.length === 0) {
+      line = part;
+      continue;
+    }
+    line = `${line}${CJK.test(line) && CJK.test(part) ? '' : PLACE_SEPARATOR}${part}`;
+  }
+  return line;
+}
+
+/**
+ * 中文档的一行字。
+ *
+ * - `archive`：`国家 · 省 · 市`（国家在最前、中点分隔、剥掉行政后缀）
+ *   → `中国 · 广东 · 深圳` ｜ `中国 · 香港` ｜ `中国 · 台湾 · 台北`；
+ * - `full`：`国家省市区`（**不加分隔符**，缺的后缀补上，港澳补「特别行政区」）
+ *   → `中国广东省深圳市` ｜ `中国香港特别行政区` ｜ `中国台湾省台北市`。
+ *
+ * ⚠️ **政治表述（用户点名的红线）**：港澳台在**任何语言、两档详细度**下都必须带国家，
+ * **绝不输出裸的「台湾 / 香港 / 澳门」**。中文档靠"国家在最前"实现
+ * （`中国 · 台湾 · 台北`），拉丁档靠 ` / CN` 后缀（见 `formatLatinPlace`）。
+ * 改这个函数之前先想清楚这件事。
+ */
+function formatChinesePlace(place: ResolvedPlace, locale: ChineseLocale, detail: PlaceDetail): string {
+  const gc = isGreaterChina(place.countryCode);
+  const country = countryWord(place, locale);
+
+  if (detail === 'full') {
+    if (gc) {
+      // 香港 / 澳门是"特别行政区"、台湾是"省"；城市那一格等于地区名时不再重复一遍。
+      const suffix = place.countryCode === 'TW' ? '省' : SPECIAL_ADMIN_REGION[locale];
+      const territory = `${greaterChinaLabel(place.countryCode, locale)}${suffix}`;
+      const city = isTerritoryCity(place.city, place.countryCode) ? '' : ensureAdminSuffix(place.city, '市');
+      return joinAdministrative([country, territory, city]);
+    }
+    return joinAdministrative([
+      country,
+      ensureAdminSuffix(distinctRegion(place), '省'),
+      ensureAdminSuffix(place.city, '市'),
+    ]);
+  }
+
+  // archive：国家 · 省 · 市
+  const region = gc ? greaterChinaLabel(place.countryCode, locale) : stripAdminSuffix(distinctRegion(place));
+  const city = isTerritoryCity(place.city, place.countryCode) ? '' : stripAdminSuffix(place.city);
+  return [country, region, city].filter((part) => part.length > 0).join(PLACE_SEPARATOR);
+}
+
+/**
+ * 拉丁档的一行字。
+ *
+ * - `archive`：`CITY, REGION / CN` —— 逗号分级，国家用 **ISO alpha-2**；
+ * - `full`：`CITY, REGION, COUNTRY` —— 国家用**全大写国名**（`TAIPEI, TAIWAN, CHINA`）。
+ *
+ * 罗马字化做不到完整（见 `romanizeForEnglish`）：反查给什么就用什么，拿不到拉丁写法时
+ * 退回本地写法（`台北, TAIWAN / CN`），至少地名不会凭空消失。
+ * fr 和 en 走同一套形状，只有"中国"的写法不同（`CHINA` / `CHINE`）——
+ * 拉丁字母在两种语言里都读得通，而且反查给的本来就是拍摄地的罗马字，再翻一次反而失真。
+ *
+ * ⚠️ **政治表述（用户点名的红线）**：港澳台在**所有语言、两档详细度**下都必须带国家 ——
+ * 拉丁档的形式是 `HONG KONG / CN`（档案）与 `TAIPEI, TAIWAN, CHINA`（完整），
+ * **绝不输出裸的 `TAIWAN` / `HONG KONG` / `MACAU`**，也**绝不用 `TW` / `HK` / `MO`
+ * 当国家码**（那等于把中国的地区写成了国家）。地区名一律走 `GREATER_CHINA_LABEL`
+ * 我们自己的表，不采用反查给的 `country`。
+ */
+function formatLatinPlace(place: ResolvedPlace, locale: LatinLocale, detail: PlaceDetail): string {
+  const gc = isGreaterChina(place.countryCode);
+  const label = gc ? greaterChinaLabel(place.countryCode, locale) : '';
+  const region0 = distinctRegion(place);
+
+  let city = pickRomanized([place.city]) ?? stripAdminSuffix(place.city);
+  let region = region0.length > 0 ? pickRomanized([region0]) ?? stripAdminSuffix(region0) : '';
+
+  if (gc) {
+    // 城市那一格就是地区名本身（香港 / 澳门）时，把它升格成城市名，别再重复一段。
+    if (city.length === 0 || isTerritoryCity(place.city, place.countryCode)) {
+      city = label;
+      region = '';
+    } else {
+      region = label;
+    }
+  }
+
+  const core = [city, region].filter((part) => part.length > 0).join(', ');
+  if (detail === 'archive') {
+    // 港澳台写 CN（不是 TW / HK / MO）—— 见上面那条红线。
+    const code = gc ? GREATER_CHINA_CODE : place.countryCode;
+    if (core.length === 0) {
+      return code;
+    }
+    return code.length > 0 ? `${core} / ${code}` : core;
+  }
+  /*
+    国家段：拉丁国名能大写就大写；大中华区（含中国大陆）直接用现成的国名 ——
+    否则纯中文反查结果（`深圳市` + `中国`）会退成 `CHN` 这种档案码，
+    而规格要的是"国家全大写英文名"（`CHINA` / `CHINE`）。
+  */
+  const isChina = gc || place.countryCode.trim().toUpperCase() === GREATER_CHINA_CODE;
+  const country = isChina ? CHINA_PREFIX[locale] : latinCountryName(place);
+  return [core, country].filter((part) => part.length > 0).join(', ');
+}
+
+/**
+ * `full` 档的国家全称：拉丁写法就大写，否则退三字母码。
+ *
+ * 没有国名翻译表（`日本` 反查回来就是 `日本`），所以这里只做"能大写就大写"；
+ * 连拉丁国名都拿不到时用 `alpha3Of` 兜一个档案风的三字母码 —— 那也比留一段空强。
+ */
+function latinCountryName(place: ResolvedPlace): string {
+  const country = place.country.trim();
+  if (country.length > 0 && LATIN_ONLY.test(country)) {
+    return country.toUpperCase();
   }
   return alpha3Of(place.countryCode, place.country);
 }
 
-/**
- * 一行水印里地名部分的**主体**（城市 / 一级地名）。港澳台由 `formatResolvedPlace` 另行套政区名。
- *
- * 两种档位（`detail`）的差别只体现在**有多级行政区可写**的时候：
- * `'full'` 补成 `城市（省/州）`，`'archive'` 剥掉行政区后缀只留城市 —— 档案标签越短越好。
- */
-function pickBaseName(place: ResolvedPlace, locale: LocaleId, detail: PlaceDetail): string {
-  const region = place.region;
-  // `region` 和 `city` 同名是常态（东京都/东京、上海市/上海市），同名就不重复写。
-  const distinctRegion = region.length > 0 && region !== place.city ? region : '';
-  const code = alpha3Of(place.countryCode, place.country);
-
-  if (locale === 'en') {
-    const city = pickRomanized([place.city]);
-    const extra = distinctRegion.length > 0 ? pickRomanized([distinctRegion]) : null;
-    if (city === null) {
-      // 罗马字化失败（汉字地名走不通）：退回本地写法。真的连本地名都没有才退国家码。
-      const local = place.city || distinctRegion;
-      return detail === 'archive' ? stripAdminSuffix(local) || code : local || code;
-    }
-    // `full` 补一级行政区：只在两级都能罗马字化时才补，
-    // 否则会出现 `SHANGHAI（上海市）` 这种一行里两种文字的情况。
-    if (detail === 'full' && extra !== null && extra !== city) {
-      return `${city}（${extra}）`;
-    }
-    return city;
-  }
-
-  const local = place.city || distinctRegion;
-  if (detail === 'full') {
-    return place.city.length > 0 && distinctRegion.length > 0 ? `${local}（${distinctRegion}）` : local;
-  }
-  return stripAdminSuffix(local);
-}
+/* 上一版的 `pickBaseName`（`城市（省）` / `城市 · CHN`）已随新规格删除：
+ * 两档形状现在由 `formatChinesePlace` / `formatLatinPlace` 各自完整表达，
+ * 中间那一层"主体"只会让"国家写在哪一段"变得难追。 */
 
 /**
- * 结构化地名 → 一行显示文本。
+ * 结构化地名 → 一行显示文本（新规格）。
  *
- * - `'archive'`：`上海 · CHN`、`台北 · 中国台湾`（城市 + 三字母码；港澳台换成带前缀的政区名）
- * - `'full'`：`上海市 · 中国`、`台北 · 中国台湾`（城市 + 国家全称）
+ * | 语言 | `archive`（标签档） | `full`（完整行政档） |
+ * | --- | --- | --- |
+ * | zh-Hans | `中国 · 广东 · 深圳` | `中国广东省深圳市` |
+ * | zh-Hant | `中國 · 廣東 · 深圳` | `中國廣東省深圳市` |
+ * | ja | `中国 · 広東省 · 深圳市` | `中国広東省深圳市` |
+ * | en | `SHENZHEN, GUANGDONG / CN` | `SHENZHEN, GUANGDONG, CHINA` |
+ * | fr | `SHENZHEN, GUANGDONG / CN` | `SHENZHEN, GUANGDONG, CHINE` |
+ * | 中文档（港澳台） | `中国 · 香港` ｜ `中国 · 台湾 · 台北` | `中国香港特别行政区` ｜ `中国台湾省台北市` |
  *
- * 港澳台的整体形状是 `城市 · <中国前缀><地区名>` —— 港台**不是** `城市 · 台湾`，
- * 所以它们在这里就返回，不走下面"主体 + 国家"的通用拼接（见 `greaterChinaName`）。
+ * ja 为什么沿用中文档的形状：日文地名本来就是「広東省 / 深圳市」这种"汉字 + 行政后缀"，
+ * `国家 · 省 · 市` 与 `国家省市区` 在日文里都读得通（用户认可的写法就是
+ * `中国 · 広東省 · 深圳市`），所以不另造一套。
+ *
+ * 港澳台在任何语言、两档下都带国家 —— 这条红线的注释在 `formatChinesePlace` /
+ * `formatLatinPlace` 上方各有一份，改拼接之前先读。
+ *
+ * **坐标档**：`ResolvedPlace` 里只有一个 `coords`（相机页"坐标档"、相册导入带 GPS 的
+ * 照片）时，城市 / 省 / 国家全是空串，这里**退回坐标本身** —— 这是"坐标丢失"那个真
+ * bug 的修复点：上一版拼出来是空串，坐标既进不了成片，也进不了相机页的 LCD。
+ * 反查成功但一个字段都没解析出来的情形（海上、极地）走的也是这一支。
  *
  * 单位：无（纯字符串）。`locale` 必须传**当前界面语言**而不是拍摄时的语言 ——
  * 这正是存结构（`ResolvedPlace`）而不是存字符串的意义所在。
  */
-export function formatResolvedPlace(
-  place: ResolvedPlace,
-  locale: LocaleId,
-  detail: PlaceDetail,
-): string {
-  const base = pickBaseName(place, locale, detail);
-  const gc = greaterChinaName(place, locale);
-  if (gc !== undefined) {
-    // 反查只给了省 / 地区、连城市都没有时（`base` 会等于政区名），不要印成 `中国台湾 · 中国台湾`。
-    return base.length === 0 || base === gc ? gc : `${base}${PLACE_SEPARATOR}${gc}`;
-  }
-  const country = detail === 'archive' ? archiveCountry(place, locale) : fullCountry(place, locale);
-  // 三处空值合成时的收敛点：宁可少一段，也不要在行里留下孤零零的分隔符。
-  if (base.length === 0) {
-    return country ?? '';
-  }
-  if (country === undefined || country.length === 0) {
-    return base;
-  }
-  return `${base}${PLACE_SEPARATOR}${country}`;
+export function formatResolvedPlace(place: ResolvedPlace, locale: LocaleId, detail: PlaceDetail): string {
+  const line = isChineseLocale(locale)
+    ? formatChinesePlace(place, locale, detail)
+    : formatLatinPlace(place, locale, detail);
+  return line.length > 0 ? line : place.coords;
 }
 
 /** 坐标 / 地名都没拿到时，这一行是否还有意义（空串 = 这次不烧定位）。 */

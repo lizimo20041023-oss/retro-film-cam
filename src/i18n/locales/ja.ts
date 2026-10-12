@@ -21,7 +21,7 @@ export const ja: Messages = {
   /* ---------------- ③ 下部コントロール ---------------- */
   'camera.preset.head': 'プリセット PRESET',
   'camera.preset.a11y': '現在のプリセット {name}、タップで切り替え',
-  'camera.preset.hint': '{index}/{total} · タップで切り替え',
+  'camera.preset.hint': '{index}/{total} · 切り替え',
   'camera.frame.hint': 'スワイプでフレーム変更',
   'camera.frame.label': 'フレーム',
   'camera.frame.next': '次のフレーム',
@@ -32,8 +32,9 @@ export const ja: Messages = {
   'camera.shutter.busy': '現像中',
 
   /* ---------------- フィルムライブラリ（ファインダー下のフィルム名を長押しで開く） ---------------- */
-  // パネル見出しは印刷された英語のプレート。LCD の文字と同じく翻訳せず、5言語で同じ表記。
-  'film.drawer.title': 'SELECT FILM STOCK',
+  // パネル見出し = 印刷された英語プレート（翻訳しない）+ 現地語の語、間は ' · ' で区切る。
+  // プレートは筐体の刻印、後ろの語が人に向けた説明 —— 5言語で同じ表記ではなくなった。
+  'film.drawer.title': 'SELECT FILM STOCK · フィルムライブラリ',
   'film.drawer.a11y': 'フィルムライブラリ、フィルムプリセットを選択',
   'film.drawer.close': '完了',
   'film.drawer.hint': 'ファインダー下のフィルム名を長押ししても開けます',
@@ -166,4 +167,35 @@ export const ja: Messages = {
   'location.failed': '位置情報を取得できません',
   'location.locating': '位置情報を取得中',
   'location.servicesOff': 'システムの「位置情報サービス」がオフになっています。',
+  /* ---------------- アルバム取り込み（§8） ---------------- */
+  'gallery.import': '取り込み',
+  'gallery.import.a11y': '写真ライブラリから取り込んで再現像する',
+  'gallery.import.busy': '現像中…',
+  'gallery.import.denied':
+    '写真へのアクセスが許可されていません。システム設定 → プライバシーとセキュリティ → 写真 で許可してください。',
+  'gallery.import.failed': '取り込みに失敗しました：{message}',
+  'gallery.import.noExif': '元写真に撮影日時がないため、今日の日付で現像します。',
+
+  /* ---------------- フィルム長尺（§9） ---------------- */
+  'gallery.mode.strip': '長尺フィルム',
+  'gallery.mode.grid': '一覧表示',
+  'gallery.mode.a11y': 'アルバムの表示方法：{label}',
+  'gallery.strip.count': '全 {count} 枚',
+
+  /* ---------------- 切片の書き出し（§9.4） ---------------- */
+  'gallery.export.entry': '切片を書き出す',
+  'gallery.export.a11y': '選択した {count} 枚をつなげて一本のポスターにする',
+  'gallery.export.hint': 'あと {count} 枚',
+  'gallery.export.busy': 'つなぎ合わせています…',
+  'gallery.export.saved': '切片をアルバムに保存しました',
+  'gallery.export.failed': '書き出しに失敗しました：{message}',
+
+  /* ---------------- 削除（§10.2） ---------------- */
+  'gallery.delete.a11y': 'この一枚を削除',
+  'gallery.delete.title': 'この一枚を削除しますか？',
+  'gallery.delete.message': '端末内のコピーも一緒に消えます。元に戻せません。',
+  'gallery.delete.cancel': 'キャンセル',
+  'gallery.delete.confirm': '削除',
+  'gallery.deleted': '削除しました',
+
 };

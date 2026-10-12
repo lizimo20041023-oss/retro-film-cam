@@ -14,13 +14,15 @@
  *                        < 1：中灰层 'normal'（把画面往灰里压）
  *   fade          0..1  深灰 '#1C1C1C' + 'lighten'：只抬黑场、不糊高光（模拟过期胶片）
  *   exposure     -1..1  > 0 白 'screen' 提亮 / < 0 黑 'multiply' 压暗
- *   grain         0..1  grain.png 平铺 + 'overlay'
+ *   grain         0..1  grain.png 平铺 + 'overlay'（单色亮度颗粒，无任何色度噪声）
  *   vignette      0..1  vignette.png 拉伸 + 'multiply'
  *   lightLeak     0..1  light-leak.png 拉伸 + 'screen'（lightLeakFlip: true 换到左边）
  *
  *  中性值不产生图层：temperature/tint/fade/lightLeak = 0、saturation/contrast = 1、
  *  exposure = 0、grain/vignette 不写就有一点点默认值（见 PRESET_DEFAULTS）。
  *  所以"少写几个字段"= 少几层合成 = 更快，不会出错。
+ *  颗粒只有 `grain` 这一个旋钮：它铺的是 `grain.png`（三通道逐像素恒等的单色亮度颗粒）。
+ *  这里曾经还有一个 `grainChroma`（预烘焙的品红↔绿块状彩噪贴图），已在 2026-10-12 彻底删除。
  *
  * ─────────────────────────────────────────────────────────────────────────
  * 怎么新增一个预设
@@ -48,9 +50,7 @@ export const PRESET_DEFAULTS = {
   splitTone: 0,
   /** 光晕：高光变暖发亮。0 = 关。 */
   bloom: 0,
-  grain: 0.22,
-  /** CCD 式块状彩色噪点。0 = 关。 */
-  grainChroma: 0,
+  grain: 0.088,
   /** 灰尘与划痕。0 = 关。 */
   dust: 0,
   vignette: 0.18,
@@ -101,7 +101,7 @@ export const PRESETS: FilmPreset[] = [
       exposure: 0.02,
       splitTone: 0.22,
     },
-    grain: 0.3,
+    grain: 0.12,
     vignette: 0.28,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
     showGuide: true,
@@ -119,7 +119,7 @@ export const PRESETS: FilmPreset[] = [
       exposure: 0.06,
       splitTone: 0.16,
     },
-    grain: 0.2,
+    grain: 0.08,
     vignette: 0.14,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
   },
@@ -136,7 +136,7 @@ export const PRESETS: FilmPreset[] = [
       exposure: 0.06,
       splitTone: 0.18,
     },
-    grain: 0.24,
+    grain: 0.1,
     vignette: 0.16,
     lightLeak: 0.22,
     lightLeakFlip: false,
@@ -155,7 +155,7 @@ export const PRESETS: FilmPreset[] = [
       exposure: -0.02,
       splitTone: 0.24,
     },
-    grain: 0.26,
+    grain: 0.1,
     vignette: 0.2,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
   },
@@ -172,7 +172,7 @@ export const PRESETS: FilmPreset[] = [
       exposure: -0.04,
       splitTone: 0.12,
     },
-    grain: 0.2,
+    grain: 0.08,
     vignette: 0.22,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
   },
@@ -190,8 +190,7 @@ export const PRESETS: FilmPreset[] = [
       splitTone: 0.52,
       bloom: 0.2,
     },
-    grain: 0.3,
-    grainChroma: 0.46,
+    grain: 0.12,
     vignette: 0.34,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
   },
@@ -209,7 +208,7 @@ export const PRESETS: FilmPreset[] = [
       splitTone: 0.34,
       bloom: 0.52,
     },
-    grain: 0.3,
+    grain: 0.12,
     vignette: 0.22,
     lightLeak: 0.18,
     lightLeakFlip: true,
@@ -229,8 +228,7 @@ export const PRESETS: FilmPreset[] = [
       splitTone: 0.4,
       bloom: 0.24,
     },
-    grain: 0.38,
-    grainChroma: 0.34,
+    grain: 0.15,
     dust: 0.16,
     vignette: 0.44,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
@@ -248,7 +246,7 @@ export const PRESETS: FilmPreset[] = [
       exposure: 0.02,
       splitTone: 0.14,
     },
-    grain: 0.38,
+    grain: 0.15,
     dust: 0.12,
     vignette: 0.4,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#E6E6E6' },
@@ -267,7 +265,7 @@ export const PRESETS: FilmPreset[] = [
       exposure: 0.1,
       splitTone: 0.3,
     },
-    grain: 0.34,
+    grain: 0.14,
     dust: 0.2,
     vignette: 0.36,
     lightLeak: 0.34,
@@ -334,7 +332,6 @@ export function resolvePreset(preset: FilmPreset): ResolvedFilmPreset {
     description: preset.description ?? '',
     color: resolvedColor,
     grain: preset.grain ?? PRESET_DEFAULTS.grain,
-    grainChroma: preset.grainChroma ?? PRESET_DEFAULTS.grainChroma,
     dust: preset.dust ?? PRESET_DEFAULTS.dust,
     vignette: preset.vignette ?? PRESET_DEFAULTS.vignette,
     lightLeak: preset.lightLeak ?? PRESET_DEFAULTS.lightLeak,

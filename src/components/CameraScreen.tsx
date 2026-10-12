@@ -611,12 +611,18 @@ export function CameraScreen() {
   }, [handlePresetCycle]);
 
   /**
-   * 长按 400ms 开胶卷库。手感和开设置/相册一致（机械动作 → Light 冲击），
+   * 长按 400ms 开胶卷库。
+   *
+   * ⚠️ 这里是**全项目唯一**使用 `Medium` 冲击的地方。v1.2.0 刻意把触感收敛到
+   * "选择"（`selectionAsync`）与"机械动作"（`impactAsync(Light)`）两档，
+   * 用户这次明确要求长按开抽屉要有更重的手感 —— 于是给它一档 Medium，
+   * 但**不要再往别处加**，否则这套"两档触感"的语言就废了。
+   *
    * 同时胶片名会"顶一下"（`filmNudge`），让人知道"长按是有反应的"。
    */
   const handleFilmLongPress = useCallback(() => {
     filmLongPressRef.current = true;
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setFilmDrawerVisible(true);
   }, []);
 
@@ -700,6 +706,14 @@ export function CameraScreen() {
         */
         watermarkLayout: settings.watermarkLayout,
         placeDetail: settings.placeDetail,
+        /*
+          这一卷拍到第几张（**1 起数**，见 `FilmStageInput.exposureIndex` 的说明）。
+          合成层在"关闭定位"时用它印摄影代号：`{胶卷代号} // ISO 400 · 35MM · EXP.07`。
+          +1 是必须的：`exposureCount` 是"**已经**拍了几张"（第一张时它还是 0，
+          顶栏 `[00A]` 读的就是它），而规格里的 EXP 编号是 1 起的 ——
+          直接传 `exposureCount` 会让第一张印成 `EXP.00`，整卷编号全部错一位。
+        */
+        exposureIndex: exposureCount + 1,
         onStage: (nextStage) => setStatus({ kind: 'developing', stage: nextStage }),
       });
 
@@ -748,6 +762,9 @@ export function CameraScreen() {
     // 但只有这两项真的影响出片，其余设置不该让快门回调失效。
     settings.watermarkLayout,
     settings.placeDetail,
+    // `exposureIndex` 用的是它，所以它变了这个回调必须重建 ——
+    // 否则第二张之后传下去的 EXP 编号会永远停在 1。
+    exposureCount,
     t,
   ]);
 
@@ -756,10 +773,21 @@ export function CameraScreen() {
    *
    * 为什么包一层箭头函数：那个 hook 把 `onPress` 存进 ref 并用原生事件订阅回调去调它，
    * 这里传的是已经 memo 过的 `handleShutter`，订阅不会因为重渲染反复重建。
+   *
+   * 触感：**只有物理侧键这一条路径用 `Heavy`**，屏幕上的快门按钮维持 `Light`
+   * （`handleShutter` 里那一发）。物理键是"盲按"——手在机身边缘、眼睛在看取景器，
+   * 没有视觉反馈，所以它需要一档更明确的重击来确认"这一枪响了"。
+   *
+   * ⚠️ 这两行**都不 await**：`impactAsync` 是异步的，而按下侧键到真正出图中间
+   * 还有定位、`takePictureAsync`、合成一大串事。等触觉回执再拍照会白等几毫秒到
+   * 几十毫秒（用户按下去的那一下会感觉"迟钝"）。触觉和快门**同时**发出去，
+   * 由系统各自完成，这才是"立即触发拍摄流水线与重度触觉反馈"。
    */
   usePhysicalShutter({
     enabled: cameraGranted && cameraReady && !developing,
     onPress: () => {
+      // 先发触觉再按快门：两行之间不做任何等待，纯粹是"手感反馈不要晚于动作"。
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
       void handleShutter();
     },
   });
@@ -854,10 +882,13 @@ export function CameraScreen() {
           点一下换下一张，序号直接印在徽章上。
         */}
         <FrameBadge
+          /* 代号（`FrameSpec.code`，纯 ASCII、不翻译）—— 徽标上显示的就是它。
+             胶卷名和画幅比例**故意不传**：用户要求顶栏只留"画幅 + 序号"，
+             胶卷名由左下角那张大卡片独占。详见 FrameBadge 的文件头。 */
+          code={frame.code}
           name={frameName}
           index={frameIndex}
           count={FRAMES.length}
-          aspect={frame.aspect}
           disabled={!interactive}
           onPress={handleBadgeFramePress}
         />
@@ -1303,8 +1334,18 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     fontFamily: UI_MONO,
   },
+  /**
+   * §三.2 复查结论：这四个拨轮底下**已经没有任何说明小字**（v1.2.0 就删干净了，
+   * 现在只有图标 + 无障碍标签），所以这里只做"收窄"。
+   *
+   * 为什么把 6 收到 4：右侧这一串是 4 枚 38pt 拨轮 + 计数徽章，中间垫了 5 道
+   * 固定 6pt 的 `topActionsGap` = 30pt 的纯空白。收成 4pt 后省下 10pt，
+   * 画幅徽标（`maxWidth: '42%'`）在 320pt 窄机上就多出 10pt 可用宽度 ——
+   * 而 4pt 的视觉间距对 38pt 的圆形拨轮来说仍然足够，不会糊成一块。
+   * 容器本身没有 padding（只有 `flexShrink: 0`），所以收窄只剩这一处可调。
+   */
   topActionsGap: {
-    width: 6,
+    width: 4,
   },
 
   /* ---------------- ② 取景器 ---------------- */

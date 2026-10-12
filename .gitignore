@@ -10,15 +10,22 @@ expo-env.d.ts
 # 检查用临时产物
 .export-check/
 assets/ui/_*.png
-assets/textures/_grade-*.png
+assets/textures/_*.png
 assets/frames/_*.png
 .ui-preview.png
-scripts/__pycache__/
+**/__pycache__/
 # 我自己写提交信息 / 一次性检查用的临时文件，一律下划线开头放在仓库根
 /_*.txt
 /_*.py
 /_*.ps1
 /_*.json
+/_*.png
+/_*.md
+# 一次性脚本也经常落在 scripts/ 下（v1.2.0 混进过 _wm_check.mjs / _zoom_check.py / _wm_out.txt，
+# 当时的规则只认仓库根，于是每次都要手动删一遍）。约定不变：下划线开头 = 不是仓库内容。
+scripts/_*
+# 一次性检查产物也会按同样的约定落在下划线开头的子目录里（例如 _probe-crops/ 放相框放大裁切图）
+/_*/
 
 # 原生工程（本项目是纯 managed，用不到；prebuild 后才会出现）
 /ios/

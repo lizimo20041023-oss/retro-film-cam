@@ -22,7 +22,7 @@ export const en: Messages = {
   /* ---------------- ③ dashboard ---------------- */
   'camera.preset.head': 'PRESET',
   'camera.preset.a11y': 'Current preset {name}, tap to switch',
-  'camera.preset.hint': '{index}/{total} · tap to switch',
+  'camera.preset.hint': '{index}/{total} · switch',
   'camera.frame.hint': 'Swipe the viewfinder',
   'camera.frame.label': 'FRAME',
   'camera.frame.next': 'Next frame',
@@ -33,9 +33,10 @@ export const en: Messages = {
   'camera.shutter.busy': 'Developing',
 
   /* ---------------- film library (long-press the film name under the viewfinder) ---------------- */
-  // The panel heading is a printed English plate: like the LCD labels it stays
-  // untranslated, and all five locales carry the identical string.
-  'film.drawer.title': 'SELECT FILM STOCK',
+  // The panel heading = the printed English plate (never translated) + a word in
+  // the current language, separated by ' · '. The plate is engraved on the body;
+  // the word after it is what actually tells the photographer where they are.
+  'film.drawer.title': 'SELECT FILM STOCK · FILM LIBRARY',
   'film.drawer.a11y': 'Film library, choose a film preset',
   'film.drawer.close': 'Done',
   'film.drawer.hint': 'You can also long-press the film name under the viewfinder',
@@ -170,4 +171,35 @@ export const en: Messages = {
   'location.failed': 'Location unavailable',
   'location.locating': 'Locating',
   'location.servicesOff': 'System Location Services is turned off.',
+  /* ---------------- importing from the photo library ---------------- */
+  'gallery.import': 'Import',
+  'gallery.import.a11y': 'Import photos from the library and re-develop them',
+  'gallery.import.busy': 'Developing…',
+  'gallery.import.denied':
+    'No photo library access. Open Settings → Privacy & Security → Photos and allow it.',
+  'gallery.import.failed': 'Import failed: {message}',
+  'gallery.import.noExif': 'The original has no capture date, so it is dated today.',
+
+  /* ---------------- negative strip ---------------- */
+  'gallery.mode.strip': 'Strip',
+  'gallery.mode.grid': 'Grid',
+  'gallery.mode.a11y': 'Album view: {label}',
+  'gallery.strip.count': '{count} frames',
+
+  /* ---------------- strip export ---------------- */
+  'gallery.export.entry': 'Export strip',
+  'gallery.export.a11y': 'Join the {count} selected frames into one long poster',
+  'gallery.export.hint': '{count} more to go',
+  'gallery.export.busy': 'Joining…',
+  'gallery.export.saved': 'Strip saved to album',
+  'gallery.export.failed': 'Export failed: {message}',
+
+  /* ---------------- deleting a frame ---------------- */
+  'gallery.delete.a11y': 'Delete this frame',
+  'gallery.delete.title': 'Delete this frame?',
+  'gallery.delete.message': 'The local copy goes with it. This cannot be undone.',
+  'gallery.delete.cancel': 'Cancel',
+  'gallery.delete.confirm': 'Delete',
+  'gallery.deleted': 'Deleted',
+
 };

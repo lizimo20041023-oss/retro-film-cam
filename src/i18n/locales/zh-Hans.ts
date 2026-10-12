@@ -30,7 +30,7 @@ export const zhHans = {
   /* ---------------- ③ 底部主控 ---------------- */
   'camera.preset.head': '预设 PRESET',
   'camera.preset.a11y': '当前预设 {name}，轻触切换',
-  'camera.preset.hint': '{index}/{total} · 轻触切换',
+  'camera.preset.hint': '{index}/{total} · 切换',
   'camera.frame.hint': '滑动取景器',
   'camera.frame.label': '相框',
   'camera.frame.next': '下一个相框',
@@ -41,8 +41,9 @@ export const zhHans = {
   'camera.shutter.busy': '正在显影',
 
   /* ---------------- 胶卷库（长按取景器下方的胶片名打开） ---------------- */
-  // 面板标题是印上去的英文标牌，和 LCD 上的字一样不翻译，五种语言共用同一串。
-  'film.drawer.title': 'SELECT FILM STOCK',
+  // 面板标题 = 印上去的英文标牌（永远不翻译）+ 一个本地语言的词，中间用 ' · ' 分开。
+  // 牌子相当于机身刻字，后面那个词才是给人看的说明 —— 所以这一串不再跨语言相同。
+  'film.drawer.title': 'SELECT FILM STOCK · 胶卷库',
   'film.drawer.a11y': '胶卷库，选择胶卷预设',
   'film.drawer.close': '完成',
   'film.drawer.hint': '长按取景器下方胶片名也可以打开这里',
@@ -172,4 +173,34 @@ export const zhHans = {
   'location.failed': '定位失败',
   'location.locating': '正在定位',
   'location.servicesOff': '系统的「定位服务」总开关没有打开。',
+  /* ---------------- 相册导入（把系统相册里的老照片重新冲印） ---------------- */
+  'gallery.import': '导入',
+  'gallery.import.a11y': '从系统相册导入照片，重新冲印',
+  'gallery.import.busy': '正在冲印…',
+  'gallery.import.denied': '没有相册访问权限，请到 系统设置 → 隐私与安全性 → 照片 里打开。',
+  'gallery.import.failed': '导入失败：{message}',
+  'gallery.import.noExif': '原图没有拍摄时间，按今天冲印。',
+
+  /* ---------------- 底片长卷（§9） ---------------- */
+  'gallery.mode.strip': '长卷底片',
+  'gallery.mode.grid': '经典大图',
+  'gallery.mode.a11y': '相册浏览方式：{label}',
+  'gallery.strip.count': '共 {count} 张',
+
+  /* ---------------- 切片导出（§9.4） ---------------- */
+  'gallery.export.entry': '导出切片',
+  'gallery.export.a11y': '把选中的 {count} 张拼成一张长条海报',
+  'gallery.export.hint': '再选 {count} 张',
+  'gallery.export.busy': '正在拼合…',
+  'gallery.export.saved': '切片已存入相簿',
+  'gallery.export.failed': '导出失败：{message}',
+
+  /* ---------------- 删除成片（§10.2） ---------------- */
+  'gallery.delete.a11y': '删除这张成片',
+  'gallery.delete.title': '删除这张成片？',
+  'gallery.delete.message': '本地副本也会一起删掉，无法撤销。',
+  'gallery.delete.cancel': '取消',
+  'gallery.delete.confirm': '删除',
+  'gallery.deleted': '已删除',
+
 } as const;

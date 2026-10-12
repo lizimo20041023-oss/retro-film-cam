@@ -172,7 +172,7 @@ BLEND = {
 # --------------------------------------------------------------------------
 NUMERIC_KEYS = (
     "temperature", "tint", "saturation", "contrast", "fade", "exposure",
-    "grain", "grainChroma", "dust", "vignette", "lightLeak", "bloom",
+    "grain", "dust", "vignette", "lightLeak", "bloom",
 )
 
 
@@ -217,7 +217,7 @@ def parse_presets() -> list[dict]:
 
 PRESET_DEFAULTS = {
     "temperature": 0.0, "tint": 0.0, "saturation": 1.0, "contrast": 1.0,
-    "fade": 0.0, "exposure": 0.0, "grain": 0.08, "grainChroma": 0.0,
+    "fade": 0.0, "exposure": 0.0, "grain": 0.088,
     "dust": 0.0, "vignette": 0.18, "lightLeak": 0.0, "bloom": 0.0,
     "lightLeakFlip": False,
 }
@@ -315,12 +315,8 @@ def build_layers(p: dict) -> list[dict]:
                        "blendMode": "color-dodge", "color": HALATION,
                        "opacity": clamp01(p["bloom"])})
 
-    # 新：CCD 色噪（块状彩色斑点）
-    if p.get("grainChroma", 0.0) > 0:
-        layers.append({"kind": "texture", "key": "chroma", "label": "色噪",
-                       "texture": "chroma-noise.png", "resizeMode": "repeat",
-                       "blendMode": "overlay", "opacity": clamp01(p["grainChroma"])})
-
+    # 颗粒：唯一的"质感"旋钮。这里曾经还有一层 CCD 色噪（chroma-noise.png，品红↔绿块状色斑），
+    # 它是满屏紫绿伪色的来源，已连同贴图和 grainChroma 参数一起彻底删除 —— 不要再加回来。
     if p["grain"] > 0:
         layers.append({"kind": "texture", "key": "grain", "label": "颗粒",
                        "texture": "grain.png", "resizeMode": "repeat",
@@ -548,7 +544,7 @@ def main() -> int:
         crop = window[crop_y:crop_y + 340, crop_x:crop_x + 340]
         fulls.append((preset["name"], frame))
         crops.append((preset["name"], crop))
-        print(f"  {preset['id']:<14} grain={p['grain']:.2f} chroma={p.get('grainChroma', 0):.2f} "
+        print(f"  {preset['id']:<14} grain={p['grain']:.2f} "
               f"dust={p.get('dust', 0):.2f}  →  天空高频 {measure_grain(window)}")
 
     out1 = contact_sheet(fulls, 3, (330, 440), os.path.join(TEXTURE_DIR, "_grade-preview.png"))

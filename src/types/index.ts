@@ -115,6 +115,15 @@ export interface FrameSpec {
    * 五种语言里都显示你写的那句原文。这是刻意的：配置文件不该逼你同时改 5 个语言包。
    */
   nameKey?: MessageKey;
+  /**
+   * 顶栏徽标上的**相框代号**：纯 ASCII 大写短名，例如 `'POLAROID'` / `'INSTAX'` /
+   * `'135 NEG'` / `'SLIDE'`。
+   *
+   * 它**不翻译**，和胶卷预设的 `RT-400` / `PR-400` 是同一类东西 ——
+   * 机器印在机身和片基上的代号，五种语言里都该长一样。
+   * 顶栏那枚胶囊徽标显示的就是 `▌ {code} · {n}/{N}`。
+   */
+  code: string;
   /** 相框 PNG；透明区域 = 照片可见窗口。 */
   source: ImageSourcePropType;
   /** 相框整体宽高比 = 宽 / 高，**必须与 PNG 实际像素比一致**。 */
@@ -253,10 +262,15 @@ export interface FilmPreset {
   name: string;
   description?: string;
   color: ColorGradeConfig;
-  /** 颗粒强度 0~1。 */
+  /**
+   * 颗粒强度 0~1。
+   *
+   * **全项目只有一种颗粒：单色亮度颗粒。** 每个像素只取一个灰度随机标量，
+   * 同一个偏量同时加到 R / G / B 上（`assets/textures/grain.png` 三通道逐像素恒等）。
+   * 曾经还有一个 `grainChroma`（预烘焙的品红↔绿块状彩噪贴图），
+   * 它会在 CCD / DIGI 两款上糊出满屏紫绿斑点，已彻底删除 —— **不要再加回来**。
+   */
   grain?: number;
-  /** 彩色噪点强度 0~1（CCD / 高感光的块状色斑，和黑白颗粒是两回事）。 */
-  grainChroma?: number;
   /** 灰尘与划痕强度 0~1（胶片扫描件的"不干净"感）。 */
   dust?: number;
   /** 暗角强度 0~1。 */
@@ -285,7 +299,6 @@ export interface ResolvedFilmPreset {
   description: string;
   color: ResolvedColorGrade;
   grain: number;
-  grainChroma: number;
   dust: number;
   vignette: number;
   lightLeak: number;
@@ -300,7 +313,7 @@ export interface ResolvedFilmPreset {
 export type GrainLevelId = 'off' | 'light' | 'std' | 'heavy' | 'max';
 
 /**
- * 一档颗粒强度 —— 相机屏幕底部那排分段按钮的一项。
+ * 一档颗粒强度 —— 设置页里那排分段按钮的一项。
  *
  * 注意它**不覆盖**预设的 grain，而是**乘上去**（见 `constants/grain.ts` 顶部说明），
  * 这样每个预设的颗粒性格都还在，只是整体浓淡可拧。
@@ -313,7 +326,7 @@ export interface GrainLevel {
   labelKey?: MessageKey;
   /** LCD 状态条里的机器打印缩写。 */
   code: string;
-  /** 乘在预设 `grain` / `grainChroma` 上的系数。0 = 关，1 = 预设原本的量。 */
+  /** 乘在预设 `grain` 上的系数。0 = 关，1 = 预设原本的量。 */
   scale: number;
   /** 一句话说明，写在配置里方便日后改。 */
   description: string;
@@ -323,8 +336,14 @@ export interface GrainLevel {
  * 4. 合成图层（声明式调色）
  * ========================================================================== */
 
-/** 纹理贴图 id。 */
-export type TextureId = 'grain' | 'chromaNoise' | 'dust' | 'vignette' | 'lightLeak';
+/**
+ * 纹理贴图 id。
+ *
+ * **只有这四种。** 曾经有一个 `'chromaNoise'`（预烘焙的品红↔绿块状彩噪），
+ * 它是满屏紫绿伪色的唯一来源，已连同 `assets/textures/chroma-noise.png` 一起删除。
+ * 颗粒只能走 `'grain'`，而 `grain.png` 的三通道逐像素恒等 —— 这就是"绝无红绿紫伪色"的保证。
+ */
+export type TextureId = 'grain' | 'dust' | 'vignette' | 'lightLeak';
 
 /** 纹理铺法：`repeat` 平铺（颗粒）/ `stretch` 拉伸（暗角、漏光）。 */
 export type TextureResizeMode = 'repeat' | 'stretch';
@@ -436,6 +455,12 @@ export interface FilmStageInput {
   watermarkLayout?: WatermarkLayout;
   /** 地名详细度。不填 = `'archive'`。 */
   placeDetail?: PlaceDetail;
+  /**
+   * 这一卷拍到第几张（1 起数），给"关闭定位时代替地名那一行"的摄影代号用：
+   * `PR-400 // ISO 400 · 35MM · EXP.07`。
+   * 不填 = 不印 `EXP.` 段，只印 `PR-400 // ISO 400 · 35MM`。
+   */
+  exposureIndex?: number;
 }
 
 /**

@@ -22,7 +22,7 @@ export const fr: Messages = {
   /* ---------------- ③ commandes du bas ---------------- */
   'camera.preset.head': 'PRÉRÉGLAGE',
   'camera.preset.a11y': 'Préréglage actuel {name}, toucher pour changer',
-  'camera.preset.hint': '{index}/{total} · toucher pour changer',
+  'camera.preset.hint': '{index}/{total} · changer',
   'camera.frame.hint': 'Balayez le viseur',
   'camera.frame.label': 'CADRE',
   'camera.frame.next': 'Cadre suivant',
@@ -33,9 +33,10 @@ export const fr: Messages = {
   'camera.shutter.busy': 'Développement',
 
   /* ---------------- filmothèque (appui long sur le nom de la pellicule sous le viseur) ---------------- */
-  // Le titre du panneau est une plaque anglaise imprimée : comme les libellés du
-  // LCD, il n'est pas traduit et reste identique dans les cinq langues.
-  'film.drawer.title': 'SELECT FILM STOCK',
+  // Le titre du panneau = la plaque anglaise imprimée (jamais traduite) + un mot
+  // dans la langue courante, séparés par ' · '. La plaque est une gravure du
+  // boîtier ; le mot qui suit s'adresse au photographe.
+  'film.drawer.title': 'SELECT FILM STOCK · FILMOTHÈQUE',
   'film.drawer.a11y': 'Filmothèque, choisir un préréglage de pellicule',
   'film.drawer.close': 'Terminé',
   'film.drawer.hint':
@@ -173,4 +174,35 @@ export const fr: Messages = {
   'location.failed': 'Position indisponible',
   'location.locating': 'Localisation en cours',
   'location.servicesOff': 'Le « Service de localisation » du système est désactivé.',
+  /* ---------------- importer depuis la photothèque ---------------- */
+  'gallery.import': 'Importer',
+  'gallery.import.a11y': 'Importer des photos de la photothèque et les redévelopper',
+  'gallery.import.busy': 'Développement…',
+  'gallery.import.denied':
+    "Accès à la photothèque refusé. Ouvrez Réglages → Confidentialité et sécurité → Photos et autorisez-le.",
+  'gallery.import.failed': "Échec de l'import : {message}",
+  'gallery.import.noExif': "L'original n'a pas de date de prise de vue : daté d'aujourd'hui.",
+
+  /* ---------------- bande négative ---------------- */
+  'gallery.mode.strip': 'Bande',
+  'gallery.mode.grid': 'Grille',
+  'gallery.mode.a11y': "Affichage de l'album : {label}",
+  'gallery.strip.count': '{count} vues',
+
+  /* ---------------- export de la bande ---------------- */
+  'gallery.export.entry': 'Exporter la bande',
+  'gallery.export.a11y': 'Assembler les {count} vues sélectionnées en une seule affiche',
+  'gallery.export.hint': 'encore {count}',
+  'gallery.export.busy': 'Assemblage…',
+  'gallery.export.saved': "Bande enregistrée dans l'album",
+  'gallery.export.failed': "Échec de l'export : {message}",
+
+  /* ---------------- supprimer une vue ---------------- */
+  'gallery.delete.a11y': 'Supprimer cette vue',
+  'gallery.delete.title': 'Supprimer cette vue ?',
+  'gallery.delete.message': 'La copie locale part avec. Action irréversible.',
+  'gallery.delete.cancel': 'Annuler',
+  'gallery.delete.confirm': 'Supprimer',
+  'gallery.deleted': 'Supprimé',
+
 };

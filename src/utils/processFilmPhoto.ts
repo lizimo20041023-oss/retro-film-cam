@@ -72,8 +72,16 @@ export interface ProcessFilmPhotoInput {
   stage: Size;
   /** 宿主：负责把 `<FilmCompositor />` 挂到屏幕上并截图（App 里由 `useFilmStage` 提供）。 */
   host: FilmStageHost;
-  /** 拍摄时间；默认 `new Date()`。显式传入便于单测（断言烧进照片的日期）。 */
-  capturedAt?: Date;
+  /**
+   * 拍摄时间；默认 `new Date()`。
+   *
+   * `null` = **明确表示"这张没有拍摄时间"，走今天**。为什么区分 `undefined` 和 `null`：
+   * §八 的导入路径要表达的是"我找过 EXIF 了，原图**没有** DateTimeOriginal" ——
+   * 这和"调用方没管这件事"是两回事。前者要顺便提示用户 `gallery.import.noExif`，
+   * 后者只是老调用方（相机屏）没传。两种都落到 `new Date()`，但语义分得清。
+   * 显式传入便于单测（断言烧进照片的日期）。
+   */
+  capturedAt?: Date | null;
   /** 覆盖预设里的 `normalizeMaxLongEdge`；0 = 跳过归一化。 */
   maxLongEdge?: number;
   /**
@@ -101,6 +109,19 @@ export interface ProcessFilmPhotoInput {
   watermarkLayout?: WatermarkLayout;
   /** 地名详细度；不传 = `'archive'`。只影响 `place` 的渲染，不影响经纬度档。 */
   placeDetail?: PlaceDetail;
+  /**
+   * 这一卷拍到第几张（1 起数），透传进 `FilmStageInput.exposureIndex`。
+   *
+   * 用途：**关闭定位时**那些照片的水印要印摄影参数代号
+   * （`PR-400 // ISO 400 · 35MM · EXP.07`）而不是地名 —— 这正是 §八 要求的
+   * "若无坐标，静默显示摄影参数代号，严禁把当前设备位置强加给老照片"。
+   *
+   * 渲染层读它的地方：`FilmCompositor.tsx` 里
+   * `const codeText = placeText.length === 0 ? formatExposureCode(input.presetName, input.exposureIndex) : '';`
+   * —— 地名行为空（关定位、或导入的老照片没有 GPS）时才印代号，
+   * 有地名时不会两边都印。`exposureIndex` 也在那个 `useMemo` 的依赖表里。
+   */
+  exposureIndex?: number;
   /** 进度回调：'normalizing' → 'capturing' → 'saving'。 */
   onStage?: (stage: DevelopStage) => void;
 }
@@ -122,6 +143,11 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
 
   // 2) 排版：相框 + 照片窗口 + 日期位置，全部由数据算出来
   const layout = computeFrameLayout(frame, stage.width, stage.height);
+  /*
+   * `??` 而不是 `||`：只把 `undefined`（调用方没传）和 `null`（导入时确认原图
+   * 没有 EXIF 拍摄时间）落到"现在"，不会把某个非法但为真的值也一起吞掉。
+   * 落点之后的类型是 `Date`，下面 `capturedAt.toISOString()` 才是安全的。
+   */
   const capturedAt = input.capturedAt ?? new Date();
   const maxLongEdge = input.maxLongEdge ?? preset.normalizeMaxLongEdge;
   const startedAt = Date.now();
@@ -149,6 +175,17 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     locale: input.locale ?? 'zh-Hans',
     watermarkLayout: input.watermarkLayout ?? 'split',
     placeDetail: input.placeDetail ?? 'archive',
+    /*
+     * ⚠️ 这两行是**全项目最容易漏的一步**。上面 `ProcessFilmPhotoInput` 里的字段
+     * 加好了、类型也过了，但只要忘了在这里抄进 `stageInput`，那个设置就是纯装饰
+     * —— 界面能选、存得住、文档里写着，而合成层永远看不到它。
+     * `watermarkLayout` / `placeDetail` 就是这么被漏过一次的。
+     *
+     * `exposureIndex` 用 `?? undefined` 而不是 `?? null`：`FilmStageInput` 上的
+     * 类型是 `number | undefined`，多一个 `null` 会把"没填"和"填了 0"混起来
+     * （虽然本意上没有第 0 张，但没必要给下游留一个要判的第三种状态）。
+     */
+    exposureIndex: input.exposureIndex ?? undefined,
   };
   input.onStage?.('capturing');
   let uri = '';

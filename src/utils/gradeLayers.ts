@@ -12,8 +12,10 @@
  *
  * 图层顺序（= 绘制顺序，改顺序会改结果）：
  *   ① 色温 ② 色调 ③ 分离色调 ④ 饱和度 ⑤ 对比度 ⑥ 褪色 ⑦ 曝光
- *   ⑧ 光晕 ⑨ 色噪 ⑩ 颗粒 ⑪ 灰尘 ⑫ 暗角 ⑬ 漏光
- * 前七层负责"色"，后六层负责"质"。
+ *   ⑧ 光晕 ⑨ 颗粒 ⑩ 灰尘 ⑪ 暗角 ⑫ 漏光
+ * 前七层负责"色"，后五层负责"质"。
+ * （曾经在 ⑧ 和 ⑨ 之间还有一层 `chroma-noise` 彩噪贴图，已在 2026-10-12 彻底删除，
+ *   理由见下面 ⑨ 处的注释 —— 那一层是满屏紫绿伪色的唯一来源。）
  */
 import type { GradeLayer, ResolvedFilmPreset } from '../types';
 
@@ -201,20 +203,14 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  // ⑨ 色噪：CCD / 高感光的块状彩色斑点（和下面黑白颗粒是两回事，色噪更粗更花）
-  if (preset.grainChroma > 0.01) {
-    layers.push({
-      kind: 'texture',
-      key: 'chroma-noise',
-      label: `色噪 ${round2(preset.grainChroma)}`,
-      textureId: 'chromaNoise',
-      resizeMode: 'repeat',
-      blendMode: 'overlay',
-      opacity: clamp01(preset.grainChroma),
-    });
-  }
-
-  // ⑩ 颗粒：PNG 平铺 + overlay（overlay 在中间调最强、暗部高光自然变弱，和胶片一致）
+  // ⑨ 颗粒：PNG 平铺 + overlay（overlay 在中间调最强、暗部高光自然变弱，和胶片一致）
+  //
+  // ⚠️ 这里曾经在它前面放过一层预烘焙的彩噪贴图（`chroma-noise.png`，品红↔绿交替的块状色斑），
+  // 只被 CCD-CYBER / DIGI-02 两款用 `grainChroma` 打开。它就是"画面严重彩噪与紫绿噪波"的元凶：
+  // 那张贴图 `|R-G| = 49.3`、`|G-B| = 34.6`，平铺 + overlay 之后满屏紫绿伪色，用户一眼就看出来了。
+  // 已**彻底删除**（不是调小）：颗粒只走 `grain`，而 `grain.png` 三通道逐像素恒等
+  // （实测 |R-G| = |R-B| = |G-B| = 0）—— 这就是绝无红绿紫伪色的保证。
+  // 想再要"CCD 味"，请用 `splitTone` + `bloom` + 高对比，不要往合成栈里塞彩色噪声。
   if (preset.grain > 0.01) {
     layers.push({
       kind: 'texture',
@@ -227,7 +223,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  // ⑪ 灰尘与划痕：screen 只加亮点，暗部什么都不加 —— 老扫描件那种"不干净"
+  // ⑩ 灰尘与划痕：screen 只加亮点，暗部什么都不加 —— 老扫描件那种"不干净"
   if (preset.dust > 0.01) {
     layers.push({
       kind: 'texture',
@@ -240,7 +236,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  // ⑫ 暗角：PNG 拉伸 + multiply
+  // ⑪ 暗角：PNG 拉伸 + multiply
   if (preset.vignette > 0.01) {
     layers.push({
       kind: 'texture',
@@ -253,7 +249,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  // ⑬ 漏光：PNG 拉伸 + screen（可左右翻转换边）
+  // ⑫ 漏光：PNG 拉伸 + screen（可左右翻转换边）
   if (preset.lightLeak > 0.01) {
     layers.push({
       kind: 'texture',

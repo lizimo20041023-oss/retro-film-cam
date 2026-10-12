@@ -35,7 +35,7 @@ SPECS = [
     ("polaroid-600", "polaroid 600", (1408, 1712), (72, 72, 1264, 1264)),
     ("instax-mini", "instax mini", (1080, 1720), (81, 90, 918, 1224)),
     ("neg-135", "35mm negative", (1350, 1950), (212, 280, 926, 1389)),
-    ("slide-mount", "slide mount", (1350, 1350), (189, 351, 972, 648)),
+    ("slide-mount", "slide mount", (1350, 1350), (189, 403, 972, 648)),
 ]
 
 FRAMES = [

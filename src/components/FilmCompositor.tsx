@@ -9,6 +9,12 @@
  *   ③ 水印。日期和定位**一起**排在最后：
  *      烧在画面内部时画在照片之上，烧在相框留白里时必须盖在相框之上，
  *      两种锚点都是"最后画"最安全 —— 所以它们共用一个 `pieces` 数组、一次渲染。
+ *      ⚠️ **七段日期契约（`src/utils/geometry.ts` 的 `WatermarkLine.quartz` 上另有一份）**：
+ *      `piece.quartz` 存在时**必须**用 `<SegmentDate/>` 画，**不能**退回 `<Text>`，
+ *      容器宽度只能用 `quartz.width` 并且不许被压缩。曾经日期就是一个普通 `<Text>`，
+ *      被 `flexShrink` 压成了 `26 10...` —— 这一行就是那个 bug 的修复面。
+ *      而 `piece.text` 是紧挨在数码管**前面**的那一小段文字（只有 `centered` 版式非空），
+ *      它才是可以被省略号收掉的一段。
  *
  * 为什么调色层要关在 `overflow: 'hidden'` 的窗口容器里？
  * RN 没有现成的 `isolation` 便捷写法可用（它是 layout prop 不是 style prop，写错会静默失效），
@@ -41,11 +47,13 @@ import type {
   ResolvedTimestampConfig,
   WatermarkLayout,
 } from '../types';
-import { formatTimestamp } from '../utils/formatTimestamp';
+import { formatQuartzDate } from '../utils/formatTimestamp';
 import { formatResolvedPlace } from '../utils/placeNames';
 import { planCapture } from '../utils/captureOptions';
-import { computeWatermarkPlan } from '../utils/geometry';
+import { computeWatermarkPlan, formatExposureCode } from '../utils/geometry';
+import type { WatermarkQuartz } from '../utils/geometry';
 import { buildGradeLayers } from '../utils/gradeLayers';
+import { SegmentDate } from './SegmentDate';
 
 export interface FilmCompositorProps {
   /** 要合成的一切数据（由 `useFilmStage` 提供）。 */
@@ -81,8 +89,23 @@ export interface WatermarkPiece {
   fontSize: number;
   letterSpacing: number;
   color: string;
-  /** 投影半径。0 = 不投影（印在相纸留白上的字不需要）。 */
+  /** 字重（已按墨色解析：`window` + graphite 要 400，液晶日期要 700）。 */
+  fontWeight: TextStyle['fontWeight'];
+  /**
+   * 阴影半径。0 = 不投影（印在相纸留白上的字不需要）。
+   * 压照片上时：日期是**同色辉光**，地名 / 代号是**黑投影**。
+   */
   shadowRadius: number;
+  /**
+   * 阴影颜色。**不填 = 同色辉光**（用 `color` 自己）；填了就是普通投影
+   * （压照片上的地名 / 代号给的是黑投影）。判断逻辑全在排版层，这里不做选择。
+   */
+  shadowColor?: string;
+  /**
+   * 七段日期（见 `WatermarkLine.quartz` 的契约）：有它就**必须**用 `<SegmentDate/>` 画。
+   * `width` 是算好的固定宽度，渲染时必须原样用、且不可压缩。
+   */
+  quartz?: WatermarkQuartz;
 }
 
 export interface WatermarkPlanInput {
@@ -100,11 +123,16 @@ export interface WatermarkPlanInput {
   locale: LocaleId;
   watermarkLayout: WatermarkLayout;
   placeDetail: PlaceDetail;
+  /** 这一卷用的预设代号（`PR-400` / `CCD-CYBER`…），关闭定位时印在原本地名那一行。 */
+  presetName: string;
+  /** 这一卷拍到第几张（1 起数）。没有就只印到 `· 35MM` 为止。 */
+  exposureIndex?: number;
 }
 
 /*
- * 墨色不在这里定：`computeWatermarkPlan` 已经按"压在照片上 / 印在相纸留白上"
- * 两种情形把每行的 `color` 和 `glowRadius` 算好了，这里只负责画。
+ * 墨色**和阴影**都不在这里定：`computeWatermarkPlan` 已经按"压在照片上 / 印在相纸留白上"
+ * 两种情形把每行的 `color`、`fontWeight`、`glowRadius` 和数码管的 `shadowColor/Radius`
+ * 算好了，这里只负责画。
  */
 
 /**
@@ -118,19 +146,32 @@ export interface WatermarkPlanInput {
 export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
   const { layout, frame, timestamp, capturedAt, locationText, place, locale } = input;
 
-  const dateText = timestamp.enabled ? formatTimestamp(capturedAt, timestamp.format).trim() : '';
+  /*
+    日期走**石英字模** `'YY  MM  DD`。
+    ⚠️ 行为变更：`preset.timestamp.format` 不再参与**成片水印** ——
+    七段数码管只能画 0-9 和引号 / 空格 / 小数点这几个窄格，`'YYYY.MM.DD'` 那种掩码画不出来。
+    相机页 LCD 上的日期预览仍然用 `formatTimestamp(date, preset.timestamp.format)`，两者互不影响。
+  */
+  const dateText = timestamp.enabled ? formatQuartzDate(capturedAt) : '';
   /*
     有结构就用结构按**当前界面语言**重排（切语言后旧照片也能重排）。
     `locationText` 只是向后兼容的兜底：相机页现在一律传 `place`
     —— 经纬度档也走 `place`（`locationStamp.ts` 会返回一个"只有坐标、
-    城市和国别都是空串"的结构，拼出来正好是坐标本身），
+    城市和国别都是空串"的结构，`formatResolvedPlace` 现在会退回坐标本身），
     所以正常管线里走不到下面那个分支。
   */
   const placeText = place
     ? formatResolvedPlace(place, locale, input.placeDetail).trim()
     : locationText.trim();
 
-  if (dateText.length === 0 && placeText.length === 0) {
+  /*
+    关闭定位（地名与降级文本都空）时印**摄影代号**：它顶替地名那一行，
+    字号再小一档（排版层会乘 0.9）。这里只负责把代号拼出来，
+    摆在哪儿由 `computeWatermarkPlan` 的 slot 决定。
+  */
+  const codeText = placeText.length === 0 ? formatExposureCode(input.presetName, input.exposureIndex) : '';
+
+  if (dateText.length === 0 && placeText.length === 0 && codeText.length === 0) {
     return [];
   }
 
@@ -152,6 +193,7 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
     dateText,
     locale,
     input.watermarkLayout,
+    codeText,
   );
 
   // `centered` 与 `split` 的行由 geometry 给了 `maxWidth`（要避让对面那块字）；
@@ -162,7 +204,8 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
   );
 
   return plan.lines.map((line) => ({
-    key: line.kind === 'date' ? 'timestamp' : 'place',
+    // 四种版式里同一份 plan 不会出现两个同 kind 的行，所以 kind 本身就是稳定的 key
+    key: line.kind,
     text: line.text,
     ...(line.align.left === undefined ? {} : { left: line.align.left }),
     ...(line.align.right === undefined ? {} : { right: line.align.right }),
@@ -172,9 +215,13 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
     fontSize: line.fontSize,
     letterSpacing: line.letterSpacing,
     color: line.color,
-    // geometry 只在"压在照片上"时给辉光；印在相纸留白上的是 0（白纸上围一圈阴影
-    // 看着像蹭脏了）。直接搬过来，不再自己按锚点猜。
+    fontWeight: line.fontWeight,
+    // geometry 只在"压在照片上"时给阴影；印在相纸留白上的是 0（白纸上围一圈阴影
+    // 看着像蹭脏了）。半径与颜色都直接搬过来，不再自己按锚点猜。
     shadowRadius: line.glowRadius,
+    ...(line.shadowColor === undefined ? {} : { shadowColor: line.shadowColor }),
+    // 七段日期原样带过来（宽度 / 管高 / 缝宽 / 阴影都由 geometry 定）
+    ...(line.quartz === undefined ? {} : { quartz: line.quartz }),
   }));
 }
 
@@ -220,8 +267,26 @@ export function FilmCompositor({
         locale: stage.locale ?? 'zh-Hans',
         watermarkLayout: stage.watermarkLayout ?? 'split',
         placeDetail: stage.placeDetail ?? 'archive',
+        // 关闭定位时印摄影代号：代号取预设名，第几张取 `exposureIndex`（1 起数）
+        presetName: preset.name,
+        exposureIndex: stage.exposureIndex,
       }),
-    [layout, frame, preset.timestamp, capturedAt, stage.locationText, stage.place, stage.locale, stage.watermarkLayout, stage.placeDetail],
+    [
+      layout,
+      frame,
+      preset.timestamp,
+      preset.name,
+      capturedAt,
+      stage.locationText,
+      stage.place,
+      stage.locale,
+      stage.watermarkLayout,
+      stage.placeDetail,
+      // ⚠️ 这一项必须留着：`processFilmPhoto` 的注释里还写着"全项目没有任何组件读
+      // `exposureIndex`"，那是因为当时 `planWatermark` 既不读它、依赖表里也没有它 ——
+      // 少了这一项，连拍第二张起代号里的 `EXP.xx` 就不会重算。
+      stage.exposureIndex,
+    ],
   );
 
   return (
@@ -274,44 +339,98 @@ export function FilmCompositor({
       />
 
       {/* ③ 水印（日期 + 定位，一次画完） */}
-      {pieces.map((piece) => (
-        <Text
-          key={piece.key}
-          allowFontScaling={false}
-          numberOfLines={1}
-          ellipsizeMode="tail"
-          style={[
-            styles.stamp,
-            {
-              left: piece.left,
-              right: piece.right,
-              bottom: piece.bottom,
-              maxWidth: piece.maxWidth,
-              textAlign: piece.textAlign,
-              color: piece.color,
-              fontSize: piece.fontSize,
-              letterSpacing: piece.letterSpacing,
-              fontFamily: preset.timestamp.fontFamily ?? timestampFontFamily,
-              fontWeight: preset.timestamp.fontWeight,
-              // 液晶辉光：同色 textShadow（比嵌套 Text 便宜）。
-              // 只在压在照片上、且预设开了 glow 时才有 —— 相纸上不发光。
-              textShadowColor:
-                piece.shadowRadius > 0
-                  ? preset.timestamp.glow
-                    ? piece.color
-                    : 'rgba(0, 0, 0, 0.55)'
-                  : 'transparent',
-              textShadowRadius:
-                piece.shadowRadius > 0 && preset.timestamp.glow
-                  ? Math.max(3, Math.round(piece.fontSize * 0.45))
-                  : piece.shadowRadius,
-              textShadowOffset: { width: 0, height: piece.shadowRadius > 0 ? 1 : 0 },
-            },
-          ]}
-        >
-          {piece.text}
-        </Text>
-      ))}
+      {pieces.map((piece) => {
+        const fontFamily = preset.timestamp.fontFamily ?? timestampFontFamily;
+        const text = stampTextStyle(piece, fontFamily, preset.timestamp.glow);
+
+        // 纯文字行（地名 / 摄影代号 / 日期关掉时的纯文字）
+        if (piece.quartz === undefined) {
+          return (
+            <Text
+              key={piece.key}
+              allowFontScaling={false}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+              style={[
+                styles.stamp,
+                {
+                  left: piece.left,
+                  right: piece.right,
+                  bottom: piece.bottom,
+                  maxWidth: piece.maxWidth,
+                  textAlign: piece.textAlign,
+                },
+                text,
+              ]}
+            >
+              {piece.text}
+            </Text>
+          );
+        }
+
+        /*
+          只有七段日期（split / stacked / dateOnly）：**固定宽度的独立容器**。
+          宽度来自 `segmentDateWidth()`，不是量出来的 —— 这就是"日期再也不会被截断"
+          的落点。RN 的 flexShrink 默认就是 0，这里显式再写一遍：
+          这条契约值得被后来的人看见（曾经就是被压成了 `26 10...`）。
+        */
+        if (piece.text.length === 0) {
+          return (
+            <View
+              key={piece.key}
+              style={[
+                styles.stamp,
+                {
+                  left: piece.left,
+                  right: piece.right,
+                  bottom: piece.bottom,
+                  width: piece.quartz.width,
+                  flexShrink: 0,
+                },
+              ]}
+            >
+              <QuartzPiece piece={piece} />
+            </View>
+          );
+        }
+
+        /*
+          居中版式：一行里两个片段 ——「地名 + 窄空格中点」可以省略号收掉（`flexShrink: 1`），
+          数码管整块让位（宽度是算好的，不参与压缩）。
+          `alignItems: 'flex-end'` 之后再用 marginBottom 把管子抬到文字的基线上：
+          管子没有降部，直接对齐下沿会显得往下掉。
+        */
+        return (
+          <View
+            key={piece.key}
+            style={[
+              styles.stamp,
+              styles.centeredRow,
+              {
+                left: piece.left,
+                right: piece.right,
+                bottom: piece.bottom,
+                maxWidth: piece.maxWidth,
+                // 居中那一行的宽度就是水印区宽度：`textAlign: 'center'` 与
+                // `justifyContent: 'center'` 都要靠一个确定的盒子才成立。
+                width: piece.textAlign === 'center' ? piece.maxWidth : undefined,
+              },
+            ]}
+          >
+            <Text
+              allowFontScaling={false}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+              style={[styles.centeredText, text]}
+            >
+              {piece.text}
+            </Text>
+            <View style={{ marginBottom: Math.round(piece.fontSize * TEXT_DESCENT_RATIO) }}>
+              <QuartzPiece piece={piece} />
+            </View>
+          </View>
+        );
+      })}
     </ViewShot>
   );
 }
@@ -388,6 +507,61 @@ function GradeLayerView({ layer, rawUri, photoFit, onImageLoad }: GradeLayerView
 
 const FLIP_X = [{ scaleX: -1 }];
 
+/**
+ * 居中版式里数码管要抬高多少 —— 文字行盒的**降部**高度（× 字号）。
+ *
+ * iOS 默认行高 ≈ 1.16 × 字号，基线以下那一截约占 0.21。`alignItems: 'flex-end'`
+ * 会把两个片段的下沿对齐，于是管子看起来比文字低了小半行（管子没有降部）；
+ * 抬高这么多，两者就坐在同一条基线上。
+ * 其余三种版式不用它：那边的管子位置由 `geometry.ts` 的 `quartzBottom` 算好了。
+ */
+const TEXT_DESCENT_RATIO = 0.21;
+
+/**
+ * 一行文字的样式。普通文字行与居中版式的文字片段共用一套。
+ *
+ * 为什么抽出来：这两处曾经各写一遍，改一处忘一处就会出现"居中那行不发光"。
+ * 注意字重是**听排版层的**（`piece.fontWeight`）：`anchor === 'window'` + graphite
+ * 时墨色要的是 400，预设里那一栏（700）是给液晶日期留的。
+ */
+function stampTextStyle(piece: WatermarkPiece, fontFamily: string, glowEnabled: boolean): TextStyle {
+  return {
+    color: piece.color,
+    fontSize: piece.fontSize,
+    letterSpacing: piece.letterSpacing,
+    fontFamily,
+    fontWeight: piece.fontWeight,
+    // 阴影：颜色由排版层给（缺省 = 同色辉光，液晶日期压在照片上要的那圈橙光）；
+    // 半径 0 就是完全不投影 —— 印在相纸留白上的字一个阴影都不带。
+    textShadowColor:
+      piece.shadowRadius > 0 ? (piece.shadowColor ?? (glowEnabled ? piece.color : 'rgba(0, 0, 0, 0.55)')) : 'transparent',
+    textShadowRadius:
+      piece.shadowRadius > 0 && glowEnabled ? Math.max(3, Math.round(piece.fontSize * 0.45)) : piece.shadowRadius,
+    textShadowOffset: { width: 0, height: piece.shadowRadius > 0 ? 1 : 0 },
+  };
+}
+
+/**
+ * 七段日期片段。参数**全部**来自 `piece.quartz` 与 `piece.color`，
+ * 这里不做任何判断（阴影该不该发、发什么颜色都由 `geometry.ts` 定好了）。
+ */
+function QuartzPiece({ piece }: { piece: WatermarkPiece }) {
+  const quartz = piece.quartz;
+  if (quartz === undefined) {
+    return null;
+  }
+  return (
+    <SegmentDate
+      text={quartz.text}
+      height={quartz.height}
+      gap={quartz.gap}
+      color={piece.color}
+      shadowColor={quartz.shadowColor}
+      shadowRadius={quartz.shadowRadius}
+    />
+  );
+}
+
 const styles = StyleSheet.create({
   stage: {
     overflow: 'hidden',
@@ -409,5 +583,15 @@ const styles = StyleSheet.create({
   },
   stamp: {
     position: 'absolute',
+  },
+  /** 居中版式那一行：文字在左、数码管在右，两个片段一起居中。 */
+  centeredRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'flex-end',
+  },
+  /** 居中版式里可被省略号收掉的那一半（数码管那一半不参与压缩）。 */
+  centeredText: {
+    flexShrink: 1,
   },
 });

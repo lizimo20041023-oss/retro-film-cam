@@ -25,7 +25,15 @@ import type { LocaleId } from '../i18n/types';
  * 以后有人"顺手格式化"就会把它吃掉。
  */
 const THIN_SPACE = '\u2009';
-const CENTERED_SEPARATOR = `${THIN_SPACE}·${THIN_SPACE}`;
+
+/**
+ * `centered` 版式里"文字 · 日期"之间的分隔符。
+ *
+ * 为什么导出：日期改走七段数码管之后，那一行要拆成「文字片段」和「数码管片段」
+ * 两次渲染（见 `geometry.ts` 的 `WatermarkLine.quartz`），分隔符得由几何层拼在文字尾巴上，
+ * 不能再把两者先粘成一整串。
+ */
+export const CENTERED_SEPARATOR = `${THIN_SPACE}·${THIN_SPACE}`;
 
 /** 英文界面下罗马字地名的额外字距倍数（见 `timestampTracking`）。 */
 const ENGLISH_TRACKING_SCALE = 1.65;
@@ -33,7 +41,11 @@ const ENGLISH_TRACKING_SCALE = 1.65;
 /**
  * 把"地名"和"日期"合成一行：`上海 · CHN · 26 10 10`。
  *
- * 只给 `centered` 版式用（其它三种版式里两者各自成段，不拼字符串）。
+ * ⚠️ 成片水印**已经不走它了**：日期换成七段数码管之后，`centered` 那一行是
+ * 「文字 + 分隔符」与「数码管」两个独立片段（见 `geometry.ts` 的 `WatermarkLine.quartz`）。
+ * 留在这里是给"要一整行字符串"的调用方（LCD、导出、日志）用的，
+ * 分隔符和 `CENTERED_SEPARATOR` 共用同一个常量，形状不会漂。
+ *
  * 地名缺失时**只返回日期**，不会留下一个孤零零的分隔符。
  *
  * 单位：无（纯字符串）。
@@ -95,6 +107,30 @@ export function timestampTracking(
 /** 补零到两位。 */
 export function pad2(value: number): string {
   return value < 10 ? `0${value}` : String(value);
+}
+
+/**
+ * 石英后背（Quartz Date）的固定字模：`'YY  MM  DD`。
+ *
+ * - 最前面那个单引号是**真实字符**，它是石英后背上的"年"标记（不是引号语法糖）；
+ * - 年月日之间是**两个空格**：一个空格在 10pt 这个字号下分不开组；
+ * - 它就是一个普通的 `format` 掩码 —— 非 token 字符原样保留，所以它走的是同一套替换逻辑。
+ */
+export const QUARTZ_DATE_FORMAT = "'YY  MM  DD";
+
+/**
+ * 石英后背日期：`'26  10  12`。
+ *
+ * 和 `formatTimestamp(date, format)` 的关系（两者并存，都在用）：
+ * - `formatTimestamp` 是**通用**文本日期，预设 `timestamp.format` 想印什么都行，
+ *   相机页 LCD 上的日期预览也还是它；
+ * - `formatQuartzDate` 是**成片水印专用**的固定字模。为什么不由预设决定格式：
+ *   七段数码管的每一位字形是自己画的（`SegmentDate.tsx`），能画的只有 0-9 加
+ *   引号 / 空格 / 小数点这几个窄格，`'YYYY.MM.DD'` 这种掩码画不出来。
+ *   它内部就是 `formatTimestamp(date, QUARTZ_DATE_FORMAT)`，不是第二套实现。
+ */
+export function formatQuartzDate(date: Date): string {
+  return formatTimestamp(date, QUARTZ_DATE_FORMAT);
 }
 
 /** 日期文字。`format` 为空串时返回空串（调用方据此决定"这次不烧日期"）。 */

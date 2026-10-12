@@ -15,6 +15,17 @@
  * 还要叠颗粒、漏光、暗角）。这里只是色偏方向和强度的示意，别拿它当取色器。
  *
  * ─────────────────────────────────────────────────────────────────────
+ * ─────────────────────────────────────────────────────────────────────
+ * 选中态为什么是"边框 + 右上角 ✓"两条
+ * ─────────────────────────────────────────────────────────────────────
+ * 用户给的规格就是这两条：当前激活的那张边框高亮成琥珀橙 `#E5A93C`，
+ * 右上角再盖一个 `✓`。为什么要两条而不是一条：抽屉里十张卡的色块颜色本身就
+ * 五花八门，只靠一圈描边的话，在浅色色块旁边（比如褪色很重的过期片）对比度
+ * 会掉下去；`✓` 是一个**和颜色无关**的形状信号，扫一眼就知道选的是哪张。
+ * 左侧那根 2pt 竖条是 v1.2.0 留下的第三个信号，保留 —— 三者在同一个位置
+ * （卡片边缘/角上），不会互相打架。
+ *
+ * ─────────────────────────────────────────────────────────────────────
  * 为什么要 memo，以及为什么 props 里传的是 id 而不是对象
  * ─────────────────────────────────────────────────────────────────────
  * 抽屉一屏要摆十张卡。`PRESETS` 是模块级常量、引用永不变化，所以只要传进来的
@@ -39,6 +50,16 @@ export interface FilmCardProps {
 
 /** 色块高度。够看出色偏，又不至于把两列网格撑成一条长列表。 */
 const SWATCH_HEIGHT = 34;
+
+/**
+ * 选中态琥珀橙。刻意不用 `INK.amber`（`#D28B2A`）：用户规格点名要 `#E5A93C`，
+ * 它在深色卡片和浅色色块上的对比度都比 `#D28B2A` 高一档（描边要压在色块上，
+ * 这一档亮度是必要的）。
+ */
+const CARD_AMBER = '#E5A93C';
+
+/** `✓` 角标的直径。小到不抢色块，大到 10pt 的字也放得下。 */
+const CHECK_SIZE = 16;
 
 /** 把 0~255 夹回合法区间。 */
 function clampChannel(value: number): number {
@@ -188,7 +209,14 @@ export const FilmCard = memo(function FilmCard({
           </Text>
         ) : null}
       </View>
-      {/* 选中指示：左侧一根竖条。用绝对定位而不是改内边距，
+      {/* 选中指示 ①：右上角 ✓。绝对定位 + `pointerEvents="none"` ——
+          它只是标记，点它必须等价于点整张卡（卡片本体才是 Pressable）。 */}
+      {selected ? (
+        <View style={styles.selectedCheck} pointerEvents="none">
+          <Text style={styles.selectedCheckMark}>✓</Text>
+        </View>
+      ) : null}
+      {/* 选中指示 ②：左侧一根竖条。用绝对定位而不是改内边距，
           这样选中时卡片内容**不会位移**（和变焦档位同一套原则）。 */}
       {selected ? <View style={styles.selectedRail} pointerEvents="none" /> : null}
     </Pressable>
@@ -204,8 +232,10 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   cardSelected: {
-    borderColor: 'rgba(210, 139, 42, 0.85)',
-    backgroundColor: 'rgba(210, 139, 42, 0.12)',
+    // 用户规格：激活卡片边框高亮为琥珀橙 #E5A93C。
+    borderColor: CARD_AMBER,
+    // 描边只有 1px（hairline），角上再给一点暖色底，远看才"亮着"。
+    backgroundColor: 'rgba(229, 169, 60, 0.12)',
   },
   cardPressed: {
     opacity: 0.62,
@@ -254,6 +284,28 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     width: 2,
-    backgroundColor: INK.amber,
+    backgroundColor: CARD_AMBER,
+  },
+  /**
+   * 右上角 `✓`。压在色块上，所以自己带一层暗底 + 一圈琥珀描边 ——
+   * 否则遇到浅色色块（褪色很重的过期片）这个字会糊在背景里看不见。
+   */
+  selectedCheck: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: CHECK_SIZE,
+    height: CHECK_SIZE,
+    borderRadius: CHECK_SIZE / 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(10, 10, 9, 0.68)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: CARD_AMBER,
+  },
+  selectedCheckMark: {
+    color: CARD_AMBER,
+    fontSize: 10,
+    fontFamily: UI_MONO,
   },
 });

@@ -4,8 +4,7 @@
     python scripts/generate_placeholder_assets.py
 
 产物（全部落在 assets/textures/）：
-    grain.png          颗粒噪点平铺 tile（512×512，彩度中性）
-    chroma-noise.png   CCD 彩色噪点 tile（256×256，块状色斑）
+    grain.png          颗粒噪点平铺 tile（512×512，单色亮度）
     dust.png           灰尘与划痕（screen 混合图层）
     vignette.png       暗角（径向 alpha 遮罩）
     light-leak.png     漏光（screen 混合图层）
@@ -144,84 +143,85 @@ def paste_text(
 #     而且支持 `python scripts/generate_frames.py 相框名` 只重画其中一张；
 #   · 更要紧的是：留在这里的话，谁跑一次本脚本就会把 assets/frames/ 里那 8 张新图
 #     悄悄覆盖回旧版设计 —— 这是最容易被踩的坑。
-# 本脚本从此只负责 assets/textures/ 下的 5 张调色贴图。
+# 本脚本从此只负责 assets/textures/ 下的 4 张调色贴图。
+# （2026-10-12 又少了一张：chroma-noise.png —— 它是 CCD/DIGI 两款满屏紫绿伪色的来源，
+#   已连同它的生成函数一起删除。颗粒只走单色的 grain.png。）
 
 
 # --------------------------------------------------------------------------- #
 # 纹理
 # --------------------------------------------------------------------------- #
-def make_grain(size: int = 512, sigma: float = 62.0, seed: int = 20261010) -> None:
-    """单色颗粒 tile：围绕中灰 128 的噪点，配合 mixBlendMode:'overlay' 使用。
+def _box_mean_torus(a, k: int):
+    """在**环面**上做 k×k 盒平均 —— 这是"能无缝平铺"的关键。
+
+    为什么不用 PIL 的 BoxBlur / resize：
+      · 那些默认用的是**边缘夹取**（edge clamp），那么 tile 的四条边会被
+        "只朝里平均"，和中间的统计特性不一样 → 平铺之后接缝处的颗粒结构断层；
+      · 照片窗口最大约 352×466 pt，tile 一旦小于窗口，iOS 就会真的把同一张图
+        平铺好几遍，接缝断层会被看成格线。
+    环面版没有边界：最右一列在 "x + 1" 时绕回第 0 列，所以生成出来的图
+    **天然左右/上下接得上**（第 511 列和第 0 列本来就是邻居）。
+
+    实现：先 `np.pad(mode="wrap")` 把图循环铺出 (k-1) 行 / 列，
+    再在**扩展后的数组**上做普通的（不绕圈的）盒求和 —— 因为接缝处已经被真实地补上了
+    邻居，所以求和窗口落在任何位置都是对的。最后裁回原尺寸。
+    （试过"对前缀和下标取模"那套写法：取模会破坏前缀和的单调性，跨接缝那一列会算出
+      负数，等于白写。循环填充没有这个问题。）
+    """
+    import numpy as np
+
+    pad = k - 1
+    padded = np.pad(a, ((0, pad), (0, pad)), mode="wrap")
+
+    # 在扩展图上滑一个 k×k 窗口求和，再裁回原尺寸。窗口数正好是 h × w（因为只补了 k-1），
+    # 且第 (h-1)、第 (w-1) 个窗口的尾巴恰好落在"绕回来的那几行/列"上 —— 这就是无缝。
+    windows = np.lib.stride_tricks.sliding_window_view(padded, (k, k))
+    return windows.sum(axis=(2, 3), dtype=np.float64) / float(k * k)
+
+
+
+def make_grain(size: int = 512, sigma: float = 59.0, seed: int = 20261012) -> None:
+    """单色颗粒 tile：围绕中灰 128 的**多尺度团簇**噪声，配合 mixBlendMode:'overlay'。
 
     为什么是 512×512：贴图的一个像素 = 屏幕上的一个**逻辑点**，所以 192 的 tile 在照片窗口
-    （约 349×466 pt）里会横着重复 2 遍、竖着 4 遍 —— 同一片噪点反复出现，
+    （最大约 352×466 pt）里会横着重复 2 遍、竖着 4 遍 —— 同一片噪点反复出现，
     眼睛能认出"花纹"，看起来就不是颗粒而是脏。512 比窗口还大，铺一次就够。
 
-    为什么 σ 要取到 62（不是 40 上下）：
-    捕获发生在 3x 屏幕上，所以 1 个贴图像素最终占 3×3 个输出像素，iOS 会做平滑插值。
-    实测（scripts/preview_grade.py 量的）：纯白噪声被放大 3 倍后标准差只剩 **0.35 倍**，
-    σ=42 落到画面上只有约 15 级，配 opacity 0.16 后中间调只剩 ±2.5 级 —— 等于没有。
-    σ=62 补偿到约 22 级，预设里再用 0.2~0.5 的 opacity，中间调有 ±5~11 级，才看得出颗粒。
-    （代价是约 5% 的像素被裁到 [8,248] 两端，那点"椒盐"反而更像银盐团簇。）
+    为什么不能是纯高斯白噪声（2026-10-12 重写的原因）：
+      捕获发生在 3x 屏幕上，1 个贴图像素最终占 3×3 个输出像素，iOS 做平滑插值 ——
+      逐像素的独立白噪声被这么一平均，对比度只剩约 0.35 倍，剩下的全是"电子沙沙声"，
+      而真实胶片的颗粒是**银盐团簇**：几个相邻颗粒连成一小块，块与块之间才是空隙。
+      所以这里按 1 : 0.5 : 0.25 叠加三个尺度：
+        细颗粒（逐像素，负责沙沙感）
+        + 2×2 盒平均（负责最小的团簇）
+        + 4×4 盒平均（负责更大的团块）
+      再 z-score 归一化后映射回 σ=59 的中灰。团块那两部分被 3x 插值吃掉得少，
+      所以颗粒在成片里留得下来、而且是"有粗有细"的，不是一层均匀的砂纸。
 
-    为什么不是纯白噪声：真实胶片颗粒是"银盐团簇"，有粗有细。
-    这里把逐像素高频噪声和 1/3 分辨率的团簇噪声按 78:22 掺起来再拉伸到目标 σ。
-    团簇那部分被插值抹掉的少，负责"结块感"；高频那部分负责"沙沙感"。
+    为什么 σ=59（不是 30~40）：放大 3 倍后标准差只剩约 0.35 倍，得先把量补回来。
+    但**不要借这个理由把值往上抬** —— 59 是按"细腻沉稳的哑光质感"定的，
+    预设里那点 grain opacity 再乘上去，中间调只剩几级 —— 刚好是"看得到但不脏"。
+
+    三通道恒等：全程只算**一个**灰度数组，存成 8 位灰度（L）而不是 RGB。
+    这既省掉 2/3 体积，也是"绝无红绿紫伪色"的硬保证 —— 根本没有第二、第三条通道。
     """
     import numpy as np
 
     rng = np.random.default_rng(seed)
+
     fine = rng.normal(0.0, 1.0, (size, size)).astype(np.float32)
+    cluster2 = _box_mean_torus(fine, 2)
+    cluster4 = _box_mean_torus(fine, 4)
 
-    coarse_size = max(2, size // 3)
-    coarse_small = rng.normal(0.0, 1.0, (coarse_size, coarse_size)).astype(np.float32)
-    coarse = np.asarray(
-        Image.fromarray(coarse_small, mode="F").resize((size, size), Image.BICUBIC),
-        dtype=np.float32,
-    )
+    noise = 1.0 * fine + 0.5 * cluster2 + 0.25 * cluster4
 
-    noise = 0.78 * fine + 0.22 * coarse
     std = float(np.std(noise))
     if std > 1e-6:
         noise /= std
-    values = np.clip(128.0 + noise * sigma, 8.0, 248.0).astype(np.uint8)
+    values = np.clip(128.0 + noise * sigma, 0.0, 255.0).astype(np.uint8)
 
-    # 存成 8 位灰度（L）而不是 RGB：噪点压不掉，RGB 会白白多占 2/3 体积
+    # 存成 8 位灰度（L）：噪点压不掉，RGB 会白白多占 2/3 体积
     save(Image.fromarray(values, mode="L"), os.path.join(TEXTURES_DIR, "grain.png"))
-
-
-def make_chroma_noise(
-    size: int = 512,
-    block: int = 2,
-    sigma: float = 34.0,
-    seed: int = 90210,
-) -> None:
-    """CCD 特有的彩色噪点：品红 / 绿交替的色斑，围绕中灰 128，配合 'overlay'。
-
-    为什么和亮度颗粒分开做：CCD 的色度通道采样率远低于亮度通道，所以它的色噪
-    **更粗、更块状**（这里是 block×block 个逻辑点的块），而胶片没有这种东西。
-    想要"CCD 味"就靠它 + 分离色调 + 硬高光，而不是靠把颗粒调大。
-
-    tile 取 512（和颗粒一样大于照片窗口）→ 不重复；块尺寸 2 pt = 6 个输出像素，
-    这正是小 DC 色噪的粗细。
-
-    存成 48 色调色板 PNG：24 位真彩的彩色噪点会撑到 700 KB 以上，调色板只要几十 KB。
-    """
-    import numpy as np
-
-    cells = max(2, size // block)
-    rng = np.random.default_rng(seed)
-    d = np.clip(rng.normal(0.0, sigma, (cells, cells)), -70.0, 70.0)
-    d = np.repeat(np.repeat(d, block, axis=0), block, axis=1)[:size, :size]
-
-    base = np.full((size, size), 128.0, dtype=np.float32)
-    r = np.clip(base + d, 0.0, 255.0)
-    g = np.clip(base - d * 0.85, 0.0, 255.0)
-    b = np.clip(base + d * 0.45, 0.0, 255.0)
-    rgb = np.dstack([r, g, b]).astype(np.uint8)
-
-    paletted = Image.fromarray(rgb, mode="RGB").convert("P", palette=Image.ADAPTIVE, colors=48)
-    save(paletted, os.path.join(TEXTURES_DIR, "chroma-noise.png"))
 
 
 def make_dust(size: int = 512, seed: int = 4242) -> None:
@@ -307,7 +307,6 @@ def main() -> None:
     ensure_dirs()
     print("textures:")
     make_grain()
-    make_chroma_noise()
     make_dust()
     make_vignette()
     make_light_leak()

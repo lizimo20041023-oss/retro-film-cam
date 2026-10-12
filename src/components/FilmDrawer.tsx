@@ -1,14 +1,21 @@
 /**
- * 胶卷库抽屉：长按底部的胶片名 400ms 打开，占据整个屏幕。
+ * 胶卷库抽屉：长按底部的胶片名 400ms 打开，从屏幕底部滑出，高度约窗口的 58%。
  *
  * ─────────────────────────────────────────────────────────────────────
- * 为什么用全屏自绘覆盖层，而不是 RN 的 `Modal`
+ * 为什么是"底部抽屉"而不是 v1.2.0 那种整屏面板
+ * ─────────────────────────────────────────────────────────────────────
+ * 用户这次的要求是"从底部滑出高度 55%~60% 的深色磨砂抽屉"。整屏面板的代价是
+ * 取景器被完全盖住，而换胶卷恰恰是"想一边看着取景器一边试"的动作 ——
+ * 露出上面那 40% 的画面，换卷时心里有底。所以这里把面板收成底部一张纸。
+ *
+ * ─────────────────────────────────────────────────────────────────────
+ * 为什么仍然用自绘覆盖层，而不是 RN 的 `Modal`
  * ─────────────────────────────────────────────────────────────────────
  * 1. `Modal` 在 New Architecture 下会新开一个原生窗口层。这台相机是**设备级**
  *    的（`zoom` / `selectedLens` 都写在 `AVCaptureDevice` 上，见 `zoom.ts` 文件头），
  *    多开一层窗口在部分机型上会让预览短暂黑屏再恢复 —— 换胶卷不该有这种副作用。
  * 2. `Modal` 的 `pageSheet` / `formSheet` 在 iOS 上**默认带圆角和半透明背景**，
- *    而这里要求"相机预览绝对不能透出来"（面板必须完全不透明），用自绘层最直接。
+ *    面板底色会被系统改写，不如自绘可控。
  * 3. 项目里已经有两个同样形态的覆盖层（`SettingsScreen` / `GalleryScreen`）都是用
  *    `...StyleSheet.absoluteFill` 自绘的，保持同一套结构，后来人不用学两种写法。
  *
@@ -16,13 +23,25 @@
  * 见下面那段 `BackHandler` 的 effect。
  *
  * ─────────────────────────────────────────────────────────────────────
- * 为什么背景是两个纯色层叠起来
+ * 为什么面板高度是"窗口高度的比例"，而不是一个固定数值
  * ─────────────────────────────────────────────────────────────────────
- * 外层是 `#0A0A0B` 的**实心**底（`styles.root`）—— 这就是"预览不会透出来"的保证；
- * 内层再叠一张半透明的皮纹，是为了和整个 App 的材质一致，而不是为了透光。
- * 改这里时**不要**把外层改成 `rgba(...,0.9x)`：那是"半透明遮罩"，不是面板。
+ * 抽屉里是 10 款胶卷的 2 列网格 = **5 行**，而每一行的高度取决于卡片宽度
+ * （`cardWidth` 由窗口宽度算出，色块 + 两行字的高度都跟着它走）。
+ * 也就是说"能不能装下 5 行"这件事本身就是窗口尺寸的函数：
+ *   · 写死一个数值 → 大屏上只占一小条、小屏上又会盖满整个取景器；
+ *   · 取窗口高度的 **0.58**（用户给的 55%~60% 的中值）→ 跟随屏幕自动缩放；
+ *   · 再用 `[380, 窗口高度 × 0.62]` 夹一次：380 是"5 行卡 + 标题"在小屏上的
+ *     最低可用高度，0.62 是"不能把取景器吃光"的上限。
+ *
+ * ─────────────────────────────────────────────────────────────────────
+ * 为什么底色是实心 `#1A1A1A` + 一层纹理，而不是半透明"毛玻璃"
+ * ─────────────────────────────────────────────────────────────────────
+ * 真正的毛玻璃要 `expo-blur`（= 新依赖，本项目禁止）。用 `rgba(26,26,26,0.9x)`
+ * 假装透光只会让卡片上的等宽小字压在相机画面上，读不清。
+ * 这里的"磨砂"是**材质**意义上的：实心 `#1A1A1A` 打底 + 一张极低透明度的皮纹
+ * （和机身、设置页同一张 tile）+ 顶部一道亮边。远看是磨砂黑，近看有颗粒。
  */
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   BackHandler,
@@ -56,8 +75,18 @@ const GRID_PADDING = 16;
 const GRID_GAP = 8;
 /** 单列最小宽度：窗口极窄时宁可横向滚动，也不把工业代号挤成两行。 */
 const CARD_MIN_WIDTH = 132;
-/** 打开动画时长。够短，不挡手；够长，能看出是"面板推上来"而不是闪一下。 */
+/** 开合动画时长。够短，不挡手；够长，能看出是"面板推上来 / 收回去"而不是闪一下。 */
 const REVEAL_MS = 180;
+/** 面板高度 = 窗口高度 × 该比例（用户给的 55%~60% 取中值）。 */
+const SHEET_HEIGHT_RATIO = 0.58;
+/** 面板高度下限：小屏上"5 行卡 + 标题"的最低可用高度。 */
+const SHEET_MIN_HEIGHT = 380;
+/** 面板高度上限（相对窗口高度）：再高就把取景器吃光了。 */
+const SHEET_MAX_RATIO = 0.62;
+/** 关闭按钮的触控区边长。用户要求 ≥ 44，所以这里就是 44 —— 不做 hitSlop 取巧。 */
+const CLOSE_TOUCH_SIZE = 44;
+/** 面板初始位移：从下方 28pt 处推上来。够看出方向，又不至于飞过整屏。 */
+const SHEET_SLIDE = 28;
 
 /**
  * `memo` 的意义有限（父组件只在开关时重渲染它），保留是为了让"这个组件的 props
@@ -72,22 +101,41 @@ export const FilmDrawer = memo(function FilmDrawer({
   const { t } = useI18n();
   const window = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  // 0 → 1 的打开进度，同时驱动遮罩透明度和面板位移。
+  // 0 → 1 的开合进度，同时驱动遮罩透明度、面板位移和整体淡出。
   const reveal = useRef(new Animated.Value(0)).current;
+  /*
+    为什么要多一个 `mounted`：用户这次要求"自动平滑收起"，
+    所以 `visible` 变 false 之后面板还得留在树上把退场动画跑完，不能立刻 `return null`。
+    `mounted` 就是"还在树上"这件事的开关，动画回调负责把它关掉。
+  */
+  const [mounted, setMounted] = useState(visible);
 
   useEffect(() => {
-    if (!visible) {
-      // 关掉时直接归零，不做退场动画：面板已经不在树上了，
-      // 留着动画只会让下一次打开从"半开"开始。
-      reveal.setValue(0);
+    if (visible) {
+      setMounted(true);
+    }
+  }, [visible]);
+
+  useEffect(() => {
+    if (!mounted) {
       return;
     }
-    Animated.timing(reveal, {
-      toValue: 1,
+    const animation = Animated.timing(reveal, {
+      toValue: visible ? 1 : 0,
       duration: REVEAL_MS,
       useNativeDriver: true,
-    }).start();
-  }, [visible, reveal]);
+    });
+    animation.start(({ finished }) => {
+      // 只有"收回去"跑完了才卸载。中途又被点开时 `visible` 已经是 true，
+      // 这里不会抢着卸载，下一次打开就从当前进度接着往上走。
+      if (finished && !visible) {
+        setMounted(false);
+      }
+    });
+    return () => {
+      animation.stop();
+    };
+  }, [mounted, visible, reveal]);
 
   useEffect(() => {
     if (!visible || Platform.OS !== 'android') {
@@ -108,6 +156,20 @@ export const FilmDrawer = memo(function FilmDrawer({
     const available = window.width - GRID_PADDING * 2 - GRID_GAP;
     return Math.max(CARD_MIN_WIDTH, Math.floor(available / 2));
   }, [window.width]);
+
+  /**
+   * 面板高度：先取比例，再夹到 [下限, 上限]。理由见文件头。
+   * 上下限同时生效时（极矮的屏幕）**上限优先** —— 宁可让网格滚起来，
+   * 也不能让面板盖过取景器。
+   */
+  const sheetHeight = useMemo(
+    () =>
+      Math.min(
+        Math.max(Math.round(window.height * SHEET_HEIGHT_RATIO), SHEET_MIN_HEIGHT),
+        Math.round(window.height * SHEET_MAX_RATIO),
+      ),
+    [window.height],
+  );
 
   const handleSelect = useCallback(
     (presetId: string) => {
@@ -137,56 +199,87 @@ export const FilmDrawer = memo(function FilmDrawer({
     [cardWidth, presetIndex, handleSelect],
   );
 
-  if (!visible) {
-    // 和 `SettingsScreen` / `GalleryScreen` 一致：不可见时不占渲染成本。
+  if (!mounted) {
+    // 从来没打开过、或者退场动画已经跑完 → 不占渲染成本。
     return null;
   }
 
   const translateY = reveal.interpolate({
     inputRange: [0, 1],
-    outputRange: [24, 0],
+    outputRange: [SHEET_SLIDE, 0],
   });
 
   return (
     <Animated.View
       style={[styles.root, { opacity: reveal }]}
-      // 读屏软件在 Android 上应该只读这张面板，不要读后面的取景器。
-      accessibilityViewIsModal
       /*
-        关闭路径一共三条：右上角"完成"、Android 返回键、读屏的双指双击。
-        **没有"点遮罩关闭"** —— 这一层是整屏的实心面板，不存在露在外面的遮罩区
-        （用户的原话是"面板底色必须完全不透明，取景器不能透出来"，整屏实心是
-        满足它的最强形态）。想改成底部抽屉形态的话，得先让取景器在面板上方
-        露出来，那和上面那条要求是冲突的。
+        退场动画期间面板还挂在树上，但**不能再接收触摸** —— 否则那 180ms 里
+        用户点到的是正在消失的按钮。（`opacity` 为 0 的视图在 iOS 上依然命中测试。）
       */
+      pointerEvents={visible ? 'auto' : 'none'}
+      // 读屏软件应该只读这张面板，不要读后面的取景器。
+      accessibilityViewIsModal
+      // 读屏的双指双击 = 关闭（面板上唯一"整块"的无障碍动作）。
       onAccessibilityTap={onClose}
     >
-      {/* 实心底：预览在这一层之下，完全不透。 */}
-      <Image
-        source={UI_ASSETS.leatherTile}
-        style={styles.backdrop}
-        resizeMode="repeat"
-        fadeDuration={0}
-      />
-      <View style={styles.veil} pointerEvents="none" />
-      <Animated.View style={[styles.sheet, { transform: [{ translateY }] }]}>
-        <View style={[styles.plate, { paddingTop: insets.top + 14 }]}>
+      {/*
+        遮罩：点空白处收起抽屉。`accessible={false}` —— 它是个纯手势区，
+        在无障碍树里多一个"按钮"只会让读屏用户多滑一次。
+      */}
+      <Pressable style={styles.scrim} accessible={false} onPress={onClose} />
+
+      <Animated.View
+        style={[
+          styles.sheet,
+          { height: sheetHeight, paddingBottom: Math.max(insets.bottom, 8) },
+          { transform: [{ translateY }] },
+        ]}
+      >
+        {/* 磨砂材质：实心 #1A1A1A 打底（见文件头），上面一张极淡的皮纹。
+            包一层 View 是为了 `pointerEvents` —— RN 的类型里它只属于 ViewStyle，
+            不能直接写在 <Image> 上（写了 tsc 会报 property does not exist）。 */}
+        <View style={styles.sheetTexture} pointerEvents="none">
+          <Image
+            source={UI_ASSETS.leatherTile}
+            style={StyleSheet.absoluteFill}
+            resizeMode="repeat"
+            fadeDuration={0}
+          />
+        </View>
+
+        <View style={styles.plate}>
           <View style={styles.plateTitles}>
-            <Text style={styles.title}>{t('film.drawer.title')}</Text>
+            {/*
+              标题：等宽 + 宽字距的"机器印字"。文案（`SELECT FILM STOCK · 胶卷库`）
+              由语言包给出，这里只管排版；`adjustsFontSizeToFit` 是给窄屏兜底的 ——
+              五语言里英文最长，加上 2.4 的字距在 320pt 宽的机器上会顶到 ✕。
+            */}
+            <Text
+              style={styles.title}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.7}
+            >
+              {t('film.drawer.title')}
+            </Text>
             <Text style={styles.hint} numberOfLines={1}>
               {t('film.drawer.hint')}
             </Text>
           </View>
+          {/*
+            极简关闭按钮：一个 `✕` 字符（比画两条线少一层布局，且天然居中）。
+            触控区 44×44 —— 用户明确要求，所以不做 hitSlop 的"假放大"。
+          */}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t('film.drawer.close')}
             onPress={onClose}
-            hitSlop={8}
-            style={({ pressed }) => [styles.done, pressed ? styles.pressed : null]}
+            style={({ pressed }) => [styles.close, pressed ? styles.pressed : null]}
           >
-            <Text style={styles.doneText}>{t('film.drawer.close')}</Text>
+            <Text style={styles.closeMark}>✕</Text>
           </Pressable>
         </View>
+
         <ScrollView
           style={styles.scroll}
           contentContainerStyle={styles.scrollContent}
@@ -204,33 +297,42 @@ const styles = StyleSheet.create({
   root: {
     // 注意：RN 0.86 已移除 StyleSheet.absoluteFillObject，只能用 absoluteFill
     ...StyleSheet.absoluteFill,
-    // 实心底色 —— 这条是"预览不透出来"的第一道保证。
-    backgroundColor: '#0A0A0B',
+    // 抽屉只占下半屏，所以遮罩是**半透明**的：上面那 40% 要能看见取景器。
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(6, 6, 6, 0.55)',
   },
-  backdrop: {
+  scrim: {
     ...StyleSheet.absoluteFill,
-    opacity: 0.9,
-  },
-  veil: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(8, 8, 7, 0.55)',
   },
   sheet: {
-    flex: 1,
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+    // 面板底色 = 用户规格的深色磨砂 #1A1A1A（实心，理由见文件头）。
+    backgroundColor: '#1A1A1A',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    // 顶部一道亮边：让"纸从下面推上来"这件事有厚度，也是磨砂感的来源之一。
+    borderTopColor: 'rgba(255, 255, 255, 0.12)',
+    // 圆角要把内部的纹理层裁掉，否则四个角会露出直角。
+    overflow: 'hidden',
+  },
+  sheetTexture: {
+    ...StyleSheet.absoluteFill,
+    opacity: 0.35,
   },
   plate: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: GRID_PADDING,
-    paddingTop: 18,
-    paddingBottom: 12,
+    paddingLeft: GRID_PADDING,
+    paddingRight: GRID_PADDING - 8,
+    paddingTop: 14,
+    paddingBottom: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(210, 139, 42, 0.28)',
+    borderBottomColor: 'rgba(229, 169, 60, 0.28)',
   },
   plateTitles: {
     flexShrink: 1,
-    paddingRight: 12,
+    paddingRight: 8,
   },
   title: {
     color: INK.amberSoft,
@@ -244,18 +346,15 @@ const styles = StyleSheet.create({
     fontSize: 9,
     letterSpacing: 0.4,
   },
-  done: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(210, 139, 42, 0.55)',
-    borderRadius: 3,
-    backgroundColor: 'rgba(210, 139, 42, 0.10)',
+  close: {
+    width: CLOSE_TOUCH_SIZE,
+    height: CLOSE_TOUCH_SIZE,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  doneText: {
-    color: INK.amberSoft,
-    fontSize: 11,
-    letterSpacing: 1,
+  closeMark: {
+    color: INK.paperDim,
+    fontSize: 15,
     fontFamily: UI_MONO,
   },
   pressed: {
@@ -267,7 +366,8 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: GRID_PADDING,
     paddingTop: 12,
-    paddingBottom: 40,
+    // 面板自己已经带了下安全区内边距，这里只留一点呼吸空间。
+    paddingBottom: 16,
   },
   grid: {
     flexDirection: 'row',

@@ -21,7 +21,7 @@ export const zhHant: Messages = {
   /* ---------------- ③ 底部主控 ---------------- */
   'camera.preset.head': '預設 PRESET',
   'camera.preset.a11y': '目前預設 {name}，輕觸切換',
-  'camera.preset.hint': '{index}/{total} · 輕觸切換',
+  'camera.preset.hint': '{index}/{total} · 切換',
   'camera.frame.hint': '滑動觀景窗',
   'camera.frame.label': '相框',
   'camera.frame.next': '下一個相框',
@@ -32,8 +32,9 @@ export const zhHant: Messages = {
   'camera.shutter.busy': '正在顯影',
 
   /* ---------------- 底片庫（長按觀景窗下方的底片名打開） ---------------- */
-  // 面板標題是印上去的英文標牌，和 LCD 上的字一樣不翻譯，五種語言共用同一串。
-  'film.drawer.title': 'SELECT FILM STOCK',
+  // 面板標題 = 印上去的英文標牌（永遠不翻譯）+ 一個本地語言的詞，中間用 ' · ' 分開。
+  // 牌子相當於機身刻字，後面那個詞才是給人看的說明 —— 所以這一串不再跨語言相同。
+  'film.drawer.title': 'SELECT FILM STOCK · 底片庫',
   'film.drawer.a11y': '底片庫，選擇底片預設',
   'film.drawer.close': '完成',
   'film.drawer.hint': '長按觀景窗下方的底片名稱也可以打開這裡',
@@ -161,4 +162,34 @@ export const zhHant: Messages = {
   'location.failed': '定位失敗',
   'location.locating': '正在定位',
   'location.servicesOff': '系統的「定位服務」總開關沒有打開。',
+  /* ---------------- 相簿匯入（把系統相簿裡的老照片重新沖印） ---------------- */
+  'gallery.import': '匯入',
+  'gallery.import.a11y': '從系統相簿匯入照片，重新沖印',
+  'gallery.import.busy': '正在沖印…',
+  'gallery.import.denied': '沒有相簿存取權限，請到 系統設定 → 隱私權與安全性 → 照片 裡打開。',
+  'gallery.import.failed': '匯入失敗：{message}',
+  'gallery.import.noExif': '原圖沒有拍攝時間，按今天沖印。',
+
+  /* ---------------- 底片長卷（§9） ---------------- */
+  'gallery.mode.strip': '長卷底片',
+  'gallery.mode.grid': '經典大圖',
+  'gallery.mode.a11y': '相簿瀏覽方式：{label}',
+  'gallery.strip.count': '共 {count} 張',
+
+  /* ---------------- 切片匯出（§9.4） ---------------- */
+  'gallery.export.entry': '匯出切片',
+  'gallery.export.a11y': '把選中的 {count} 張拼成一張長條海報',
+  'gallery.export.hint': '再選 {count} 張',
+  'gallery.export.busy': '正在拼合…',
+  'gallery.export.saved': '切片已存入相簿',
+  'gallery.export.failed': '匯出失敗：{message}',
+
+  /* ---------------- 刪除成片（§10.2） ---------------- */
+  'gallery.delete.a11y': '刪除這張成片',
+  'gallery.delete.title': '刪除這張成片？',
+  'gallery.delete.message': '本機副本也會一併刪掉，無法復原。',
+  'gallery.delete.cancel': '取消',
+  'gallery.delete.confirm': '刪除',
+  'gallery.deleted': '已刪除',
+
 };

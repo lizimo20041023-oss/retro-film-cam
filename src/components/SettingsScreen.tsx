@@ -40,17 +40,35 @@ import type {
 } from '../types';
 
 /**
- * 覆盖层的不透明底色。
+ * 覆盖层的"深色毛玻璃"底色 —— 不透明度 0.98。
  *
- * 为什么必须**不透明**：本屏是挂在相机屏上的整屏覆盖层，取景器一直在后面跑。
- * 以前用的是 `rgba(12, 12, 11, 0.97)`，那 3% 的透明足够让实时预览透出来
- * —— 用户报的就是这个"看着像渲染故障"。色值贴近 `INK` 那套深色。
+ * 为什么必须**几乎不透明**：本屏是挂在相机屏上的整屏覆盖层，取景器一直在后面跑。
+ * 更早的版本用的是 `rgba(12, 12, 11, 0.97)`，那 3% 的透明足够让实时预览透出来
+ * —— 用户报的就是这个"看着像渲染故障"。
+ *
+ * 为什么是 0.98 而不是 1.0：v1.2.0 改成完全不透明的 `#0E0F11` 把 bug 按住了，
+ * 但用户这次明确要"不透明度极高（`rgba(18, 18, 18, 0.98)`）的深色毛玻璃"。
+ * 剩那 2% 只够透出一点极暗的环境光，观感上像一块深色玻璃，远不足以让取景画面
+ * "看出来"。真正兜住穿透的是两层保险：① 这里 0.98 的遮罩；② `CameraScreen`
+ * 在 `covered` 时把整个取景容器压成 `opacity: 0`（见那份注释）。**两层都要在。**
+ *
+ * ⚠️ `src/components/GalleryScreen.tsx:88` 有一份**完全同值**的 `SCRIM`，
+ * 两个文件是同一个视觉语言的两块面板。**改这里必须同时改那边**（反之亦然）——
+ * 两份不一致时，用户会觉得"设置页和相册页不是同一个 App"。
  *
  * 为什么写在这里而不是 `src/constants/theme.ts`：常量目录不在本次改动的写入范围内，
- * 而且这个值只服务于"覆盖层"这一个场景。`GalleryScreen.tsx` 里有一份同值的常量，
- * 两个文件改一处必须同时改另一处。
+ * 而且这个值只服务于"覆盖层"这一个场景，放在用它的两个文件里更好找。
  */
-const SCRIM = '#0E0F11';
+const SCRIM = 'rgba(18, 18, 18, 0.98)';
+
+/**
+ * 选中项对勾的颜色 —— 用户点名的琥珀橙。
+ *
+ * 为什么不复用 `INK.amber`（`#D28B2A`）：对勾只有 15pt，字重又比旁边的
+ * 15pt 正文细（`✓` 在多数字体里笔画很轻），用标准琥珀在 `#121212` 上会发闷。
+ * `#E5A93C` 比它亮一档，正好补上笔画细带来的对比度损失。
+ */
+const CHECK_AMBER = '#E5A93C';
 
 export interface SettingsScreenProps {
   visible: boolean;
@@ -348,8 +366,16 @@ interface OptionRowProps {
 }
 
 /**
- * 一行可选项。选中态用**左侧琥珀小方块**而不是勾选框：
- * 和取景屏幕上的 LCD 色标是同一个视觉语言，而且 8pt 的字号里"打勾"根本看不清。
+ * 一行可选项。
+ *
+ * 选中态 = **最右侧一个琥珀橙对勾**（用户明确要求的那种"设置列表"写法），
+ * 文字一律靠左。v1.2.0 用的是"左侧 7pt 小方块 + 整行文字提亮"，问题是扫描
+ * 一列选项时眼睛要**左右横跳**才能确认选中了哪个；对勾固定在右端，
+ * 一列看下来是一条竖线，一眼就能找到当前档位。
+ *
+ * 为什么对勾写在 `note` **后面**而不是取代它：`note` 是"这一档的代号"
+ * （颗粒的 `STD` / 语言的 `zh-Hans`），它是内容不是状态，选中时更不该消失
+ * —— 用户想知道"标准档的代号是 STD"。所以顺序固定为：文字 → 代号 → 对勾。
  */
 function OptionRow({ label, note, selected, onPress, a11yLabel, disabled }: OptionRowProps) {
   /** 灰掉时按"不可用"报给读屏，而不是报成普通可选但点了没反应。 */
@@ -368,7 +394,6 @@ function OptionRow({ label, note, selected, onPress, a11yLabel, disabled }: Opti
       accessibilityLabel={a11yLabel}
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
     >
-      <View style={[styles.mark, selected && styles.markOn]} />
       <Text
         style={[
           styles.rowLabel,
@@ -384,6 +409,26 @@ function OptionRow({ label, note, selected, onPress, a11yLabel, disabled }: Opti
           {note}
         </Text>
       ) : null}
+      {/*
+        对勾的宽度**恒定占位**（无论选中与否都渲染这个 View）。
+        否则选中一行会让文字区域突然缩窄 20pt，长标签（"跟随系统"这类）会
+        在选中的瞬间被 `numberOfLines={1}` 截出省略号 —— 一个纯粹的视觉抖动。
+        未选中时里面那枚字形是空的，但 `accessibilityState.selected` 已经把
+        状态报给读屏了，视觉上的留白不损失任何信息。
+      */}
+      <View style={styles.check}>
+        {selected ? (
+          <Text
+            style={[styles.checkMark, disabled === true && styles.rowLabelDim]}
+            numberOfLines={1}
+            // 对勾是纯装饰：读屏已经通过 `accessibilityState.selected` 念过选中态了，
+            // 不关掉的话 VoiceOver 会再念一遍"勾"，同一件事听两遍。
+            accessible={false}
+          >
+            ✓
+          </Text>
+        ) : null}
+      </View>
     </Pressable>
   );
 }
@@ -475,18 +520,6 @@ const styles = StyleSheet.create({
   rowPressed: {
     backgroundColor: 'rgba(255, 255, 255, 0.04)',
   },
-  mark: {
-    width: 7,
-    height: 7,
-    marginRight: 12,
-    backgroundColor: 'transparent',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: INK.paperFaint,
-  },
-  markOn: {
-    backgroundColor: INK.amber,
-    borderColor: INK.amber,
-  },
   rowLabel: {
     flex: 1,
     color: INK.paperDim,
@@ -499,6 +532,23 @@ const styles = StyleSheet.create({
   /** 灰掉的行：压到 0.38 —— 还读得清是什么，但一眼看得出"现在不生效"。 */
   rowLabelDim: {
     opacity: 0.38,
+  },
+  /**
+   * 对勾的固定槽位。宽度写死 20pt，选中与否都占着，避免选中瞬间文字被挤窄。
+   * 用 `alignItems: 'flex-end'` 而不是靠外边距对齐：右端就是这一行的右缘，
+   * 不随 `note` 的长短漂移。
+   */
+  check: {
+    width: 20,
+    marginLeft: 12,
+    alignItems: 'flex-end',
+  },
+  checkMark: {
+    // 用户点名的色值，比 `INK.amber`（#D28B2A）更亮一档 —— 对勾只有 15pt，
+    // 用标准琥珀在深色底上会有点发闷，看不清。
+    color: CHECK_AMBER,
+    fontSize: 15,
+    lineHeight: 20,
   },
   rowNote: {
     marginLeft: 12,

@@ -61,6 +61,10 @@ export const FRAMES: FrameSpec[] = [
     id: 'polaroid-600',
     name: '一次成像',
     nameKey: 'frame.polaroid600',
+    // 顶栏胶囊徽标上的相框代号：纯 ASCII 大写短名，**不翻译**，也不走 `nameKey` ——
+    // 它和胶卷预设的 `RT-400` / `PR-400` 是同一类东西：机器印在机身和片基上的代号，
+    // 五种语言里都该长一样。徽标显示的是 `▌ {code} · {n}/{N}`。
+    code: 'POLAROID',
     // 1408×1712 = 88:107（600 系即时成像的真实外框比）。
     // 画面区 1264×1264 正方形，四周留白 72px，底部下巴 376px —— 三边等宽、下重，
     // 这个"头轻脚重"的比例就是拍立得的辨识度来源，改一点点都不像。
@@ -77,6 +81,8 @@ export const FRAMES: FrameSpec[] = [
     id: 'instax-mini',
     name: '迷你画幅',
     nameKey: 'frame.instaxMini',
+    // 机器代号，不翻译（说明见上面 `polaroid-600` 那条）。
+    code: 'INSTAX',
     // 1080×1720 = 54:86（instax mini 的真实外框比）。
     // 画面区 918×1224 严格 3:4 竖构图，上留白 90px、下巴 406px。
     source: require('../../assets/frames/instax-mini.png'),
@@ -91,6 +97,9 @@ export const FRAMES: FrameSpec[] = [
     id: 'neg-135',
     name: '135 负片',
     nameKey: 'frame.neg135',
+    // 机器代号，不翻译（说明见上面 `polaroid-600` 那条）。带空格是故意的：
+    // 真实片边上印的就是 `135`，前面冠一个胶卷家族的短名，比硬凑成一个词好认。
+    code: '135 NEG',
     // 1350×1950。按 35mm 胶片的真实毫米数放大（约 38.6 px/mm）：
     // 画面区 926×1389 = 24×36mm 竖拍，两侧各 212px 是齿孔带，
     // 上下各留 280/281px 片头片尾用来印代号。
@@ -98,20 +107,24 @@ export const FRAMES: FrameSpec[] = [
     aspect: 1350 / 1950,
     window: { x: 0.157037, y: 0.14359, width: 0.685926, height: 0.712308 },
     photoFit: 'cover',
-    // 片边已经印满了字（齿孔代号 / C-41），日期改烧画面内部右下角，谁也不挤谁
+    // 片边已经印满了字（齿孔代号 / PROCESS C-41），日期改烧画面内部右下角，谁也不挤谁
     watermark: { anchor: 'window', tone: 'amber', align: 'right' },
     designSize: { width: 1350, height: 1950 },
-    description: '135 负片：两侧真齿孔 + 橙黄片边代号（▷ 12A / C-41 135），纯黑片基无污渍',
+    description: '135 负片：两侧真齿孔 + 橙黄/浅白片边代号（▷ 12A / PROCESS C-41），纯黑片基无污渍',
   },
   {
     id: 'slide-mount',
     name: '幻灯装裱',
     nameKey: 'frame.slideMount',
+    // 机器代号，不翻译（说明见上面 `polaroid-600` 那条）。
+    code: 'SLIDE',
     // 1350×1350 = 1:1（50×50mm 幻灯卡纸的真实外形）。
-    // 开孔 972×648 = 36×24mm 横幅，居中，这就是唯一一张横构图。
+    // 开孔 972×648 = 36×24mm 横幅，**居中偏下**（上 403px / 下 299px ≈ 1.35:1），
+    // 这就是唯一一张横构图。开孔宽占卡纸宽的 72.000%，落在设计规格的 68~72% 区间内，
+    // 所以宽度一像素都没动 —— 一动 3:2 就不正了。
     source: require('../../assets/frames/slide-mount.png'),
     aspect: 1350 / 1350,
-    window: { x: 0.14, y: 0.26, width: 0.72, height: 0.48 },
+    window: { x: 0.14, y: 0.298519, width: 0.72, height: 0.48 },
     photoFit: 'cover',
     watermark: { anchor: 'frame', tone: 'graphite', align: 'right' },
     designSize: { width: 1350, height: 1350 },

@@ -49,14 +49,17 @@ TRANSPARENT_INDEX = 255
 WINDOW_POLAROID_600 = (72, 72, 1264, 1264)
 WINDOW_INSTAX_MINI = (81, 90, 918, 1224)
 WINDOW_NEG_135 = (212, 280, 926, 1389)
-WINDOW_SLIDE_MOUNT = (189, 351, 972, 648)
+# 幻灯卡的开孔**不是居中的**：用户要求"高度居中偏下"，取上留白 = 1.35 × 下留白。
+# 可用高度 1350 - 648 = 702 px，按 1.35 : 1 劈开 → 上 403.28 / 下 298.72，
+# 取整 y = 403（上 403 / 下 299，实际比 1.3478），而且 972 × 648 的 3:2 分毫未动。
+WINDOW_SLIDE_MOUNT = (189, 403, 972, 648)
 
 # --------------------------------------------------------------------------- #
 # 调色板：4 张相框所有用色都在这里，想统一换风格改这一段就够。
 # 颜色数量要克制 —— `save()` 会把整张图量化到 256 色，颜色一多，
 # 相近的纸色就会被合并成同一格，纸纹先糊掉。
 # --------------------------------------------------------------------------- #
-PAPER_INSTANT = (250, 249, 245)  # 600 系即时成像相纸（暖白，比纯白低 2 度）
+PAPER_INSTANT = (247, 246, 242)  # #F7F6F2 600 系即时成像相纸（纯净微暖卡纸）
 PAPER_MINI = (250, 250, 250)  # instax mini 片（冷白，比 600 系更冷更细）
 CARD_IVORY = (233, 228, 217)  # 幻灯装裱卡纸（象牙白，偏暖）
 CARD_WEAVE = (223, 218, 205)  # 卡纸的哑光织纹（压深一点点）
@@ -67,9 +70,9 @@ FILM_BASE = (22, 23, 26)  # 35mm 片基（近黑，带一点蓝）
 FILM_EDGE = (9, 10, 12)  # 片基最外圈（裁切边比片基本体更黑）
 FILM_PERF = (28, 29, 33)  # 齿孔带底色（乳剂面比片基略亮，摸得出来）
 
-INK_REBATE = (206, 158, 74)  # 片边代号那种偏琥珀的印刷色（真边码是橙黄）
-INK_DIM = (150, 152, 158)  # 片边上的次级代号（比边码灰，几乎融进片基）
-INK_CARD = (150, 146, 136)  # 印在卡纸上的规格字（印刷灰，不是黑）
+INK_REBATE = (232, 163, 60)  # #E8A33C 片边帧号：橙黄（用户钉死的暖橙黄）
+INK_PALE = (242, 239, 230)  # #F2EFE6 片边工艺字：浅白（上一版的冷灰"青色"已废弃）
+INK_CARD = (160, 160, 154)  # #A0A09A 卡纸上的规格字：浅灰卡纸压印，不是深灰实心字
 
 # --------------------------------------------------------------------------- #
 # 真实规格（毫米）→ 本脚本所有像素尺寸都由它们换算
@@ -294,6 +297,42 @@ def deboss(
     overlay(img, draw)
 
 
+def inner_shadow(
+    img: Image.Image,
+    window: tuple[int, int, int, int],
+    spread: float = 1.5,
+    ink: float = 0.12,
+) -> None:
+    """开孔四周一圈 **1.5 px 接触内阴影**（`rgba(0,0,0,0.12)`），做出"照片嵌进去了"的景深。
+
+    ⚠️ 这道阴影画在**纸面一侧**（紧贴开孔外缘的那 1~2 圈像素），不画在洞里 —— 这是
+    被格式逼出来的唯一解，不是偷懒：
+      · 相框 PNG 是**盖在照片之上**的一层，洞里（alpha=0）任何像素都只会把照片挡住；
+      · 更要命的是 `save()` 的二值 alpha 契约：调色板 PNG 只有一个透明槽，
+        洞里画半透明黑 = 要么把照片压暗一整格（alpha 按 1/255 渗色），
+        要么在"窗口必须全透"的审计里被判成 `blocked`。
+    所以做法是：**在洞外的纸面上**从孔缘往外压一层会衰减的墨 —— 紧贴孔缘那一圈
+    压满 12%，往外 1 px 只剩 4%，再往外归零。合成的底是**不透明**的纸，
+    所以这层的半透明只改 RGB、不改 alpha，"1.5 px 的渐变"和"二值 alpha"两件事同时成立。
+
+    观感上这就是照片投在纸口上的接触阴影（真实嵌装卡纸的孔缘本来也比纸面暗一档）。
+    """
+    x, y, w, h = window
+    peak = ink * 255.0
+    for d in range(int(math.ceil(spread))):
+        level = peak * max(0.0, 1.0 - d / spread)
+        if level < 1.0:
+            continue
+        fa = (0, 0, 0, int(round(level)))
+
+        def draw(dd: ImageDraw.ImageDraw, d: int = d, fa=fa) -> None:
+            dd.rectangle(
+                [x - d - 1, y - d - 1, x + w + d, y + h + d], outline=fa, width=1
+            )
+
+        overlay(img, draw)
+
+
 def print_text(
     text: str,
     size: int,
@@ -364,6 +403,45 @@ def paste_text(
 ) -> None:
     """`print_text` 的糖：直接贴到相框上。"""
     img.alpha_composite(print_text(text, size, tracking, ink, wear, seed, jitter), xy)
+
+
+def right_triangle(
+    img: Image.Image,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    ink: tuple[int, int, int],
+) -> None:
+    """在 `img` 的 `(x, y)` 处画一个右向**空心**三角（▷），占 `w × h`。
+
+    ⚠️ 为什么不用字形：`font()` 走的 `ImageFont.load_default()` 是本环境里
+    唯一可用的字体（`os.walk(PIL/)` 找不到任何 .ttf / .otf），它只带一套
+    极窄的默认字形，**基本只有 ASCII**。`▷`(U+25B7)、`▶`、`△`、`•`
+    全部落到 .notdef —— 印出来是**"方框里画个叉"的豆腐块**，不是三角。
+    判定方法：把待测字符和私用区码位 U+E000（必定缺字形）的渲染逐像素
+    比对，两者完全一致即证明缺字形（实测 `'A'`/`'1'`/`'-'` 三者都不同，
+    而 `▷`/`▶`/`△`/`•` 四个全都相同）。
+    → 结论：**画进相框的符号一律用图元画，文字只限 ASCII。**
+
+    为什么按重心缩放挖空，而不是"每个顶点各内缩一点"：三角形三个内角不
+    一样大，逐顶点固定内缩会让三条边的笔画粗细不均，锐角那头会断；绕重心
+    缩一个比例 k，内缩量才正比于对边长，看起来才像描出来的字。
+
+    用独立 RGBA 图层做"只盖笔画"：孔内 alpha 留 0，`alpha_composite` 时
+    底下的片基原样透出来 —— 直接往图上填底色会在带纹理的片基上留一块死色
+    补丁，也能顺带保证 alpha 直方图仍然只有 0 / 255。
+    """
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    outer = [(0, 0), (0, h - 1), (w - 1, (h - 1) // 2)]
+    d.polygon(outer, fill=ink + (255,))
+    gx, gy = (w - 1) / 3.0, (h - 1) / 2.0
+    k = 0.42
+    inner = [(gx + (px - gx) * k, gy + (py - gy) * k) for px, py in outer]
+    # ImageDraw 在 RGBA 上是**直接写像素**、不做混合，所以这一笔是真的镂空。
+    d.polygon(inner, fill=(0, 0, 0, 0))
+    img.alpha_composite(layer, (x, y))
 
 
 def text_width(text: str, size: int, tracking: int) -> int:
@@ -465,6 +543,10 @@ def make_polaroid_600() -> None:
     # 窗口压痕：真片是"药膜面朝下压进片仓"的，边缘有一道很浅的台阶。
     # 只给最窄的一圈、最低的对比 —— 多了就是"画了个框"。
     deboss(img, window, width=3, light=(255, 255, 255, 64), dark=(0, 0, 0, 40))
+    # 照片内边缘的 1.5 px 接触内阴影 rgba(0,0,0,0.12)：见 `inner_shadow()`，
+    # 它压在纸面一侧（洞里的像素是透明的，画不进去），孔缘那一圈压满 12%、
+    # 往外 1 px 衰减到 4%、再往外归零 —— 照片看起来是"嵌"在纸口下面的。
+    inner_shadow(img, window, spread=1.5, ink=0.12)
     punch(img, window)
 
     save(img, "polaroid-600")
@@ -518,7 +600,11 @@ def make_neg_135() -> None:
 
     片基是**纯黑**的：彩色负片的片基本来就偏黑（橙色 mask 只在冲洗后的
     药膜面显色，扫描时才被扣掉），所以这里不用上一版那种橙片基。
-    片边上只印真片会印的东西：帧号（`▷ 12A` / `13 ▷`）和冲洗工艺 `C-41 135`。
+    片边上只印真片会印的东西，只用**两种墨**（用户钉死的橙黄 + 浅白，
+    上一版那支偏冷的灰蓝 `INK_DIM` 已经去掉）：
+      · 暖橙黄 `#E8A33C` —— 帧号 `▷ 12A` / `13 ▷`（两个三角都是**图元画的**，
+        不是字形：默认字体没有 U+25B7，印出来会是豆腐块，见 `right_triangle()`）；
+      · 浅白 `#F2EFE6`   —— 冲洗工艺 `PROCESS C-41`。
     **没有尘土、划痕、斑块** —— 那些是"用过"的痕迹，不该由印刷机喷上去。
     """
     W, H = 1350, 1950
@@ -556,23 +642,40 @@ def make_neg_135() -> None:
         pitch=PERF_PITCH,
     )
 
-    # 上片边：帧号（琥珀，真边码就是印在齿孔带之间的橙黄小字）。
+    # 上片边：帧号（暖橙黄 #E8A33C，真边码就是印在齿孔带之间的橙黄小字）。
     # 位置必须在 window 之外 —— 相框是盖在照片之上的图层，
     # 落在窗口里的字会**烧进成片**。y=150 在 window.y=280 上方，安全。
-    paste_text(img, (x + 12, 150), "> 12A", size=52, tracking=9, ink=INK_REBATE, seed=41)
-    # 相机侧的片边代号（灰，几乎融进片基里）—— 真片两侧印的是不同信息
-    paste_text(img, (x + 12, 1730), "C-41 135", size=48, tracking=8, ink=INK_DIM, seed=43)
-    # 右下角：下一格的帧号，右对齐到窗口右缘
-    lab = "13 >"
+    # `▷` 由 `right_triangle()` 画，不用字形（默认字体没有这个码位，见其说明）。
+    NUM_SIZE, NUM_TRACK = 52, 9
+    TRI_W, TRI_H, TRI_GAP = 30, 38, 12
+    right_triangle(img, x + 12, 151, TRI_W, TRI_H, INK_REBATE)
     paste_text(
         img,
-        (x + w - 12 - text_width(lab, 52, 9), 1730),
+        (x + 12 + TRI_W + TRI_GAP, 150),
+        "12A",
+        size=NUM_SIZE,
+        tracking=NUM_TRACK,
+        ink=INK_REBATE,
+        seed=41,
+    )
+    # 相机侧的片边工艺字（浅白 #F2EFE6）—— 真片两侧印的是不同信息
+    paste_text(
+        img, (x + 12, 1730), "PROCESS C-41", size=48, tracking=8, ink=INK_PALE, seed=43
+    )
+    # 右下角：下一格的帧号，右对齐到窗口右缘（三角在数字**右边**，与上片边相反）
+    lab = "13"
+    lab_w = text_width(lab, NUM_SIZE, NUM_TRACK)
+    lab_x = x + w - 12 - (lab_w + TRI_GAP + TRI_W)
+    paste_text(
+        img,
+        (lab_x, 1730),
         lab,
-        size=52,
-        tracking=9,
+        size=NUM_SIZE,
+        tracking=NUM_TRACK,
         ink=INK_REBATE,
         seed=47,
     )
+    right_triangle(img, lab_x + lab_w + TRI_GAP, 1731, TRI_W, TRI_H, INK_REBATE)
 
     save(img, "neg-135")
     print_window("neg-135", (W, H), window)
@@ -582,10 +685,12 @@ def make_neg_135() -> None:
 # 4. slide-mount —— 50×50mm 幻灯装裱卡
 # --------------------------------------------------------------------------- #
 def make_slide_mount() -> None:
-    """幻灯装裱卡：50 × 50 mm 方形卡纸，中间开 36 × 24 mm 横孔，**居中**。
+    """幻灯装裱卡：50 × 50 mm 方形卡纸，中间开 36 × 24 mm 横孔，**居中偏下**。
 
-    比例尺 27 px/mm：50 mm × 27 = 1350 px 画布，开孔 36 × 24 mm → 972 × 648 px，
-    居中后四边留白 (1350 - 972) / 2 = 189 px、(1350 - 648) / 2 = 351 px。
+    比例尺 27 px/mm：50 mm × 27 = 1350 px 画布，开孔 36 × 24 mm → 972 × 648 px。
+    左右留白 (1350 - 972) / 2 = 189 px（严格对称，开孔宽度占卡纸宽的 72.000%，
+    正好落在用户要求的 68~72% 区间内，所以**宽度一像素都没动**，3:2 才保得住）；
+    上下留白按用户要求做成"居中偏下"：上 403 px / 下 299 px = 1.348（≈1.35）。
 
     这是四张里唯一的横向开孔 —— 真实的 35mm 幻灯框就是"方卡 + 横孔"，
     所以它在相册里天然和另外三张竖构图不一样，一眼能认出来。
@@ -598,8 +703,9 @@ def make_slide_mount() -> None:
       · 顶部一行 `SLIDE MOUNT` 规格印字 —— 真卡纸上印的就是这类小字，
         也是本张**唯一**的印刷内容。不打孔、无红线、无编号、无污渍。
 
-    底部 351 px 是**日期水印的地盘**（`frames.ts` 里 anchor='frame'），
-    所以那一片刻意留空。
+    底部 299 px 是**日期水印的地盘**（`frames.ts` 里 anchor='frame'），
+    所以那一片刻意留空；顶部那行 `SLIDE MOUNT` 缩到 34 号浅灰，压印感还在，
+    但不再和照片抢眼睛。
     """
     W, H = 1350, 1350
     window = WINDOW_SLIDE_MOUNT
@@ -634,8 +740,10 @@ def make_slide_mount() -> None:
     overlay(img, aperture_shade)
     punch(img, window)
 
-    # 顶部规格印字：本张唯一的印刷内容，小、灰、贴左对齐到开孔左缘。
-    paste_text(img, (x + 2, 96), "SLIDE MOUNT", size=46, tracking=22, ink=INK_CARD, seed=71)
+    # 顶部规格印字：本张唯一的印刷内容。小、浅灰（#A0A09A）、贴左对齐到开孔左缘。
+    # 字号 46 → 34 是用户明确要求的"缩小字号，避免喧宾夺主"：46 号在 1350 px 的
+    # 卡纸上已经比开孔本身还抢眼；字距反而拉到 24，把"卡纸压印"的疏排感留住了。
+    paste_text(img, (x + 2, 96), "SLIDE MOUNT", size=34, tracking=24, ink=INK_CARD, seed=71)
 
     save(img, "slide-mount")
     print_window("slide-mount", (W, H), window)

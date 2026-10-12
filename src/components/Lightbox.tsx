@@ -23,6 +23,20 @@
  * `Share.share({ url })` 到底把文件递给哪个 App、下拖过程中 `spring` 回弹的手感、
  * 以及 6pt / 12pt 这两个阈值在真实手指下的边界，都属于"类型对但没实测"。
  * 阈值全部提成上面的常量，就是为了上机之后好调。
+ *
+ * ── 底栏的两次返工（值得写下来）───────────────────────────────────────────
+ * v1.2.0 的底栏是**四个等宽胶囊按钮**（保存 / 分享 / 删除 / 完成）平铺居中。
+ * 用户反馈是"重叠挤压"：四个中文两字标签各自要 68pt，加 gap 后在 iPhone SE
+ * （320pt 宽）上正好顶到边，而 VoiceOver 开大字时还会溢出。
+ *
+ * 现在改成**左状态 + 右动作**两段式：
+ *   · 左边不是按钮，是一句状态（`gallery.saved`）—— 它原来是个按钮，
+ *     但"保存"这个动作对 App 内相册里的照片来说是多余的：这张图**本来就在**
+ *     App 的沙盒里，用户要的是"存到系统相册"，而这一步在导入/拍摄流程里
+ *     已经做过一次了。留成状态比留成按钮更诚实。
+ *   · 右边只有两枚真按钮：分享（带文字）与删除（垃圾桶图标）。
+ *     删除用图标而不是文字，是因为它必须一眼从"分享"里分出来，
+ *     而"删除"两个字在任何语言里都比图标长。
  */
 import { useCallback, useMemo, useRef, useState } from 'react';
 import {
@@ -42,7 +56,6 @@ import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { INK, UI_MONO } from '../constants/theme';
 import { useI18n } from '../i18n';
-import { saveToLibraryDetailed } from '../utils/saveToLibrary';
 import { describeError } from '../utils/describeError';
 
 /**
@@ -66,6 +79,24 @@ const DISMISS_DRAG = 96;
 
 /** 双击判定窗口（ms）。 */
 const DOUBLE_TAP_MS = 280;
+
+/**
+ * 底栏右侧两枚按钮的触控直径（pt）。
+ * 44 是 Apple HIG 的最小命中尺寸 —— 用户明确要求"触控区域不小于 44x44pt"。
+ * 这里**直接把按钮做成 44pt 的圆**，而不是画小再靠 `hitSlop` 补：
+ * `hitSlop` 只扩大触摸判定，不会扩大 VoiceOver 的可聚焦矩形，
+ * 读屏用户仍然只能"点到"那个小图标。
+ */
+const ACTION_SIZE = 44;
+
+/** 两枚按钮之间的间距（pt）。用户点名的 16。 */
+const ACTION_GAP = 16;
+
+/** 垃圾桶图标的视觉宽度（pt）。比 44pt 的按钮小一圈，才有"按在圆里"的感觉。 */
+const TRASH_WIDTH = 22;
+
+/** 分享按钮的横向内边距（pt）。 */
+const SHARE_PADDING = 16;
 
 /** 两指间距。 */
 function distanceBetween(a: NativeTouchEvent, b: NativeTouchEvent): number {
@@ -303,31 +334,10 @@ export function Lightbox({
     [clampOffset, dragY, handleTap, onClose, resetView],
   );
 
-  /** 保存到系统相簿（RETRO CAM）。失败/退到相机胶卷都如实说。 */
-  const handleSave = useCallback((): void => {
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    void (async (): Promise<void> => {
-      const save = await saveToLibraryDetailed(uri);
-      if (!save.ok) {
-        onToast({ key: `save-error-${Date.now()}`, message: save.message });
-        return;
-      }
-      if (save.destination === 'album') {
-        onToast({
-          key: `save-album-${Date.now()}`,
-          message: t('gallery.saved', { album: save.album }),
-        });
-        return;
-      }
-      // 退到相机胶卷：这句文案是相机屏也在用的那句，不另造一句
-      onToast({ key: `save-roll-${Date.now()}`, message: t('develop.done.saved') });
-    })();
-  }, [onToast, t, uri]);
-
   /**
-   * 分享。用 RN 内置的 `Share` 而不是 `expo-sharing` —— 后者**不在依赖里**，
-   * 而任务明令不许加依赖。代价要如实说明：Android 的 `Share` 只认 `message`，
-   * `url` 在那边会被忽略，所以安卓上分享出去的是一条带句子但没有图片文件的文本。
+   * 分享：用 RN 内置的 `Share` 而不是 `expo-sharing`（后者不在依赖里）。
+   * 这是底栏里**唯一**会跳出 App 的动作，所以给一次 Light impact 而不是 selection
+   * —— 和"关闭设置页"同级，比切换选项重一档。
    */
   const handleShare = useCallback((): void => {
     void Haptics.selectionAsync();
@@ -343,13 +353,22 @@ export function Lightbox({
     })();
   }, [onToast, t, uri]);
 
-  /** 删除：二次确认框和网格那一侧同一个理由（删的是用户自己的照片，且不可恢复）。 */
+  /**
+   * 删除：二次确认框和网格那一侧同一个理由（删的是用户自己的照片，且不可恢复）。
+   *
+   * 文案换成 `gallery.delete.title/message/cancel/confirm` 这一套：它们是
+   * 专门为"删一张成片"写的，标题是个问句、正文说清了"本地副本也一起删"。
+   * 之前复用的是 `gallery.delete`（"删除这张"），那本来是网格长按提示的句子，
+   * 当确认框标题时读起来像陈述句，用户按下去之前不知道会发生什么。
+   *
+   * `onDelete` 只负责落库 —— 这里已经问过一次了，父层**不能再问第二次**。
+   */
   const handleDelete = useCallback((): void => {
     void Haptics.selectionAsync();
-    Alert.alert(t('gallery.delete'), undefined, [
-      { text: t('gallery.cancel'), style: 'cancel' },
+    Alert.alert(t('gallery.delete.title'), t('gallery.delete.message'), [
+      { text: t('gallery.delete.cancel'), style: 'cancel' },
       {
-        text: t('gallery.delete'),
+        text: t('gallery.delete.confirm'),
         style: 'destructive',
         onPress: () => {
           resetView();
@@ -414,54 +433,77 @@ export function Lightbox({
         />
       </Animated.View>
 
-      {/* 操作条：四个都是真按钮，不靠手势 —— 手势是给"看图"用的，操作要有明确靶子 */}
-      <View style={styles.actionBar}>
-        {/* 保存键沿用相机屏显影完成那句"已存入相册"：同一件事在整个 App 里
-            只该有一种说法，而 i18n 里没有单独的 `gallery.save`。 */}
-        <ActionButton
-          label={t('develop.done.saved')}
-          a11yLabel={t('develop.done.saved')}
-          onPress={handleSave}
-        />
+      {/*
+        底栏 = 左状态 + 右动作（两次返工的结论见文件头）。
 
-        <ActionButton label={t('gallery.share')} a11yLabel={t('gallery.share')} onPress={handleShare} />
-        <ActionButton
-          label={t('gallery.delete')}
-          a11yLabel={t('gallery.delete')}
-          onPress={handleDelete}
-          danger
-        />
-        <ActionButton label={t('gallery.close')} a11yLabel={t('gallery.close')} onPress={handleClose} />
+        为什么左边是 `Text` 而不是按钮：这张成片**本来就在** App 沙盒里，
+        "保存"对 App 内相册是个空动作；用户真正要的是系统相册那一份，
+        而那一份在拍摄/导入流程里已经落过盘了。所以这里如实陈述一句
+        "已存入相簿"，把右端的位置让给两个真的会改变状态的动作。
+
+        用 `gallery.saved`（`已存到「RETRO CAM」`）而不是 `develop.done.saved`
+        （`已存入相册`）：前者带相簿名，用户能据此去系统相册里找到它。
+      */}
+      <View style={styles.actionBar}>
+        <Text style={styles.status} numberOfLines={2} maxFontSizeMultiplier={1.4}>
+          {t('gallery.saved', { album: t('album.name') })}
+        </Text>
+
+        <View style={styles.actions}>
+          <Pressable
+            onPress={handleShare}
+            accessibilityRole="button"
+            accessibilityLabel={t('gallery.share')}
+            style={({ pressed }) => [styles.shareAction, pressed && styles.actionPressed]}
+          >
+            <Text style={styles.shareText} numberOfLines={1} maxFontSizeMultiplier={1.4}>
+              {t('gallery.share')}
+            </Text>
+          </Pressable>
+
+          <Pressable
+            onPress={handleDelete}
+            accessibilityRole="button"
+            // 视觉上只有一个垃圾桶，读屏必须把它念全：`gallery.delete.a11y`
+            // 是"删除这张成片"，比直接拿 `gallery.delete`（"删除这张"）更明确。
+            accessibilityLabel={t('gallery.delete.a11y')}
+            style={({ pressed }) => [styles.iconAction, pressed && styles.actionPressed]}
+          >
+            <TrashIcon />
+          </Pressable>
+        </View>
       </View>
     </View>
   );
 }
 
-/** 底部那排胶囊按钮。抽出来是因为四个的样式/无障碍结构完全一样，只有文案和颜色不同。 */
-function ActionButton({
-  label,
-  a11yLabel,
-  onPress,
-  danger,
-}: {
-  label: string;
-  a11yLabel: string;
-  onPress: () => void;
-  /** 删除这类不可逆操作用暗琥珀，和取景器上的告警色一致。 */
-  danger?: boolean;
-}) {
+/**
+ * 垃圾桶图标 —— **手画的**，不是 emoji、也不是图片资源。
+ *
+ * 为什么不用 `🗑`：emoji 的字形由系统字体决定（iOS 上是彩色的 Apple Color Emoji），
+ * 在一屏纯黑白琥珀的界面里会突兀，而且它的**宽度随系统版本变**，
+ * 44pt 的圆里可能出现"某个 iOS 版本上偏大、边缘被裁"这种只在真机上看得见的问题。
+ * 为什么不用图片：`assets/**` 不在本次写入范围内，而且为一个 22pt 的图形加一张位图
+ * 不划算（还要配 @2x/@3x）。
+ *
+ * 全部用 `View` 拼：桶盖（一条横杠 + 一个小提手）+ 桶身（三条竖纹）。
+ * 颜色跟 `INK.amberDeep` —— 和取景器上的告警色一致，也和被删掉的那枚
+ * "删除"文字按钮同色，用户不会觉得删除键"变淡了"。
+ */
+function TrashIcon() {
   return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={a11yLabel}
-      hitSlop={6}
-      style={({ pressed }) => [styles.action, pressed && styles.actionPressed]}
-    >
-      <Text style={[styles.actionText, danger === true && styles.actionDanger]} numberOfLines={1}>
-        {label}
-      </Text>
-    </Pressable>
+    <View style={styles.trash} accessible={false}>
+      {/* 提手：桶盖上方的小凸起 */}
+      <View style={styles.trashHandle} />
+      {/* 桶盖 */}
+      <View style={styles.trashLid} />
+      {/* 桶身（上宽下窄做不出来，RN 不支持梯形；用等宽 + 圆角下缘近似） */}
+      <View style={styles.trashBody}>
+        <View style={styles.trashRib} />
+        <View style={styles.trashRib} />
+        <View style={styles.trashRib} />
+      </View>
+    </View>
   );
 }
 
@@ -524,19 +566,49 @@ const styles = StyleSheet.create({
   image: {
     backgroundColor: 'transparent',
   },
+  /**
+   * 底栏。`space-between` 把状态推到最左、动作推到最右 ——
+   * 两段之间用 `gap` 而不是 `marginLeft: 'auto'`，这样窄屏上状态文字
+   * 先被 `flexShrink` 挤窄（换行成两行），而不是把右边的按钮挤出屏幕。
+   */
   actionBar: {
     flexDirection: 'row',
-    justifyContent: 'center',
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'space-between',
+    gap: 12,
     paddingTop: 12,
-    paddingHorizontal: 12,
+    paddingHorizontal: 20,
   },
-  action: {
-    minWidth: 68,
-    height: 36,
-    paddingHorizontal: 12,
-    borderRadius: 18,
+  status: {
+    flexShrink: 1,
+    color: INK.paperDim,
+    fontFamily: UI_MONO,
+    fontSize: 11,
+    lineHeight: 15,
+    letterSpacing: 0.8,
+  },
+  /** 右侧两枚按钮的容器。间距 16pt 写在这里，不靠父层的 gap。 */
+  actions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: ACTION_GAP,
+  },
+  /** 分享：宽 44pt 是命中高度，宽度按文字撑开（各语言的"分享"都是 2~6 个字符）。 */
+  shareAction: {
+    minWidth: ACTION_SIZE,
+    height: ACTION_SIZE,
+    paddingHorizontal: SHARE_PADDING,
+    borderRadius: ACTION_SIZE / 2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: INK.hairline,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  /** 删除：正圆 44pt。没有 `hitSlop` —— 按钮本身就是 44pt，不需要补。 */
+  iconAction: {
+    width: ACTION_SIZE,
+    height: ACTION_SIZE,
+    borderRadius: ACTION_SIZE / 2,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: INK.hairline,
     alignItems: 'center',
@@ -545,13 +617,49 @@ const styles = StyleSheet.create({
   actionPressed: {
     backgroundColor: 'rgba(255, 255, 255, 0.06)',
   },
-  actionText: {
+  shareText: {
     color: INK.amberSoft,
     fontFamily: UI_MONO,
     fontSize: 12,
     letterSpacing: 1.2,
   },
-  actionDanger: {
-    color: INK.amberDeep,
+  /* ── 手画的垃圾桶（见 TrashIcon 的注释） ───────────────────────────── */
+  trash: {
+    width: TRASH_WIDTH,
+    alignItems: 'center',
+  },
+  trashHandle: {
+    width: 8,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: INK.amberDeep,
+  },
+  trashLid: {
+    width: TRASH_WIDTH,
+    height: 2,
+    borderRadius: 1,
+    marginTop: 1,
+    backgroundColor: INK.amberDeep,
+  },
+  trashBody: {
+    width: TRASH_WIDTH - 4,
+    height: 14,
+    marginTop: 2,
+    paddingHorizontal: 2,
+    paddingTop: 2,
+    borderBottomLeftRadius: 2,
+    borderBottomRightRadius: 2,
+    // 桶身只画左右两道边 + 下缘，中间留空 —— 实心块在深色底上会显成"一坨黑"。
+    borderLeftWidth: 2,
+    borderRightWidth: 2,
+    borderBottomWidth: 2,
+    borderColor: INK.amberDeep,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  trashRib: {
+    width: 1,
+    height: '100%',
+    backgroundColor: INK.amberDeep,
   },
 });
