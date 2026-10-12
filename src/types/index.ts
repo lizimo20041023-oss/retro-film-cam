@@ -100,6 +100,38 @@ export interface FrameWatermarkStyle {
 }
 
 /**
+ * 相框的**横向变体**：同一款相框在横拍时改用的那一套 PNG + 窗口。
+ *
+ * 为什么需要它：窗口的宽高比是钉死的（拍立得是正方形、135 是 3:2），
+ * 把一张横照片 `cover` 进竖版窗口会切掉两边大半，把竖照片硬塞进横版窗口同理。
+ * 与其在合成时做几何体操，不如让相框自己提供一套横版 PNG —— 纸还是那张纸，
+ * 只是转了个方向。
+ */
+export interface FrameOrientationVariant {
+  /** 横向相框 PNG。 */
+  source: ImageSourcePropType;
+  /** 横向 PNG 的整体宽高比（宽 / 高），**必须与 PNG 实际像素比一致**。 */
+  aspect: number;
+  /** 横向 PNG 里的镂空窗口（归一化，相对横向 PNG 整体）。 */
+  window: NormalizedRect;
+  /** 横向 PNG 的设计像素尺寸，仅用于文档与自检提示。 */
+  designSize?: Size;
+}
+
+/**
+ * 相框里的一个**画面开槽**。
+ *
+ * 只有"一框多图"的相框（半格双联框）才会写 `slots`。普通相框不写它，
+ * 直接用自己的 `window`，行为与没有这个字段时完全一致。
+ */
+export interface FrameSlot {
+  /** 开槽的归一化矩形。 */
+  window: NormalizedRect;
+  /** 这一格的照片怎么填，不写 = 跟相框的 `photoFit`。 */
+  photoFit?: 'cover' | 'contain';
+}
+
+/**
  * 一个相框 = 一张透明 PNG + 一个归一化镂空窗口。
  * 新增相框只需要往 `src/constants/frames.ts` 的数组里加一条，核心逻辑一行都不用改。
  */
@@ -116,12 +148,17 @@ export interface FrameSpec {
    */
   nameKey?: MessageKey;
   /**
-   * 顶栏徽标上的**相框代号**：纯 ASCII 大写短名，例如 `'POLAROID'` / `'INSTAX'` /
-   * `'135 NEG'` / `'SLIDE'`。
+   * 顶栏徽标上的**相框代号**：纯 ASCII 大写短名，例如 `'INSTANT SQ'` /
+   * `'INSTANT MINI'` / `'135 NEG'` / `'SLIDE'`。
    *
    * 它**不翻译**，和胶卷预设的 `RT-400` / `PR-400` 是同一类东西 ——
    * 机器印在机身和片基上的代号，五种语言里都该长一样。
    * 顶栏那枚胶囊徽标显示的就是 `▌ {code} · {n}/{N}`。
+   *
+   * ⚠️ **不许写厂商商标**：这个字符串会渲染在用户看得见的顶栏徽标上，把别人的
+   * 注册商标当成自己 App 的画幅名是最弱的用法（完整理由见 `src/constants/frames.ts`）。
+   * 只描述**介质与画幅**：`INSTANT SQ` = 一次成像方形、`INSTANT MINI` = 一次成像迷你。
+   * 长度也有预算 —— 见 `FrameBadge` 的 `maxWidth: '42%'` 那段核算。
    */
   code: string;
   /** 相框 PNG；透明区域 = 照片可见窗口。 */
@@ -139,6 +176,16 @@ export interface FrameSpec {
   watermark?: FrameWatermarkStyle;
   /** PNG 的设计像素尺寸，仅用于文档与自检提示。 */
   designSize?: Size;
+  /**
+   * 横拍变体。照片是横构图时合成层改用它，而不是把横照片硬塞进竖版窗口。
+   * 不写 = 这款相框只有竖版，横照片仍按 `window` + `photoFit` 处理。
+   */
+  landscape?: FrameOrientationVariant;
+  /**
+   * 一框多图的画面开槽。写了它时 `window` **仍然要写** ——
+   * 它同时是"没有第二张照片时的单图兜底"和取景器那条构图参考线的依据。
+   */
+  slots?: FrameSlot[];
   /** 一句话说明。 */
   description?: string;
 }
@@ -461,6 +508,24 @@ export interface FilmStageInput {
    * 不填 = 不印 `EXP.` 段，只印 `PR-400 // ISO 400 · 35MM`。
    */
   exposureIndex?: number;
+  /**
+   * **重曝**的第二张原片 uri。有它时合成层把两张在**同一个画面窗口内**叠起来
+   * （上面那张的透明度由 `overlayOpacity` 决定），然后整条调色 / 颗粒 / 相框管线
+   * 作用在**合成结果**上 —— 等价于在底片上叠两次曝光，物理上是对的。
+   *
+   * 为什么不先合成再交给管线：那样就得再截一次图、多一轮编解码，
+   * 而且两张的颗粒会各自独立、叠完还是"两张数码图"，不像同一次曝光。
+   */
+  overlayUri?: string | null;
+  /** 重曝上面那张的不透明度（0~1），不填 = 0.5。只有 `overlayUri` 有值时才有意义。 */
+  overlayOpacity?: number;
+  /**
+   * **一框多图**相框的第二张原片 uri（半格双联框的右格）。
+   *
+   * 和 `overlayUri` 的区别：这个是**并排放进另一个开槽**，不是叠在同一格里。
+   * 相框没有 `slots` 时这个字段无效。
+   */
+  secondUri?: string | null;
 }
 
 /**
@@ -553,6 +618,16 @@ export type SaveOutcome =
 export type LocalePreference = 'auto' | 'zh-Hans' | 'zh-Hant' | 'ja' | 'en' | 'fr';
 
 /**
+ * **地名**用的语言，只影响逆地理编码拼出来的那一行字。
+ *
+ * 为什么和界面语言分开：界面可以是日语，但用户可能就想要地名的英文拼写；
+ * 反过来界面是英文、地名想印中文也合理。所以这是一个独立设置项。
+ *
+ * 只有三种取值 —— 地名要么印中文（简/繁），要么印拉丁字母，中间态没有意义。
+ */
+export type GeoLocale = 'zh-Hans' | 'zh-Hant' | 'en';
+
+/**
  * 定位水印模式：
  * - `off`    不写定位（**默认**，即使用户给了权限也要他主动开）；
  * - `place`  写地名（城市 · 国家），走系统反查，苹果/谷歌会联网解析；
@@ -570,6 +645,12 @@ export interface AppSettings {
   placeDetail: PlaceDetail;
   /** 颗粒档位（原来在取景器底部那条横向滑块上，现在挪进设置）。 */
   grainLevel: GrainLevelId;
+  /**
+   * 地名用哪种语言印。**和界面语言刻意分开** —— 界面可以是日语，但地名仍想印简体。
+   * `'auto'` = 跟界面语言走：界面语言是 `zh-Hans` / `zh-Hant` / `en` 就用它，
+   * 其余（ja / fr）退回 `'en'`，因为反查回来的行政名在日法两种语言下没有可靠的对应词表。
+   */
+  geoLocale: GeoLocale | 'auto';
 }
 
 /** 写字机里定位这一格的状态（只影响 LCD 显示，不影响能否拍照）。 */

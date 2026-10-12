@@ -18,7 +18,7 @@
  *
  * 单位说明：本文件只处理字符串，不涉及任何长度单位。
  */
-import type { PlaceDetail, ResolvedPlace } from '../types';
+import type { GeoLocale, LocalePreference, PlaceDetail, ResolvedPlace } from '../types';
 import type { LocaleId } from '../i18n/types';
 import { pad2 } from './formatTimestamp';
 
@@ -251,6 +251,14 @@ function firstNonEmpty(...values: Array<string | null | undefined>): string {
  * 先拿坐标，所以最差也能退化成坐标那一行的城市位（见 `locationStamp.ts`）。
  * 传 `undefined` 就表示没有兜底。
  *
+ * **它为什么不吃语言参数**（§五.2 的"让 resolvePlaceFromGeocode 走它"该怎么理解）：
+ * 这个函数只做"反查结果 → 结构"，一行字都不拼，所以它对语言**真的没有可判之处**；
+ * 给它加一个 `geoLocale` 只会得到一个装饰性参数（而且 `ResolvedPlace` 也没有地方存语言 ——
+ * 存了就违背本文件开头"存结构、渲染时才拼"那条原则）。所以地名语言在这里的落点是
+ * **调用点上一行**：`locationStamp.ts` / `importPhoto.ts` 都是先
+ * `const locale = resolveGeoLocale(geoSettings, uiLocale)` 再调本函数，
+ * 然后把同一个 `locale` 交给 `formatResolvedPlace`。判断仍然只有 `resolveGeoLocale` 一处。
+ *
  * 单位：`latitude` / `longitude` 是**度**（WGS-84）。
  */
 export function resolvePlaceFromGeocode(
@@ -363,6 +371,50 @@ type LatinLocale = 'en' | 'fr';
 /** 中文档语言判定，顺带把类型收窄（`formatResolvedPlace` 靠它分流，所以不用断言）。 */
 function isChineseLocale(locale: LocaleId): locale is ChineseLocale {
   return locale !== 'en' && locale !== 'fr';
+}
+
+/**
+ * 地名语言 → 真正拿去拼字的那种语言（§五.2 的收口函数）。
+ *
+ * 为什么需要它：**界面语言**和**地名语言**是两件事。界面是日文、地名要印英文
+ * （`geoLocale: 'en'`）是完全合理的组合；反过来界面法语、地名印简中也一样。
+ * 界面语言回答"按钮上写什么字"，地名语言回答"反查回来的行政名该按哪套词表排"。
+ *
+ * `'auto'` 的语义（按规格，也是这里唯一有判断的地方）：界面语言本身就是
+ * `zh-Hans` / `zh-Hant` / `en` 时就用它自己；**ja / fr 退回 `'en'`** ——
+ * 日文和法文都没有可靠的"行政名反查词表"可用，硬撑着按日文/法文拼，
+ * 只会把中文反查结果原样印上去或者得到半汉半欧的怪东西，不如退到英文档（罗马字）。
+ * 这个"退回"是**下结论**不是兜底：'en' 那一档有 `romanizeForEnglish` + 拉丁国名表，
+ * 是三种里唯一能保证"任何输入都有像样输出"的一档。
+ *
+ * 入参故意收 `LocalePreference | undefined` 而不是只收 `GeoLocale | 'auto'`：
+ * 调用方手里可能只有"当前界面语言"这一个值（它自己也可能是 ja / fr），
+ * 多一层类型体操不如让这一个函数把五种语言全接住、在内部判掉。
+ */
+export function resolveGeoLocale(geoLocale: LocalePreference | undefined, uiLocale: LocaleId): GeoLocale {
+  if (geoLocale !== undefined && geoLocale !== 'auto') {
+    return isGeoLocale(geoLocale) ? geoLocale : 'en';
+  }
+  switch (uiLocale) {
+    case 'zh-Hans':
+      return 'zh-Hans';
+    case 'zh-Hant':
+      return 'zh-Hant';
+    default:
+      // 'en' 自己、'ja' / 'fr' 退回 'en'（理由见上）。
+      return 'en';
+  }
+}
+
+/**
+ * 这个字符串是不是地名语言三选一。
+ *
+ * 存在的意义只有一个：`resolveGeoLocale` 的入参被放宽到了五种语言，
+ * 而设置里那个值理论上只可能是三种（或 `'auto'`）—— 万一持久化的旧数据里
+ * 混进了 `'ja'`，这里会把它判掉并退到 'en'，而不是让日文档悄悄生效。
+ */
+function isGeoLocale(value: LocalePreference): value is GeoLocale {
+  return value === 'zh-Hans' || value === 'zh-Hant' || value === 'en';
 }
 
 /**
@@ -585,11 +637,26 @@ function latinCountryName(place: ResolvedPlace): string {
  *
  * 单位：无（纯字符串）。`locale` 必须传**当前界面语言**而不是拍摄时的语言 ——
  * 这正是存结构（`ResolvedPlace`）而不是存字符串的意义所在。
+ *
+ * 关于 §五.2 的那条"独立设置"：第 2 个参数现在可以收三种东西 ——
+ * 已经解析好的 `LocaleId`（老调用方的写法，行为一字不变）、设置里的地名语言
+ * （`GeoLocale`）、或者 `'auto'`。后两种都会先过 `resolveGeoLocale`，
+ * 于是"界面 ja + 地名 en"这种组合不需要调用方自己算，也不会有人漏算一次。
+ * 第 4 个参数 `uiLocale` 只在传 `'auto'`（或传了 ja/fr）时有意义：
+ * 它就是 `'auto'` 要参照的那个界面语言。默认 `'zh-Hans'` 是为了让
+ * "只传三个实参"的老调用方拿到和以前一样的结果。
  */
-export function formatResolvedPlace(place: ResolvedPlace, locale: LocaleId, detail: PlaceDetail): string {
-  const line = isChineseLocale(locale)
-    ? formatChinesePlace(place, locale, detail)
-    : formatLatinPlace(place, locale, detail);
+export function formatResolvedPlace(
+  place: ResolvedPlace,
+  locale: LocalePreference,
+  detail: PlaceDetail,
+  uiLocale: LocaleId = 'zh-Hans',
+): string {
+  // 收口：语言判断只在这一个函数入口做一次，下面两个分支拿到的都是确定的三选一。
+  const resolved = resolveGeoLocale(locale, uiLocale);
+  const line = isChineseLocale(resolved)
+    ? formatChinesePlace(place, resolved, detail)
+    : formatLatinPlace(place, resolved, detail);
   return line.length > 0 ? line : place.coords;
 }
 

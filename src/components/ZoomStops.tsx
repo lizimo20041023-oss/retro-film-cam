@@ -29,11 +29,20 @@
  * 而且拖动语义和点按语义冲突）；也不用分段控件（`SegmentedControl` 在 RN 里
  * 只有 iOS 有，Android 得自己实现，等于白搭一层平台分支）。
  * 这里的"拟物"全部靠嵌套 `View` 的边框和底色叠出来：
- *   外框（深色凹槽） → 格子分隔线 → 抬起柱（琥珀底 + 亮上边 + 暗下边）。
+ *   外框（凹槽） → 格子分隔线 → 抬起柱（琥珀底 + 亮上边 + 暗下边）。
+ *
+ * ─────────────────────────────────────────────────────────────────────
+ * 现状：这个组件当前**没有挂载点**
+ * ─────────────────────────────────────────────────────────────────────
+ * 新规格把档位条从取景器上撤了（焦段改成胶囊循环 + 捏合），所以 `CameraScreen` 不再
+ * 引用它。文件保留是因为 `constants/zoom.ts`、`constants/lenses.ts`、
+ * `hooks/usePinchZoom.ts` 的文件头都指向这里，删掉会让那几段解释失去落点。
+ * 颜色已按 `useTheme()` 迁移过一次，将来要重新挂载时不用再补一遍。
  */
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
-import { INK, UI_MONO } from '../constants/theme';
+import { UI_MONO, useTheme } from '../constants/theme';
+import type { Theme } from '../constants/theme';
 
 /** 一档在 UI 上的形状。数据来自 `src/constants/lenses.ts` 的 `ZOOM_STOPS`。 */
 export type ZoomStopView = {
@@ -80,6 +89,8 @@ export const ZoomStops = memo(function ZoomStops({
   onSelect,
 }: ZoomStopsProps) {
   const window = useWindowDimensions();
+  const theme = useTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
   // 见文件头：宽度只依赖窗口宽度，**绝不**依赖 activeStopId。
   const trackWidth = Math.min(TRACK_MAX_WIDTH, Math.round(window.width * TRACK_WIDTH_RATIO));
 
@@ -137,83 +148,87 @@ export const ZoomStops = memo(function ZoomStops({
   );
 });
 
-const styles = StyleSheet.create({
-  row: {
-    // 只负责"把轨道放在屏幕正中"，轨道宽度由上面的 trackWidth 决定。
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingTop: 8,
-    paddingBottom: 4,
-    backgroundColor: 'rgba(10, 10, 9, 0.34)',
-  },
-  track: {
-    flexDirection: 'row',
-    // 凹槽：深底 + 细琥珀描边，跟 LCD 面板同一套材质。
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(210, 139, 42, 0.30)',
-    borderRadius: 4,
-    backgroundColor: 'rgba(8, 8, 7, 0.72)',
-    // RN 0.86 仍然支持 overflow: 'hidden'；用来让格子的分隔线止于圆角内。
-    overflow: 'hidden',
-  },
-  cell: {
-    // `flex: 1` + 固定宽度的父容器 = 三格严格等宽，且宽度与选中态无关。
-    flex: 1,
-    height: 34,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cellDivider: {
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    borderLeftColor: 'rgba(210, 139, 42, 0.22)',
-  },
-  cellPressed: {
-    opacity: 0.55,
-  },
-  pillar: {
-    position: 'absolute',
-    left: 4,
-    right: 4,
-    top: 4,
-    height: PILLAR_HEIGHT,
-    borderRadius: 2,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255, 255, 255, 0.10)',
-    backgroundColor: 'rgba(255, 255, 255, 0.045)',
-  },
-  pillarActive: {
-    // 抬起的琥珀柱：亮上边 + 暗下边，制造"被按下去/弹起来"的机械感。
-    backgroundColor: 'rgba(210, 139, 42, 0.24)',
-    borderColor: 'rgba(210, 139, 42, 0.85)',
-    borderTopColor: 'rgba(244, 226, 190, 0.75)',
-    borderBottomColor: 'rgba(0, 0, 0, 0.55)',
-  },
-  label: {
-    color: INK.paperDim,
-    fontSize: 12,
-    letterSpacing: 0.8,
-    fontFamily: UI_MONO,
-  },
-  labelActive: {
-    color: INK.amberSoft,
-    fontWeight: '700',
-  },
-  labelDisabled: {
-    color: 'rgba(226, 222, 214, 0.22)',
-  },
-  labelDigital: {
-    // 数码档的文字略小一点，暗示"这不是一支独立镜头"。
-    fontSize: 11.5,
-  },
-  digitalMark: {
-    position: 'absolute',
-    right: 3,
-    bottom: 1,
-    color: 'rgba(226, 222, 214, 0.30)',
-    fontSize: 6.5,
-    fontFamily: UI_MONO,
-  },
-  digitalMarkActive: {
-    color: 'rgba(211, 158, 89, 0.75)',
-  },
-});
+function createStyles(theme: Theme) {
+  const { ink } = theme;
+  return StyleSheet.create({
+    row: {
+      // 只负责"把轨道放在屏幕正中"，轨道宽度由上面的 trackWidth 决定。
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingTop: 8,
+      paddingBottom: 4,
+      backgroundColor: theme.glass,
+    },
+    track: {
+      flexDirection: 'row',
+      // 凹槽：深底 + 细描边。原来这里跟 LCD 面板共用一套琥珀描边，
+      // 面板已按新规格删掉，凹槽就跟着主题的中性描边走。
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.glassBorder,
+      borderRadius: 4,
+      backgroundColor: theme.panel,
+      // RN 0.86 仍然支持 overflow: 'hidden'；用来让格子的分隔线止于圆角内。
+      overflow: 'hidden',
+    },
+    cell: {
+      // `flex: 1` + 固定宽度的父容器 = 三格严格等宽，且宽度与选中态无关。
+      flex: 1,
+      height: 34,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    cellDivider: {
+      borderLeftWidth: StyleSheet.hairlineWidth,
+      borderLeftColor: ink.hairline,
+    },
+    cellPressed: {
+      opacity: 0.55,
+    },
+    pillar: {
+      position: 'absolute',
+      left: 4,
+      right: 4,
+      top: 4,
+      height: PILLAR_HEIGHT,
+      borderRadius: 2,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.glassBorder,
+      backgroundColor: theme.glass,
+    },
+    pillarActive: {
+      // 抬起的琥珀柱：亮上边 + 暗下边，制造"被按下去/弹起来"的机械感。
+      backgroundColor: theme.glass,
+      borderColor: ink.amber,
+      borderTopColor: ink.paper,
+      borderBottomColor: theme.scrim,
+    },
+    label: {
+      color: ink.paperDim,
+      fontSize: 12,
+      letterSpacing: 0.8,
+      fontFamily: UI_MONO,
+    },
+    labelActive: {
+      color: ink.amberSoft,
+      fontWeight: '700',
+    },
+    labelDisabled: {
+      color: ink.paperFaint,
+    },
+    labelDigital: {
+      // 数码档的文字略小一点，暗示"这不是一支独立镜头"。
+      fontSize: 11.5,
+    },
+    digitalMark: {
+      position: 'absolute',
+      right: 3,
+      bottom: 1,
+      color: ink.paperFaint,
+      fontSize: 6.5,
+      fontFamily: UI_MONO,
+    },
+    digitalMarkActive: {
+      color: ink.amberSoft,
+    },
+  });
+}

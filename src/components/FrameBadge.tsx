@@ -9,7 +9,12 @@
  * 用户的原话是"看不懂"——一个没有图例的抽象小方块既不像相纸也不像画幅，
  * 那行比例又和顶栏其它信息抢同一块注意力。**整块已删除**（含 `AspectSketch`、
  * `greatestCommonDivisor`、`formatAspectRatio` 和它们的样式），
- * 现在只剩一行纯文字：`▌ INSTAX · 02/08`。
+ * 现在只剩一行纯文字：`▌ INSTANT MINI · 02/07`。
+ *
+ * ⚠️ 这里的例子原来是 `▌ INSTAX · 02/08`，`INSTAX` 是富士的注册商标。本仓库要转
+ * 公开，相框代号不许再写厂商名（详见 `src/constants/frames.ts` 里 `polaroid-600`
+ * 那条注释）。**代号变了，宽度预算也跟着变**：`INSTANT MINI` 是全表最长的一条，
+ * 见 `plate.maxWidth` 那段注释里的核算。
  *
  * ─────────────────────────────────────────────────────────────────────
  * 为什么分母取"相框总数"（这条规格没写死，是我的判断）
@@ -35,9 +40,10 @@
  * 自带一点左侧留白，和文字之间想稳定留出 6pt 根本对不齐，换字体就散架。
  * 用一个 3×12、圆角 1 的 `View` 画出来，宽高和间距完全可控。
  */
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { INK, UI_MONO } from '../constants/theme';
+import { UI_MONO, useTheme } from '../constants/theme';
+import type { Theme } from '../constants/theme';
 import { useI18n } from '../i18n';
 
 export interface FrameBadgeProps {
@@ -54,12 +60,10 @@ export interface FrameBadgeProps {
 }
 
 /**
- * 规格里给的琥珀橙。刻意**不用** `INK.amber`（`#D28B2A`）：徽标要在
- * `rgba(255,255,255,0.08)` 的浅胶囊底上跳出来，`INK.amber` 在这个底色上偏暗，
- * 用户点名要的就是这个更亮一档的琥珀。
+ * 规格里给的琥珀橙。原来这里写死成 `#E5A93C`，理由是"不能用 `INK.amber`（`#D28B2A`）
+ * 那个偏暗的值"。现在主题里的 `ink.amber` 本身就是 `#E5A93C`，写死的理由消失了 ——
+ * 而写死会在浅色主题下留下一根红色胶囊里不该出现的暗橙装饰条，所以改读主题。
  */
-const BADGE_AMBER = '#E5A93C';
-
 /** 序号补零到两位：`01/04`、`02/08`（用户给的样例就是两位）。 */
 function twoDigits(value: number): string {
   return String(Math.max(0, value)).padStart(2, '0');
@@ -78,6 +82,9 @@ export const FrameBadge = memo(function FrameBadge({
   onPress,
 }: FrameBadgeProps) {
   const { t } = useI18n();
+  const theme = useTheme();
+  // 颜色必须在组件里现取：模块级 StyleSheet 会把深浅色在加载那一刻冻结住
+  const styles = useMemo(() => createStyles(theme), [theme]);
 
   return (
     <Pressable
@@ -114,38 +121,42 @@ export const FrameBadge = memo(function FrameBadge({
   );
 });
 
-const styles = StyleSheet.create({
-  touch: {
-    // 顶栏右侧还有胶片计数 + 四枚拨轮，42% 是留给徽标的上限 ——
-    // 再宽就会把右边的拨轮挤到贴边（尤其 iPhone SE 那档窄屏）。
-    maxWidth: '42%',
-    flexShrink: 1,
-  },
-  pressed: {
-    opacity: 0.6,
-  },
-  plate: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
-    // 用户规格给的暗色微型胶囊底框：白色 8% 叠在深色顶栏上，够看清又不显眼。
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  accent: {
-    width: 3,
-    height: 12,
-    borderRadius: 1,
-    backgroundColor: BADGE_AMBER,
-  },
-  label: {
-    // 和装饰条之间固定 6pt（见文件头）。
-    marginLeft: 6,
-    flexShrink: 1,
-    color: INK.paper,
-    fontSize: 12,
-    letterSpacing: 0.6,
-    fontFamily: UI_MONO,
-  },
-});
+function createStyles(theme: Theme) {
+  const { ink } = theme;
+  return StyleSheet.create({
+    touch: {
+      // 顶栏一共三样东西：这枚徽标、底片计数、设置拨轮。徽标超过 42% 宽，
+      // 窄屏（iPhone SE 那档）上计数就会贴到拨轮边上，所以这里留硬上限。
+      maxWidth: '42%',
+      flexShrink: 1,
+    },
+    pressed: {
+      opacity: 0.6,
+    },
+    plate: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 4,
+      // 微型胶囊底框：跟控制台其它磨砂面共用同一个 `glass`，
+      // 深色下是白色 8%（原来写死的值），浅色下自动变成一层浅灰。
+      backgroundColor: theme.glass,
+    },
+    accent: {
+      width: 3,
+      height: 12,
+      borderRadius: 1,
+      backgroundColor: ink.amber,
+    },
+    label: {
+      // 和装饰条之间固定 6pt（见文件头）。
+      marginLeft: 6,
+      flexShrink: 1,
+      color: ink.paper,
+      fontSize: 12,
+      letterSpacing: 0.6,
+      fontFamily: UI_MONO,
+    },
+  });
+}

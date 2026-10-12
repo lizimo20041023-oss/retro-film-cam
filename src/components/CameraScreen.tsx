@@ -1,45 +1,24 @@
 /**
- * 主相机屏幕 —— 单屏完成"取景 → 拍摄 → 显影 → 存相册"。
+ * 取景器主屏。
  *
- * ── 视觉结构（自上而下五段，取景器不再被任何浮层遮挡） ────────────────────────
- *   ① 顶部操作栏 TopPanel   极窄一条，位于灵动岛下方、取景器**之上**：
- *                           左侧是**画幅徽章**（等比例小方框 + 画幅名，点一下换下一张），
- *                           右侧是**胶片计数徽章**（`[01A]`，数本卷拍了几张）
- *                           加四枚 44pt 机械拨轮（补光 / 反转 / 设置 / 相册）。
- *                           这里**不出现任何句子** —— 文字标签一律删除，
- *                           拨轮只留图标（刻字说明的活交给无障碍标签）。
- *   ② 取景器 Viewfinder     flex:1，只有三样东西（严格遵守"不做实时 GLSL"的约束）：
- *                           `CameraView` 原始实时画面 + 半透明引导 UI + 相框 PNG 遮罩。
- *   ③ 变焦档位 Bar          `0.5×` / `1×` / `2×` 三个等宽机械档位，居中。
- *   ④ 底部主控 FilmLine     一行"胶片名"（两侧 ◀ ▶ 只是**装饰性提示**）——
- *                           轻触换下一卷（带淡入淡出），长按 400ms 开胶卷库。
- *                           中间是快门；右侧是倍率读数。
- *   ⑤ 状态条 StatusPanel    超低对比度方框 + 琥珀色等宽字，显示当前显影参数。
+ * 这一版把"实时取景"和"相框"彻底拆开了：取景阶段画面上只有一条极细的画幅参考线，
+ * 相框贴图只在按下快门后的合成阶段（`FilmCompositor`）出现。实时就贴一张拍立得白边，
+ * 用户会以为拍出来就是那样 —— 而负片的画幅里根本不可能有白边。
  *
- * 底纹：整机背景是一张 160×160 的暗色皮革 tile（`assets/ui/leather-tile.png`，
- * `resizeMode="repeat"`），亮度只有 ±2/255 —— 远看是 #171716 的纯色，近看才有质感。
+ * 屏幕从上到下四层（全部按安全区避让）：
+ *   ① 顶栏      画幅徽标 / 底片计数 / 设置
+ *   ② 取景器    相机预览 + 画幅参考线 + 对焦曝光层 + 悬浮胶囊行
+ *   ③ 工具行    导入 / 重曝 / 定时 / 闪光灯 / 翻转
+ *   ④ 核心区    相册缩略图 / 快门 / 胶卷抽屉入口
  *
- * ── 调色/合成 ────────────────────────────────────────────────────────────────
- * 调色/颗粒/暗角/日期/相框这些"重活"全部发生在按快门之后：
- *   takePictureAsync → processFilmPhoto（合成视图 + captureRef）→ Asset.create 存相册。
- * 合成视图渲染在 `DevelopOverlay` 的暖黑幕布上（必须真的上屏，iOS 才截得到），
- * 而这层幕布本身在 ViewShot 之外，不会被截进成片。
- * ⚠️ 因此上面 ①③④⑤ 里的任何东西都**不会**出现在成片里 —— 成片只有：
- *    画面 + 调色图层 + 相框 PNG + 日期。想改成片请改 `FilmCompositor`。
+ * 触感只有两档：`selectionAsync`（"切换/选中"类）与 `impactAsync(Light)`（机械动作类）。
+ * 唯一的例外是物理侧键的 `Heavy` —— 那一下要隔着手机壳也能确认"按下去了"。
  *
- * ── 手势分工 ────────────────────────────────────────────────────────────────
- *   · 取景器区域 → 单击对焦 / 双指捏合变焦 / 左右滑动换相框（`FrameSwitcher`）；
- *   · 顶部左侧徽章 → 换下一张画幅；
- *   · 顶部右侧拨轮 → 补光 / 反转 / 设置 / 相册；
- *   · 变焦档位 → 点一下切到那一档；
- *   · 底部胶片名 → 轻触循环下一卷，长按 400ms 开胶卷库。
- *
- * ── 震动分工（只有两档力度，别再加） ────────────────────────────────────────
- *   `selectionAsync()`  切换类：档位 / 画幅 / 胶卷 / 颗粒 / 补光 / 对焦 / 开面板
- *   `impactAsync(Light)` 机械动作类：快门、拨轮（反转、开设置、开相册）
- *   为什么不再用 `Medium`：这台机器的所有按键都是"轻档"手感的机械拨轮，
- *   Medium 在 iPhone 上听起来像系统警告，和这台相机的音色不是一回事。
+ * 性能上有两条硬约束：切焦段**不能**重载 `CameraView`（原生会话重建会闪黑一下），
+ * 拖曝光也**不能**让整屏跟着重渲染（所以相册缩略图、工具行、胶囊行各自成组件，
+ * 状态尽量往里收，`cameraFocusProps` 这种传给原生的对象用 `useMemo` 稳住形状）。
  */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ComponentRef, ReactNode } from 'react';
 import {
@@ -58,19 +37,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import type { CameraType, CameraViewProps } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex, wrapIndex } from '../constants/frames';
-import { applyGrainLevel, findGrainLevelIndex, grainLevelAt } from '../constants/grain';
-import {
-  DEFAULT_PRESET_ID,
-  PRESETS,
-  findPresetIndex,
-  resolvePreset,
-  wrapPresetIndex,
-} from '../constants/presets';
-import { ZOOM_STOPS, isDigitalStop, resolveStop, zoomToFactor } from '../constants/lenses';
-import { INK, UI_MONO, compact } from '../constants/theme';
-import { UI_ASSETS } from '../constants/uiAssets';
-import { DEFAULT_ZOOM, ZOOM_MAX, toCameraZoom } from '../constants/zoom';
+
 import { useI18n } from '../i18n';
 import { useFilmFonts } from '../hooks/useFilmFonts';
 import { useFilmStage } from '../hooks/useFilmStage';
@@ -78,69 +45,161 @@ import { useLocationStamp } from '../hooks/useLocationStamp';
 import { usePhysicalShutter } from '../hooks/usePhysicalShutter';
 import { usePinchZoom } from '../hooks/usePinchZoom';
 import { useSettings } from '../hooks/useSettings';
-import type { CapturedPhoto, DevelopStatus, Rect, Size } from '../types';
+import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex, wrapIndex } from '../constants/frames';
+import { applyGrainLevel, findGrainLevelIndex, grainLevelAt } from '../constants/grain';
+import { ASSUMED_LENS_NATIVE_MM, ZOOM_STOPS, resolveStop, zoomToFactor } from '../constants/lenses';
+import { DEFAULT_PRESET_ID, PRESETS, findPresetIndex, resolvePreset } from '../constants/presets';
+import { UI_MONO, useTheme } from '../constants/theme';
+import { UI_ASSETS } from '../constants/uiAssets';
+import { DEFAULT_ZOOM, ZOOM_MAX, toCameraZoom } from '../constants/zoom';
 import { describeError } from '../utils/describeError';
 import { addShot } from '../utils/galleryStore';
 import { computeFrameLayout } from '../utils/geometry';
-import { LOCATION_FAILURE_COPY } from '../utils/locationStamp';
+import { importAndDevelop } from '../utils/importPhoto';
 import { processAndSaveFilmPhoto } from '../utils/processFilmPhoto';
+import { AlbumThumb } from './AlbumThumb';
+import { AspectGuide } from './AspectGuide';
 import { DevelopOverlay, computeDevelopStageBox } from './DevelopOverlay';
 import { DialButton } from './DialButton';
 import { FilmCompositor } from './FilmCompositor';
 import { FilmDrawer } from './FilmDrawer';
-import { FocusReticle } from './FocusReticle';
-import type { FocusTarget } from './FocusReticle';
+import { FocusExposure } from './FocusExposure';
 import { FrameBadge } from './FrameBadge';
-import { FrameOverlay } from './FrameOverlay';
 import { FrameSwitcher } from './FrameSwitcher';
 import { GalleryScreen } from './GalleryScreen';
 import { PermissionNotice } from './PermissionNotice';
 import { SettingsScreen } from './SettingsScreen';
 import { ShutterButton } from './ShutterButton';
-import { ZoomStops } from './ZoomStops';
-import type { ZoomStopView } from './ZoomStops';
+import { ToolRow } from './ToolRow';
+import { ViewfinderBar } from './ViewfinderBar';
+import type { FocusTarget } from './FocusReticle';
+import type { TimerSeconds } from './ToolRow';
+import type { ThemeInk } from '../constants/theme';
+import type { ZoomStop } from '../constants/lenses';
+import type { CapturedPhoto, DevelopStatus, Rect, Size } from '../types';
 
-/** 取景器里相框四周留白。 */
+/** 画幅参考线四周留白：贴着屏幕边看不出画幅比，留一点才像取景框 */
 const PREVIEW_PADDING = 10;
 
-/** 长按胶卷名打开胶卷库的时长（ms）。用户点名要 400ms。 */
-const FILM_LONG_PRESS_MS = 400;
+/** 取景器中央那枚 24pt 十字（手动对焦唯一的"画面中心"参照） */
+const RETICLE = 24;
 
-/** 换一卷胶卷时的淡入时长（ms）。短到"换了"，长到"看得出是换了"。 */
-const FILM_FADE_MS = 160;
-
-/** 长按胶卷名时的"顶一下"位移（pt）：位移量刻意很小，是提示不是动画表演。 */
-const FILM_NUDGE = 7;
+/** 参考线顶部的格式标签。写的是参照画幅，不是当前焦段 —— 当前焦段在胶囊上 */
+const GUIDE_LABEL = '35mm';
 
 /**
- * expo-camera 57.0.6 的 `CameraViewProps` 里**没有** `focusPoint` —— 它是
- * `patches/expo-camera+57.0.6.patch` 往 iOS 原生加的 prop。
- *
- * 之所以不用改库的 JS/TS 就能用：`node_modules/expo-camera/build/utils/props.js`
- * 的 `convertNativeProps()` 是 `Object.entries(props)` **全量透传**，只对
- * `type` / `flash` 两张表做转换，不做白名单过滤。运行期直接传就行，
- * 只有类型上缺一块 —— 用一次交叉类型补上，全项目仅此一处。
+ * 切档时画面先被"推"进去多少。幅度必须很小：这是镜头马达的步进，
+ * 不是镜头在拉近，缩多了用户会以为画幅变了（参考线不跟着缩就是这个道理）。
  */
-type FocusPointProp = { focusPoint?: { x: number; y: number } };
+const LENS_PUSH_SCALE = 0.965;
+const LENS_PUSH_SPEED = 28;
+const LENS_PUSH_BOUNCINESS = 7;
 
-/** 夹到 0~1。 */
+/** 重曝第二张压在第一张上的强度：太实会把第一张吃掉，太淡等于没叠 */
+const DOUBLE_OVERLAY_OPACITY = 0.5;
+
+/**
+ * 开屏默认停在 1×那一档。`ZOOM_STOPS` 的顺序是 0.5× / 1× / 2×，
+ * 下标写死是因为它是相机硬件的档位顺序，不是可变列表。
+ */
+const DEFAULT_STOP_INDEX = 1;
+
+/** 定时档位顺序：关 → 3s → 10s */
+const TIMER_STEPS: readonly TimerSeconds[] = [0, 3, 10];
+
+/** 底部核心区左右两侧的拟物尺寸：比快门小一圈，视觉重心才在中间 */
+const CORE_THUMB_SIZE = 46;
+const CORE_ENTRY_SIZE = 46;
+
+/**
+ * `CameraView` 的原生扩展属性。对焦点与曝光补偿都打在原生补丁上，
+ * 集中放同一个类型别名里，`cameraFocusProps` 才有稳定、可复用的形状。
+ * `exposureBias` 为 `nil` 时原生完全不动测光，所以 EV 归零就不下发这个键。
+ */
+type FocusPointProp = {
+  focusPoint?: { x: number; y: number };
+  exposureBias?: number;
+};
+
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) {
     return 0;
   }
-  return Math.min(1, Math.max(0, value));
+  return Math.min(Math.max(value, 0), 1);
 }
 
-/**
- * 胶片计数徽章上的"齿孔字母"。
- *
- * 为什么要有这个字母：真胶片边缘的编号是 `26A` / `27` 这种带字母的（字母是
- * 厂家在片边上印的批号段），只写数字反而像页码。这里用**前后摄**去决定字母 ——
- * 它每翻一次镜头就变，正好给"当前是哪一支镜头"一个余光可见的提示；
- * 而计数本身按用户要求**换镜头就归零**（新的卷、新的计数）。
- */
+/** 底片计数后缀：后摄 A 卷、前摄 B 卷 */
 function filmCounterLetter(facing: CameraType): string {
   return facing === 'back' ? 'A' : 'B';
+}
+
+/** 取景器里的静态几何：只有尺寸没有颜色，所以放在模块级也不会被深浅色冻结 */
+const chrome = StyleSheet.create({
+  guide: { position: 'absolute' as const, overflow: 'hidden' as const },
+  guideLine: { position: 'absolute' as const },
+  layer: { position: 'absolute' as const },
+  reticle: { position: 'absolute' as const, width: RETICLE, height: RETICLE },
+  reticleH: { position: 'absolute' as const, left: 0, right: 0, top: RETICLE / 2, height: StyleSheet.hairlineWidth },
+  reticleV: { position: 'absolute' as const, top: 0, bottom: 0, left: RETICLE / 2, width: StyleSheet.hairlineWidth },
+  reticleDot: {
+    position: 'absolute' as const,
+    left: (RETICLE - 5) / 2,
+    top: (RETICLE - 5) / 2,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+});
+
+/** 三分构图线：只帮构图，压得越淡越好 */
+function GuideGrid({ rect }: { rect: Rect }) {
+  const { ink } = useTheme();
+  // 浅色主题下虚线反而要比深色更暗才压得住画面，所以颜色交给主题，
+  // 整体再乘一个透明度把三分线拉回"几乎看不见"的强度
+  const lineColor = ink.paperFaint;
+  const hairline = StyleSheet.hairlineWidth;
+  return (
+    <View
+      pointerEvents="none"
+      style={[
+        chrome.guide,
+        { left: rect.left, top: rect.top, width: rect.width, height: rect.height, opacity: 0.6 },
+      ]}
+    >
+      <View style={[chrome.guideLine, { left: rect.width / 3, top: 0, bottom: 0, width: hairline, backgroundColor: lineColor }]} />
+      <View style={[chrome.guideLine, { left: (rect.width / 3) * 2, top: 0, bottom: 0, width: hairline, backgroundColor: lineColor }]} />
+      <View style={[chrome.guideLine, { top: rect.height / 3, left: 0, right: 0, height: hairline, backgroundColor: lineColor }]} />
+      <View style={[chrome.guideLine, { top: (rect.height / 3) * 2, left: 0, right: 0, height: hairline, backgroundColor: lineColor }]} />
+    </View>
+  );
+}
+
+/** 四角括号 + 中央十字：提示"画幅里真正会被拍到的区域" */
+function FocusBrackets({ rect }: { rect: Rect }) {
+  const { ink } = useTheme();
+  const color = ink.paperFaint;
+  const hairline = StyleSheet.hairlineWidth;
+  // 角标随画幅缩放：小画幅上固定 14pt 会显得像四块补丁
+  const inset = Math.max(4, Math.round(rect.width * 0.014));
+  const size = Math.max(14, Math.round(Math.min(rect.width, rect.height) * 0.07));
+  const box = { position: 'absolute' as const, width: size, height: size };
+  return (
+    <View
+      pointerEvents="none"
+      style={[chrome.layer, { left: rect.left, top: rect.top, width: rect.width, height: rect.height }]}
+    >
+      <View style={[box, { left: inset, top: inset, borderLeftWidth: hairline, borderTopWidth: hairline, borderColor: color }]} />
+      <View style={[box, { right: inset, top: inset, borderRightWidth: hairline, borderTopWidth: hairline, borderColor: color }]} />
+      <View style={[box, { left: inset, bottom: inset, borderLeftWidth: hairline, borderBottomWidth: hairline, borderColor: color }]} />
+      <View style={[box, { right: inset, bottom: inset, borderRightWidth: hairline, borderBottomWidth: hairline, borderColor: color }]} />
+      <View style={[chrome.reticle, { left: (rect.width - RETICLE) / 2, top: (rect.height - RETICLE) / 2 }]}>
+        <View style={[chrome.reticleH, { backgroundColor: color }]} />
+        <View style={[chrome.reticleV, { backgroundColor: color }]} />
+        <View style={[chrome.reticleDot, { borderColor: color }]} />
+      </View>
+    </View>
+  );
 }
 
 export function CameraScreen() {
@@ -151,171 +210,87 @@ export function CameraScreen() {
   const locationStamp = useLocationStamp();
   const { settings } = useSettings();
   const { t, localeId } = useI18n();
+  const theme = useTheme();
+  const { ink } = theme;
+  const styles = useMemo(() => createStyles(theme.ink, theme.scheme), [theme.ink, theme.scheme]);
   const [cameraPermission, requestCameraPermission, getCameraPermission] = useCameraPermissions();
 
-  /* ---------------- 状态 ---------------- */
-  const [frameIndex, setFrameIndex] = useState<number>(() => findFrameIndex(DEFAULT_FRAME_ID));
-  const [presetIndex, setPresetIndex] = useState<number>(() => findPresetIndex(DEFAULT_PRESET_ID));
+  const [frameIndex, setFrameIndex] = useState(() => findFrameIndex(DEFAULT_FRAME_ID));
+  const [presetIndex, setPresetIndex] = useState(() => findPresetIndex(DEFAULT_PRESET_ID));
   const [facing, setFacing] = useState<CameraType>('back');
   const [flashOn, setFlashOn] = useState(false);
-  /**
-   * 变焦。值就是传给 `<CameraView zoom={...}>` 的那个数（0 = 不放大），
-   * 不是倍数 —— 为什么见 `src/constants/zoom.ts` 的文件头。
-   */
+  /** 直接就是 `CameraView` 的 zoom 值（0~1 归一化），捏合与档位都往这里写 */
   const [zoom, setZoom] = useState<number>(DEFAULT_ZOOM);
-  /**
-   * 点亮的焦段档位。只在"点了档位按钮"时非空 —— 捏合之后清空，
-   * 因为那时候读数已经不在任何一档上了，还亮着会骗人。
-   */
-  const [activeStopId, setActiveStopId] = useState<string | null>(null);
-  /** `getAvailableLenses()` 的结果（异步，初值是空数组）。 */
+  const [stopIndex, setStopIndex] = useState(DEFAULT_STOP_INDEX);
   const [lenses, setLenses] = useState<readonly string[]>([]);
-  /** 要写给 `<CameraView selectedLens>` 的名字。`undefined` = 不传这个 prop。 */
   const [lens, setLens] = useState<string | undefined>(undefined);
-  /**
-   * 本卷已拍张数（胶片计数徽章显示的就是它）。用户要求**换镜头归零**：
-   * 前后摄是两套镜头模组，把前摄拍的张数记在后摄的卷上会误导人。
-   * 从 0 开始 —— 徽章显示的是"这张会在胶片的第几格"，拍完才 +1。
-   */
   const [exposureCount, setExposureCount] = useState(0);
-  /**
-   * 手动对焦点。x / y 是**取景器上的 0~1 归一化坐标**（原点左上，和
-   * `Pressable` 的 `locationX` / `locationY` 同向），`at` 是时间戳 ——
-   * 同一个点连点两次也要重新对焦，所以它必须是新对象。
-   * `null` = 还没点过。
-   */
   const [focusTarget, setFocusTarget] = useState<FocusTarget>(null);
+  const [focusSeen, setFocusSeen] = useState(false);
+  const [exposure, setExposure] = useState(0);
+  const [timerSeconds, setTimerSeconds] = useState<TimerSeconds>(0);
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [doubleExposure, setDoubleExposure] = useState(false);
+  const [pendingExposureUri, setPendingExposureUri] = useState<string | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraKey, setCameraKey] = useState(0);
   const [mountError, setMountError] = useState<string | null>(null);
   const [status, setStatus] = useState<DevelopStatus>({ kind: 'idle' });
   const [saveIssue, setSaveIssue] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [previewBox, setPreviewBox] = useState<Size>({ width: 0, height: 0 });
-  /** 设置界面（整屏覆盖层，不是导航栈里的一个页面）。 */
   const [settingsVisible, setSettingsVisible] = useState(false);
-  /**
-   * App 内相册。同样是整屏覆盖层 —— 用户的原话是「不用每次都去系统相册查看」，
-   * 所以它是**本机沙盒里的第二份拷贝**，不是系统相册的镜像。
-   */
   const [galleryVisible, setGalleryVisible] = useState(false);
-  /** 胶卷库抽屉（长按底部胶片名 400ms 打开）。 */
   const [filmDrawerVisible, setFilmDrawerVisible] = useState(false);
+  /** 相册缩略图自己那份列表不会跟着别处变，用这个键催它重读 */
+  const [albumKey, setAlbumKey] = useState(0);
 
-  /* ---------------- refs ---------------- */
   const cameraRef = useRef<ComponentRef<typeof CameraView>>(null);
-  /** 同步防连点锁：`disabled` 属性挡不住"同一帧内的第二次点击"，这个能。 */
+  /** 同步锁：`setState` 是异步的，连点两下快门会漏进来两次 */
   const shotLockRef = useRef(false);
   const askedCameraRef = useRef(false);
-  /**
-   * 长按胶卷名时先触发 `onLongPress` 再触发 `onPress`（RN 的既有行为），
-   * 用一个 ref 记下来，让松开那一下**不要再换一卷**。
-   * 用 ref 而不是 state：它在一次触摸里被读写，重新渲染反而会被覆盖。
-   */
-  const filmLongPressRef = useRef(false);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lensScale = useRef(new Animated.Value(1)).current;
 
-  /* ---------------- 派生数据（全部来自纯数据常量） ---------------- */
   const frame = FRAMES[frameIndex] ?? FRAMES[0];
   const preset = PRESETS[presetIndex] ?? PRESETS[0];
-  /*
-   * 颗粒强度**只从设置里读**，主屏不再自己持有一份。
-   *
-   * 这里曾经是 `useState(findGrainLevelIndex(DEFAULT_GRAIN_LEVEL_ID))` + 主屏
-   * 自己那条分段条，后果是：设置页里改了颗粒、成片一点没变（两边各说各话），
-   * 而且同一件事在界面上出现两次。唯一的真源是 `settings.grainLevel`，
-   * 写入方只有设置页；主屏分段条已删除。
-   */
   const grainLevel = grainLevelAt(findGrainLevelIndex(settings.grainLevel));
-  /**
-   * 颗粒档位是**乘在预设之上**的，所以顺序必须是「先乘档位 → 再补默认值」。
-   * 这样 LCD 状态条显示的数字、和真正进 `buildGradeLayers` 的数字，永远是同一个。
-   */
-  const effectivePreset = useMemo(
-    () => applyGrainLevel(preset, grainLevel.scale),
-    [preset, grainLevel.scale],
-  );
+  const effectivePreset = useMemo(() => applyGrainLevel(preset, grainLevel.scale), [preset, grainLevel.scale]);
   const resolved = useMemo(() => resolvePreset(effectivePreset), [effectivePreset]);
-
-  /**
-   * 相框显示名。内置相框带 `nameKey`（跟着语言走），
-   * 用户自己加的相框没这个键，就直接显示配置里写的 `name`。
-   */
   const frameName = frame.nameKey !== undefined ? t(frame.nameKey) : frame.name;
-
   const developing = status.kind === 'developing';
   const cameraGranted = cameraPermission?.granted === true;
   const interactive = !developing && cameraGranted;
-  /**
-   * 镜头列表还没回来时**不要**把按钮画成禁用 —— 不然回到相机那一刻
-   * 三个档位全是灰的，看着像坏了。这时候点了会退化成"只设 zoom、不切镜头"，
-   * 行为仍然是对的（1× 本来就是主摄的原生焦距）。
-   */
   const lensesKnown = lenses.length > 0;
+  const stop: ZoomStop = ZOOM_STOPS[stopIndex] ?? ZOOM_STOPS[DEFAULT_STOP_INDEX];
+  // 焦段读数按"这颗镜头的原生等效焦距 × 当前变焦倍数"算：JS 读不到真实焦距，
+  // 用的是 `ASSUMED_LENS_NATIVE_MM` 里的假定值，捏合变焦时它也跟着连续变
+  const focalMm = Math.round(ASSUMED_LENS_NATIVE_MM[stop.lens] * zoomToFactor(zoom));
 
   /**
-   * 三个倍率档位的展示数据。`resolveStop` 是保守的：拿不到镜头列表，
-   * 或者这台设备没有超广角（前摄是常客）时，那一档会报 `available: false`。
-   *
-   * 档位是**数码裁切**时（2×），无障碍标签里补一句 `zoom.stop.digital` ——
-   * 读屏用户看不到格子上那个小 `D` 角标，得用文字告诉他"这一档是裁切，不是换镜头"。
+   * 对焦点与曝光补偿一起下发给原生。EV 归零时故意省略 `exposureBias` 键：
+   * 原生收到 `nil` 就完全不碰测光，同时也少一次无意义的 prop diff。
    */
-  const zoomStops = useMemo<readonly ZoomStopView[]>(
+  const cameraFocusProps = useMemo<CameraViewProps & FocusPointProp>(() => {
+    const props: CameraViewProps & FocusPointProp = {};
+    if (focusTarget !== null) {
+      props.focusPoint = { x: focusTarget.x, y: focusTarget.y };
+    }
+    if (exposure !== 0) {
+      props.exposureBias = exposure;
+    }
+    return props;
+  }, [focusTarget, exposure]);
+
+  const previewLayout = useMemo(
     () =>
-      ZOOM_STOPS.map((stop) => {
-        const roleKey = stop.lens === 'ultraWide' ? 'zoom.role.ultraWide' : 'zoom.role.wide';
-        const label = `${stop.multiplier}× ${t(roleKey)}`;
-        const digital = isDigitalStop(stop);
-        const stopResolved = resolveStop(stop, { lenses, facing });
-        return {
-          id: stop.id,
-          short: `${stop.multiplier}×`,
-          a11y: digital
-            ? `${t('zoom.stop.a11y', { label })} · ${t('zoom.stop.digital')}`
-            : t('zoom.stop.a11y', { label }),
-          disabled: lensesKnown && !stopResolved.available,
-          digital,
-        };
-      }),
-    [lenses, lensesKnown, facing, t],
+      computeFrameLayout(
+        frame,
+        Math.max(1, (previewBox.width > 1 ? previewBox.width : window.width) - PREVIEW_PADDING * 2),
+        Math.max(1, (previewBox.height > 1 ? previewBox.height : window.height * 0.62) - PREVIEW_PADDING * 2),
+      ),
+    [frame, previewBox.width, previewBox.height, window.width, window.height],
   );
-
-  /**
-   * 倍率读数（右下角）。和档位按钮**用同一套换算**：`zoomToFactor()` 是
-   * `zoom.ts` 里那条指数曲线的反函数（`videoZoomFactor = 16^zoom`）。
-   *
-   * 它是**估算**，不是实测值 —— 真机的 `videoMaxZoomFactor` 从 JS 读不到，
-   * 只能按 16 假设（详见 `src/constants/lenses.ts` 的文件头）。之所以还要显示，
-   * 是因为取景器画面本身看不出"现在放大了多少"，而这个数字在捏合时是唯一的反馈。
-   */
-  const zoomFactor = zoomToFactor(zoom);
-
-  /**
-   * 传给 `<CameraView>` 的 `focusPoint`。
-   *
-   * **必须是 memo 化的对象**：原生那个 prop 是命令式的，刻意没做等值短路
-   * （这样同一个点连点两次也能重新对焦），所以只要这个对象的引用变了，
-   * 原生就会重新对焦一次。写成内联字面量的话，每一次 re-render ——
-   * 比如手指在变焦档位上点一下 —— 都会变成一次对焦。
-   *
-   * 没有手动对焦点时返回**空对象**，而不是 `{ focusPoint: undefined }`：
-   * `convertNativeProps` 用的是 `Object.entries`，值为 `undefined` 的键也会被算进去，
-   * 展开一个空对象才是真的什么都没传。
-   */
-  const cameraFocusProps = useMemo<CameraViewProps & FocusPointProp>(
-    () =>
-      focusTarget === null ? {} : { focusPoint: { x: focusTarget.x, y: focusTarget.y } },
-    [focusTarget],
-  );
-
-  // 取景器里相框的排版（和成片用同一个 computeFrameLayout，所以构图一致）
-  const previewLayout = useMemo(() => {
-    const availableWidth = previewBox.width > 1 ? previewBox.width : window.width;
-    const availableHeight = previewBox.height > 1 ? previewBox.height : window.height * 0.62;
-    return computeFrameLayout(
-      frame,
-      Math.max(1, availableWidth - PREVIEW_PADDING * 2),
-      Math.max(1, availableHeight - PREVIEW_PADDING * 2),
-    );
-  }, [frame, previewBox.width, previewBox.height, window.width, window.height]);
 
   const frameOffset = useMemo(
     () => ({
@@ -325,90 +300,53 @@ export function CameraScreen() {
     [previewBox.width, previewBox.height, previewLayout.width, previewLayout.height],
   );
 
-  // 成片合成舞台的尺寸（同时决定成片像素：逻辑尺寸 × PixelRatio）
   const stageBox = useMemo(
     () => computeDevelopStageBox({ width: window.width, height: window.height }),
     [window.width, window.height],
   );
 
-  // 底部 LCD 状态条的三行文案（只是把 resolved 里的数字排成紧凑的机器打印格式）
-  const timestampAnchor = resolved.timestamp.anchor ?? frame.watermark?.anchor ?? 'window';
-  const lcdDateLine = resolved.timestamp.enabled
-    ? t('lcd.date.on', { format: resolved.timestamp.format, anchor: timestampAnchor.toUpperCase() })
-    : t('lcd.date.off');
-  const lcdParamLine = t('lcd.params', {
-    code: grainLevel.code,
-    grain: compact(resolved.grain),
-    vignette: compact(resolved.vignette),
-    leak: compact(resolved.lightLeak),
-    font: fonts.source === 'custom' ? t('lcd.font.custom') : t('lcd.font.mono'),
-  });
   /**
-   * 定位那一行。三种失败都只把原因写出来，**绝不拦快门** ——
-   * 定位只是水印里的一行小字，没拿到就这张不写，不该耽误出片。
-   *
-   * 这里用 `LOCATION_FAILURE_COPY[...].short`：LCD 是单行，放不下完整句子。
-   */
-  const lcdLocationLine =
-    locationStamp.state.kind === 'ready'
-      ? t('lcd.location.on', { value: locationStamp.state.text })
-      : locationStamp.state.kind === 'locating'
-        ? t('location.locating')
-        : locationStamp.state.kind === 'error'
-          ? t(LOCATION_FAILURE_COPY[locationStamp.state.reason].short)
-          : t('lcd.location.off');
-
-  /**
-   * 是否有整屏面板盖在相机上。`SettingsScreen` / `GalleryScreen` 的遮罩是
-   * `rgba(12,12,11,0.97)`，`FilmDrawer` 是实心 —— 单看每一个都够厚，但 0.97
-   * 仍然会让高亮的取景画面在背后"隐隐发亮"。这里把整个取景容器压成 `opacity: 0`，
-   * 从根上保证"面板下面没有相机画面"。
-   *
-   * 为什么改透明度而不是卸载 `CameraView`：卸载会触发一次完整的原生相机会话重建
-   * （关一次设置界面就黑屏一下），而透明度是纯合成层的属性，代价为零。
+   * 三个面板打开时取景器整体隐藏（但**不卸载**）：卸载 `CameraView` 会让 iOS
+   * 重建一次采集会话，关掉面板回来时要黑一下，那是比"看不见"更糟的体验。
    */
   const covered = settingsVisible || galleryVisible || filmDrawerVisible;
 
-  /* ---------------- 权限：首次进来自动问一次 ---------------- */
+  /**
+   * 相机权限只在"系统还愿意弹窗"的时候自动问一次。被永久拒绝后再调 `request`
+   * 也不会弹，反而会盖掉下面那张带"去设置"按钮的提示卡。
+   */
   useEffect(() => {
-    if (askedCameraRef.current || cameraPermission === null) {
+    if (askedCameraRef.current) {
       return;
     }
-    if (cameraPermission.granted || !cameraPermission.canAskAgain) {
+    if (cameraPermission === null || cameraPermission.granted || !cameraPermission.canAskAgain) {
       return;
     }
     askedCameraRef.current = true;
     void requestCameraPermission();
   }, [cameraPermission, requestCameraPermission]);
 
-  /* ---------------- 回调 ---------------- */
   const handlePreviewLayout = useCallback((event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
-    setPreviewBox((current) =>
-      current.width === width && current.height === height ? current : { width, height },
-    );
+    setPreviewBox((current) => (current.width === width && current.height === height ? current : { width, height }));
   }, []);
 
-  /**
-   * 问一次可用镜头列表。`onAvailableLensesChanged` 是主路径，这个是兜底：
-   * 有的机型要等 `onCameraReady` 之后镜头才登记进 discovery session。
-   * 两个来源写同一个 state，谁先回来算谁的。
-   */
   const refreshLenses = useCallback(async () => {
     const camera = cameraRef.current;
-    if (camera === null) {
+    if (!camera) {
       return;
     }
     try {
-      setLenses(await camera.getAvailableLensesAsync());
+      const available = await camera.getAvailableLensesAsync();
+      setLenses(available);
     } catch {
-      // 拿不到就当没有 —— `zoomStops` 会退化成"只调 zoom、不切镜头"
+      // 拿不到镜头列表不该拦住拍照：档位退化成"只改 zoom，不指定镜头"
       setLenses([]);
     }
   }, []);
 
-  const handleLensesChanged = useCallback((event: { lenses: string[] }) => {
-    setLenses(event.lenses ?? []);
+  const handleLensesChanged = useCallback(({ lenses: available }: { lenses: string[] }) => {
+    setLenses(available);
   }, []);
 
   const handleCameraReady = useCallback(() => {
@@ -417,136 +355,46 @@ export function CameraScreen() {
     void refreshLenses();
   }, [refreshLenses]);
 
-  const handleMountError = useCallback((event: { message: string }) => {
+  const handleMountError = useCallback(({ message }: { message: string }) => {
+    setMountError(message);
     setCameraReady(false);
-    setMountError(event.message);
   }, []);
 
   const handleRetryCamera = useCallback(() => {
     setMountError(null);
-    setCameraReady(false);
-    // 换 key → CameraView 重新挂载（比反复调 API 可靠）
+    // 重挂载而不是重试 API：会失败的通常是整个会话，重建一次比逐个重试可靠
     setCameraKey((current) => current + 1);
   }, []);
 
-  /** 滑动换相框：FrameSwitcher 已经取过模，这里再兜一次。 */
   const handleFrameChange = useCallback((next: number) => {
     setFrameIndex(wrapIndex(next));
   }, []);
 
-  /**
-   * 顶部左侧的画幅徽章：点一下 = 换下一张。
-   * 和 `FrameSwitcher` 的滑动、底部 ‹ › 步进共用同一个 `frameIndex`，
-   * 所以三条路径永远同步（也共用同一种"选择"震动）。
-   */
   const handleBadgeFramePress = useCallback(() => {
     void Haptics.selectionAsync();
     setFrameIndex((current) => wrapIndex(current + 1));
   }, []);
 
-  /** 底部 ‹ › 步进换相框（和滑动走同一条 state，所以两边永远同步）。 */
-  const handleStepFrame = useCallback((direction: -1 | 1) => {
-    void Haptics.selectionAsync();
-    setFrameIndex((current) => wrapIndex(current + direction));
-  }, []);
-
-  /** 底部胶片名：轻触换下一卷。 */
-  const handlePresetCycle = useCallback(() => {
-    void Haptics.selectionAsync();
-    setPresetIndex((current) => wrapPresetIndex(current + 1));
-  }, []);
-
   const handleFlipCamera = useCallback(() => {
+    // 翻转是机械动作 → Light。换镜头的同时焦段、对焦点、底片计数都要归位，
+    // 否则前摄会继承后摄的档位，拍出来跟读数对不上
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setFacing((current) => (current === 'back' ? 'front' : 'back'));
-    // iOS 的 AVCapturePhotoOutput 在前置上没有闪光灯档位（Retina Flash 是系统相机
-    // 自己做的，第三方拿不到），翻转时顺手关掉，避免按钮亮着但什么也没发生。
     setFlashOn(false);
-    // 前后摄的镜头模组不一样（后置广角的最大数码变焦和前置差很多），
-    // 沿用旧值会让翻转后突然变成另一档放大，直接归零最不容易出意外。
     setZoom(DEFAULT_ZOOM);
-    // 镜头列表是**按摄像头**给的，不清掉会拿着后摄的超广角去点前摄的档位按钮。
     setLens(undefined);
-    setActiveStopId(null);
     setLenses([]);
-    // 手动对焦点是上一个摄像头的坐标，换摄像头之后它没有任何意义
     setFocusTarget(null);
-    // 换卷：胶片计数归零（用户要求"翻转相机重置计数"）
     setExposureCount(0);
+    setStopIndex(DEFAULT_STOP_INDEX);
   }, []);
 
-  /**
-   * 双指捏合。手动调出来的读数不在任何一档上，顺手把档位灯灭掉 ——
-   * 否则会出现「亮着 2×，读数却是 1.4×」这种自相矛盾的显示。
-   */
   const handleZoomChange = useCallback((next: number) => {
+    // 捏合是连续变焦，档位高亮没有意义，焦段读数直接跟着 zoom 走
     setZoom(toCameraZoom(next));
-    setActiveStopId(null);
   }, []);
 
-  /**
-   * 点倍率档位：切镜头 + 设 zoom。
-   *
-   * 0.5× / 1× 两档的 zoom 都是 0（靠换镜头而不是数码放大）；2× 那档是主摄
-   * × 2 的数码裁切。为什么不真的切长焦、`factor` 为什么要写死，
-   * 见 `src/constants/lenses.ts` 的文件头。
-   *
-   * 镜头列表还没回来时（`lensesKnown === false`）不拦着：`resolveStop` 会
-   * 返回 `lens: undefined`，这时就只设 zoom、不切镜头，行为仍然是对的。
-   */
-  const handleStopPress = useCallback(
-    (id: string) => {
-      const stop = ZOOM_STOPS.find((candidate) => candidate.id === id);
-      if (stop === undefined) {
-        return;
-      }
-      const stopResolved = resolveStop(stop, { lenses, facing });
-      if (lensesKnown && !stopResolved.available) {
-        return;
-      }
-      void Haptics.selectionAsync();
-      setLens(stopResolved.lens);
-      setZoom(stopResolved.zoom);
-      setActiveStopId(stop.id);
-    },
-    [lenses, lensesKnown, facing],
-  );
-
-  /**
-   * 点画面对焦。
-   *
-   * `locationX` / `locationY` 是相对那层透明接收层的坐标，而它和 `CameraView`
-   * 完全重合，所以除以取景器宽高就是原生要的 0~1 归一化坐标。
-   *
-   * **竖屏旋转、前摄镜像、`resizeAspectFill` 的裁切都不在这里算** —— 那一层交给
-   * `AVCaptureVideoPreviewLayer.captureDevicePointConverted(fromLayerPoint:)`
-   * 在原生侧做（见 `patches/expo-camera+57.0.6.patch`）。手写的 x/y 交换迟早会在
-   * 某一个朝向上指向错误的地方，而对焦点错了是**无声的**：照片照样能拍，
-   * 只是焦点落在别处，用户根本不会知道是坐标算错了。
-   */
-  const handleTapFocus = useCallback(
-    (event: GestureResponderEvent) => {
-      const { width, height } = previewLayout;
-      if (width <= 0 || height <= 0) {
-        return;
-      }
-      const { locationX, locationY } = event.nativeEvent;
-      void Haptics.selectionAsync();
-      setFocusTarget({
-        x: clamp01(locationX / width),
-        y: clamp01(locationY / height),
-        // 时间戳是身份的一部分：同一点连点两次必须是新对象，否则原生收不到通知
-        at: Date.now(),
-      });
-    },
-    [previewLayout],
-  );
-
-  /**
-   * 取景器上的双指捏合。和档位按钮走同一个 `handleZoomChange`，
-   * 所以两种调法（捏合 / 点档位）永远只有一个真值来源。
-   * 为什么要用 capture 阶段的细节见 `src/hooks/usePinchZoom.ts` 的文件头。
-   */
+  // 捏合与档位共用同一个 `zoom`：两条路都只改这一个值，切档时不会把捏合的结果丢掉
   const pinchHandlers = usePinchZoom({
     enabled: interactive,
     zoom,
@@ -554,9 +402,102 @@ export function CameraScreen() {
     onChange: handleZoomChange,
   });
 
+  const applyStop = useCallback(
+    (index: number) => {
+      const next: ZoomStop | undefined = ZOOM_STOPS[index];
+      if (next === undefined) {
+        return;
+      }
+      const resolution = resolveStop(next, { lenses, facing });
+      setStopIndex(index);
+      setLens(resolution.lens);
+      setZoom(resolution.zoom);
+      // 推拉只作用在画面容器上：参考线和对焦层跟着缩的话，等于告诉用户"画幅变了"
+      lensScale.setValue(LENS_PUSH_SCALE);
+      Animated.spring(lensScale, {
+        toValue: 1,
+        speed: LENS_PUSH_SPEED,
+        bounciness: LENS_PUSH_BOUNCINESS,
+        useNativeDriver: true,
+      }).start();
+    },
+    [facing, lenses, lensScale],
+  );
+
+  const handleCycleFocal = useCallback(() => {
+    if (ZOOM_STOPS.length === 0) {
+      return;
+    }
+    void Haptics.selectionAsync();
+    // 从当前档往后找第一个"这台机器真的有"的档：前摄没有超广角，
+    // 切过去再假装现在是 13mm，不如直接跳过
+    for (let step = 1; step <= ZOOM_STOPS.length; step += 1) {
+      const index = (stopIndex + step) % ZOOM_STOPS.length;
+      const candidate: ZoomStop | undefined = ZOOM_STOPS[index];
+      if (candidate === undefined) {
+        continue;
+      }
+      if (!lensesKnown || resolveStop(candidate, { lenses, facing }).available) {
+        applyStop(index);
+        return;
+      }
+    }
+    applyStop(stopIndex);
+  }, [applyStop, facing, lenses, lensesKnown, stopIndex]);
+
+  const handleExposureChange = useCallback((next: number) => {
+    setExposure(next);
+  }, []);
+
+  const handleFocusIdle = useCallback(() => {
+    // 对焦框和滑块由 FocusExposure 自己淡出，淡完才回来清状态，
+    // 否则"清除即消失"会把淡出动画一起吃掉
+    setFocusTarget(null);
+  }, []);
+
+  const handleTapFocus = useCallback(
+    (event: GestureResponderEvent) => {
+      if (!interactive) {
+        return;
+      }
+      if (previewBox.width <= 1 || previewBox.height <= 1) {
+        return;
+      }
+      const { locationX, locationY } = event.nativeEvent;
+      void Haptics.selectionAsync();
+      // 手势层铺满整个取景器，坐标就该按取景器算。旧版除以画幅框的尺寸，
+      // 于是点画面边角时对焦点会落到别处（原生按可见预览层的比例取点）
+      setFocusTarget({
+        x: clamp01(locationX / previewBox.width),
+        y: clamp01(locationY / previewBox.height),
+        at: Date.now(),
+      });
+      setFocusSeen(true);
+    },
+    [interactive, previewBox.width, previewBox.height],
+  );
+
   const handleToggleFlash = useCallback(() => {
+    if (facing !== 'back') {
+      return;
+    }
     void Haptics.selectionAsync();
     setFlashOn((current) => !current);
+  }, [facing]);
+
+  const handleCycleTimer = useCallback(() => {
+    void Haptics.selectionAsync();
+    setTimerSeconds((current) => {
+      const at = TIMER_STEPS.indexOf(current);
+      return TIMER_STEPS[(at + 1) % TIMER_STEPS.length] ?? 0;
+    });
+  }, []);
+
+  const handleToggleDouble = useCallback(() => {
+    void Haptics.selectionAsync();
+    setDoubleExposure((current) => !current);
+    // 任何一次切换都把没冲的半成品丢掉：留着它，下次开重曝会莫名其妙叠上一张旧照片
+    setPendingExposureUri(null);
   }, []);
 
   const handleOpenSystemSettings = useCallback(() => {
@@ -579,79 +520,49 @@ export function CameraScreen() {
 
   const handleCloseGalleryScreen = useCallback(() => {
     setGalleryVisible(false);
+    // 相册里可能删过、也可能导入过照片，回来时底部缩略图要重读一次
+    setAlbumKey((current) => current + 1);
   }, []);
 
-  /* ---------------- 胶卷名那一行 ---------------- */
-  // 换卷时的淡入：`setValue(0)` 是**同步**的，所以 index 一变这一行立刻变淡，
-  // 再花 160ms 淡回来。只动 opacity（原生驱动），滚动时不掉帧。
-  const filmReveal = useRef(new Animated.Value(1)).current;
-  /** 长按时的"顶一下"。由 `onPressIn` / `onPressOut` 驱动，不跟任何 state 走。 */
-  const filmNudge = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    filmReveal.setValue(0);
-    const animation = Animated.timing(filmReveal, {
-      toValue: 1,
-      duration: FILM_FADE_MS,
-      useNativeDriver: true,
-    });
-    animation.start();
-    return () => {
-      animation.stop();
-    };
-  }, [filmReveal, presetIndex]);
-
-  const handleFilmPress = useCallback(() => {
-    // 长按已经开过胶卷库了，松开这一下不要再换一卷
-    if (filmLongPressRef.current) {
-      filmLongPressRef.current = false;
+  const handleOpenFilmDrawer = useCallback(() => {
+    if (!interactive) {
       return;
     }
-    handlePresetCycle();
-  }, [handlePresetCycle]);
-
-  /**
-   * 长按 400ms 开胶卷库。
-   *
-   * ⚠️ 这里是**全项目唯一**使用 `Medium` 冲击的地方。v1.2.0 刻意把触感收敛到
-   * "选择"（`selectionAsync`）与"机械动作"（`impactAsync(Light)`）两档，
-   * 用户这次明确要求长按开抽屉要有更重的手感 —— 于是给它一档 Medium，
-   * 但**不要再往别处加**，否则这套"两档触感"的语言就废了。
-   *
-   * 同时胶片名会"顶一下"（`filmNudge`），让人知道"长按是有反应的"。
-   */
-  const handleFilmLongPress = useCallback(() => {
-    filmLongPressRef.current = true;
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setFilmDrawerVisible(true);
-  }, []);
-
-  const handleFilmPressOut = useCallback(() => {
-    filmNudge.setValue(0);
-  }, [filmNudge]);
+  }, [interactive]);
 
   const handleCloseFilmDrawer = useCallback(() => {
     setFilmDrawerVisible(false);
   }, []);
 
-  /**
-   * 在胶卷库里选中一卷：换预设 + 关抽屉。
-   * 这里用 `selectionAsync`（"选择"类动作），关抽屉本身不再补一次震动 ——
-   * 一次操作只该有一次反馈。
-   */
   const handleFilmDrawerSelect = useCallback((presetId: string) => {
     void Haptics.selectionAsync();
     setPresetIndex(findPresetIndex(presetId));
     setFilmDrawerVisible(false);
   }, []);
 
+  /** 冲印层自己的收尾（只在 done/error 可点），顺手把两条轻提示也清掉 */
   const handleDismiss = useCallback(() => {
     setStatus({ kind: 'idle' });
     setSaveIssue(null);
+    setNotice(null);
   }, []);
 
-  /** 快门：拿原图 → 显影 → 存相册。整条链路都在 try/catch 里，绝不白屏。 */
-  const handleShutter = useCallback(async (): Promise<void> => {
+  const handleDismissBanner = useCallback(() => {
+    // 只清提示，不动 `status`：这条横幅可能是在冲印层还开着的时候弹出来的
+    setSaveIssue(null);
+    setNotice(null);
+  }, []);
+
+  /**
+   * 拍摄主流程。
+   *
+   * 重曝（§一.7）在这里分叉：开着重曝时第一次按快门只把照片存进 `pendingExposureUri`，
+   * **不冲印**；第二次才把两张一起交给合成器。判据是"按下时手上有没有上一张"，
+   * 而不是"这是第几次" —— 中途关掉重曝不该把半成品冲出去。
+   */
+  const handleShutter = useCallback(async () => {
     const camera = cameraRef.current;
     if (shotLockRef.current) {
       return;
@@ -659,73 +570,56 @@ export function CameraScreen() {
     if (!camera || !cameraReady || developing) {
       return;
     }
-
     shotLockRef.current = true;
-    setSaveIssue(null);
-    setStatus({ kind: 'developing', stage: 'normalizing' });
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    const overlayUri = doubleExposure ? pendingExposureUri : null;
 
     try {
-      // 定位和拍照**并行**：按快门那一刻就把定位请求发出去。
-      // 它有自己的截止时间（`useLocationStamp` 里的 SHOT_DEADLINE_MS），
-      // 到点拿不到就这张不写定位 —— 照片永远不等 GPS。
-      const locationPromise = locationStamp.resolveForShot();
+      setSaveIssue(null);
+      setNotice(null);
+      setStatus({ kind: 'developing', stage: 'normalizing' });
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
+      // 定位与拍摄并行：等 GPS 定下来再按快门，手机会多举一秒
+      const locationPromise = locationStamp.resolveForShot();
       const shot = await camera.takePictureAsync({ quality: 1, exif: false });
       if (!shot || !shot.uri) {
         throw new Error(t('error.noPhoto'));
       }
-
-      const captured: CapturedPhoto = {
-        uri: shot.uri,
-        width: shot.width,
-        height: shot.height,
-      };
-
+      const captured: CapturedPhoto = { uri: shot.uri, width: shot.width, height: shot.height };
       const place = await locationPromise;
+
+      if (doubleExposure && overlayUri === null) {
+        // 重曝第一张：先留着不冲，等第二张叠上去一起冲
+        setPendingExposureUri(captured.uri);
+        setStatus({ kind: 'idle' });
+        setNotice(t('camera.tool.double.hint'));
+        return;
+      }
 
       const result = await processAndSaveFilmPhoto({
         photo: captured,
         frame,
-        // 传乘过颗粒档位的预设：LCD 上显示什么数字，出片就是什么力度
         preset: effectivePreset,
         stage: stageBox,
         host: filmStage.host,
-        /*
-          传**结构**而不是拼好的字符串：合成层要按"拍这张时的界面语言"重新拼那一行字。
-          一行拼好的中文地名在用户切成英文之后没法重排，而 `ResolvedPlace`
-          带着城市/地区/国家的分档信息，四种水印版式才排得出来。
-          详情见 `src/utils/placeNames.ts` 的文件头。
-        */
         place,
         locale: localeId,
-        /*
-          水印版式和地名详细度必须**每次都从设置里读**，不能用合成层的默认值。
-          合成层（`FilmCompositor`）是会按拍这张时的设置重排那一行字的，
-          而它拿到的只有这里传下去的东西 —— 少传一个，设置页里那一项就只是装饰。
-        */
         watermarkLayout: settings.watermarkLayout,
         placeDetail: settings.placeDetail,
-        /*
-          这一卷拍到第几张（**1 起数**，见 `FilmStageInput.exposureIndex` 的说明）。
-          合成层在"关闭定位"时用它印摄影代号：`{胶卷代号} // ISO 400 · 35MM · EXP.07`。
-          +1 是必须的：`exposureCount` 是"**已经**拍了几张"（第一张时它还是 0，
-          顶栏 `[00A]` 读的就是它），而规格里的 EXP 编号是 1 起的 ——
-          直接传 `exposureCount` 会让第一张印成 `EXP.00`，整卷编号全部错一位。
-        */
         exposureIndex: exposureCount + 1,
+        overlayUri: overlayUri ?? undefined,
+        overlayOpacity: overlayUri === null ? undefined : DOUBLE_OVERLAY_OPACITY,
         onStage: (nextStage) => setStatus({ kind: 'developing', stage: nextStage }),
       });
 
       setStatus({ kind: 'done', uri: result.photo.uri, saved: result.save.ok });
-      // 这一格用掉了 → 胶片计数 +1（徽章显示的是"下一张会在第几格"）
       setExposureCount((current) => current + 1);
-      /*
-        再往 App 内相册存一份。**故意不 await**：成片此刻已经落盘了，
-        这一步只是拷一份到沙盒，慢几百毫秒不该让"冲洗完成"多等。
-        也不用 `useGallery()` —— 那会给这个组件引入一个跟取景毫无关系的
-        re-render 源；相册界面每次打开自己重新读索引。
-      */
+      // 重曝是一次性的：叠完就散伙，否则用户会以为后面每张都会叠
+      setPendingExposureUri(null);
+      setDoubleExposure(false);
+      setAlbumKey((current) => current + 1);
+      // 存 App 相册故意不 await：失败也不该让已经冲好的照片看起来像失败
       void addShot({
         sourceUri: result.photo.uri,
         width: result.photo.width,
@@ -733,7 +627,6 @@ export function CameraScreen() {
         frameId: frame.id,
         presetId: effectivePreset.id,
       }).catch((error: unknown) => {
-        // `addShot` 按约定不抛（失败返回 null），这里是最后一道兜底
         console.warn('[retro-film-cam] 存进 App 相册失败：', describeError(error));
       });
       if (!result.save.ok) {
@@ -750,52 +643,145 @@ export function CameraScreen() {
   }, [
     cameraReady,
     developing,
+    doubleExposure,
+    pendingExposureUri,
     filmStage.host,
     frame,
     effectivePreset,
     stageBox,
-    // 只依赖这个稳定的 useCallback，不依赖整个 controller 对象
-    // （controller 每次渲染都是新对象，会把 handleShutter 也一起重建）
     locationStamp.resolveForShot,
     localeId,
-    // 依赖具体字段而不是整个 settings 对象：设置一变这里就该重建，
-    // 但只有这两项真的影响出片，其余设置不该让快门回调失效。
     settings.watermarkLayout,
     settings.placeDetail,
-    // `exposureIndex` 用的是它，所以它变了这个回调必须重建 ——
-    // 否则第二张之后传下去的 EXP 编号会永远停在 1。
     exposureCount,
     t,
   ]);
 
-  /**
-   * 音量键 / 蓝牙快门线（`usePhysicalShutter` 在不支持的设备上是 no-op）。
-   *
-   * 为什么包一层箭头函数：那个 hook 把 `onPress` 存进 ref 并用原生事件订阅回调去调它，
-   * 这里传的是已经 memo 过的 `handleShutter`，订阅不会因为重渲染反复重建。
-   *
-   * 触感：**只有物理侧键这一条路径用 `Heavy`**，屏幕上的快门按钮维持 `Light`
-   * （`handleShutter` 里那一发）。物理键是"盲按"——手在机身边缘、眼睛在看取景器，
-   * 没有视觉反馈，所以它需要一档更明确的重击来确认"这一枪响了"。
-   *
-   * ⚠️ 这两行**都不 await**：`impactAsync` 是异步的，而按下侧键到真正出图中间
-   * 还有定位、`takePictureAsync`、合成一大串事。等触觉回执再拍照会白等几毫秒到
-   * 几十毫秒（用户按下去的那一下会感觉"迟钝"）。触觉和快门**同时**发出去，
-   * 由系统各自完成，这才是"立即触发拍摄流水线与重度触觉反馈"。
-   */
+  const stopCountdown = useCallback(() => {
+    if (countdownRef.current !== null) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
+  }, []);
+
+  // 组件走了还在跳的定时器会一直抓着相机引用
+  useEffect(() => () => stopCountdown(), [stopCountdown]);
+
+  const handleCancelCountdown = useCallback(() => {
+    stopCountdown();
+    setCountdown(null);
+  }, [stopCountdown]);
+
+  /** 真正的倒计时：归零那一下才拍照，中途点快门键/物理键都是取消 */
+  const runShutter = useCallback(() => {
+    if (countdownRef.current !== null) {
+      return;
+    }
+    if (timerSeconds === 0) {
+      void handleShutter();
+      return;
+    }
+    let remaining = timerSeconds;
+    setNotice(null);
+    setCountdown(remaining);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    countdownRef.current = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        stopCountdown();
+        setCountdown(null);
+        void handleShutter();
+        return;
+      }
+      setCountdown(remaining);
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }, 1000);
+  }, [handleShutter, stopCountdown, timerSeconds]);
+
+  const handleShutterPress = useCallback(() => {
+    if (countdownRef.current !== null) {
+      handleCancelCountdown();
+      return;
+    }
+    runShutter();
+  }, [handleCancelCountdown, runShutter]);
+
   usePhysicalShutter({
+    // 倒计时中 `developing` 是 false，物理键照样能按 —— 按下去就是取消
     enabled: cameraGranted && cameraReady && !developing,
     onPress: () => {
-      // 先发触觉再按快门：两行之间不做任何等待，纯粹是"手感反馈不要晚于动作"。
+      // 唯一的 Heavy 触感。两行都故意不 await：快门响应不能被触感或异步流程拖慢
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-      void handleShutter();
+      handleShutterPress();
     },
   });
 
-  /* ---------------- 覆盖层内容（权限 / 加载 / 相机错误） ---------------- */
+  /**
+   * 从系统相册导入并重新冲印（§一.4 的 `＋导入`）。
+   *
+   * 注意 `setStatus(developing)` 必须发生在调用之前：`FilmCompositor` 得在屏幕上
+   * 真实布局过，iOS 的 `renderInContext` 抓不到没上屏的内容。
+   */
+  const handleImport = useCallback(async () => {
+    if (developing) {
+      return;
+    }
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setNotice(null);
+    setStatus({ kind: 'developing', stage: 'normalizing' });
+    const result = await importAndDevelop({
+      host: filmStage.host,
+      frame,
+      preset: effectivePreset,
+      stage: stageBox,
+      locale: localeId,
+      watermarkLayout: settings.watermarkLayout,
+      placeDetail: settings.placeDetail,
+      grainLevel: settings.grainLevel,
+    });
+    if (!result.ok) {
+      setStatus({ kind: 'idle' });
+      if (result.reason === 'cancelled') {
+        // 用户自己按掉的选择器不是错误，不该弹提示
+        return;
+      }
+      setNotice(
+        result.reason === 'permission-denied'
+          ? t('gallery.import.denied')
+          : t('gallery.import.failed', { message: result.message ?? t('common.unknownError') }),
+      );
+      return;
+    }
+    // 导入的照片不算"曝光"，底片计数不动；但相册里确实多了东西，缩略图要重读
+    setAlbumKey((current) => current + 1);
+    setStatus({ kind: 'idle' });
+    if (result.missingExifDate) {
+      setNotice(t('gallery.import.noExif'));
+    }
+  }, [
+    developing,
+    effectivePreset,
+    filmStage.host,
+    frame,
+    localeId,
+    settings.grainLevel,
+    settings.placeDetail,
+    settings.watermarkLayout,
+    stageBox,
+    t,
+  ]);
+
+  const handleImportPress = useCallback(() => {
+    void handleImport();
+  }, [handleImport]);
+
+  const filmCounterText = `[${String(exposureCount).padStart(2, '0')}${filmCounterLetter(facing)}]`;
+  const bannerMessage = saveIssue ?? notice;
+  const focusHintVisible = !focusSeen && interactive && focusTarget === null;
+
   let noticeNode: ReactNode = null;
   if (cameraPermission === null) {
-    noticeNode = <ActivityIndicator color="#FFB562" />;
+    noticeNode = <ActivityIndicator color={ink.amber} />;
   } else if (!cameraPermission.granted) {
     noticeNode = (
       <PermissionNotice
@@ -832,59 +818,19 @@ export function CameraScreen() {
     );
   }
 
-  /**
-   * 胶片计数徽章的文字：`[01A]`。序号补零到两位 —— 等宽字体下位数变化本来
-   * 也不会抖，补零是为了让这个徽章在任何张数下都保持同样的宽度和"片边编号"的味道。
-   */
-  const filmCounterText = `[${String(exposureCount).padStart(2, '0')}${filmCounterLetter(facing)}]`;
-  const filmNudgeX = filmNudge.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, -FILM_NUDGE],
-  });
-
-  /**
-   * 右下角读数下面那行小字。
-   *
-   * 没有点亮任何档位（捏合过、或者刚翻转镜头）时只写 `变焦`；点亮了档位就写
-   * "点亮的是哪一档" —— 这样它和上面那三个格子说的是同一件事，不会出现
-   * "格子亮着 1×、下面写着别的东西"的矛盾。
-   *
-   * 数码裁切那一档额外补一句 `zoom.stop.digital`：那一格的边框、格内小 `D`
-   * 角标都在别的组件里，这是主界面上唯一能写清"这一档不是换镜头"的地方。
-   */
-  const activeZoomStop = zoomStops.find((stop) => stop.id === activeStopId);
-  const activeStopHint =
-    activeZoomStop === undefined
-      ? t('zoom.label')
-      : activeZoomStop.digital === true
-        ? `${activeZoomStop.short} ${t('zoom.stop.digital')}`
-        : activeZoomStop.short;
-
   return (
-    <View style={styles.root}>
-      {/* 机身底纹：极低对比度的皮革/磨砂 tile，远看是纯色。
-          包一层 View 是为了 `pointerEvents` —— RN 的类型里它只属于 ViewStyle，
-          不能直接写在 <Image> 上（写了 tsc 会报 property does not exist）。 */}
-      <View style={StyleSheet.absoluteFill} pointerEvents="none">
-        <Image
-          source={UI_ASSETS.leatherTile}
-          style={styles.backdrop}
-          resizeMode="repeat"
-          fadeDuration={0}
-        />
-      </View>
+    <View style={[styles.root, { backgroundColor: theme.body }]}>
+      {/* 深色主题下才铺皮革底纹：浅色主题要的是一块浅底板，铺深色皮革等于把主题又变回深色 */}
+      {theme.scheme === 'dark' ? (
+        <View style={styles.fill} pointerEvents="none">
+          <Image source={UI_ASSETS.leatherTile} style={styles.backdrop} resizeMode="repeat" fadeDuration={0} />
+        </View>
+      ) : null}
 
-      {/* ================= ① 顶部操作栏（独立一行，不遮挡取景器） ================= */}
+      {/* ① 顶栏：画幅徽标 + 底片计数 + 设置。闪光灯/翻转/相册都搬去了工具行与核心区 */}
       <View style={[styles.topPanel, { paddingTop: insets.top + 4 }]}>
-        {/*
-          左上：画幅徽章。它替代了原来那行"相框 · 序号 · 预设"的等宽字标签 ——
-          那一行要读一眼才知道在说什么，而画幅是一个**可以点**的东西，
-          点一下换下一张，序号直接印在徽章上。
-        */}
+        <View style={[styles.panelPlate, { backgroundColor: theme.panel }]} pointerEvents="none" />
         <FrameBadge
-          /* 代号（`FrameSpec.code`，纯 ASCII、不翻译）—— 徽标上显示的就是它。
-             胶卷名和画幅比例**故意不传**：用户要求顶栏只留"画幅 + 序号"，
-             胶卷名由左下角那张大卡片独占。详见 FrameBadge 的文件头。 */
           code={frame.code}
           name={frameName}
           index={frameIndex}
@@ -892,34 +838,10 @@ export function CameraScreen() {
           disabled={!interactive}
           onPress={handleBadgeFramePress}
         />
-
-        {/*
-          右上：胶片计数徽章 + 四枚拨轮。
-          拨轮底下原来各刻一行小字（补光 / 反转 / 设置 / 相册），现在全部去掉 ——
-          用户明确要求"图标保留、说明文字去掉"。认不出图标的问题交给无障碍标签和
-          真实机身的习惯（闪光灯、翻转、设置、相册都是通用图形）。
-        */}
         <View style={styles.topActions}>
-          <Text style={styles.filmCounter} numberOfLines={1}>
+          <Text style={[styles.filmCounter, { color: ink.amber }]} allowFontScaling={false}>
             {filmCounterText}
           </Text>
-          <View style={styles.topActionsGap} />
-          <DialButton
-            icon={flashOn ? UI_ASSETS.iconFlashOn : UI_ASSETS.iconFlash}
-            active={flashOn}
-            disabled={facing === 'front'}
-            onPress={handleToggleFlash}
-            accessibilityLabel={flashOn ? t('camera.flash.on') : t('camera.flash.off')}
-            size={38}
-          />
-          <View style={styles.topActionsGap} />
-          <DialButton
-            icon={UI_ASSETS.iconFlip}
-            onPress={handleFlipCamera}
-            accessibilityLabel={t('camera.flip.a11y')}
-            size={38}
-          />
-          <View style={styles.topActionsGap} />
           <DialButton
             icon={UI_ASSETS.iconSettings}
             active={settingsVisible}
@@ -927,19 +849,10 @@ export function CameraScreen() {
             accessibilityLabel={t('camera.settings.a11y')}
             size={38}
           />
-          <View style={styles.topActionsGap} />
-          <DialButton
-            icon={UI_ASSETS.iconAlbum}
-            active={galleryVisible}
-            onPress={handleOpenGalleryScreen}
-            accessibilityLabel={t('camera.gallery.a11y')}
-            size={38}
-          />
         </View>
       </View>
 
-      {/* ================= ② 取景器 =================
-          `covered` 时整块压成透明：面板下面不能有任何相机画面（详见 covered 的注释）。 */}
+      {/* ② 取景器 */}
       <View
         style={[styles.preview, covered ? styles.previewCovered : null]}
         pointerEvents={covered ? 'none' : 'auto'}
@@ -947,21 +860,25 @@ export function CameraScreen() {
         {...pinchHandlers}
       >
         {cameraGranted ? (
-          <CameraView
-            key={cameraKey}
-            ref={cameraRef}
-            style={StyleSheet.absoluteFill}
-            facing={facing}
-            mode="picture"
-            {...cameraFocusProps}
-            flash={flashOn && facing === 'back' ? 'on' : 'off'}
-            selectedLens={lens}
-            onAvailableLensesChanged={handleLensesChanged}
-            zoom={zoom}
-            animateShutter
-            onCameraReady={handleCameraReady}
-            onMountError={handleMountError}
-          />
+          // 只给画面容器做推拉，`CameraView` 本身不动：`key` 恒定，
+          // 切焦段/换预设都只是改 props，原生会话不会重建
+          <Animated.View style={[styles.fill, { transform: [{ scale: lensScale }] }]}>
+            <CameraView
+              key={cameraKey}
+              ref={cameraRef}
+              style={styles.fill}
+              facing={facing}
+              mode="picture"
+              {...cameraFocusProps}
+              flash={flashOn && facing === 'back' ? 'on' : 'off'}
+              selectedLens={lens}
+              onAvailableLensesChanged={handleLensesChanged}
+              zoom={zoom}
+              animateShutter
+              onCameraReady={handleCameraReady}
+              onMountError={handleMountError}
+            />
+          </Animated.View>
         ) : null}
 
         {previewBox.width > 1 && previewBox.height > 1 ? (
@@ -983,19 +900,10 @@ export function CameraScreen() {
               ]}
             >
               {resolved.showGuide ? <GuideGrid rect={previewLayout.window} /> : null}
+              {/* 画幅参考线：只有这一条 1px 白线，相框贴图留到合成阶段 */}
+              <AspectGuide window={previewLayout.window} label={GUIDE_LABEL} />
               <FocusBrackets rect={previewLayout.window} />
-              <FrameOverlay frame={frame} layout={previewLayout} />
             </View>
-
-            {/*
-              点画面对焦。这一层是**透明**的，铺满整个取景器（和 `CameraView` 同尺寸，
-              所以 `locationX / 取景器宽` 就是原生要的 0~1 归一化坐标）。
-
-              特意放在 FrameSwitcher **里面**：手势路径于是是
-              `Pressable → FrameSwitcher → preview`。单击不会被它抢走
-              （它的 `onStartShouldSetPanResponder` 恒为 false，只在移动时接管），
-              而横向滑动换相框时它照样能接管过去（Pressable 默认允许被终止）。
-            */}
             {interactive ? (
               <Pressable
                 style={styles.focusCatcher}
@@ -1007,166 +915,137 @@ export function CameraScreen() {
           </FrameSwitcher>
         ) : null}
 
-        {/*
-          对焦框。纯展示（`pointerEvents="none"`），所以放在取景器这一层 ——
-          不参与任何手势，也不会挡住上面那层点击区域。
-        */}
-        <FocusReticle
+        {/* 坐标按整个取景器归一化，跟 Tap 手势层对齐 */}
+        <FocusExposure
           target={focusTarget}
-          width={previewLayout.width}
-          height={previewLayout.height}
+          width={Math.max(previewBox.width, 1)}
+          height={Math.max(previewBox.height, 1)}
+          exposure={exposure}
+          onExposure={handleExposureChange}
+          onIdle={handleFocusIdle}
         />
 
-        {/* 保存失败（通常是相册权限）：不阻塞拍摄，给一次"去设置" */}
-        {saveIssue !== null ? (
-          <View style={[styles.banner, { bottom: 12 }]}>
-            <Text style={styles.bannerText}>{saveIssue}</Text>
+        {focusHintVisible ? (
+          <View style={styles.focusHint} pointerEvents="none">
+            <View style={styles.focusHintChip}>
+              <Text style={[styles.focusHintText, { color: ink.paper }]} allowFontScaling={false}>
+                {t('camera.focus.hint')}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
+        {/* 倒计时：画面里只有数字，读屏才念"3 秒后拍摄" */}
+        {countdown !== null ? (
+          <View
+            style={styles.countdownLayer}
+            pointerEvents="none"
+            accessible
+            accessibilityLabel={t('camera.timer.counting', { seconds: countdown })}
+          >
+            <Text style={[styles.countdownDigit, { color: ink.paper }]} allowFontScaling={false}>
+              {String(countdown)}
+            </Text>
+          </View>
+        ) : null}
+
+        {/* 重曝两下之间的轻提示（不走 DevelopOverlay：那层会挡住取景器） */}
+        {pendingExposureUri !== null ? (
+          <View style={styles.doubleHint} pointerEvents="none">
+            <View style={styles.focusHintChip}>
+              <Text style={[styles.doubleHintText, { color: ink.amber }]} allowFontScaling={false}>
+                {t('camera.tool.double.hint')}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
+        {bannerMessage !== null ? (
+          <View style={[styles.banner, { backgroundColor: theme.panel, borderColor: ink.amberDeep }]}>
+            <Text style={[styles.bannerText, { color: ink.paper }]}>{bannerMessage}</Text>
             <View style={styles.bannerActions}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t('banner.openSettings')}
-                onPress={handleOpenSystemSettings}
-                hitSlop={8}
-              >
-                <Text style={styles.bannerAction}>{t('banner.openSettings')}</Text>
-              </Pressable>
+              {saveIssue !== null ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('banner.openSettings')}
+                  onPress={handleOpenSystemSettings}
+                  hitSlop={8}
+                >
+                  <Text style={[styles.bannerAction, { color: ink.amber }]}>{t('banner.openSettings')}</Text>
+                </Pressable>
+              ) : null}
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={t('banner.dismiss')}
-                onPress={() => setSaveIssue(null)}
+                onPress={handleDismissBanner}
                 hitSlop={8}
               >
-                <Text style={styles.bannerAction}>{t('banner.dismiss')}</Text>
+                <Text style={[styles.bannerAction, { color: ink.amber }]}>{t('banner.dismiss')}</Text>
               </Pressable>
             </View>
           </View>
         ) : null}
+
+        {/* 悬浮胶囊行贴着取景器底边；容器不吃触摸，只有胶囊本身吃 */}
+        <View style={styles.barLayer} pointerEvents="box-none">
+          <ViewfinderBar
+            temperature={resolved.color.temperature}
+            focalMm={focalMm}
+            exposure={exposure}
+            onPickFilm={handleOpenFilmDrawer}
+            onCycleFocal={handleCycleFocal}
+            onExposure={handleExposureChange}
+          />
+        </View>
       </View>
 
-      {/* ================= ③ 变焦档位 =================
-          放在取景器和主控之间：上面是"看画面调"的手势（滑动换相框 / 捏合变焦），
-          这里是"点一下就到"的精确档位。三个等宽格子居中，选中态画在格子**内部**，
-          所以点哪一档整条轨道都不会挪位。详见 ZoomStops 的文件头。 */}
-      {cameraGranted ? (
-        <View style={styles.zoomBar}>
-          <ZoomStops
-            stops={zoomStops}
-            activeStopId={activeStopId}
-            enabled={interactive}
-            onSelect={handleStopPress}
-          />
-        </View>
-      ) : null}
-
-      {/* ================= ④ 底部主控 ================= */}
-      <View style={styles.dashboard}>
-        <View style={styles.dashSide}>
-          <DialButton
-            icon={UI_ASSETS.iconFilm}
-            onPress={handlePresetCycle}
-            disabled={!interactive}
-            accessibilityLabel={t('camera.preset.a11y', { name: preset.name })}
-          />
-          {/*
-            胶片名这一行。用户要的形态是"一行文字，两侧小三角"：
-              · 轻触 → 换下一卷（淡入淡出 + 选择震动）；
-              · 长按 400ms → 打开胶卷库。
-            两个三角是**提示**，不是独立的按钮 —— 所以整行只有一个 Pressable，
-            三角用 `pointerEvents` 由父级接管（它们本来就不接收触摸）。
-          */}
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('camera.preset.a11y', { name: preset.name })}
-            accessibilityHint={t('film.drawer.hint')}
-            onPress={handleFilmPress}
-            onLongPress={handleFilmLongPress}
-            onPressIn={() => {
-              Animated.timing(filmNudge, {
-                toValue: 1,
-                duration: FILM_LONG_PRESS_MS,
-                useNativeDriver: true,
-              }).start();
-            }}
-            onPressOut={handleFilmPressOut}
-            delayLongPress={FILM_LONG_PRESS_MS}
-            disabled={!interactive}
-            hitSlop={6}
-            style={({ pressed }) => [styles.filmLine, pressed ? styles.pressed : null]}
-          >
-            <Animated.View
-              style={[styles.filmLineInner, { transform: [{ translateX: filmNudgeX }] }]}
-            >
-              {/* 序号：固定两位宽（`padStart` + 等宽字体 = 位宽恒定），
-                  所以右边的三角和胶片名永远不会因为位数变化而挪动。 */}
-              <Text style={styles.filmLineIndex} numberOfLines={1}>
-                {String(presetIndex + 1).padStart(2, '0')}
-              </Text>
-              <Text style={styles.filmArrow}>◀</Text>
-              <Animated.Text
-                style={[styles.filmName, { opacity: filmReveal }]}
-                numberOfLines={1}
-                /* 最长的 `CCD-CYBER` 在 13pt Menlo 下约 78pt，一侧只有 ~90pt —— 让它
-                   自动缩一点比截断好看（和旧预设卡同一条理由）。 */
-                adjustsFontSizeToFit
-                minimumFontScale={0.7}
-              >
-                {preset.name}
-              </Animated.Text>
-              <Text style={styles.filmArrow}>▶</Text>
-            </Animated.View>
-          </Pressable>
-        </View>
-
-        <ShutterButton
-          onPress={() => {
-            void handleShutter();
-          }}
+      {/* ③ + ④ 控制台：工具行 + 核心区。齿轮/开关类的改动只脏这一块 */}
+      <View style={[styles.console, { paddingBottom: Math.max(insets.bottom, 10) }]}>
+        <View style={[styles.panelPlate, { backgroundColor: theme.panel }]} pointerEvents="none" />
+        <ToolRow
+          doubleExposure={doubleExposure}
+          timerSeconds={timerSeconds}
+          flashOn={flashOn}
+          flashDisabled={facing !== 'back'}
           busy={developing}
-          disabled={!cameraReady || !cameraGranted}
+          onImport={handleImportPress}
+          onToggleDouble={handleToggleDouble}
+          onCycleTimer={handleCycleTimer}
+          onToggleFlash={handleToggleFlash}
+          onFlip={handleFlipCamera}
         />
-
-        <View style={[styles.dashSide, styles.dashSideRight]}>
-          {/*
-            右下角的倍率读数。用户明确要求保留它 —— 底部一行只有胶片名的话，
-            右侧会空一大块，快门会显得偏右。它同时也是捏合变焦时唯一的数字反馈。
-          */}
-          <Text style={styles.zoomReadout} numberOfLines={1}>
-            {`${zoomFactor.toFixed(1)}×`}
-          </Text>
-          <Text style={styles.dashHint} numberOfLines={1}>
-            {activeStopHint}
-          </Text>
-        </View>
-      </View>
-
-      {/* ================= ⑥ 底部 LCD 状态条 ================= */}
-      <View style={[styles.lcdWrap, { paddingBottom: Math.max(insets.bottom, 10) }]}>
-        <View style={styles.lcdPanel}>
-          <View style={styles.lcdRow}>
-            <View
-              style={[
-                styles.lcdSwatch,
-                {
-                  backgroundColor: resolved.timestamp.enabled
-                    ? resolved.timestamp.color
-                    : 'rgba(210, 139, 42, 0.22)',
-                },
-              ]}
+        <View style={styles.coreRow}>
+          <View style={styles.coreSide}>
+            <AlbumThumb refreshKey={albumKey} size={CORE_THUMB_SIZE} onPress={handleOpenGalleryScreen} />
+          </View>
+          {/* 倒计时期间不传 busy：ShutterButton 内部是 `disabled || busy`，
+              传了它按钮就点不动了，"再点一次取消"这条规则会失效 */}
+          <ShutterButton
+            onPress={handleShutterPress}
+            busy={developing}
+            disabled={!cameraReady || !cameraGranted}
+          />
+          <View style={[styles.coreSide, styles.coreSideRight]}>
+            <DialButton
+              icon={UI_ASSETS.iconFilm}
+              onPress={handleOpenFilmDrawer}
+              disabled={!interactive}
+              accessibilityLabel={t('camera.preset.a11y', { name: preset.name })}
+              size={CORE_ENTRY_SIZE}
             />
-            <Text style={styles.lcdText} numberOfLines={1}>
-              {lcdDateLine}
+            <Text
+              style={[styles.filmName, { color: ink.paperDim }]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.7}
+              allowFontScaling={false}
+            >
+              {preset.name}
             </Text>
           </View>
-          <Text style={[styles.lcdText, styles.lcdTextIndent]} numberOfLines={1}>
-            {lcdParamLine}
-          </Text>
-          <Text style={[styles.lcdText, styles.lcdTextIndent]} numberOfLines={1}>
-            {lcdLocationLine}
-          </Text>
         </View>
       </View>
 
-      {/* ================= 显影层（在 ViewShot 之外，不会被截进成片） ================= */}
       <DevelopOverlay status={status} onDismiss={handleDismiss}>
         {filmStage.stage !== null ? (
           <FilmCompositor
@@ -1179,10 +1058,6 @@ export function CameraScreen() {
         ) : null}
       </DevelopOverlay>
 
-      {/*
-        胶卷库（长按胶片名打开）。放在显影层**之后**：它必须盖住一切，
-        否则长按一下还能从抽屉里看到显影幕布在动。
-      */}
       <FilmDrawer
         visible={filmDrawerVisible}
         presetIndex={presetIndex}
@@ -1190,22 +1065,9 @@ export function CameraScreen() {
         onClose={handleCloseFilmDrawer}
       />
 
-      {/* ================= 权限 / 错误提示（最上层） ================= */}
-      {noticeNode !== null ? (
-        <View style={styles.noticeLayer}>{noticeNode}</View>
-      ) : null}
+      {noticeNode !== null ? <View style={styles.noticeLayer}>{noticeNode}</View> : null}
 
-      {/*
-        App 内相册。（和设置界面同级，都在最顶上；两个都 `visible=false`
-        时自己 return null，不占层级也不吃触摸。）
-      */}
       <GalleryScreen visible={galleryVisible} onClose={handleCloseGalleryScreen} />
-
-      {/*
-        设置界面压在**最顶上**（包括权限提示之上）：
-        它是一个显式打开的模态，用户按了"设置"就必须能看到它。
-        `visible=false` 时组件自己 return null，不占层级也不吃触摸。
-      */}
       <SettingsScreen
         visible={settingsVisible}
         onClose={handleCloseSettingsScreen}
@@ -1215,393 +1077,96 @@ export function CameraScreen() {
   );
 }
 
-/* ==========================================================================
- * 内部小组件
- * ========================================================================== */
-
 /**
- * 三分构图参考线（纯静态，不做实时水平仪）。
- * 对齐的是**画面窗口**不是整张相框 —— 所以 `rect` 传的是 `layout.window`。
- * 刻意做得很淡（0.125 白）：它只是给眼睛一个参考，不该在取景时"跳出来"。
+ * 样式工厂：几何写死在这里，颜色全部由主题注入。
+ * 模块级的 `StyleSheet.create` 会把深浅色冻结在加载那一刻，所以必须按主题重建。
  */
-function GuideGrid({ rect }: { rect: Rect }) {
-  return (
-    <View
-      pointerEvents="none"
-      style={[
-        styles.guide,
-        { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
-      ]}
-    >
-      <View style={[styles.guideVertical, { left: rect.width / 3 }]} />
-      <View style={[styles.guideVertical, { left: (rect.width * 2) / 3 }]} />
-      <View style={[styles.guideHorizontal, { top: rect.height / 3 }]} />
-      <View style={[styles.guideHorizontal, { top: (rect.height * 2) / 3 }]} />
-    </View>
-  );
+function createStyles(ink: ThemeInk, scheme: 'dark' | 'light') {
+  const fill = { position: 'absolute' as const, top: 0, right: 0, bottom: 0, left: 0 };
+  const hairline = StyleSheet.hairlineWidth;
+  return StyleSheet.create({
+    root: { flex: 1 },
+    fill,
+    backdrop: { ...fill, opacity: 0.95 },
+    topPanel: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 14,
+      paddingBottom: 9,
+      borderBottomWidth: hairline,
+      borderBottomColor: ink.hairline,
+      overflow: 'hidden',
+    },
+    // 半透明衬板：让下面的皮革底纹还能透出一点，纯色面板会把机身质感整片盖掉
+    panelPlate: { ...fill, opacity: 0.88 },
+    topActions: { flexDirection: 'row', alignItems: 'center', flexShrink: 0 },
+    filmCounter: {
+      minWidth: 42,
+      marginRight: 10,
+      textAlign: 'right',
+      fontFamily: UI_MONO,
+      fontSize: 10,
+      letterSpacing: 0.8,
+    },
+    preview: { flex: 1, overflow: 'hidden', backgroundColor: '#0A0A0B' },
+    previewCovered: { opacity: 0 },
+    canvas: { position: 'absolute' },
+    focusCatcher: { ...fill },
+    focusHint: { position: 'absolute', left: 0, right: 0, bottom: 68, alignItems: 'center' },
+    focusHintChip: {
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      borderRadius: 999,
+      backgroundColor: 'rgba(0,0,0,0.42)',
+    },
+    focusHintText: { fontFamily: UI_MONO, fontSize: 11, letterSpacing: 1.2 },
+    countdownLayer: { ...fill, alignItems: 'center', justifyContent: 'center' },
+    countdownDigit: {
+      fontFamily: UI_MONO,
+      fontSize: 96,
+      letterSpacing: 2,
+      textShadowColor: 'rgba(0,0,0,0.6)',
+      textShadowRadius: 14,
+      textShadowOffset: { width: 0, height: 2 },
+    },
+    doubleHint: { position: 'absolute', left: 0, right: 0, top: 26, alignItems: 'center' },
+    doubleHintText: { fontFamily: UI_MONO, fontSize: 10, letterSpacing: 0.8 },
+    // 横幅抬到胶囊行上方：压住胶囊的话，出问题时连焦段都点不了
+    banner: {
+      position: 'absolute',
+      left: 16,
+      right: 16,
+      bottom: 56,
+      padding: 12,
+      borderRadius: 4,
+      borderWidth: hairline,
+    },
+    bannerText: { fontSize: 13, lineHeight: 19 },
+    bannerActions: { flexDirection: 'row', marginTop: 10 },
+    bannerAction: { fontSize: 14, fontWeight: '700', marginRight: 18 },
+    barLayer: { position: 'absolute', left: 0, right: 0, bottom: 12, alignItems: 'center' },
+    console: {
+      paddingTop: 8,
+      borderTopWidth: hairline,
+      borderTopColor: ink.hairline,
+      overflow: 'hidden',
+    },
+    coreRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 18,
+      marginTop: 6,
+    },
+    coreSide: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center' },
+    coreSideRight: { justifyContent: 'flex-end' },
+    filmName: { marginLeft: 8, maxWidth: 74, fontFamily: UI_MONO, fontSize: 9, letterSpacing: 0.6 },
+    noticeLayer: {
+      ...fill,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: scheme === 'dark' ? 'rgba(0,0,0,0.72)' : 'rgba(236,236,232,0.86)',
+    },
+  });
 }
-
-/**
- * 四角 L 形对焦框 + 中心微小准星。
- *
- * 只画四个角而不是四个完整的框：视觉重量低得多，但在任何背景上都读得出"这是取景范围"。
- * 也**不在取景器里做实时对焦动画** —— 那会引入逐帧计算，违反"取景器只做呈现"的约束。
- */
-function FocusBrackets({ rect }: { rect: Rect }) {
-  const inset = Math.max(4, Math.round(rect.width * 0.014));
-  const size = Math.max(14, Math.round(Math.min(rect.width, rect.height) * 0.07));
-  const corner = { width: size, height: size };
-  const top = { top: inset };
-  const bottom = { bottom: inset };
-  const left = { left: inset };
-  const right = { right: inset };
-
-  return (
-    <View
-      pointerEvents="none"
-      style={[
-        styles.focusLayer,
-        { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
-      ]}
-    >
-      <View style={[styles.corner, corner, styles.cornerTL, top, left]} />
-      <View style={[styles.corner, corner, styles.cornerTR, top, right]} />
-      <View style={[styles.corner, corner, styles.cornerBL, bottom, left]} />
-      <View style={[styles.corner, corner, styles.cornerBR, bottom, right]} />
-
-      <View
-        style={[
-          styles.reticle,
-          { left: rect.width / 2 - RETICLE / 2, top: rect.height / 2 - RETICLE / 2 },
-        ]}
-      >
-        <View style={styles.reticleH} />
-        <View style={styles.reticleV} />
-        <View style={styles.reticleDot} />
-      </View>
-    </View>
-  );
-}
-
-/** 准星画布边长（pt）。 */
-const RETICLE = 24;
-/** 准星中心留空的直径 —— 留空比实心十字更"轻"，也更像真机的对焦标记。 */
-const RETICLE_GAP = 5;
-
-/* ==========================================================================
- * 样式
- * ========================================================================== */
-
-// INK / UI_MONO / compact 都搬到了 `src/constants/theme.ts` ——
-// 设置界面和取景屏幕必须共用同一套墨色，否则两边会慢慢漂成两个 App。
-
-const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: '#171716',
-  },
-  backdrop: {
-    // 注意：RN 0.86 已移除 StyleSheet.absoluteFillObject，只能用 absoluteFill
-    ...StyleSheet.absoluteFill,
-    opacity: 0.95,
-  },
-
-  /* ---------------- ① 顶部操作栏 ---------------- */
-  topPanel: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingBottom: 9,
-    backgroundColor: 'rgba(10, 10, 9, 0.34)',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: INK.hairline,
-  },
-  topActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexShrink: 0,
-  },
-  /**
-   * 胶片计数徽章。用户要的样子是"胶片片边上的机器编号"：极小、等宽、
-   * 琥珀色打在深底上。宽度由补零固定，所以 9 → 10 也不会把右边的拨轮推走。
-   */
-  filmCounter: {
-    minWidth: 42,
-    textAlign: 'right',
-    color: INK.amber,
-    fontSize: 10,
-    letterSpacing: 0.8,
-    fontFamily: UI_MONO,
-  },
-  /**
-   * §三.2 复查结论：这四个拨轮底下**已经没有任何说明小字**（v1.2.0 就删干净了，
-   * 现在只有图标 + 无障碍标签），所以这里只做"收窄"。
-   *
-   * 为什么把 6 收到 4：右侧这一串是 4 枚 38pt 拨轮 + 计数徽章，中间垫了 5 道
-   * 固定 6pt 的 `topActionsGap` = 30pt 的纯空白。收成 4pt 后省下 10pt，
-   * 画幅徽标（`maxWidth: '42%'`）在 320pt 窄机上就多出 10pt 可用宽度 ——
-   * 而 4pt 的视觉间距对 38pt 的圆形拨轮来说仍然足够，不会糊成一块。
-   * 容器本身没有 padding（只有 `flexShrink: 0`），所以收窄只剩这一处可调。
-   */
-  topActionsGap: {
-    width: 4,
-  },
-
-  /* ---------------- ② 取景器 ---------------- */
-  preview: {
-    flex: 1,
-    overflow: 'hidden',
-    backgroundColor: '#0A0A0B',
-  },
-  /** 有整屏面板盖着时：取景器整块隐去（保持挂载，只改透明度）。 */
-  previewCovered: {
-    opacity: 0,
-  },
-  canvas: {
-    position: 'absolute',
-  },
-  /**
-   * 点画面对焦的透明接收层。写死四边而不是用 `StyleSheet.absoluteFillObject`，
-   * 免得跟着 RN 版本的 API 变动走。它和 `CameraView` 完全重合，
-   * 所以 `locationX / previewLayout.width` 直接就是 0~1。
-   */
-  focusCatcher: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-  },
-  guide: {
-    position: 'absolute',
-    overflow: 'hidden',
-  },
-  guideVertical: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    width: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(255, 255, 255, 0.125)',
-  },
-  guideHorizontal: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(255, 255, 255, 0.125)',
-  },
-  focusLayer: {
-    position: 'absolute',
-  },
-  corner: {
-    position: 'absolute',
-    borderColor: 'rgba(255, 255, 255, 0.30)',
-  },
-  cornerTL: { borderTopWidth: 1, borderLeftWidth: 1 },
-  cornerTR: { borderTopWidth: 1, borderRightWidth: 1 },
-  cornerBL: { borderBottomWidth: 1, borderLeftWidth: 1 },
-  cornerBR: { borderBottomWidth: 1, borderRightWidth: 1 },
-  reticle: {
-    position: 'absolute',
-    width: RETICLE,
-    height: RETICLE,
-  },
-  reticleH: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: RETICLE / 2,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(255, 255, 255, 0.34)',
-  },
-  reticleV: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    left: RETICLE / 2,
-    width: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(255, 255, 255, 0.34)',
-  },
-  reticleDot: {
-    position: 'absolute',
-    left: RETICLE / 2 - RETICLE_GAP / 2,
-    top: RETICLE / 2 - RETICLE_GAP / 2,
-    width: RETICLE_GAP,
-    height: RETICLE_GAP,
-    borderRadius: RETICLE_GAP / 2,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255, 255, 255, 0.50)',
-  },
-
-  /* 相册保存失败横幅 */
-  banner: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    padding: 12,
-    borderRadius: 4,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(194, 122, 48, 0.45)',
-    backgroundColor: 'rgba(18, 15, 12, 0.94)',
-  },
-  bannerText: {
-    color: 'rgba(232, 228, 220, 0.88)',
-    fontSize: 13,
-    lineHeight: 19,
-  },
-  bannerActions: {
-    marginTop: 10,
-    flexDirection: 'row',
-  },
-  bannerAction: {
-    marginRight: 18,
-    color: INK.amber,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-
-  /* ---------------- ③ 变焦档位 ---------------- */
-  /**
-   * 只负责"横向居中 + 上下留白"。容器宽度由 `ZoomStops` 自己按窗口宽度算，
-   * 这里**不能**给固定宽度或 `flex: 1` —— 那会把居中这件事交给父布局，
-   * 而父布局的宽度里还夹着左右 padding，最后会偏一点点。
-   *
-   * 也不在这里再叠一层底色：`ZoomStops` 自己已经带了和主控同一档的
-   * `rgba(10,10,9,0.34)`，两边都写会让这条带子比上下两段明显更黑。
-   */
-  zoomBar: {
-    alignItems: 'center',
-  },
-
-  /* ---------------- ④ 底部主控 ---------------- */
-  dashboard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    paddingBottom: 4,
-    backgroundColor: 'rgba(10, 10, 9, 0.34)',
-  },
-  dashSide: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexShrink: 1,
-  },
-  dashSideRight: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'column',
-    alignItems: 'flex-end',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  /**
-   * 胶片名那一行。整行是**一个** Pressable（"点哪儿都换下一卷"），
-   * 所以这里只能有内边距，不能给两侧三角单独做按钮。
-   */
-  filmLine: {
-    marginLeft: 8,
-    paddingHorizontal: 4,
-    paddingVertical: 4,
-    flexShrink: 1,
-  },
-  filmLineInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  /**
-   * 序号槽：固定两位、右对齐、等宽字体。
-   * 这三条加起来保证"位宽恒定" —— 9 → 10 时右边的三角和胶片名一格都不动。
-   */
-  filmLineIndex: {
-    width: 18,
-    textAlign: 'right',
-    color: INK.paperDim,
-    fontSize: 11,
-    letterSpacing: 0.5,
-    fontFamily: UI_MONO,
-  },
-  /** 两侧小三角：**只是提示**（可以点、点的是整行），所以刻意做得很小很暗。 */
-  filmArrow: {
-    marginHorizontal: 5,
-    color: INK.paperFaint,
-    fontSize: 8,
-    fontFamily: UI_MONO,
-  },
-  /** 胶片名：工业代号，等宽大字，和旧的预设卡同一个视觉重量。 */
-  filmName: {
-    flexShrink: 1,
-    color: INK.amberSoft,
-    fontSize: 13,
-    letterSpacing: 0.6,
-    fontFamily: UI_MONO,
-  },
-  /**
-   * 右下角倍率读数。用户要求保留它（右侧空了快门会显偏）。
-   * 它是**估算值**，为什么显示估算值见 `zoomFactor` 附近的注释。
-   */
-  zoomReadout: {
-    color: INK.amber,
-    fontSize: 13,
-    letterSpacing: 0.8,
-    fontFamily: UI_MONO,
-  },
-  dashHint: {
-    marginTop: 2,
-    color: 'rgba(226, 222, 214, 0.30)',
-    fontSize: 8.5,
-    letterSpacing: 0.4,
-    fontFamily: UI_MONO,
-  },
-  pressed: {
-    opacity: 0.6,
-  },
-
-  /* ---------------- ⑥ LCD 状态条 ---------------- */
-  lcdWrap: {
-    paddingHorizontal: 14,
-    paddingTop: 9,
-  },
-  lcdPanel: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(210, 139, 42, 0.20)',
-    borderRadius: 2,
-    backgroundColor: 'rgba(210, 139, 42, 0.045)',
-    paddingHorizontal: 9,
-    paddingVertical: 6,
-  },
-  lcdRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  lcdSwatch: {
-    width: 6,
-    height: 6,
-    marginRight: 7,
-    borderRadius: 1,
-  },
-  lcdText: {
-    flexShrink: 1,
-    color: INK.amber,
-    fontSize: 10,
-    letterSpacing: 1.1,
-    opacity: 0.86,
-    fontFamily: UI_MONO,
-  },
-  lcdTextIndent: {
-    marginTop: 3,
-    marginLeft: 13,
-  },
-
-  /* ---------------- 覆盖层 ---------------- */
-  noticeLayer: {
-    ...StyleSheet.absoluteFill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.72)',
-  },
-});

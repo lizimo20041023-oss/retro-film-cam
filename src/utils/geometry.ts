@@ -19,7 +19,9 @@
  *    （见 `TONE_STYLE`）—— 打字机体是印在相纸上的小字，本来就比点阵液晶小一圈。
  *
  * 三条从上一版保留下来的规则，别顺手改掉：
- *   1. 字号是**画面宽度**的比例（不是屏幕宽度）：换相框、换手机都不会比例失衡；
+ *   1. 日期 / 地名的字号**跟画布短边成比例**（`DATE_FONT_SHORT_EDGE_RATIO`）：换相框、
+ *      换手机都不会比例失衡。预设里的 `fontSizeRatio` 没被删掉，它降级成"这一卷想印多大"
+ *      的相对权重 —— 绝对值由短边那条线收口。**改字号只改这一个函数**，四种版式一起动；
  *   2. 边距是**相框宽度**的比例：留白随图放大缩小；
  *   3. `frame` 锚点在**下留白里垂直居中**，用 0.62 修正基线（数码管字面偏上）。
  *
@@ -34,8 +36,10 @@ import { CENTERED_SEPARATOR, pad2, timestampTracking } from './formatTimestamp';
 import type {
   FontWeight,
   FrameLayout,
+  FrameSlot,
   FrameSpec,
   LocationLayout,
+  NormalizedRect,
   Rect,
   ResolvedTimestampConfig,
   Size,
@@ -68,16 +72,133 @@ export function fitBox(aspect: number, maxWidth: number, maxHeight: number): Siz
 }
 
 /**
+ * 相框的两个朝向。
+ *
+ * 只有相框自己提供了 `FrameSpec.landscape` 变体（横版 PNG + 横版窗口）时，
+ * `'landscape'` 才可能被选中；没有变体的相框永远走 `'portrait'`，也就是老行为。
+ */
+export type FrameOrientation = 'portrait' | 'landscape';
+
+/**
+ * 判断朝向需要的"照片形状"。
+ *
+ * 故意只要宽高两个数：`CapturedPhoto` / `NormalizedPhoto` / `ImagePickerAsset` 换算出来的
+ * 那个小对象都能直接传进来，几何层不必知道 `uri` 之类的东西。
+ */
+export interface PhotoFrameShape {
+  width: number;
+  height: number;
+}
+
+/**
+ * 这次该用竖版还是横版（§六.1 的渲染侧规则）。
+ *
+ * 判据是**原图的实际长宽比**，不是相框自己 —— 同一张相框遇到横着拍的照片要换横版 PNG，
+ * 否则竖版窗口会把横构图裁掉两边。
+ *
+ * - 相框没有 `landscape` 变体 → 永远竖版：相框数据还没填完时，渲染结果与 v1.3.0 一字不差；
+ * - `width === height` 的正方图 → 竖版。用严格大于号是**刻意**的：正方图两边都说得通，
+ *   选竖版才能让"横竖都不吃亏"的照片保持和以前完全一样的结果（少一次无谓的换版）。
+ */
+export function resolveFrameOrientation(frame: FrameSpec, photo: PhotoFrameShape): FrameOrientation {
+  if (frame.landscape === undefined) {
+    return 'portrait';
+  }
+  const width = Number.isFinite(photo.width) ? photo.width : 0;
+  const height = Number.isFinite(photo.height) ? photo.height : 0;
+  return width > height ? 'landscape' : 'portrait';
+}
+
+/**
+ * 按朝向取相框几何（aspect + 归一化窗口）。
+ *
+ * 横版变体缺失时**退回竖版**，绝不返回 undefined —— 调用方因此不需要自己判空，
+ * "没有变体"和"要竖版"在这里是同一条路。
+ */
+function frameGeometryOf(
+  frame: FrameSpec,
+  orientation: FrameOrientation,
+): { aspect: number; window: NormalizedRect } {
+  return orientation === 'landscape' && frame.landscape !== undefined
+    ? { aspect: frame.landscape.aspect, window: frame.landscape.window }
+    : { aspect: frame.aspect, window: frame.window };
+}
+
+/**
+ * 从**已经算好的** `FrameLayout` 反推这次用的是竖版还是横版。
+ *
+ * 渲染层（`FilmCompositor`）只拿得到上游算好的 `layout` + `frame`，**拿不到**原图的像素尺寸
+ * （`rawUri` 只是个字符串），所以"成片该铺哪张 PNG"只能从布局反推。
+ *
+ * ⚠️ **主判据是归一化窗口的距离，不是 `aspect`**。`slide-mount` 的卡纸是正方形，
+ * 横竖两版的 `aspect` 都是 1350/1350 = 1.0 —— 只比 aspect 会把横版布局反推成竖版，
+ * 于是横版的"2:3 竖孔"上会盖一张竖版的"3:2 横孔"PNG（实测 358×358 的横版布局
+ * 反推出 `portrait` ✗）。窗口在两版之间一定不同（转 90° 就是换了坐标），
+ * 把 `layout.window` 除以布局尺寸还原成归一化值再比，才能无歧义地还原上游那次选择。
+ *
+ * 为什么不让渲染层自己再判一次横竖：`stage.layout` 和相框 PNG 必须来自**同一次选择**，
+ * 判两次就可能出现"布局按横版算、PNG 铺了竖版"这种错位。
+ */
+export function frameOrientationOfLayout(frame: FrameSpec, layout: FrameLayout): FrameOrientation {
+  const variant = frame.landscape;
+  if (variant === undefined) {
+    return 'portrait';
+  }
+  if (!(layout.width > 0) || !(layout.height > 0)) {
+    return 'portrait';
+  }
+  // 绝对窗口 → 归一化窗口的曼哈顿距离（`computeFrameLayout` 里的 round 只带来 < 0.5px 的偏差，
+  // 而两版窗口之间差着几十个百分点，不构成歧义）。
+  const windowGapOf = (candidate: NormalizedRect): number => {
+    const x = layout.window.left / layout.width;
+    const y = layout.window.top / layout.height;
+    const w = layout.window.width / layout.width;
+    const h = layout.window.height / layout.height;
+    return (
+      Math.abs(x - candidate.x) +
+      Math.abs(y - candidate.y) +
+      Math.abs(w - candidate.width) +
+      Math.abs(h - candidate.height)
+    );
+  };
+  const portraitWindowGap = windowGapOf(frame.window);
+  const landscapeWindowGap = windowGapOf(variant.window);
+  if (Math.abs(landscapeWindowGap - portraitWindowGap) > 1e-6) {
+    return landscapeWindowGap < portraitWindowGap ? 'landscape' : 'portrait';
+  }
+  // 连窗口都一模一样（相框数据写重了才会这样）：再比一次 aspect，
+  // 最后仍判竖版 —— 与 `resolveFrameOrientation` 的正方图规则同向，
+  // 宁可不动也不要凭空换一张 PNG。
+  const portraitAspectGap = Math.abs(layout.aspect - frame.aspect);
+  const landscapeAspectGap = Math.abs(layout.aspect - variant.aspect);
+  return landscapeAspectGap < portraitAspectGap ? 'landscape' : 'portrait';
+}
+
+/** 按朝向取相框 PNG。返回类型直接用 `FrameSpec['source']`，免得几何层 import react-native。 */
+export function frameSourceOf(frame: FrameSpec, orientation: FrameOrientation): FrameSpec['source'] {
+  return orientation === 'landscape' && frame.landscape !== undefined ? frame.landscape.source : frame.source;
+}
+
+/**
  * 把相框归一化窗口换算成绝对坐标，并顺带算出"下留白高度 / 右边距"。
  * 后两者是日期水印定位的基础：拍立得的下白边、35mm 的下黑边都靠它。
+ *
+ * `orientation` 是**这个函数唯一的可变输入**（默认竖版）：横版变体要用它自己的
+ * `aspect` / `window` 重算整个布局 —— 只换 PNG 不换布局，窗口就会和照片对不上。
  */
-export function computeFrameLayout(frame: FrameSpec, maxWidth: number, maxHeight: number): FrameLayout {
-  const box = fitBox(frame.aspect, maxWidth, maxHeight);
+export function computeFrameLayout(
+  frame: FrameSpec,
+  maxWidth: number,
+  maxHeight: number,
+  orientation: FrameOrientation = 'portrait',
+): FrameLayout {
+  const geometry = frameGeometryOf(frame, orientation);
+  const box = fitBox(geometry.aspect, maxWidth, maxHeight);
 
-  const left = clamp(Math.round(frame.window.x * box.width), 0, box.width - 1);
-  const top = clamp(Math.round(frame.window.y * box.height), 0, box.height - 1);
-  const width = clamp(Math.round(frame.window.width * box.width), 1, box.width - left);
-  const height = clamp(Math.round(frame.window.height * box.height), 1, box.height - top);
+  const left = clamp(Math.round(geometry.window.x * box.width), 0, box.width - 1);
+  const top = clamp(Math.round(geometry.window.y * box.height), 0, box.height - 1);
+  const width = clamp(Math.round(geometry.window.width * box.width), 1, box.width - left);
+  const height = clamp(Math.round(geometry.window.height * box.height), 1, box.height - top);
   const window: Rect = { left, top, width, height };
 
   return {
@@ -89,6 +210,58 @@ export function computeFrameLayout(frame: FrameSpec, maxWidth: number, maxHeight
     bottomStripHeight: Math.max(0, box.height - (top + height)),
     // 窗口右沿 → 相框右边
     rightMargin: Math.max(0, box.width - (left + width)),
+  };
+}
+
+/* ==========================================================================
+ * 一框多图（半格双联）：开槽的绝对坐标
+ * ========================================================================== */
+
+/**
+ * 一框多图：把每个开槽的归一化窗口换算成绝对坐标（相对合成舞台）。
+ *
+ * 和 `computeFrameLayout` 用同一套 `clamp` 规则，所以某一格的右沿永远不会越出相框。
+ * 返回顺序就是绘制顺序：`slots[0]` 是先拍的那一张（左格），`slots[1]` 是右格。
+ */
+export function computeSlotRects(layout: FrameLayout, slots: readonly FrameSlot[]): Rect[] {
+  return slots.map((slot) => {
+    const left = clamp(Math.round(slot.window.x * layout.width), 0, layout.width - 1);
+    const top = clamp(Math.round(slot.window.y * layout.height), 0, layout.height - 1);
+    return {
+      left,
+      top,
+      width: clamp(Math.round(slot.window.width * layout.width), 1, layout.width - left),
+      height: clamp(Math.round(slot.window.height * layout.height), 1, layout.height - top),
+    };
+  });
+}
+
+/**
+ * 多格画面的**混合区** = 所有开槽的并集矩形。
+ *
+ * 调色 / 颗粒 / 漏光要盖在这一块上，而不是分别盖在每一格上：它们是"整卷冲洗一遍"的效果，
+ * 分格各洗一次会在两格的接缝处露出两遍颗粒和两道暗角，比"少一格对齐"难看得多。
+ * 空数组返回 1×1：调用方拿到的是一个合法的矩形，不需要判空。
+ */
+export function slotBounds(rects: readonly Rect[]): Rect {
+  if (rects.length === 0) {
+    return { left: 0, top: 0, width: 1, height: 1 };
+  }
+  let left = Number.POSITIVE_INFINITY;
+  let top = Number.POSITIVE_INFINITY;
+  let right = Number.NEGATIVE_INFINITY;
+  let bottom = Number.NEGATIVE_INFINITY;
+  for (const rect of rects) {
+    left = Math.min(left, rect.left);
+    top = Math.min(top, rect.top);
+    right = Math.max(right, rect.left + rect.width);
+    bottom = Math.max(bottom, rect.top + rect.height);
+  }
+  return {
+    left,
+    top,
+    width: Math.max(1, right - left),
+    height: Math.max(1, bottom - top),
   };
 }
 
@@ -368,9 +541,51 @@ const OVER_PHOTO_INK = TONE_STYLE.graphite.color;
 /** 压在照片上的印字投影：小半径纯黑。这是**投影**不是辉光 —— 辉光只给液晶日期。 */
 const OVER_PHOTO_SHADOW = 'rgba(0, 0, 0, 0.6)';
 
-/** 日期字号的上下限（逻辑点）。下限 8 是为了再小的相框也不会糊成一团。 */
+/**
+ * 日期字号的上下限（逻辑点）。
+ *
+ * 下限 8 现在是**常态**而不是兜底：画布短边的 2% 在手机上算出来只有 7.16pt，
+ * 而 8pt 是"再小就不成字"的实测下限（配套的灯管高 6pt、段厚 0.84pt）。
+ * 也就是说手机档停在短边的 2.23% 而不是 2% —— 这条是**有意**留的差额，
+ * 别为了把百分比凑漂亮而调低它：6pt 的管子已经是最细的一档了。
+ */
 const MIN_DATE_FONT = 8;
 const MAX_DATE_FONT = 96;
+
+/**
+ * 日期字号的**绝对上限**：画布短边的 2%（规格 §五.1）。
+ *
+ * 为什么"跟谁成比例"从画面宽度换成短边：日期是**成片上的字**，它的可读性只跟这块画布
+ * 有多小有关 —— 长边再长也不会让字更好认。而画面宽度是相框自己的事（拍立得的窗口
+ * 占 89.8%、35mm 只占 68.6%），拿它当基准等于让"相框裁得狠不狠"决定字号。
+ *
+ * 为什么预设的 `fontSizeRatio` 没有被删：它仍然是"这一卷想印多大"的相对权重，
+ * 只是绝对值被这条线收口。三层（预设权重 → 短边收口 → 墨色系数）**全部在
+ * `dateFontOf` 这一行里合成** —— 这就是"比例必须在同一处收口"的全部意思：
+ * 四种版式、四款相框、五个预设共用这一个数，不存在某一版跑偏的可能。
+ *
+ * 实测（舞台 358×640，短边 358）：2% = 7.16pt，被 `MIN_DATE_FONT = 8` 兜到 8pt，
+ * 也就是停在短边的 2.23% —— 这是**有意**的，见 `MIN_DATE_FONT` 那条注释。
+ */
+const DATE_FONT_SHORT_EDGE_RATIO = 0.02;
+
+/**
+ * 日期字号的**唯一**算法：预设权重 → 画布短边收口 → 墨色系数 → 上下限。
+ *
+ * 为什么要抽成一个函数：四种版式和两个旧接口（`computeTimestampLayout` /
+ * `computeLocationLayout`）都必须**逐位相同**地得到这个数。散在五处写五遍，
+ * 迟早有一处忘了改，而"字号对不齐"这种问题在成片上表现为"某个版式的日期大一圈"，
+ * 极难回溯到是谁算的。
+ *
+ * `fontScale` 是墨色系数（`TONE_STYLE[*].fontScale`）：它乘在**收口之后**，
+ * 因为"打字机体比液晶小一档"是相对关系，不该被短边那条线抹平 ——
+ * 乘在收口之前的话，琥珀和石墨在小画布上会被同一个上限压成一样大。
+ */
+function dateFontOf(layout: FrameLayout, config: ResolvedTimestampConfig, fontScale: number): number {
+  const shortEdge = Math.min(layout.width, layout.height);
+  const capped = Math.min(layout.window.width * config.fontSizeRatio, shortEdge * DATE_FONT_SHORT_EDGE_RATIO);
+  return Math.round(clamp(capped * fontScale, MIN_DATE_FONT, MAX_DATE_FONT));
+}
 
 /**
  * 地名相对日期的字号系数。
@@ -395,11 +610,14 @@ const STACKED_LEADING = 1.32;
 /**
  * 石英数码管的管高 ÷ 日期字号。
  *
- * 为什么不 1:1：规格要的是"字号缩小至精致克制的 10pt ~ 11pt"，而这个 App 的日期字号
- * 是**跟画面窗口宽度成比例**的（上面规则 1，不许改），典型手机上算出来是 14~20pt。
- * 取 0.58 之后：18pt → 10.4（四舍五入 10，正好落在规格那一档）、17pt → 10、14pt → 8。
- * 也就是说"大画幅的手机"落在 10~11pt，"窄窗口的相框（35mm / 幻灯卡）"会小到 8pt ——
- * 这是**故意**的：宁可守住比例规则，也不给某几个相框开小灶。
+ * 为什么不 1:1：日期字号是**排字用的行高**，管子是**画出来的形体**，两者不必等大；
+ * 而且管子本来就该比行高矮一点，才能和旁边那行地名平视。
+ *
+ * 改版后的实际效果（舞台短边 358）：
+ * - 手机档：日期 8pt → 8 × 0.58 = 4.64 → 被 `MIN_QUARTZ_HEIGHT` 兜到 **6pt**，
+ *   也就是管子高度由下限决定（段厚 0.84pt、缝 0.5pt，成片放大 ~4.7× 后是 4px / 2.3px，还认得出）；
+ * - 平板档（舞台短边 700）：日期 14pt → **8pt**，这时才由这条比例说话。
+ * 想再缩小日期，改的是 `DATE_FONT_SHORT_EDGE_RATIO`，不是这条 —— 这条只决定"管子比字矮多少"。
  */
 const QUARTZ_HEIGHT_SCALE = 0.58;
 /**
@@ -613,9 +831,12 @@ export function computeWatermarkPlan(
   const placeInk =
     anchor === 'window' ? { color: OVER_PHOTO_INK, fontWeight: TONE_STYLE.graphite.fontWeight } : ink;
 
-  const dateFont = Math.round(
-    clamp(layout.window.width * config.fontSizeRatio * toneStyle.fontScale, MIN_DATE_FONT, MAX_DATE_FONT),
-  );
+  /*
+   * 日期字号：**唯一**入口 `dateFontOf`（预设权重 → 短边 2% 收口 → 墨色系数 → 上下限）。
+   * 渲染层一个系数都不乘 —— "渲染层再乘 0.6"那种做法会让四种版式各缩各的，
+   * 而这条规则要的是四版对齐。
+   */
+  const dateFont = dateFontOf(layout, config, toneStyle.fontScale);
   const placeFont = Math.max(6, Math.round(dateFont * PLACE_FONT_SCALE));
   const inset = Math.max(2, Math.round(layout.width * config.insetRatio));
   const { bottom, region } = resolveBaselineAndRegion(layout, config, anchor, dateFont);
@@ -835,7 +1056,7 @@ export function computeWatermarkPlan(
 /**
  * 日期水印的位置与字号。
  *
- * - 字号跟**画面宽度**绑定（不是跟屏幕宽度）：这样换相框、换手机都不会比例失衡；
+ * - 字号跟**画布短边**绑定（见 `DATE_FONT_SHORT_EDGE_RATIO`）：换相框、换手机都不会比例失衡；
  * - `inset` 跟相框宽度绑定，留白随图放大缩小；
  * - 锚点 `frame` 时垂直居中于下留白（数码管基线偏低，用 0.62 修正）；
  * - 锚点 `window` 时贴在画面内部右下角，退到下留白之上 inset 的位置。
@@ -850,7 +1071,10 @@ export function computeTimestampLayout(
   const frame: WatermarkFrameSpec = { watermark: { anchor } };
   const plan = computeWatermarkPlan(layout, config, frame, '', '1', 'en', 'dateOnly');
   const line = plan.lines[0];
-  const fallbackFont = Math.round(clamp(layout.window.width * config.fontSizeRatio, MIN_DATE_FONT, MAX_DATE_FONT));
+  // 兜底字号也必须走同一个 `dateFontOf`：`dateOnly` 版式基本不会走到这里，
+  // 但"旧接口自己另算一套字号"正是这条规则最容易被绕开的地方，留一条旧公式就等于留一个坑。
+  // 这里用 amber 的系数：这个壳子不带 tone（旧签名就没有），取"不打折"的那一档才不会偏小。
+  const fallbackFont = dateFontOf(layout, config, TONE_STYLE.amber.fontScale);
   return {
     right: line?.align.right ?? layout.rightMargin + Math.max(2, Math.round(layout.width * config.insetRatio)),
     bottom: line?.bottom ?? Math.max(2, Math.round(layout.width * config.insetRatio)),

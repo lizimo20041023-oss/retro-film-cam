@@ -34,10 +34,11 @@
  * 内联箭头函数传进来，`memo` 会失效 —— 所以调用方必须传稳定的 `onSelect`
  * （`CameraScreen` 里用 `useCallback` 包的）。
  */
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ColorGradeConfig, FilmPreset } from '../types';
-import { INK, UI_MONO } from '../constants/theme';
+import { UI_MONO, useTheme } from '../constants/theme';
+import type { Theme } from '../constants/theme';
 import { useI18n } from '../i18n';
 
 export interface FilmCardProps {
@@ -52,11 +53,26 @@ export interface FilmCardProps {
 const SWATCH_HEIGHT = 34;
 
 /**
- * 选中态琥珀橙。刻意不用 `INK.amber`（`#D28B2A`）：用户规格点名要 `#E5A93C`，
- * 它在深色卡片和浅色色块上的对比度都比 `#D28B2A` 高一档（描边要压在色块上，
- * 这一档亮度是必要的）。
+ * 选中态原来写死 `#E5A93C`，理由是"`INK.amber`（`#D28B2A`）偏暗"。现在主题的
+ * `ink.amber` 就是 `#E5A93C`，写死的理由没了 —— 而它会在浅色主题下留下一根
+ * 和主题红不一致的橙线，所以改读主题。
+ *
+ * 为什么不直接写 `rgba(...)`：主题只给纯色，描边要"压"在色块上需要透明度，
+ * 于是这里按前缀把 hex 拆成 rgb 再加 alpha。**放在本文件导出**是给 `FilmDrawer`
+ * 复用的（它那条标题分隔线同样需要琥珀色 28%），而 `src/utils/**` 不在这次改动范围内。
  */
-const CARD_AMBER = '#E5A93C';
+export function withAlpha(color: string, alpha: number): string {
+  const hex = color.startsWith('#') ? color.slice(1) : '';
+  if (hex.length !== 6) {
+    // 主题值将来若换成 `rgb()` 写法也还能用：退化成不带透明度的原色，
+    // 总比抛错或者画出全透明的线要好。
+    return color;
+  }
+  const red = parseInt(hex.slice(0, 2), 16);
+  const green = parseInt(hex.slice(2, 4), 16);
+  const blue = parseInt(hex.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
 
 /** `✓` 角标的直径。小到不抢色块，大到 10pt 的字也放得下。 */
 const CHECK_SIZE = 16;
@@ -158,14 +174,15 @@ function swatchZones(color: ColorGradeConfig): SwatchZone {
  * 色块本体：三段色阶 + 一道"乳剂层"高光。
  * 刻意不做圆角以外的装饰，它不是缩略图，只是一个色彩示意。
  */
-function FilmSwatch({ zones }: { zones: SwatchZone }) {
+function FilmSwatch({ zones, styles }: { zones: SwatchZone; styles: FilmStyles }) {
+  const { ink } = useTheme();
   return (
     <View style={styles.swatch}>
       <View style={[styles.swatchZone, styles.swatchZoneTop, { backgroundColor: zones.top }]} />
       <View style={[styles.swatchZone, { backgroundColor: zones.mid }]} />
       <View style={[styles.swatchZone, { backgroundColor: zones.bottom }]} />
       {/* 顶部一条极淡的白线，模拟乳剂层的高光，让色块不至于像纯色卡纸。 */}
-      <View style={styles.swatchSheen} pointerEvents="none" />
+      <View style={[styles.swatchSheen, { backgroundColor: ink.paperFaint }]} pointerEvents="none" />
     </View>
   );
 }
@@ -177,6 +194,10 @@ export const FilmCard = memo(function FilmCard({
   onSelect,
 }: FilmCardProps) {
   const { t } = useI18n();
+  const theme = useTheme();
+  // 颜色必须在组件里现取：模块级 StyleSheet 会把深浅色在加载那一刻冻结住，
+  // 而这十张卡是抽屉里唯一会整片换肤的东西。
+  const styles = useMemo(() => createStyles(theme), [theme]);
   const description = preset.description ?? '';
   // 选中态在无障碍里也要说出来：读屏用户不会看到那根琥珀色指示条。
   const label = selected
@@ -198,7 +219,7 @@ export const FilmCard = memo(function FilmCard({
         pressed ? styles.cardPressed : null,
       ]}
     >
-      <FilmSwatch zones={swatchZones(preset.color)} />
+      <FilmSwatch zones={swatchZones(preset.color)} styles={styles} />
       <View style={styles.body}>
         <Text style={[styles.code, selected ? styles.codeSelected : null]} numberOfLines={1}>
           {preset.name}
@@ -223,89 +244,93 @@ export const FilmCard = memo(function FilmCard({
   );
 });
 
-const styles = StyleSheet.create({
-  card: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255, 255, 255, 0.10)',
-    borderRadius: 3,
-    backgroundColor: 'rgba(255, 255, 255, 0.035)',
-    overflow: 'hidden',
-  },
-  cardSelected: {
-    // 用户规格：激活卡片边框高亮为琥珀橙 #E5A93C。
-    borderColor: CARD_AMBER,
-    // 描边只有 1px（hairline），角上再给一点暖色底，远看才"亮着"。
-    backgroundColor: 'rgba(229, 169, 60, 0.12)',
-  },
-  cardPressed: {
-    opacity: 0.62,
-  },
-  swatch: {
-    height: SWATCH_HEIGHT,
-  },
-  swatchZone: {
-    flex: 1,
-  },
-  swatchZoneTop: {
-    flex: 1.1,
-  },
-  swatchSheen: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 0,
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.22)',
-  },
-  body: {
-    paddingHorizontal: 8,
-    paddingTop: 6,
-    paddingBottom: 7,
-  },
-  code: {
-    color: INK.paper,
-    fontSize: 15,
-    letterSpacing: 1.1,
-    fontFamily: UI_MONO,
-  },
-  codeSelected: {
-    color: INK.amberSoft,
-  },
-  description: {
-    marginTop: 3,
-    color: INK.paperDim,
-    fontSize: 9,
-    letterSpacing: 0.4,
-    fontFamily: UI_MONO,
-  },
-  selectedRail: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 2,
-    backgroundColor: CARD_AMBER,
-  },
-  /**
-   * 右上角 `✓`。压在色块上，所以自己带一层暗底 + 一圈琥珀描边 ——
-   * 否则遇到浅色色块（褪色很重的过期片）这个字会糊在背景里看不见。
-   */
-  selectedCheck: {
-    position: 'absolute',
-    top: 4,
-    right: 4,
-    width: CHECK_SIZE,
-    height: CHECK_SIZE,
-    borderRadius: CHECK_SIZE / 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(10, 10, 9, 0.68)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: CARD_AMBER,
-  },
-  selectedCheckMark: {
-    color: CARD_AMBER,
-    fontSize: 10,
-    fontFamily: UI_MONO,
-  },
-});
+type FilmStyles = ReturnType<typeof createStyles>;
+
+function createStyles(theme: Theme) {
+  const { ink } = theme;
+  return StyleSheet.create({
+    card: {
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: theme.glassBorder,
+      borderRadius: 3,
+      backgroundColor: theme.glass,
+      overflow: 'hidden',
+    },
+    cardSelected: {
+      // 规格：激活卡片边框高亮成琥珀橙。描边只有 1px（hairline），
+      // 角上再给一点同色暖底，远看才"亮着"。
+      borderColor: ink.amber,
+      backgroundColor: withAlpha(ink.amber, 0.12),
+    },
+    cardPressed: {
+      opacity: 0.62,
+    },
+    swatch: {
+      height: SWATCH_HEIGHT,
+    },
+    swatchZone: {
+      flex: 1,
+    },
+    swatchZoneTop: {
+      flex: 1.1,
+    },
+    swatchSheen: {
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      top: 0,
+      height: 1,
+    },
+    body: {
+      paddingHorizontal: 8,
+      paddingTop: 6,
+      paddingBottom: 7,
+    },
+    code: {
+      color: ink.paper,
+      fontSize: 15,
+      letterSpacing: 1.1,
+      fontFamily: UI_MONO,
+    },
+    codeSelected: {
+      color: ink.amberSoft,
+    },
+    description: {
+      marginTop: 3,
+      color: ink.paperDim,
+      fontSize: 9,
+      letterSpacing: 0.4,
+      fontFamily: UI_MONO,
+    },
+    selectedRail: {
+      position: 'absolute',
+      left: 0,
+      top: 0,
+      bottom: 0,
+      width: 2,
+      backgroundColor: ink.amber,
+    },
+    /**
+     * 右上角 `✓`。压在色块上，所以自己带一层实心底 + 一圈琥珀描边 ——
+     * 否则遇到浅色色块（褪色很重的过期片）这个字会糊在背景里看不见。
+     */
+    selectedCheck: {
+      position: 'absolute',
+      top: 4,
+      right: 4,
+      width: CHECK_SIZE,
+      height: CHECK_SIZE,
+      borderRadius: CHECK_SIZE / 2,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: theme.panel,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: ink.amber,
+    },
+    selectedCheckMark: {
+      color: ink.amber,
+      fontSize: 10,
+      fontFamily: UI_MONO,
+    },
+  });
+}

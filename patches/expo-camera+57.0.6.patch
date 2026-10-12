@@ -1,8 +1,8 @@
 diff --git a/node_modules/expo-camera/ios/CameraViewModule.swift b/node_modules/expo-camera/ios/CameraViewModule.swift
-index e199463..5a2e26b 100644
+index e199463..7ca1a69 100644
 --- a/node_modules/expo-camera/ios/CameraViewModule.swift
 +++ b/node_modules/expo-camera/ios/CameraViewModule.swift
-@@ -207,6 +207,15 @@ public final class CameraViewModule: Module, ScannerResultHandler {
+@@ -207,6 +207,24 @@ public final class CameraViewModule: Module, ScannerResultHandler {
          }
        }
  
@@ -15,22 +15,34 @@ index e199463..5a2e26b 100644
 +        view.applyFocusPointFromViewSpace(focusPoint)
 +      }
 +
++      Prop("exposureBias") { (view, exposureBias: Double?) in
++        // Not command-like, unlike `focusPoint`: the slider fires a value per frame while the
++        // finger moves, and re-applying the same number would just take the device lock for
++        // nothing. `nil` and 0 are both "no compensation" and must not thrash the device.
++        if view.exposureBias != exposureBias {
++          view.exposureBias = exposureBias
++        }
++      }
++
        Prop("responsiveOrientationWhenOrientationLocked") { (view, responsiveOrientation: Bool?) in
          if let responsiveOrientation, view.responsiveWhenOrientationLocked != responsiveOrientation {
            view.responsiveWhenOrientationLocked = responsiveOrientation
 diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/node_modules/expo-camera/ios/Current/CameraSessionManager.swift
-index 7a6568c..07b95cb 100644
+index 7a6568c..655a3c0 100644
 --- a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift
 +++ b/node_modules/expo-camera/ios/Current/CameraSessionManager.swift
-@@ -13,6 +13,7 @@ protocol CameraSessionManagerDelegate: AnyObject {
+@@ -13,6 +13,10 @@ protocol CameraSessionManagerDelegate: AnyObject {
    var selectedLens: String? { get }
    var torchEnabled: Bool { get }
    var autoFocus: AVCaptureDevice.FocusMode { get }
 +  var focusPoint: CGPoint? { get }
++  /// Exposure compensation in EV coming from the `exposureBias` prop. `nil` = no compensation.
++  /// The manager clamps it to the active device's own supported range before applying it.
++  var exposureBias: Double? { get }
    var zoom: CGFloat { get }
    var onMountError: EventDispatcher { get }
    var onCameraReady: EventDispatcher { get }
-@@ -34,6 +35,14 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+@@ -34,6 +38,14 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
    private var photoOutput: AVCapturePhotoOutput?
    private var videoFileOutput: AVCaptureMovieFileOutput?
    private var runtimeErrorTask: Task<Void, Never>?
@@ -45,7 +57,7 @@ index 7a6568c..07b95cb 100644
  
    init(delegate: CameraSessionManagerDelegate) {
      self.delegate = delegate
-@@ -198,6 +207,11 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+@@ -198,6 +210,11 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
        return
      }
  
@@ -57,10 +69,38 @@ index 7a6568c..07b95cb 100644
      do {
        try device.lockForConfiguration()
        defer { device.unlockForConfiguration() }
-@@ -209,6 +223,132 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+@@ -209,6 +226,160 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
      }
    }
  
++  /// Applies the exposure compensation coming from the `exposureBias` prop.
++  ///
++  /// `setExposureTargetBias` is public, non-deprecated API, and it is the only way to bias
++  /// auto-exposure that keeps working while the device is in a continuous AE mode — which is
++  /// exactly the state the camera sits in after a tap-to-focus. Locking exposure outright
++  /// (`exposureMode = .locked`) would fight `setFocusPoint()` below, which re-arms `.autoExpose`
++  /// every time the user taps.
++  ///
++  /// The requested value is clamped to the *active* device's range rather than to a hard-coded
++  /// ±2: the ultra-wide and the telephoto do not accept the same range, and passing an
++  /// out-of-range value raises an `NSInvalidArgumentException` that would take the app down.
++  func setExposureBias() {
++    guard let device = captureDeviceInput?.device else {
++      return
++    }
++
++    let requested = Float(delegate?.exposureBias ?? 0.0)
++    let clamped = min(max(requested, device.minExposureTargetBias), device.maxExposureTargetBias)
++
++    do {
++      try device.lockForConfiguration()
++      defer { device.unlockForConfiguration() }
++      device.setExposureTargetBias(clamped, completionHandler: nil)
++    } catch {
++      log.info("\(#function): \(error.localizedDescription)")
++    }
++  }
++
 +  /// Applies the point of interest coming from the `focusPoint` prop.
 +  /// A `nil` value means the manual point was cleared and the camera should go back to
 +  /// continuous autofocus. Both cases are no-ops when the device supports neither.
@@ -190,7 +230,7 @@ index 7a6568c..07b95cb 100644
    func updateZoom() {
      guard let device = captureDeviceInput?.device, let delegate else {
        return
-@@ -278,6 +418,10 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+@@ -278,6 +449,10 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
      runtimeErrorTask?.cancel()
      runtimeErrorTask = nil
  
@@ -201,7 +241,7 @@ index 7a6568c..07b95cb 100644
      // Stop before deconfiguring. Removing inputs and outputs from a session that is still
      // running rebuilds the capture graph just to tear it down, and that rebuild waits out
      // its own deadline when the graph never started in the first place.
-@@ -323,6 +467,7 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+@@ -323,6 +498,7 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
  
    deinit {
      runtimeErrorTask?.cancel()
@@ -209,7 +249,7 @@ index 7a6568c..07b95cb 100644
    }
  
    var currentPhotoOutput: AVCapturePhotoOutput? { photoOutput }
-@@ -340,6 +485,12 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+@@ -340,6 +516,12 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
        return
      }
  
@@ -223,10 +263,10 @@ index 7a6568c..07b95cb 100644
      defer {
        session.commitConfiguration()
 diff --git a/node_modules/expo-camera/ios/Current/CameraView.swift b/node_modules/expo-camera/ios/Current/CameraView.swift
-index 4692d00..2dc332e 100644
+index 4692d00..8981721 100644
 --- a/node_modules/expo-camera/ios/Current/CameraView.swift
 +++ b/node_modules/expo-camera/ios/Current/CameraView.swift
-@@ -98,6 +98,50 @@ public class CameraView: ExpoView, EXAppLifecycleListener, EXCameraInterface, Ca
+@@ -98,6 +98,66 @@ public class CameraView: ExpoView, EXAppLifecycleListener, EXCameraInterface, Ca
      }
    }
  
@@ -254,6 +294,22 @@ index 4692d00..2dc332e 100644
 +  /// `videoGravity = .resizeAspectFill` crops the sensor. Hand-written x/y swapping gets
 +  /// at least one of those wrong, and a wrong point of interest silently focuses on the
 +  /// wrong part of the frame.
++  /// Exposure compensation in EV, coming from the `exposureBias` prop. `nil` means "no
++  /// compensation" and is treated as 0.
++  ///
++  /// This is deliberately a *plain* stored value rather than a command like `focusPoint`:
++  /// dragging the EV slider emits a stream of values and the session manager only needs the
++  /// latest one, so re-applying an unchanged value would just take the device lock for nothing.
++  /// Clamping to the device's supported range happens on the session queue, not here — only
++  /// the active device knows what it supports.
++  var exposureBias: Double? {
++    didSet {
++      sessionQueue.async {
++        self.sessionManager.setExposureBias()
++      }
++    }
++  }
++
 +  func applyFocusPointFromViewSpace(_ point: CGPoint?) {
 +    guard let point else {
 +      focusPoint = nil

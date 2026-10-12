@@ -12,6 +12,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from 'react';
 import type {
   AppSettings,
+  GeoLocale,
   GrainLevelId,
   LocalePreference,
   LocationMode,
@@ -32,6 +33,11 @@ export interface SettingsContextValue {
   setPlaceDetail: (next: PlaceDetail) => void;
   /** 颗粒档位。原来在取景器底部那条横向滑块上，现在归设置页管。 */
   setGrainLevel: (next: GrainLevelId) => void;
+  /**
+   * 地名用哪种语言印（`'auto'` = 跟界面语言走）。
+   * 和 `setLocalePreference` 是两件事：这个是照片上那行字，不是界面。
+   */
+  setGeoLocale: (next: GeoLocale | 'auto') => void;
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
@@ -89,6 +95,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     [update],
   );
 
+  const setGeoLocale = useCallback(
+    (next: GeoLocale | 'auto') => update({ geoLocale: next }),
+    [update],
+  );
+
   const value = useMemo<SettingsContextValue>(
     () => ({
       settings,
@@ -98,6 +109,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setWatermarkLayout,
       setPlaceDetail,
       setGrainLevel,
+      setGeoLocale,
     }),
     [
       settings,
@@ -107,6 +119,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setWatermarkLayout,
       setPlaceDetail,
       setGrainLevel,
+      setGeoLocale,
     ],
   );
 

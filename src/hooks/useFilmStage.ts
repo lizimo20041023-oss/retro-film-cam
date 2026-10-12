@@ -11,14 +11,42 @@
  * - 有 1500ms 兜底超时：万一某张图没触发 onLoad，也绝不会让用户卡在"显影中"；
  * - `unmount()` 会立刻 settle，避免 `await whenReady()` 永久挂住。
  */
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { ViewShotRef } from 'react-native-view-shot';
 import type { FilmStageHost, FilmStageInput } from '../types';
 import { countStageImages } from '../utils/gradeLayers';
+import { resolveGeoLocale } from '../utils/placeNames';
+import { useI18n } from '../i18n';
+import { useSettings } from './useSettings';
 
 /** 兜底超时（ms）。正常情况 200~600ms 就绪。 */
 const READY_TIMEOUT_MS = 1500;
+
+/**
+ * 这次合成会**多**渲染几张参与就绪计数的图（§五.3）。
+ *
+ * 为什么必须在这里补上：`countStageImages`（`gradeLayers.ts`，不在本次改动范围内）
+ * 只知道"照片 1 张 + 相框 1 张 + 每个纹理层 1 张"。重曝是第二张照片、一框多图是第二格，
+ * 两者都要等 `onLoad` 才能截，可它们不在那个函数的知识里。**计数少了不会死等**
+ * （`whenReady` 的判据是 `loadedCount >= expectedCount`，欠着也能被 1500ms 兜底放行），
+ * 但那正是最坏的情况：截到只解码了一半的第二张图，成片上出现半黑的一格。
+ *
+ * 判据必须和渲染层**逐字一致**（空串不算、`slots` 少于两格不算），
+ * 否则计数和实际节点数会错开 —— 多了会白等到超时，少了会截早。
+ */
+function countExtraStageImages(input: FilmStageInput): number {
+  let extra = 0;
+  if (typeof input.overlayUri === 'string' && input.overlayUri.length > 0) {
+    extra += 1;
+  }
+  const slots = input.frame.slots;
+  const hasSecondSlot = slots !== undefined && slots.length > 1;
+  if (hasSecondSlot && typeof input.secondUri === 'string' && input.secondUri.length > 0) {
+    extra += 1;
+  }
+  return extra;
+}
 
 export interface FilmStageController {
   /** 交给 `processFilmPhoto` 的宿主。 */
@@ -36,6 +64,26 @@ export interface FilmStageController {
 export function useFilmStage(): FilmStageController {
   const [stage, setStage] = useState<FilmStageInput | null>(null);
   const viewShotRef = useRef<ViewShotRef | null>(null);
+
+  const { settings } = useSettings();
+  const { localeId } = useI18n();
+
+  /*
+   * 地名语言（§五.2）在这里收口 —— 相机拍摄与相册导入重冲印**两条路径**都经过
+   * `host.mount`，所以只改这一处，成片水印、就绪计数、`locale` 派生出的字距全都对齐。
+   *
+   * 为什么经 ref 转一手，而不是让下面的 `mount` 直接读 `settings`：
+   * `controller` 是 `useMemo(..., [])` —— 稳定引用是这套就绪信号的命脉
+   * （`handleStageLayout` / `handleStageImageLoad` 要跨渲染保持同一个函数）。
+   * 闭包里的 `settings` 会永远停在第一帧，用户改了地名语言之后所有底片都按老语言烧字，
+   * 而且这种错不报任何警告。ref 每次渲染同步一次，`mount` 读到的永远是按快门那一刻的值。
+   */
+  const geoLocaleRef = useRef(settings.geoLocale);
+  const uiLocaleRef = useRef(localeId);
+  useEffect(() => {
+    geoLocaleRef.current = settings.geoLocale;
+    uiLocaleRef.current = localeId;
+  }, [settings.geoLocale, localeId]);
 
   const layoutDoneRef = useRef(false);
   const loadedCountRef = useRef(0);
@@ -85,12 +133,25 @@ export function useFilmStage(): FilmStageController {
         clearTimer();
         layoutDoneRef.current = false;
         loadedCountRef.current = 0;
-        expectedCountRef.current = countStageImages(input.preset);
+        expectedCountRef.current = countStageImages(input.preset) + countExtraStageImages(input);
         settledRef.current = false;
         readyPromiseRef.current = new Promise<void>((resolve) => {
           resolveReadyRef.current = resolve;
         });
-        setStage(input);
+        /*
+         * 地名语言只在这里改写一次：`input.locale` 原本是**界面语言**，
+         * 而水印要印的是**地名语言**（§五.2，界面日文 + 地名英文这种组合必须成立）。
+         *
+         * 为什么敢整份换掉（而不是另开一个字段）：`stage.locale` 在整棵树里只有
+         * `FilmCompositor.planWatermark` 一个消费点，而它消费的正是"这行地名该怎么排"——
+         * 地名档位（`formatResolvedPlace`）与拉丁档的字距 / 大写（`timestampTracking`）
+         * 本来就是同一件事的两面。日期是七段数码管，与语言无关，不受影响。
+         */
+        const staged: FilmStageInput = {
+          ...input,
+          locale: resolveGeoLocale(geoLocaleRef.current, uiLocaleRef.current),
+        };
+        setStage(staged);
         // 兜底：宁可截到"可能差一张图"，也不能永远不出片
         timeoutRef.current = setTimeout(settle, READY_TIMEOUT_MS);
       },

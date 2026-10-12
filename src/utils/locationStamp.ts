@@ -13,13 +13,14 @@
 import * as Location from 'expo-location';
 import type { LocaleId, MessageKey } from '../i18n/types';
 import type {
+  LocalePreference,
   LocationFailureReason,
   LocationMode,
   LocationStampOutcome,
   PlaceDetail,
   ResolvedPlace,
 } from '../types';
-import { formatCoords, formatResolvedPlace, resolvePlaceFromGeocode } from './placeNames';
+import { formatCoords, formatResolvedPlace, resolveGeoLocale, resolvePlaceFromGeocode } from './placeNames';
 
 /**
  * 单次定位最长等多久。
@@ -65,17 +66,23 @@ export { formatCoords };
  * 保留是因为两处仍然有用：排查"反查到底给了什么"，以及日志打点。
  * 内部直接复用新的渲染器，所以它和成片里的那行字**永远一致**。
  *
+ * `locale` 现在可以是设置里的地名语言（含 `'auto'`）：那样必须把**界面语言**
+ * 一起传进来（第 4 个参数），`'auto'` 才知道该参照谁。不传就按简中算 ——
+ * 和这个函数以前"默认 zh-Hans"的行为一致。
+ *
  * 单位：无（纯字符串）。
  */
 export function describePlace(
   address: Location.LocationGeocodedAddress | undefined,
-  locale: LocaleId = 'zh-Hans',
+  locale: LocalePreference = 'zh-Hans',
   detail: PlaceDetail = 'archive',
+  uiLocale?: LocaleId,
 ): string | null {
   if (!address) {
     return null;
   }
-  const text = formatResolvedPlace(resolvePlaceFromGeocode(address, 0, 0), locale, detail);
+  const placeLocale = resolveGeoLocale(locale, uiLocale ?? 'zh-Hans');
+  const text = formatResolvedPlace(resolvePlaceFromGeocode(address, 0, 0), placeLocale, detail);
   return text.length > 0 ? text : null;
 }
 
@@ -91,12 +98,20 @@ export function describePlace(
  *
  * 坐标模式下 `place` 是"只有坐标、没有国家"的结构化结果：城市和国别都是空串，
  * 渲染出来就是坐标本身 —— 调用方不需要为两种模式写两套分支。
+ *
+ * `locale` 收的是**地名语言**（§五.2）：既可以直接给三种之一，也可以给设置里的
+ * `'auto'`；后者必须把界面语言放进 `uiLocale`，否则只能按简中算。
+ * 解析只在这里做一次（两条返回分支共用），所以"坐标档按界面语言、地名档按地名语言"
+ * 这种半对半错的情况不可能出现。
  */
 export async function fetchLocationStamp(
   mode: LocationMode,
-  locale: LocaleId = 'zh-Hans',
+  locale: LocalePreference = 'zh-Hans',
   detail: PlaceDetail = 'archive',
+  uiLocale?: LocaleId,
 ): Promise<LocationStampOutcome> {
+  // 语言在这里就定下来：下面无论走"坐标档"还是"反查档"，用的都是同一个值。
+  const placeLocale = resolveGeoLocale(locale, uiLocale ?? 'zh-Hans');
   if (mode === 'off') {
     return { ok: false, reason: 'services-off' };
   }
@@ -146,7 +161,7 @@ export async function fetchLocationStamp(
         coords: formatCoords(coords.latitude, coords.longitude),
       };
       // 坐标模式下"要显示的那一行"就是坐标本身：文件名 / 相册条目里没有城市可写。
-      return { ok: true, text: formatResolvedPlace(place, locale, detail), place };
+      return { ok: true, text: formatResolvedPlace(place, placeLocale, detail), place };
     }
 
     const places = await withTimeout(
@@ -158,7 +173,10 @@ export async function fetchLocationStamp(
     }
 
     const place = resolvePlaceFromGeocode(places[0], coords.latitude, coords.longitude);
-    const text = formatResolvedPlace(place, locale, detail);
+    // 语言用的是上面解析好的 `placeLocale`，不是原始的 `locale`：
+    // 原始值可能是 'auto'，直接传下去会落到 `formatResolvedPlace` 的默认档（简中），
+    // 于是"界面英文 + 地名 auto"就会印出中文 —— 这正是 §五.2 要避免的那种错。
+    const text = formatResolvedPlace(place, placeLocale, detail);
     // 反查"成功"但一个字都没解析出来（海上、极地）：这一行没有任何信息量，
     // 与其烧一串空字符串，不如老老实实报"这次没拿到"。
     return text.trim().length > 0 ? { ok: true, text, place } : { ok: false, reason: 'failed' };

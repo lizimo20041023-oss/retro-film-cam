@@ -53,7 +53,7 @@ import type {
 } from '../types';
 import type { LocaleId } from '../i18n/types';
 import { planCapture } from './captureOptions';
-import { computeFrameLayout } from './geometry';
+import { computeFrameLayout, resolveFrameOrientation } from './geometry';
 import { buildGradeLayers } from './gradeLayers';
 import { normalizePhoto } from './normalizePhoto';
 import { saveToLibrary } from './saveToLibrary';
@@ -122,6 +122,29 @@ export interface ProcessFilmPhotoInput {
    * 有地名时不会两边都印。`exposureIndex` 也在那个 `useMemo` 的依赖表里。
    */
   exposureIndex?: number;
+  /**
+   * 重曝：**第二张**要叠在同一格画面里的底片（§五.3）。
+   *
+   * 不传 / `null` / 空串 = 单次曝光（和 v1.3.0 完全一样）。
+   * 传了就是把两张底片叠在同一格上洗一次 —— 注意调节的时机：
+   * 叠加发生在**画面窗口内、调色之前**（见 `FilmCompositor`），
+   * 所以调色 / 颗粒 / 暗角作用在"合成结果"上，而不是各洗一遍再叠。
+   */
+  overlayUri?: string | null;
+  /**
+   * 重曝那一张的不透明度；默认 **0.5**。
+   *
+   * 只有 `overlayUri` 有值时才有意义。为什么不默认 1：两张都全量叠上去就是"后一张盖住前一张"，
+   * 那不是重曝是替换；0.5 才是"两次曝光各占一半"的物理直觉。
+   */
+  overlayOpacity?: number;
+  /**
+   * 一框多图（半格双联）的**右格**那一张（§五.3）。
+   *
+   * 只在相框自带 `slots`（至少两格）时有效；相框没有 `slots` 时这个值被忽略，
+   * 渲染结果与 v1.3.0 一致（相机页拿到的相框目前都还没有 `slots`）。
+   */
+  secondUri?: string | null;
   /** 进度回调：'normalizing' → 'capturing' → 'saving'。 */
   onStage?: (stage: DevelopStage) => void;
 }
@@ -142,7 +165,15 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
   const preset = resolvePreset(rawPreset);
 
   // 2) 排版：相框 + 照片窗口 + 日期位置，全部由数据算出来
-  const layout = computeFrameLayout(frame, stage.width, stage.height);
+  /*
+   * 先按**原图的实际长宽比**选朝向（§六.1），再拿这个朝向去算布局。
+   * 顺序不能反过来：横构图遇上只有竖版窗口的相框，窗口会把照片裁掉两边，
+   * 而横版变体自带的 `window` 就是为这个比例准备的。
+   * `photo` 而不是 `normalized`：归一化只改像素不改比例，用原图更贴近"用户拍到的"，
+   * 而且在归一化失败降级时也不会拿到一个不存在的尺寸。
+   */
+  const orientation = resolveFrameOrientation(frame, photo);
+  const layout = computeFrameLayout(frame, stage.width, stage.height, orientation);
   /*
    * `??` 而不是 `||`：只把 `undefined`（调用方没传）和 `null`（导入时确认原图
    * 没有 EXIF 拍摄时间）落到"现在"，不会把某个非法但为真的值也一起吞掉。
@@ -184,8 +215,16 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
      * `exposureIndex` 用 `?? undefined` 而不是 `?? null`：`FilmStageInput` 上的
      * 类型是 `number | undefined`，多一个 `null` 会把"没填"和"填了 0"混起来
      * （虽然本意上没有第 0 张，但没必要给下游留一个要判的第三种状态）。
+     *
+     * §五.3 的三个新字段按同样的规矩抄下来：`overlayUri` / `secondUri` 保持
+     * `string | null | undefined` 原样（渲染层用"是字符串且非空"判断），
+     * `overlayOpacity` 也**不在这里补 0.5** —— 默认值只在渲染层生效一次，
+     * 两边各补一次默认值，将来改默认就可能只改一处，出现"数据说 0.5、界面是 0.8"。
      */
     exposureIndex: input.exposureIndex ?? undefined,
+    overlayUri: input.overlayUri ?? null,
+    overlayOpacity: input.overlayOpacity,
+    secondUri: input.secondUri ?? null,
   };
   input.onStage?.('capturing');
   let uri = '';

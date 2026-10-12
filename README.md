@@ -46,6 +46,8 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [22. 许可证与隐私](#22-许可证与隐私)
 - [23. v1.2.0：这一版改了什么（八件事）](#23-v120这一版改了什么八件事)
 - [24. v1.3.0：按十一节规格重构](#24-v130按十一节规格重构)
+- [25. v1.4.0：Dazz 级极简重构 + 六节增量 + 商标清理](#25-v140dazz-级极简重构--六节增量--商标清理)
+- [24. v1.3.0：按十一节规格重构](#24-v130按十一节规格重构)
 
 ---
 
@@ -1766,7 +1768,8 @@ z-score 归一化到 σ=59，存成 **8 位灰度 `L` 模式**。
 `FrameBadge.tsx` 205 → **151** 行，整块重写。原来它是"按 `frame.aspect` 画一个小矩形 +
 渲染胶卷名"，现在只渲染文字胶囊：
 
-- 内容 `▌ {code} · {n}/{N}`，例如 `▌ POLAROID · 01/04`；
+- 内容 `▌ {code} · {n}/{N}`，例如 `▌ INSTANT SQ · 01/07`
+  （v1.3.0 原为 `▌ POLAROID · 01/04`，代号里的厂商商标在 v1.4.0 已清掉，见 §25）；
 - `▌` 是一个独立 `View`（宽 3、高 12、圆角 1、琥珀橙 `#E5A93C`），不是字符 ——
   字符在不同字体下宽度会变，徽标会跟着抖；
 - 胶囊 `backgroundColor: 'rgba(255,255,255,0.08)'`、`borderRadius: 4`、
@@ -1775,9 +1778,10 @@ z-score 归一化到 σ=59，存成 **8 位灰度 `L` 模式**。
   375pt 机型上顶栏那行会被截成 `RE…`，正是用户报的溢出问题。
 
 `FrameSpec` 为此新增了**必填** `code: string`（纯 ASCII 大写、五语言里都长一样、**不翻译**）：
-`'POLAROID'` / `'INSTAX'` / `'135 NEG'` / `'SLIDE'`。
+v1.3.0 是 `'POLAROID'` / `'INSTAX'` / `'135 NEG'` / `'SLIDE'`，v1.4.0 起前两个换成
+`'INSTANT SQ'` / `'INSTANT MINI'`（厂商商标，见 §25）。
 
-`N` 用的是**相框总数**（4）。规格里 `02/08` 与 `01/04` 两个分母对不上，判定那只是示范格式。
+`N` 用的是**相框总数**（v1.3.0 是 4，v1.4.0 起是 7）。规格里 `02/08` 与 `01/04` 两个分母对不上，判定那只是示范格式。
 
 ### 24.3 §一 物理侧键触发重触觉
 
@@ -1969,6 +1973,224 @@ ASCII** —— `▷`(U+25B7) 落到 `.notdef`，印出来是**"方框里画个�
 | `expo-image-picker` 真实返回的 EXIF 形状 | 没有真实照片可验；代码里顶层与嵌套两级都试了 |
 | 打滑彩蛋的观感 | 6.25% 是确定的，但"像过片失误"这层感觉要眼睛看 |
 | `✓` / `✕` 字符在真机上会不会缺字 | 与 `▷` 是同一类风险，但这两个码位在 iOS 系统字体里有 |
+
+---
+
+## 25. v1.4.0：Dazz 级极简重构 + 六节增量 + 商标清理
+
+这一版是**六节规格**（取景器解耦、点按对焦 + EV、变焦不重载、深浅色、水印字号与地理语言、相框横竖自适应）
+加上**转公开仓库前的商标清理**。`app.json` 版本 `1.3.0` → **`1.4.0`**。
+
+### 25.1 §一 取景框彻底解耦 + 三层新控制台
+
+旧版取景器把"相框预览"直接盖在 `CameraView` 上（`<FrameOverlay>`），
+结果是预览画面与成片永远对不齐，而且一屏堆了颗粒条、LCD 面板、变焦条、底片切换条。
+
+| 动作 | 结果 |
+| --- | --- |
+| 删掉 `<FrameOverlay>` | **文件保留**（`src/components/FrameOverlay.tsx` 仍在仓库里，只是没人引用了），取景器只留 `AspectGuide.tsx` 的 1px 半透明白圆角参考线 + 顶部 `35mm` 等宽小字 |
+| 删掉 `styles.lcdWrap` / `lcdPanel` / `zoomBar` 整块 | 主屏从 **1402 行降到 1126 行** |
+| 新增三层控制台 | 悬浮胶囊 `ViewfinderBar.tsx`（色温/焦段/曝光）+ 5 个线性图标 `ToolRow.tsx`（导入/重曝/定时/闪光/翻转）+ 底部「缩略图｜快门｜胶卷抽屉」 |
+| 顶栏减负 | 只留画幅徽标 + 底片计数 + **一枚**设置 `DialButton` |
+
+**新增/重写的组件**：`FocusExposure.tsx`(226) / `ViewfinderBar.tsx`(304) / `ToolRow.tsx`(280) /
+`AlbumThumb.tsx`(78) / `AspectGuide.tsx`(64)；`FocusReticle.tsx` 103→**94**（受控 opacity 的黄色 1px 方框 + spring 脉冲）。
+`DialButton.tsx` / `ShutterButton.tsx` / `DevelopOverlay.tsx` / `constants/zoom.ts` / `constants/lenses.ts` / `hooks/usePinchZoom.ts` **一行未改**。
+
+**参考线画在真实成像窗口上，不是画在标称画幅上。** 规格里写的 1:1 / 3:2 / 3:4
+与四款相框的真实画幅（`0.822` / `0.628` / `0.692` / `1.0`）对不上，
+所以 `AspectGuide` 直接取 `previewLayout.window` —— 画在标称比例上等于画错。
+
+### 25.2 §二 点按对焦 + 垂直 EV 滑块（`expo-camera` 补丁第二次扩展）
+
+§19 那次补丁只做了"点哪对哪"。这一版把 `exposureBias` 也加进了原生侧，
+见 `src/components/CameraScreen.tsx` 的 `FocusPointProp` 类型别名与 `cameraFocusProps`。
+
+- **EV 步进 1/3 档**（`EXPOSURE_STEP = 1/3`，−2.0…+2.0 共 13 档）。不用 0.1：
+  原生收的是连续 `Float`，0.1 是**假精度**，只会让读数好看。
+- **两个入口都做了**（规格写的是"二选一"）：对焦后 3 秒内出现的垂直 EV 滑块（右侧 8pt 竖线，
+  每格 `selectionAsync()`），**外加** `ViewfinderBar` 里那颗可上下拖的 EV 胶囊（阈值 4pt，
+  满量程 `DRAG_SPAN = 150`，轻点归零）。理由是硬性的：滑块只在对焦后存在 3 秒，
+  把 EV 的唯一入口挂上去等于那颗胶囊 95% 时间是死按钮。
+- `cameraFocusProps` 在 **EV === 0 时省略 `exposureBias`** —— 不传才是"恢复原生自动"，
+  传 0 在某些机型上会被当成"手动 0"。
+- 翻转相机重置 zoom / stopIndex，但**故意不重置 EV**（EV 是拍摄意图，不是镜头属性）。
+- `FocusReticle` 改成黄色细线方框 + 脉冲回弹，3 秒淡出；焦点坐标归一的**分母由"画幅框"改成 `previewBox`**。
+
+### 25.3 §三 换焦段不再重载 + 120ms 镜头推拉
+
+旧版切档会改 `<CameraView>` 的 `key`，等于每次换焦段都重建一次相机会话（黑一下）。
+现在 `key` 恒定，切档**只改 `zoom` prop**，props 全部用 `useMemo` 稳定；
+容器给 120ms `Animated.spring`（`setValue(0.965)` → 1，`speed: 28`、`bounciness: 7`、
+`useNativeDriver: true`）做"推拉镜头"的错觉，**只包住 `CameraView` 那一层**
+（三分线和参考线不跟着缩放，否则整个取景框在呼吸）。
+焦段胶囊显示按原生焦距折算后的真实毫米数（13 / 26 / 52mm），
+色温胶囊显示带符号数字（`+0.28`）—— 5 个语言包里没有"暖/冷"词，且本轮不许新增 i18n 键。
+
+### 25.4 §四 机身跟随系统深浅色
+
+`src/constants/theme.ts` 整体重写成 hook 式 API：
+
+```ts
+export interface Theme {
+  scheme: 'dark' | 'light';
+  body; panel; scrim; glass; glassBorder; focus; sliderTrack;
+  ink: { paper; paperDim; paperFaint; amber; amberSoft; amberDeep; hairline };
+}
+export function useTheme(): Theme        // useColorScheme() === 'light' ? LIGHT : DARK
+export function themeFor(scheme): Theme  // 给 Alert / createStyles 这类没有 hook 上下文的地方
+```
+
+`DARK_THEME` 是原来的"暗夜黑钛"（`body '#151518'`、`ink.amber '#E5A93C'`），
+`LIGHT_THEME` 是新增的"经典徕卡银"（`body '#E5E5E2'`、`scrim 'rgba(237,236,232,0.985)'`、
+`ink.amber '#D32F2F'` —— 浅色下用红不用黄，黄在银底上读不出来）。
+
+**迁移的坑（下次改颜色请先读这段）**：`useTheme()` 是唯一正路。模块级
+`StyleSheet.create({ color: INK.x })` 会在**模块加载时**把颜色烧死，
+切深浅色一行都不会变 —— 必须把 `createStyles` 搬进组件内用 `useMemo(() => createStyles(theme), [theme])`。
+旧导出 `INK` / `BODY_COLOR` 还留着但已标 `@deprecated`；**全仓零处仍在用**。
+
+- `app.json` 加了 `"userInterfaceStyle": "automatic"` —— **不写这一行 iOS 永远给亮色外观**，
+  这是最容易漏的一步。
+- `App.tsx` 根容器接 `theme.body`，`<StatusBar>` 跟随 `theme.scheme`。
+- **`StripView` 的暗房面例外**：`const DARKROOM = '#0A0A0C'` 固定取深色。
+  暗房是"背光看片"的物理场景，浅色机身下也得是暗的，否则胶片条浮在白底上。
+- 设置页在"地名详细度"之后新增 **④ 地名语言** 四档（`auto` / `zh-Hans` / `zh-Hant` / `en`）。
+
+### 25.5 §五 水印字号与地理语言
+
+**字号收口在一处**（`src/utils/geometry.ts` 的 `dateFontOf`），渲染层一个系数都不乘：
+
+```ts
+const shortEdge = Math.min(layout.width, layout.height);
+const capped = Math.min(layout.window.width * config.fontSizeRatio,
+                        shortEdge * DATE_FONT_SHORT_EDGE_RATIO);   // 0.02
+return Math.round(clamp(capped * fontScale, MIN_DATE_FONT, MAX_DATE_FONT));
+```
+
+实测舞台 358×640（短边 358）：四款日期 **14→8 / 17→8 / 14→8 / 12→8 pt**，
+灯管高一律 **6pt**（`MIN_QUARTZ_HEIGHT` 兜住），地名一律 **6pt**。
+
+> ⚠️ **"缩 35~40%" 和 "短边 2%" 数学上不能同时成立** —— 短边 2% = 7.16pt，
+> 相当于把 14pt 砍 49%、17pt 砍 58%。本版以 **2% + 下限**为准。
+> 若哪天要卡死 −35~40%，**只改 `DATE_FONT_SHORT_EDGE_RATIO`（如 0.026）一处即可**。
+> 三条硬要求都守住了：管高 ≥ 6、日期行 `fits=true` 全过、`centered` 仍居中。
+
+`resolveGeoLocale`（`src/utils/placeNames.ts` 新增）：`'auto'` 时界面语言是
+`zh-Hans`/`zh-Hant` 就原样用，**ja / en / fr 一律落 `en`**（这三档没有对应地名库）；
+显式设置完全压过界面语言。**港澳台前缀在两种详细度下都没有回退**，行为与 v1.3.0 一致。
+
+### 25.6 §六 相框：横竖自适应、纸纤维、3 款新相框
+
+四款现有相框全部**新生成一张横版 PNG**（`*-landscape.png`），`FrameSpec` 新增可选的
+`landscape: FrameOrientationVariant`。选朝向的逻辑在 `processFilmPhoto` 里按**原图**横竖
+调 `resolveFrameOrientation` + `computeFrameLayout` 重算布局，渲染层**不重判**，
+用 `frameOrientationOfLayout` 从布局反推该铺哪张 PNG —— **"布局与 PNG"永远同源**。
+
+> **正方形相框的坑**：`slide-mount` 横竖 `aspect` 都是 1.0，
+> 按 aspect 反推会把横版布局误判成竖版。改成**归一化窗口距离为主判据**（窗口也相同才退回 aspect）。
+
+**新增三款**：`fp100c`（FP-100C 撕拉片，药水毛边只在纸边一圈）、
+`half-frame`（半格双联框，**两个 `slots`**，左右并列 3:4 竖槽 + 84px 立筋 + 上缘防挂切口）、
+`sheet8x10`（8×10 大画幅散页，纯黑窄片边 + 左下角 Notch + 片边 ASCII 标识字）。
+`FrameSpec` 新增 `slots` 与 `FrameOrientationVariant`（见 `src/types/index.ts`）。
+
+**纸纤维**：所有相纸类相框烘进 **3%~4% 低频纸纤维噪点**（`neg-135` 黑片基不加），
+alpha 仍然只有 **0 / 255** 两个值（`P` 模式 + `transparency=255`）。
+
+**重曝与双联渲染**（`FilmCompositor.tsx` 597→735）：`<ViewShot>` → 窗口内
+先底图、再 `overlayUri`（默认 `opacity 0.5`）、**然后**才盖调色/颗粒/暗角图层，最后相框、水印。
+顺序不能反 —— 每层各自"洗"一遍再叠会得到**两道暗角 + 双份颗粒**。第二张**不设 `mixBlendMode`**
+（纯 alpha 叠加才是"同一格曝光两次"）。有 `slots` 的相框走**逐槽渲染**：
+第一格内叠 `overlayUri`，第二格画 `secondUri` 且**没有**重曝分支，缺省时第二格**留黑**
+（不拿第一张去填），`layers` 只挂一次盖在并集上 → 接缝两侧颗粒连续。
+
+**三个只有看图才会发现的真 bug**（都已修，写在这里是为了下次别再犯）：
+
+1. **`half-frame` 两个槽重叠 164px** —— 成品里根本没有立筋，是一个 960px 的大洞，
+   而 `frames.ts` 的并集窗口还比真洞宽 100px（端上右边 100px 会压在纸面上）。
+   生成器自带的 `audit()` 当时全绿，**因为期望掩码和产物错得一样**。
+   → 教训：审计脚本不能和被审计对象共享同一份期望值，必须有一路独立测量。
+2. **横版印字被转 90°** —— 整层 `transpose` 任何方向都不行（转的是画布坐标，
+   字的位置跟着转，一半出界一半被 `punch()` 挖掉）；`ROTATE_90` 与 `ROTATE_270`
+   都是竖排但**字头朝向相反**，全局统计分不出。只能按块搬运 + 与底图同旋向的影射。
+3. **`FASTOCTREE` 把纸纤维量化抹平** —— 它是每通道固定 16 格的八叉树，
+   纸色落在 240…255 之内就被并成 **1 个色号**（σ 3.713 → 0.000），
+   烘进去的纤维在成品里彻底不存在。换 `MEDIANCUT` 并修掉它 `putpalette` 少字节导致透明索引失效的连带 bug。
+
+**代价**：11 张 PNG 从 42.3 KB 涨到 **1409.1 KB**。24 位对照下 P 模式只剩 **1.4×** 优势，
+P 模式现在唯一的理由是"alpha 天然二值"（不需要半透明掩码）。这是纤维真被保留下来的代价，**接受**。
+
+### 25.7 商标清理（转公开仓库的前置）
+
+公开前清掉仓库里**真实在用的第三方商标**。判断标准不是"有没有出现品牌词"，
+而是**"它是不是渲染在用户能看见的界面上"**：
+
+| 位置 | 原值 | 现值 | 为什么 |
+| --- | --- | --- | --- |
+| 顶栏画幅徽标（`FrameSpec.code`） | `POLAROID` | **`INSTANT SQ`** | 印在界面上，当自己 App 的画幅名称用，是描述性合理使用里**最弱**的一种 |
+| 顶栏画幅徽标 | `INSTAX` | **`INSTANT MINI`** | 同上 |
+| `sheet8x10.png` 片边字 | `KODAK 4142` | **`SAFETY 8X10`** | 厂商名与商品编号**一起**换掉 —— 只删 `KODAK` 而留 `4142` 等于把检索线索留在图里 |
+
+替换原则：**用描述"画幅规格"的词，不用品牌名**，风格与已有的 `135 NEG` / `SLIDE` 保持一致。
+
+**顶栏徽标宽度核算**（`FrameBadge` 是 `maxWidth: '42%'` + `numberOfLines={1}` +
+`adjustsFontSizeToFit` + `minimumFontScale={0.75}` 的胶囊）：
+Menlo 字宽 0.6023 em × 12pt = 7.224pt，加 `letterSpacing: 0.6` → **7.824pt/字符**；
+胶囊固定开销 = `paddingHorizontal 8×2` + 装饰条 3 + `marginLeft 6` = **25pt**。
+
+| 代号 | 字符数 | 文本宽 | 屏宽 375pt 下的缩放 |
+| --- | --- | --- | --- |
+| `INSTANT MINI · 02/07` | 20 | 156.48pt | **0.772** |
+| `INSTANT SQ · 01/07` | 18 | 140.83pt | 0.857 |
+| `135 NEG · 03/07` | 16 | 125.18pt | 0.965 |
+| `FP-100C · 05/07` | 16 | 125.18pt | 0.965 |
+| `SLIDE` / `HALF` / `8X10` | 13 | 101.71pt | **不触发缩放** |
+
+`minimumFontScale: 0.75` 的下限要到屏宽 **366.95pt** 才触到，
+而能跑 iOS 16.4 的最窄机型（iPhone SE 2/3、iPhone 8、12/13 mini）都是 **375pt**
+→ **任何能跑本版 iOS 的机型都不会截断**，最紧的一款还留 2.9% 余量。
+
+**有意保留、不清理的**（都不是用户可见文案）：
+
+- `src/constants/presets.ts` 里 `portra-400` / `superia-x` / `velvia-50` / `cinestill-800t` /
+  `tri-x-400` 这些 **`id`** —— 它们会写进相册索引与照片元数据，
+  **改了会让老用户的成片对不上号**，是数据兼容性问题，不是商标问题。
+- `assets/frames/polaroid-600.png` / `instax-mini.png` 这些**内部文件名**（描述性使用，风险低得多）。
+  改名要动 `generate_frames.py` 的常量与 `FRAMES` 字典键、重生成四款、逐一验字节，
+  风险和收益不成比例，**留作后续单独处理**。
+- `generate_frames.py` 里的 `WINDOW_POLAROID_600` / `WINDOW_INSTAX_MINI` / `RADIUS_INSTAX`
+  等**内部标识符**，以及各处"原来是什么、为什么换掉"的注释记录。
+
+**相框的 i18n 名称本来就是无品牌的**（`frame.polaroid600` = 一次成像 / インスタント / INSTANT /
+INSTANTANÉ，`frame.instaxMini` = 迷你画幅 / ミニ / MINI），所以只改了 `code`，`nameKey` 一个没动。
+
+> 本次商标清理**没有单独触发构建**，已并入 v1.4.0 这一轮提交。
+
+### 25.8 已知限制
+
+| 限制 | 说明 |
+| --- | --- |
+| **`half-frame` 横拍取景与成片不一致** | 这一款只有竖版。横拍时原图 `cover` 进 `slots[0]`（3:4 竖槽，只保留中间约 56% 宽）、`slots[1]` 留黑；而取景器参考线画的是**两槽并集**（1.603）。修它需要给 `FrameOrientationVariant` 加 `slots` 并再生成一张横版 PNG（两槽上下叠放）。**想拍横幅请换别的相框。** |
+| **`fp100c` / `half-frame` / `sheet8x10` 没有横版** | 横拍会退回竖版 PNG 走 `cover` 裁切 |
+| **横版相框四周留白只有 15~17pt** | `anchor === 'frame'` 时日期行盒（9.3pt + inset 10）会轻微压到照片：polaroid 越界 **5.92pt**、instax **3.92pt**。本轮**没有改锚点规则**，要修的话把横版下留白加到 ≥24pt，或给横版单独指定 `anchor: 'window'` |
+| **`stage.locale` 语义已变** | 现在指"地理语言"而不是界面语言，全树只有 `planWatermark` 消费它 |
+| **`stacked` 版式在 `neg-135` 上丢地名行** | v1.3.0 既有行为，本轮没动 |
+
+### 25.9 这一版**没有**在真机验证过的东西
+
+| 项 | 为什么没法在这台机器上验证 |
+| --- | --- |
+| **8pt 日期 / 6pt 灯管在成片上认不认得出** | **本版最大风险项**。算术上笔画宽 = 6 × 0.14 = 0.84pt，按 `captureLongEdge = 2048` 换算约 4~5px，但到底糊不糊必须看真机截图 |
+| EV 是否真的改变了画面亮度 | 补丁只扩了原生参数透传，端上没法验证曝光结果 |
+| 定时器精度 | 3s / 10s 倒计时在 JS 侧，真机后台会掉精度 |
+| 重曝叠合的观感、临时文件存活 | 需要真机拍两次；`overlayUri` 的临时文件生命周期依赖 `FileSystem` cache 目录 |
+| 120ms 弹簧手感、375pt 上三颗胶囊挤不挤 | 手上没有 375pt 真机；宽度是算出来的，观感不是 |
+| 取景器与成片是否真的一致 | `FrameOverlay` 不画水印，两者本来就不同源 |
+| 浅色主题下的对比度 | 只能靠算，没有真机眼睛 |
+| 捏合缩放与 EV 滑块抢手势 | 两个手势在同一块区域内，`hitSlop` 也是算的 |
+| VoiceOver 朗读顺序 | 三层新控制台加了不少可聚焦元素，顺序只能上手听 |
+| 七段日期在 `centered` 6pt 下能显示几个字 | 需要真机截图 |
 
 ---
 

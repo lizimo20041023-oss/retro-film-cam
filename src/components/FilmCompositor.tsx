@@ -4,6 +4,7 @@
  * 绘制顺序（也就是最终成片的图层顺序）：
  *   ① 画面窗口（overflow: hidden）
  *        · 原照片（cover / contain）
+ *        · 重曝的第二张（`overlayUri`，`overlayOpacity` 默认 0.5，叠在同一格里）
  *        · 调色图层（纯色层 / 同图自叠 / 纹理层，全部用 mixBlendMode 混合）
  *   ② 相框 PNG（resizeMode="stretch" 铺满整个合成舞台，透明处露出照片）
  *   ③ 水印。日期和定位**一起**排在最后：
@@ -21,13 +22,9 @@
  * 而 `overflow: 'hidden'` 本身就建立了裁剪与合成边界：混合只发生在窗口内部、
  * 只跟底下的照片混，既不会溢出到相框上，也不会混到取景器背景。
  *
- * 关于截图尺寸：`ViewShot` 的 options 里**故意不传 width/height**，
- * 这样输出像素 = 这里的逻辑尺寸 × PixelRatio（官方原话：不传就是原始像素尺寸），
- * 也就是"屏幕上多大，成片就多清晰"，不会因为放大而变糊。
- *
- * 关于水印版式：这个组件**不认识"预设"和"版式"的语义**，它只做两件事 ——
- * 把"这次要印什么字、印在哪"算成一份 `WatermarkPiece[]`（纯函数，见 `planWatermark`），
- * 然后照着画。加第五种版式 = 改那一个 switch，渲染这一段一行都不用动。
+ * 一框多图（`frame.slots`，§五.3）怎么摆：每一格有自己的窗口，按 `slots` 的**并集**
+ * 建立那一个裁剪 / 混合边界 —— 理由见 `src/utils/geometry.ts` 的 `slotBounds`：
+ * 颗粒是"整卷洗一遍"的效果，分格各洗一次会在接缝处露出两遍。相框 PNG 依然铺满整台。
  */
 import { useMemo } from 'react';
 import type { RefObject } from 'react';
@@ -40,9 +37,11 @@ import type { LocaleId } from '../i18n/types';
 import type {
   FilmStageInput,
   FrameLayout,
+  FrameSlot,
   FrameSpec,
   GradeLayer,
   PlaceDetail,
+  Rect,
   ResolvedPlace,
   ResolvedTimestampConfig,
   WatermarkLayout,
@@ -50,7 +49,14 @@ import type {
 import { formatQuartzDate } from '../utils/formatTimestamp';
 import { formatResolvedPlace } from '../utils/placeNames';
 import { planCapture } from '../utils/captureOptions';
-import { computeWatermarkPlan, formatExposureCode } from '../utils/geometry';
+import {
+  computeSlotRects,
+  computeWatermarkPlan,
+  formatExposureCode,
+  frameOrientationOfLayout,
+  frameSourceOf,
+  slotBounds,
+} from '../utils/geometry';
 import type { WatermarkQuartz } from '../utils/geometry';
 import { buildGradeLayers } from '../utils/gradeLayers';
 import { SegmentDate } from './SegmentDate';
@@ -229,6 +235,44 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
  * 二、渲染
  * ========================================================================== */
 
+/**
+ * 重曝那一张的默认不透明度（§五.3）。
+ *
+ * 为什么是 0.5 而不是 1：两张都全量叠上去等于"后一张盖住前一张"，那是替换不是重曝；
+ * 一半一半才对得上"同一格底片曝光两次"的物理直觉（也才有"鬼影"可看）。
+ */
+const OVERLAY_DEFAULT_OPACITY = 0.5;
+
+/** 空数组常量：没有开槽时复用同一个引用，免得每次渲染都新建一个数组。 */
+const NO_SLOTS: readonly Rect[] = [];
+
+/** 只认"非空的字符串 uri"：`null` / `undefined` / `''` 都表示这次没有这一张。 */
+function nonEmptyUri(value: string | null | undefined): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/** 重曝的不透明度：缺省 0.5，越界值夹回 `[0, 1]`（`NaN` 也走缺省）。 */
+function overlayOpacityOf(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return OVERLAY_DEFAULT_OPACITY;
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+/** 某一格画哪张底片：0 = 第一张（`rawUri`），1 = 第二张；再多的槽位没有底片。 */
+function slotPhotoUri(slotIndex: number, rawUri: string, secondUri: string | null): string | null {
+  if (slotIndex === 0) {
+    return rawUri;
+  }
+  return slotIndex === 1 ? secondUri : null;
+}
+
+/** 某一格的填充方式：格子自己没写就沿用相框的 `photoFit`（`FrameSlot` 上没有这一项）。 */
+function slotPhotoFit(frame: FrameSpec, slot: FrameSlot | undefined): 'cover' | 'contain' {
+  const fit = slot?.photoFit ?? frame.photoFit;
+  return fit === 'contain' ? 'contain' : 'cover';
+}
+
 export function FilmCompositor({
   stage,
   viewShotRef,
@@ -238,6 +282,22 @@ export function FilmCompositor({
   style,
 }: FilmCompositorProps) {
   const { layout, preset, frame, rawUri, capturedAt } = stage;
+
+  /*
+   * §五.3 的三块渲染输入，在这里一次算清（渲染段只读结果，不再自己判断）：
+   * - `overlayUri`：重曝的第二张，空串 / null 都当没有；
+   * - `secondUri`：一框多图的右格；
+   * - `slotRects`：开槽的绝对坐标；空数组 = 相框没有开槽，走 v1.3.0 的单窗口老路。
+   *
+   * `mixing`（混合边界）取所有开槽的**并集**：调色 / 颗粒 / 暗角盖在这一块上，
+   * 而不是每格各盖一遍 —— 分格各洗一遍会在接缝两侧露出两遍颗粒。
+   */
+  const overlayUri = nonEmptyUri(stage.overlayUri);
+  const secondUri = nonEmptyUri(stage.secondUri);
+  const overlayOpacity = overlayOpacityOf(stage.overlayOpacity);
+  const slots = frame.slots;
+  const slotRects = slots !== undefined && slots.length > 0 ? computeSlotRects(layout, slots) : NO_SLOTS;
+  const mixing: Rect = slotRects.length > 0 ? slotBounds(slotRects) : layout.window;
 
   // 调色层：纯函数算出来的声明式图层，渲染层只按 kind 分发
   const layers = useMemo(() => buildGradeLayers(preset), [preset]);
@@ -299,25 +359,89 @@ export function FilmCompositor({
       style={[styles.stage, { width: layout.width, height: layout.height }, style]}
       onLayout={onLayout}
     >
-      {/* ① 画面窗口 */}
+      {/* ① 画面：单格 = 一个窗口；一框多图 = 每格一个窗口，共用一块裁剪 / 混合边界 */}
       <View
         style={[
           styles.window,
           {
-            left: layout.window.left,
-            top: layout.window.top,
-            width: layout.window.width,
-            height: layout.window.height,
+            left: mixing.left,
+            top: mixing.top,
+            width: mixing.width,
+            height: mixing.height,
           },
         ]}
       >
-        <Image
-          source={{ uri: rawUri }}
-          style={styles.fill}
-          resizeMode={frame.photoFit === 'contain' ? 'contain' : 'cover'}
-          onLoad={onImageLoad}
-          fadeDuration={0}
-        />
+        {slotRects.length > 0 ? (
+          slotRects.map((rect, index) => {
+            const uri = slotPhotoUri(index, rawUri, secondUri);
+            if (uri === null) {
+              /*
+               * 这一格没有底片（相框有两个槽位但调用方没给第二张）：**什么都不画**，
+               * 露出舞台底色（黑）。不要拿第一张去填第二格 —— 半格空着是真实的
+               * 半格相机结果，用同一张图填满反而像成了"两张一样的"。
+               */
+              return null;
+            }
+            return (
+              <View
+                key={`slot-${index}`}
+                style={[
+                  styles.slot,
+                  {
+                    // `computeSlotRects` 给的是相对舞台的坐标，这里换算成相对并集容器的。
+                    left: rect.left - mixing.left,
+                    top: rect.top - mixing.top,
+                    width: rect.width,
+                    height: rect.height,
+                  },
+                ]}
+              >
+                <Image
+                  source={{ uri }}
+                  style={styles.fill}
+                  resizeMode={slotPhotoFit(frame, slots?.[index])}
+                  onLoad={onImageLoad}
+                  fadeDuration={0}
+                />
+                {/* 重曝只叠在**第一格**上：第二格是另一半格，本来就没有第二次曝光 */}
+                {index === 0 && overlayUri !== null ? (
+                  <Image
+                    source={{ uri: overlayUri }}
+                    style={[styles.fill, { opacity: overlayOpacity }]}
+                    resizeMode={slotPhotoFit(frame, slots?.[0])}
+                    onLoad={onImageLoad}
+                    fadeDuration={0}
+                  />
+                ) : null}
+              </View>
+            );
+          })
+        ) : (
+          <>
+            <Image
+              source={{ uri: rawUri }}
+              style={styles.fill}
+              resizeMode={frame.photoFit === 'contain' ? 'contain' : 'cover'}
+              onLoad={onImageLoad}
+              fadeDuration={0}
+            />
+            {/*
+              重曝（§五.3）：第二张底片叠在**同一个窗口内**、叠在原片之上、
+              叠在调色层之下 —— 顺序就是这个功能的全部语义：
+              "两张底片叠在同一格上晒一次"，所以下面那条调色 / 颗粒 / 暗角管线
+              作用的是合成结果，而不是各洗一遍再叠（后者会得到两道暗角和双份颗粒）。
+            */}
+            {overlayUri !== null ? (
+              <Image
+                source={{ uri: overlayUri }}
+                style={[styles.fill, { opacity: overlayOpacity }]}
+                resizeMode={frame.photoFit === 'contain' ? 'contain' : 'cover'}
+                onLoad={onImageLoad}
+                fadeDuration={0}
+              />
+            ) : null}
+          </>
+        )}
         {layers.map((layer) => (
           <GradeLayerView
             key={layer.key}
@@ -329,9 +453,15 @@ export function FilmCompositor({
         ))}
       </View>
 
-      {/* ② 相框 */}
+      {/*
+        ② 相框：横构图（原图 width > height）且相框有横版变体时换成横版 PNG。
+        朝向**从 `layout.aspect` 反推**，不在这里重判一次横竖：`stage` 里没有原图像素尺寸
+        （`rawUri` 只是字符串），而布局是上游按同一次选择算好的 —— 判两次就可能出现
+        "布局按横版算、PNG 铺了竖版"的错位。没有横版变体时 `frameSourceOf` 返回原 PNG，
+        所以这一行对现有四款相框（都还没有 `landscape`）是零行为变化。
+      */}
       <Image
-        source={frame.source}
+        source={frameSourceOf(frame, frameOrientationOfLayout(frame, layout))}
         style={[styles.frame, { width: layout.width, height: layout.height }]}
         resizeMode="stretch"
         onLoad={onImageLoad}
@@ -571,6 +701,14 @@ const styles = StyleSheet.create({
   window: {
     position: 'absolute',
     // 关键：把混合层关在窗口里，混合只作用于底下的照片
+    overflow: 'hidden',
+  },
+  /**
+   * 一框多图里的**一格**。相对并集容器绝对定位，而且自己也是一层裁剪边界 ——
+   * 每格各自 `overflow: hidden`，`cover` 才只裁自己那一格，不会盖住邻居。
+   */
+  slot: {
+    position: 'absolute',
     overflow: 'hidden',
   },
   fill: {

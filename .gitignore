@@ -9,6 +9,9 @@ expo-env.d.ts
 
 # 检查用临时产物
 .export-check/
+# 点开头的一次性探针目录。下面的 /_*/ 只认下划线开头，`.wm-probe/` 这种点开头的
+# 会整个漏网（v1.3.0 后新增，里面是 98 KB 的 probe.js / probe-out.txt）。
+.wm-probe/
 assets/ui/_*.png
 assets/textures/_*.png
 assets/frames/_*.png

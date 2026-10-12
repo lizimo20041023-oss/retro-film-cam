@@ -55,7 +55,8 @@ import type { NativeScrollEvent, NativeSyntheticEvent } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import ViewShot from 'react-native-view-shot';
 import type { ViewShotRef } from 'react-native-view-shot';
-import { INK, UI_MONO } from '../constants/theme';
+import { themeFor, UI_MONO } from '../constants/theme';
+import type { Theme } from '../constants/theme';
 import { useI18n } from '../i18n';
 import type { GalleryShot } from '../utils/galleryStore';
 import { saveToLibraryDetailed } from '../utils/saveToLibrary';
@@ -196,6 +197,10 @@ interface RailProps {
  * 所以滚到最右端也不会露出带子之外的空白。
  */
 function FilmRail({ side, offset, holes }: RailProps): React.ReactElement {
+  // 暗房面固定取深色（见文件头 `DARKROOM` / `RAIL` 上方那段理由）
+  const board = themeFor('dark');
+  const styles = useMemo(() => createStyles(board), [board]);
+
   const perforations = useMemo(
     () => Array.from({ length: holes }, (_unused, index) => index * PERF_PITCH),
     [holes],
@@ -243,6 +248,9 @@ interface FrameProps {
  */
 function FilmFrame(props: FrameProps): React.ReactElement {
   const { shot, index, total, frameWidth, frameHeight, spacing, ownSlip, previousSlip, code, selected, onPress } = props;
+
+  const board = themeFor('dark');
+  const styles = useMemo(() => createStyles(board), [board]);
 
   const aspect = shot.height > 0 ? shot.width / shot.height : 1;
   const codeText = frameCodeText(index, total, code);
@@ -328,6 +336,9 @@ export interface StripPosterProps {
  * 相册里那份还会被 `galleryStore` 压到 2048 长边，所以再大也只是白占内存。
  */
 export function StripPoster({ shots, code, width, height, shotRef, onFrameLoad }: StripPosterProps): React.ReactElement {
+  const board = themeFor('dark');
+  const styles = useMemo(() => createStyles(board), [board]);
+
   const frameHeight = POSTER_FRAME_HEIGHT;
   const frameWidths = shots.map((shot) => (shot.height > 0 ? frameHeight * (shot.width / shot.height) : frameHeight));
 
@@ -461,6 +472,14 @@ export interface StripViewProps {
 export function StripView(props: StripViewProps): React.ReactElement {
   const { shots, filmCode, width, height, onOpen, onLongPress, onSaved, onFailed } = props;
   const { t } = useI18n();
+
+  /**
+   * 暗房面固定取深色（见上面 `DARKROOM` 那段理由）。
+   * 用 `board.ink` 而不是 `useTheme().ink`：这一屏的底板永远是暗的，
+   * 浅机身下也必须配深色板的墨，否则会出现"深底黑字"。
+   */
+  const board = themeFor('dark');
+  const styles = useMemo(() => createStyles(board), [board]);
 
   const [offset, setOffset] = useState(0);
   const [exporting, setExporting] = useState(false);
@@ -775,7 +794,7 @@ export function StripView(props: StripViewProps): React.ReactElement {
       ) : null}
       {exporting && !posterReady ? (
         <View style={styles.busyVeil} pointerEvents="auto">
-          <ActivityIndicator color={INK.amberSoft} />
+          <ActivityIndicator color={board.ink.amberSoft} />
           <Text style={styles.busyText}>{t('gallery.export.busy')}</Text>
         </View>
       ) : null}
@@ -787,7 +806,19 @@ export function StripView(props: StripViewProps): React.ReactElement {
  * 样式
  * ========================================================================== */
 
-const styles = StyleSheet.create({
+/**
+ * 样式表 = 墨色的函数。调用方一律传 `themeFor('dark')`（见上面 `DARKROOM` 那段理由），
+ * 所以整张表实际上只有一组实参；写成函数是为了不让任何颜色落到模块作用域 ——
+ * 那是这次要修的病（模块加载时把颜色烧死，切机身一行都不变）。
+ *
+ * 这里也只有"墨色"来自配色表。`DARKROOM` / `RAIL` / `#000000`（片窗）/
+ * `slipMark` / `frameSelected` 这些是**底片本身的颜色**，跟 App 的外壳无关，
+ * 保持写死 —— 它们是这一屏的物性，不是主题。
+ */
+function createStyles(theme: Theme) {
+  const { ink } = theme;
+
+  return StyleSheet.create({
   root: {
     backgroundColor: DARKROOM,
     overflow: 'hidden',
@@ -901,13 +932,13 @@ const styles = StyleSheet.create({
     height: 18,
   },
   frameRailNo: {
-    color: INK.amberSoft,
+    color: ink.amberSoft,
     fontFamily: UI_MONO,
     fontSize: 9,
     letterSpacing: 0.6,
   },
   frameCode: {
-    color: INK.paperDim,
+    color: ink.paperDim,
     fontFamily: UI_MONO,
     fontSize: 9,
     letterSpacing: 0.6,
@@ -928,19 +959,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     borderRadius: 20,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: INK.hairline,
+    borderColor: ink.hairline,
     alignItems: 'center',
     justifyContent: 'center',
   },
   exportEntryText: {
-    color: INK.paper,
+    color: ink.paper,
     fontFamily: UI_MONO,
     fontSize: 12,
     letterSpacing: 1,
   },
   exportHint: {
     flexShrink: 1,
-    color: INK.paperDim,
+    color: ink.paperDim,
     fontFamily: UI_MONO,
     fontSize: 11,
     letterSpacing: 0.6,
@@ -965,7 +996,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: 'rgba(229, 169, 60, 0.05)',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: INK.hairline,
+    borderColor: ink.hairline,
     alignItems: 'center',
     justifyContent: 'center',
     opacity: 0.5,
@@ -983,7 +1014,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   exportCancelText: {
-    color: INK.paperDim,
+    color: ink.paperDim,
     fontFamily: UI_MONO,
     fontSize: 12,
     letterSpacing: 1,
@@ -1011,7 +1042,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   posterRailText: {
-    color: INK.amberSoft,
+    color: ink.amberSoft,
     fontFamily: UI_MONO,
     fontSize: 26,
     letterSpacing: 2,
@@ -1027,7 +1058,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   posterProcess: {
-    color: INK.paperDim,
+    color: ink.paperDim,
     fontFamily: UI_MONO,
     fontSize: 24,
     letterSpacing: 3,
@@ -1044,9 +1075,10 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(10, 10, 12, 0.94)',
   },
   busyText: {
-    color: INK.paperDim,
+    color: ink.paperDim,
     fontFamily: UI_MONO,
     fontSize: 12,
     letterSpacing: 2,
   },
-});
+  });
+}

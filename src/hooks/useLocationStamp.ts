@@ -67,6 +67,14 @@ export function useLocationStamp(): LocationStampController {
   const { localeId } = useI18n();
   const mode = settings.locationMode;
   const detail = settings.placeDetail;
+  /*
+   * 地名语言（§五.2）：直接把手里的设置值交给取数层，由它内部的 `resolveGeoLocale` 解析。
+   * 为什么不在这个 hook 里先解析成具体语言再传下去：LCD 这行字和成片水印是同一套词表，
+   * 解析规则必须只有一处（`placeNames.resolveGeoLocale`）—— 在这里再写一遍 switch，
+   * 以后加语言就会出现"LCD 印英文、水印印中文"的错位。
+   * `localeId`（界面语言）单独传：`geoLocale === 'auto'` 时它就是参照物。
+   */
+  const geoLocale = settings.geoLocale;
 
   const [state, setState] = useState<LocationStampState>(IDLE_STATE);
   const [probeToken, setProbeToken] = useState(0);
@@ -85,8 +93,8 @@ export function useLocationStamp(): LocationStampController {
    * 这一步纯粹是给用户看的反馈（LCD 上会从"定位 关"变成地名），
    * 真正烧进照片的值永远走 `resolveForShot`。
    *
-   * `localeId` / `detail` 进依赖数组是有意的：在设置里切换语言或地名档位后，
-   * LCD 上那行预览必须立刻跟着变，否则用户会以为设置没生效。
+   * `localeId` / `geoLocale` / `detail` 进依赖数组是有意的：在设置里切换界面语言、
+   * 地名语言或地名档位后，LCD 上那行预览必须立刻跟着变，否则用户会以为设置没生效。
    */
   useEffect(() => {
     if (mode === 'off') {
@@ -97,7 +105,7 @@ export function useLocationStamp(): LocationStampController {
     let cancelled = false;
     setState({ kind: 'locating' });
 
-    void fetchLocationStamp(mode, localeId, detail).then((outcome) => {
+    void fetchLocationStamp(mode, geoLocale, detail, localeId).then((outcome) => {
       if (cancelled || !aliveRef.current) return;
       if (outcome.ok) {
         setState({ kind: 'ready', text: trimLocationText(outcome.text) });
@@ -109,14 +117,17 @@ export function useLocationStamp(): LocationStampController {
     return () => {
       cancelled = true;
     };
-  }, [mode, localeId, detail, probeToken]);
+  }, [mode, geoLocale, localeId, detail, probeToken]);
 
   const resolveForShot = useCallback(async (): Promise<ResolvedPlace | null> => {
     if (mode === 'off') {
       return null;
     }
     // 到这里才带截止线：LCD 上那次探测可以慢慢等，按快门这次不行。
-    const outcome = await withinDeadline(fetchLocationStamp(mode, localeId, detail), SHOT_DEADLINE_MS);
+    const outcome = await withinDeadline(
+      fetchLocationStamp(mode, geoLocale, detail, localeId),
+      SHOT_DEADLINE_MS,
+    );
     if (outcome === null) {
       return null;
     }
@@ -128,7 +139,7 @@ export function useLocationStamp(): LocationStampController {
       }
     }
     return outcome.ok ? outcome.place : null;
-  }, [mode, localeId, detail]);
+  }, [mode, geoLocale, localeId, detail]);
 
   const refresh = useCallback(() => setProbeToken((n) => n + 1), []);
 

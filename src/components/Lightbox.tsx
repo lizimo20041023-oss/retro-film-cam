@@ -54,7 +54,8 @@ import {
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { INK, UI_MONO } from '../constants/theme';
+import { themeFor, UI_MONO } from '../constants/theme';
+import type { Theme } from '../constants/theme';
 import { useI18n } from '../i18n';
 import { describeError } from '../utils/describeError';
 
@@ -62,6 +63,10 @@ import { describeError } from '../utils/describeError';
  * lightbox 背景：纯黑，比两个面板的 `SCRIM` 还黑。
  * 这里唯一的内容就是一张照片，四周越暗越像在看底片 —— 而照片本身往往是暗调，
  * 用面板那种近黑会让画面和背景糊在一起，看不出照片的边界。
+ * 为什么是纯黑、而且**不跟随机身深浅**：这一屏上唯一的内容就是照片本身，
+ * 底板越暗越像在看底片；用面板那种近黑（`panel`）会让画面和背景糊在一起。
+ * 浅色机身上若把它换成浅底，照片的"底片感"就没了 —— 它是看片台，不是机身。
+ * 所以这条常量不进配色表，和同一屏的墨色一样钉死（见组件里 `theme` 那段）。
  */
 const BACKDROP = '#000000';
 
@@ -141,6 +146,18 @@ export function Lightbox({
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensionsSafe();
   const { t } = useI18n();
+
+  /**
+   * 灯箱**固定用深色那一套墨**，不跟随机身 —— 这是本次改动里唯一一处刻意不跟随的地方。
+   *
+   * 为什么：这块底板是 `#000000`（见 `BACKDROP` 的注释），它挡在照片前面，
+   * 是"看片台"而不是 App 的外壳。系统切成浅色时如果换成浅色墨，
+   * 炭黑 `rgba(28,28,30,0.92)` 压在纯黑底上等于没有字，整条底栏会直接消失。
+   * 所以这里用 `themeFor('dark')` 把墨色钉死；底板的黑同理保持原值。
+   * 代价是浅机身上这一屏的强调色仍是琥珀而不是朱红 —— 见交付说明里的"没验证/存疑"一节。
+   */
+  const theme = useMemo(() => themeFor('dark'), []);
+  const styles = useMemo(() => createStyles(theme), [theme]);
 
   /** 缩放值走 state：它会被渲染成 `<Image>` 的 `transform`，变化本来就该重绘。 */
   const [scale, setScale] = useState(1);
@@ -487,10 +504,14 @@ export function Lightbox({
  * 不划算（还要配 @2x/@3x）。
  *
  * 全部用 `View` 拼：桶盖（一条横杠 + 一个小提手）+ 桶身（三条竖纹）。
- * 颜色跟 `INK.amberDeep` —— 和取景器上的告警色一致，也和被删掉的那枚
+ * 颜色跟深色墨表的 `ink.amberDeep` —— 和取景器上的告警色一致，也和被删掉的那枚
  * "删除"文字按钮同色，用户不会觉得删除键"变淡了"。
+ * 这里同样**不跟随机身**：底板永远是纯黑，浅色墨在上面读不出来（见组件里 `theme` 那段）。
  */
 function TrashIcon() {
+  const theme = useMemo(() => themeFor('dark'), []);
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
   return (
     <View style={styles.trash} accessible={false}>
       {/* 提手：桶盖上方的小凸起 */}
@@ -520,7 +541,16 @@ function useWindowDimensionsSafe(): { width: number; height: number } {
   return { width, height };
 }
 
-const styles = StyleSheet.create({
+/**
+ * 样式表 = "拿到哪套墨色就用哪套"的函数。
+ *
+ * 注意这里收的是 `Theme` 而不是四处散落的色值：灯箱永远传深色那一套
+ * （见组件里 `theme` 那段说明），所以整张表只有一组实参。
+ */
+function createStyles(theme: Theme) {
+  const { ink, glass } = theme;
+
+  return StyleSheet.create({
   root: {
     ...StyleSheet.absoluteFill,
     backgroundColor: BACKDROP,
@@ -533,7 +563,7 @@ const styles = StyleSheet.create({
   },
   counter: {
     flex: 1,
-    color: INK.paperDim,
+    color: ink.paperDim,
     fontFamily: UI_MONO,
     fontSize: 11,
     letterSpacing: 1.2,
@@ -544,15 +574,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 15,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: INK.hairline,
+    borderColor: ink.hairline,
     alignItems: 'center',
     justifyContent: 'center',
   },
   closePressed: {
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    backgroundColor: glass,
   },
   closeText: {
-    color: INK.amberSoft,
+    color: ink.amberSoft,
     fontFamily: UI_MONO,
     fontSize: 12,
     letterSpacing: 1.2,
@@ -581,7 +611,7 @@ const styles = StyleSheet.create({
   },
   status: {
     flexShrink: 1,
-    color: INK.paperDim,
+    color: ink.paperDim,
     fontFamily: UI_MONO,
     fontSize: 11,
     lineHeight: 15,
@@ -600,7 +630,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: SHARE_PADDING,
     borderRadius: ACTION_SIZE / 2,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: INK.hairline,
+    borderColor: ink.hairline,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -610,15 +640,15 @@ const styles = StyleSheet.create({
     height: ACTION_SIZE,
     borderRadius: ACTION_SIZE / 2,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: INK.hairline,
+    borderColor: ink.hairline,
     alignItems: 'center',
     justifyContent: 'center',
   },
   actionPressed: {
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    backgroundColor: glass,
   },
   shareText: {
-    color: INK.amberSoft,
+    color: ink.amberSoft,
     fontFamily: UI_MONO,
     fontSize: 12,
     letterSpacing: 1.2,
@@ -632,14 +662,14 @@ const styles = StyleSheet.create({
     width: 8,
     height: 2,
     borderRadius: 1,
-    backgroundColor: INK.amberDeep,
+    backgroundColor: ink.amberDeep,
   },
   trashLid: {
     width: TRASH_WIDTH,
     height: 2,
     borderRadius: 1,
     marginTop: 1,
-    backgroundColor: INK.amberDeep,
+    backgroundColor: ink.amberDeep,
   },
   trashBody: {
     width: TRASH_WIDTH - 4,
@@ -653,13 +683,14 @@ const styles = StyleSheet.create({
     borderLeftWidth: 2,
     borderRightWidth: 2,
     borderBottomWidth: 2,
-    borderColor: INK.amberDeep,
+    borderColor: ink.amberDeep,
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
   trashRib: {
     width: 1,
     height: '100%',
-    backgroundColor: INK.amberDeep,
+    backgroundColor: ink.amberDeep,
   },
-});
+  });
+}

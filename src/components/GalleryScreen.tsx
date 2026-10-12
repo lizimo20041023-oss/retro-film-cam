@@ -51,7 +51,8 @@ import * as Haptics from 'expo-haptics';
 import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex } from '../constants/frames';
 import { applyGrainLevel, findGrainLevelIndex, grainLevelAt } from '../constants/grain';
 import { DEFAULT_PRESET_ID, PRESETS, findPresetIndex, resolvePreset } from '../constants/presets';
-import { INK, UI_MONO } from '../constants/theme';
+import { themeFor, useTheme, UI_MONO } from '../constants/theme';
+import type { Theme } from '../constants/theme';
 import { useI18n } from '../i18n';
 import { useFilmStage } from '../hooks/useFilmStage';
 import { useGallery } from '../hooks/useGallery';
@@ -84,25 +85,22 @@ const PADDING = 12;
 const ACTION_BAR_HEIGHT = 72;
 
 /**
- * 覆盖层的"深色毛玻璃"底色 —— 不透明度 0.98。
+ * 覆盖层遮罩的**可读性底线**：不透明度 0.985。
  *
  * 为什么必须**几乎不透明**：本屏是挂在相机屏上的整屏覆盖层，取景器一直在后面跑。
  * 只要留一点透明度，实时预览就会透过来（用户报的就是这个"渲染故障"）。
+ * 颜色本身来自 `useTheme().scrim`（深机身 `rgba(14,15,17,0.985)`、
+ * 浅机身 `rgba(237,236,232,0.985)`）—— 遮罩底下压着的是本屏的面板文字，
+ * 浅机身配深遮罩会变成"深底黑字"。挡住取景器靠的是 0.985 这个不透明度，
+ * 不是颜色的深浅。
  *
- * 为什么是 0.98 而不是 1.0：v1.2.0 用的是完全不透明的 `#0E0F11`，用户这次明确
- * 要"不透明度极高（`rgba(18, 18, 18, 0.98)`）的深色毛玻璃"。剩那 2% 只够透出
- * 一点极暗的环境光，观感上像一块深色玻璃，远不足以让取景画面"看出来"。
- * 真正兜住穿透的是两层保险：① 这里 0.98 的遮罩；② `CameraScreen` 在 `covered`
+ * ⚠️ `src/components/SettingsScreen.tsx` 的机身后板共用同一个 `scrim` token。
+ * 两处以前各留一份写死的 `'rgba(18, 18, 18, 0.98)'`，注释还互相指路；
+ * 现在都从配色表取，就是为了消灭"改一处忘另一处"这个失败模式。
+ *
+ * 真正兜住穿透的是两层保险：① 这里 0.985 的遮罩；② `CameraScreen` 在 `covered`
  * 时把整个取景容器压成 `opacity: 0`（见那份注释）。**两层都要在。**
- *
- * ⚠️ `src/components/SettingsScreen.tsx:53` 有一份**完全同值**的 `SCRIM`，
- * 两个文件是同一个视觉语言的两块面板。**改这里必须同时改那边**（反之亦然）——
- * 两份不一致时，用户会觉得"设置页和相册页不是同一个 App"。
- *
- * 为什么写在这里而不是 `src/constants/theme.ts`：常量目录不在本次改动的写入范围内，
- * 而且这个值只服务于"覆盖层"这一个场景，放在用它的两个文件里更好找。
  */
-const SCRIM = 'rgba(18, 18, 18, 0.98)';
 
 /** 提示条停留时长（ms）。够读一句话，又不至于挡着下一张照片。 */
 const TOAST_MS = 2400;
@@ -133,6 +131,26 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
   const { t, localeId } = useI18n();
   const { shots, loading, error, refresh, remove } = useGallery();
   const { settings } = useSettings();
+
+  /**
+   * 机身配色。**必须在这里现取，不能在模块作用域**：`StyleSheet.create` 一旦写在
+   * 模块顶级，颜色就在模块加载那一刻烧死了，系统切深浅色时一行都不会变，
+   * 这正是这次要修的病。`useTheme()` 内部是 `useColorScheme()`，所以它得跟着
+   * 这个组件每次渲染跑一遍 —— 位置必须在这个函数体里、任何 `if (!visible) return null`
+   * 之前，否则切换机身时 hook 数量会对不上。
+   */
+  const theme = useTheme();
+  const { ink, scrim, glass, glassBorder } = theme;
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
+  /**
+   * 冲印幕布**故意不跟随机身**，固定用深色那一套。
+   *
+   * 为什么：幕布底下盖着的是 `FilmCompositor` 正在合成的照片 —— 那是暗房里的工作台，
+   * 不是 App 的外壳。系统切成浅色时把幕布也换成浅的，等于让照片浮在一块白板上，
+   * "当着用户的面冲印"这个语境就没了（同一条理由见 `StripView` 的暗房背光）。
+   */
+  const darkroom = useMemo(() => themeFor('dark'), []);
 
   /**
    * 合成舞台宿主。**必须挂在 UI 层**（`useFilmStage` 的文件头解释了原因）：
@@ -439,7 +457,7 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
    * 齿孔轨道 / 切片海报上印的胶卷代号，取最近一张成片的预设**名字**。
    *
    * 为什么用 `name` 而不是 `id`：预设的 `name` 本来就是代号形态
-   * （`RT-400` = Retro 400、`PR-400` = Portra 400，见 `constants/presets.ts:93/111`），
+   * （`RT-400`、`PR-400`，见 `constants/presets.ts:93/111`），
    * 而 `id` 是 `retro-400` 这种小写连字符串 —— 印在齿孔旁边像文件名，不像胶卷代号。
    * 一条成片都没有时给空串：`frameCodeText` 收到空串会返回 `null`，轨道上就不印，
    * 而不是印一个假的型号。
@@ -562,7 +580,7 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator color={INK.amberSoft} />
+          <ActivityIndicator color={ink.amberSoft} />
         </View>
       ) : null}
 
@@ -680,7 +698,7 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
               timestampFontFamily={fonts.fontFamily}
             />
           ) : null}
-          <ActivityIndicator color={INK.amberSoft} />
+          <ActivityIndicator color={darkroom.ink.amberSoft} />
           <Text style={styles.stageBusy} numberOfLines={1}>
             {t('gallery.import.busy')}
           </Text>
@@ -713,15 +731,30 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
   );
 }
 
-const styles = StyleSheet.create({
+/**
+ * 样式表 = "当前机身配色"的函数（见组件里 `styles` 那段注释）。
+ *
+ * 为什么把原先写死的白色/琥珀那几处也一并换成 token：
+ * - `rgba(255,255,255,0.06)`（按下反馈）在浅机身上是一层白雾，改用 `glass`：
+ *   深机身是 `rgba(255,255,255,0.08)`，浅机身自动变成 `rgba(0,0,0,0.06)`。
+ * - 【＋ 導入】和模式胶囊原先写死 `rgba(229,169,60,*)` / `#E5A93C`。
+ *   它们是"选中 / 主操作"的强调色，浅机身的强调色是朱红，写死琥珀会在浅底上发土。
+ *   这里用 `glassBorder` + `ink.amber` 表达同一件事：一块比别人实一点的底色 + 强调色文字。
+ * - 只有冲印幕布（`stageVeil` / `stageBusy`）固定走深色，理由见组件里 `darkroom` 那段。
+ */
+function createStyles(theme: Theme) {
+  const { ink, scrim, glass, glassBorder } = theme;
+  const darkroom = themeFor('dark');
+
+  return StyleSheet.create({
   root: {
     // 注意：RN 0.86 已移除 StyleSheet.absoluteFillObject，只能用 absoluteFill
     ...StyleSheet.absoluteFill,
     // 压在 DevelopOverlay（zIndex 20）之上、与 SettingsScreen（30）同级：
     // 显影过程中打开相册不该被盖住，两者也不会同时打开
     zIndex: 30,
-    // 必须不透明：取景器的实时预览就在这块下面跑（见上面 SCRIM 的注释）
-    backgroundColor: SCRIM,
+    // 必须不透明：取景器的实时预览就在这块下面跑（见文件头那段遮罩说明）
+    backgroundColor: scrim,
   },
   header: {
     flexDirection: 'row',
@@ -731,7 +764,7 @@ const styles = StyleSheet.create({
   },
   title: {
     flex: 1,
-    color: INK.paper,
+    color: ink.paper,
     fontFamily: UI_MONO,
     fontSize: 18,
     letterSpacing: 4,
@@ -742,15 +775,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 15,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: INK.hairline,
+    borderColor: ink.hairline,
     alignItems: 'center',
     justifyContent: 'center',
   },
   closePressed: {
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    backgroundColor: glass,
   },
   closeText: {
-    color: INK.amberSoft,
+    color: ink.amberSoft,
     fontFamily: UI_MONO,
     fontSize: 12,
     letterSpacing: 1.2,
@@ -758,7 +791,7 @@ const styles = StyleSheet.create({
   /*
     【＋ 導入】。给它实心一点的底色（而不是和"完成"一样的描边）：
     它是这一页唯一的"产生内容"的动作，另外两个都是"离开"。
-    底色用琥珀的低透明度而不是纯色 —— 纯琥珀底 + 白字在深色面板上会太跳，
+    底色用 `glass` 而不是纯色 —— 纯强调色底 + 反色字在面板上会太跳，
     和这台机器的"液晶 + 描边"语汇不符。
   */
   import: {
@@ -767,21 +800,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     marginRight: 8,
     borderRadius: 15,
-    backgroundColor: 'rgba(229, 169, 60, 0.14)',
+    backgroundColor: glass,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(229, 169, 60, 0.42)',
+    borderColor: glassBorder,
     alignItems: 'center',
     justifyContent: 'center',
   },
   importPressed: {
-    backgroundColor: 'rgba(229, 169, 60, 0.26)',
+    // 没有比 `glass` 更"实"的通用 token，用不透明度做按下反馈即可
+    opacity: 0.6,
   },
   importBusy: {
     // 忙的时候压暗：配合 `disabled`，让"按不动"这件事看得出来
     opacity: 0.6,
   },
   importText: {
-    color: '#E5A93C',
+    color: ink.amber,
     fontFamily: UI_MONO,
     fontSize: 12,
     letterSpacing: 1.2,
@@ -800,25 +834,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     borderRadius: 15,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: INK.hairline,
+    borderColor: ink.hairline,
     alignItems: 'center',
     justifyContent: 'center',
   },
   modeButtonOn: {
-    borderColor: 'rgba(229, 169, 60, 0.55)',
-    backgroundColor: 'rgba(229, 169, 60, 0.12)',
+    borderColor: glassBorder,
+    backgroundColor: glass,
   },
   modeButtonPressed: {
     opacity: 0.7,
   },
   modeText: {
-    color: INK.paperDim,
+    color: ink.paperDim,
     fontFamily: UI_MONO,
     fontSize: 12,
     letterSpacing: 1,
   },
   modeTextOn: {
-    color: '#E5A93C',
+    color: ink.amber,
   },
   /**
    * 导入冲印的幕布 + 合成舞台。
@@ -840,7 +874,7 @@ const styles = StyleSheet.create({
   },
   stageBusy: {
     marginTop: 12,
-    color: INK.paperDim,
+    color: darkroom.ink.paperDim,
     fontFamily: UI_MONO,
     fontSize: 12,
     letterSpacing: 2,
@@ -848,7 +882,7 @@ const styles = StyleSheet.create({
   errorLine: {
     marginHorizontal: 20,
     marginBottom: 8,
-    color: INK.amberSoft,
+    color: ink.amberSoft,
     fontFamily: UI_MONO,
     fontSize: 11,
     lineHeight: 16,
@@ -861,14 +895,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
   },
   emptyTitle: {
-    color: INK.paperDim,
+    color: ink.paperDim,
     fontFamily: UI_MONO,
     fontSize: 13,
     letterSpacing: 2,
   },
   emptyHint: {
     marginTop: 10,
-    color: INK.paperFaint,
+    color: ink.paperFaint,
     fontFamily: UI_MONO,
     fontSize: 11,
     lineHeight: 18,
@@ -883,7 +917,8 @@ const styles = StyleSheet.create({
     marginBottom: GAP,
   },
   tile: {
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    // 照片还没解码完时露出的占位底色，跟机身走（浅机身下不能是一层白）
+    backgroundColor: glass,
     overflow: 'hidden',
   },
   tilePressed: {
@@ -900,16 +935,17 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 14,
     borderRadius: 10,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: glass,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: INK.hairline,
+    borderColor: ink.hairline,
   },
   toastText: {
-    color: INK.paper,
+    color: ink.paper,
     fontFamily: UI_MONO,
     fontSize: 11,
     lineHeight: 16,
     letterSpacing: 0.6,
     textAlign: 'center',
   },
-});
+  });
+}

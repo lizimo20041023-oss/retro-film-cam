@@ -11,6 +11,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type {
   AppSettings,
+  GeoLocale,
   GrainLevelId,
   LocalePreference,
   LocationMode,
@@ -30,6 +31,9 @@ const STORAGE_KEY = 'fretrocam.settings.v1';
  *
  * `watermarkLayout: 'split'`（地名左 / 日期右）是上一版就有的排版，
  * 老用户升级上来视觉不变 —— 换默认值等于偷偷改所有人的成片。
+ *
+ * `geoLocale: 'auto'`（跟界面语言走）也是刻意的：它是个新设置项，
+ * 默认值必须让老用户"什么都不用做"，而不是把他照片上的地名换成另一种语言。
  */
 export const DEFAULT_SETTINGS: AppSettings = {
   locale: 'auto',
@@ -37,6 +41,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   watermarkLayout: 'split',
   placeDetail: 'archive',
   grainLevel: DEFAULT_GRAIN_LEVEL_ID,
+  geoLocale: 'auto',
 };
 
 const LOCALE_IDS: readonly LocalePreference[] = ['auto', ...LOCALES.map((l) => l.id)];
@@ -49,6 +54,8 @@ const WATERMARK_LAYOUTS: readonly WatermarkLayout[] = [
 ];
 const PLACE_DETAILS: readonly PlaceDetail[] = ['archive', 'full'];
 const GRAIN_IDS: readonly GrainLevelId[] = GRAIN_LEVELS.map((level) => level.id);
+/** 地名语言只有三种，外加一个"跟界面语言走"。 */
+const GEO_LOCALES: readonly (GeoLocale | 'auto')[] = ['auto', 'zh-Hans', 'zh-Hant', 'en'];
 
 /**
  * 白名单里挑一个，挑不到就用默认值。
@@ -85,6 +92,7 @@ function sanitize(raw: unknown): AppSettings {
     ),
     placeDetail: pick(raw.placeDetail, PLACE_DETAILS, DEFAULT_SETTINGS.placeDetail),
     grainLevel: pick(raw.grainLevel, GRAIN_IDS, DEFAULT_SETTINGS.grainLevel),
+    geoLocale: pick(raw.geoLocale, GEO_LOCALES, DEFAULT_SETTINGS.geoLocale),
   };
 }
 

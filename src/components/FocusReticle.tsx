@@ -1,110 +1,107 @@
 /**
- * 手动对焦的四角框。
+ * 对焦框：只画一个黄框，不含手势、不含计时。
  *
- * 只在用户点了画面之后闪一下：快速张开（130ms）→ 停 820ms → 淡出（340ms）。
- * 为什么要淡出而不是一直留着 —— 原生那边 4 秒后会把镜头交回连续自动对焦
- * （见 `patches/expo-camera+57.0.6.patch` 里的 `manualFocusResetDelay`），
- * 一个永远亮着的框会让人以为"还锁着"，反而误导。
+ * 为什么把"框"和"手指"拆成两个文件：曝光滑块的触摸区必须压在这一层之上，而框本身
+ * 必须 `pointerEvents: 'none'` —— 否则它会吃掉自己身下那一点面积的"点按对焦"。
+ * 两种触摸语义塞进同一个组件，迟早有人给它挂上 panHandlers 而悄悄弄坏别处的点按；
+ * 拆开之后，这个错误在结构上就写不出来了。
  *
- * 这个组件是**纯展示**：`pointerEvents="none"`，不参与任何手势，
- * 所以它跟"点画面对焦"那一层是分开的两个东西。
+ * 为什么脉冲用 `Animated.spring` 而不是 `timing`：镜头合焦是机械动作，收束要有过冲。
+ * 匀速的 timing 看起来像普通 UI 动画，不像对焦。
  */
-
 import { useEffect, useRef } from 'react';
-import { Animated, StyleSheet, View } from 'react-native';
+import { Animated, StyleSheet } from 'react-native';
+import { useTheme } from '../constants/theme';
 
-import { INK } from '../constants/theme';
-
-/** 一次对焦请求。`at` 是时间戳 —— 同一个点连点两次也要重新闪一下，所以它是身份的一部分。 */
+/** 点击落点：`x` / `y` 是以取景器为参照的 0~1 归一化坐标，`at` 是时间戳（毫秒）。 */
 export type FocusTarget = { x: number; y: number; at: number } | null;
 
-type FocusReticleProps = {
+/**
+ * 框的边长。取景器上唯一一个"手指大小"的标记：76 与旧版一致，
+ * 换尺寸会让老用户觉得对焦"变小了/变大了"，而它并没有。
+ */
+export const RETICLE_SIZE = 76;
+
+const STROKE = 1;
+const RADIUS = 2;
+/** 按下瞬间的放大倍数：1.18 看得出来"被按到了"，又不会盖住旁边刚落下的手指。 */
+const PULSE_SCALE = 1.18;
+const PULSE_SPEED = 20;
+const PULSE_BOUNCINESS = 9;
+
+/**
+ * 把归一化落点换算成框左上角的像素坐标，并把它按在取景器内。
+ *
+ * 为什么必须夹紧：手指点到画面最边缘时，框会有一半落在取景器外面 —— 看起来像被裁掉了；
+ * 而且曝光滑块要贴着框右侧 8pt，框越界会把滑块一起推出画面。
+ */
+export function reticleOrigin(
+  target: { x: number; y: number },
+  width: number,
+  height: number,
+): { left: number; top: number } {
+  return {
+    left: Math.min(Math.max(target.x * width - RETICLE_SIZE / 2, 0), Math.max(width - RETICLE_SIZE, 0)),
+    top: Math.min(Math.max(target.y * height - RETICLE_SIZE / 2, 0), Math.max(height - RETICLE_SIZE, 0)),
+  };
+}
+
+export interface FocusReticleProps {
   target: FocusTarget;
-  /** 取景器（= `CameraView`）的逻辑宽高。`target` 的 x/y 是它上面的 0~1 归一化坐标。 */
   width: number;
   height: number;
-};
+  /** 整层透明度由父级驱动：3 秒无操作时它要和曝光滑块一起淡出，所以不能各淡各的。 */
+  opacity: Animated.Value;
+}
 
-/** 方框边长（逻辑点）。参考 iOS 相机那种"小而不抢戏"的尺寸。 */
-const SIZE = 76;
-/** 每条角线的长度与粗细。 */
-const CORNER = 16;
-const THICK = 1.6;
-
-export function FocusReticle({ target, width, height }: FocusReticleProps) {
-  const progress = useRef(new Animated.Value(0)).current;
-  // 0 表示"还没有过对焦请求"。用 `at` 而不是 `target` 当依赖：`target` 每次点击
-  // 都是新对象，但只有 `at` 真的变了才需要重播动画。
+export function FocusReticle({ target, width, height, opacity }: FocusReticleProps) {
+  const { focus } = useTheme();
+  const scale = useRef(new Animated.Value(1)).current;
+  /**
+   * 用时间戳而不是 target 对象当依赖：每次点击 target 都是新对象，拿它比较等于每次必跑动画；
+   * 而父级因别的原因（拖 EV、切镜头）重渲染时时间戳没变，动画就不该重跑。
+   */
   const stamp = target === null ? 0 : target.at;
 
   useEffect(() => {
     if (stamp === 0) {
-      progress.setValue(0);
       return;
     }
-    progress.setValue(0);
-    const animation = Animated.sequence([
-      Animated.timing(progress, { toValue: 1, duration: 130, useNativeDriver: true }),
-      Animated.delay(820),
-      Animated.timing(progress, { toValue: 0, duration: 340, useNativeDriver: true }),
-    ]);
-    animation.start();
-    return () => {
-      animation.stop();
-    };
-  }, [stamp, progress]);
+    scale.setValue(PULSE_SCALE);
+    const pulse = Animated.spring(scale, {
+      toValue: 1,
+      speed: PULSE_SPEED,
+      bounciness: PULSE_BOUNCINESS,
+      useNativeDriver: true,
+    });
+    pulse.start();
+    return () => pulse.stop();
+  }, [stamp, scale]);
 
   if (target === null) {
     return null;
   }
 
-  // 贴着取景器边缘点的时候把框拽回来，不让它被裁掉一半。
-  const left = Math.min(Math.max(target.x * width - SIZE / 2, 0), Math.max(width - SIZE, 0));
-  const top = Math.min(Math.max(target.y * height - SIZE / 2, 0), Math.max(height - SIZE, 0));
+  const origin = reticleOrigin(target, width, height);
 
   return (
-    <View pointerEvents="none" style={[styles.root, { left, top }]}>
-      <Animated.View
-        style={[
-          styles.box,
-          {
-            opacity: progress,
-            transform: [
-              {
-                // 从略大缩到正常 —— "合焦"的手感就来自这个收拢动作
-                scale: progress.interpolate({ inputRange: [0, 1], outputRange: [1.24, 1] }),
-              },
-            ],
-          },
-        ]}
-      >
-        <View style={[styles.corner, styles.topLeft]} />
-        <View style={[styles.corner, styles.topRight]} />
-        <View style={[styles.corner, styles.bottomLeft]} />
-        <View style={[styles.corner, styles.bottomRight]} />
-      </Animated.View>
-    </View>
+    <Animated.View
+      style={[
+        styles.box,
+        { left: origin.left, top: origin.top, borderColor: focus, opacity, transform: [{ scale }] },
+      ]}
+    />
   );
 }
 
+// 这里只放几何：颜色一律现取，放模块级会把首次渲染时的配色冻住，切深浅色就不跟手了。
 const styles = StyleSheet.create({
-  root: {
-    position: 'absolute',
-    width: SIZE,
-    height: SIZE,
-  },
   box: {
-    width: SIZE,
-    height: SIZE,
-  },
-  corner: {
     position: 'absolute',
-    width: CORNER,
-    height: CORNER,
-    borderColor: INK.amber,
+    width: RETICLE_SIZE,
+    height: RETICLE_SIZE,
+    borderWidth: STROKE,
+    borderRadius: RADIUS,
+    pointerEvents: 'none',
   },
-  topLeft: { top: 0, left: 0, borderTopWidth: THICK, borderLeftWidth: THICK },
-  topRight: { top: 0, right: 0, borderTopWidth: THICK, borderRightWidth: THICK },
-  bottomLeft: { bottom: 0, left: 0, borderBottomWidth: THICK, borderLeftWidth: THICK },
-  bottomRight: { bottom: 0, right: 0, borderBottomWidth: THICK, borderRightWidth: THICK },
 });

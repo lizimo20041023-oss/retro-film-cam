@@ -34,12 +34,13 @@
  *     最低可用高度，0.62 是"不能把取景器吃光"的上限。
  *
  * ─────────────────────────────────────────────────────────────────────
- * 为什么底色是实心 `#1A1A1A` + 一层纹理，而不是半透明"毛玻璃"
+ * 为什么底色是实心面板色 + 一层纹理，而不是半透明"毛玻璃"
  * ─────────────────────────────────────────────────────────────────────
- * 真正的毛玻璃要 `expo-blur`（= 新依赖，本项目禁止）。用 `rgba(26,26,26,0.9x)`
+ * 真正的毛玻璃要 `expo-blur`（= 新依赖，本项目禁止）。用半透明黑
  * 假装透光只会让卡片上的等宽小字压在相机画面上，读不清。
- * 这里的"磨砂"是**材质**意义上的：实心 `#1A1A1A` 打底 + 一张极低透明度的皮纹
- * （和机身、设置页同一张 tile）+ 顶部一道亮边。远看是磨砂黑，近看有颗粒。
+ * 这里的"磨砂"是**材质**意义上的：实心打底（`theme.panel`，深色下就是原来写死的
+ * `#1A1A1A` 那一档；浅色下跟着换，否则面板是黑板、标题却是深色字）+ 一张极低
+ * 透明度的皮纹（和机身、设置页同一张 tile）+ 顶部一道亮边。
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -56,10 +57,11 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PRESETS } from '../constants/presets';
-import { INK, UI_MONO } from '../constants/theme';
+import { UI_MONO, useTheme } from '../constants/theme';
+import type { Theme } from '../constants/theme';
 import { UI_ASSETS } from '../constants/uiAssets';
 import { useI18n } from '../i18n';
-import { FilmCard } from './FilmCard';
+import { FilmCard, withAlpha } from './FilmCard';
 
 export interface FilmDrawerProps {
   visible: boolean;
@@ -99,6 +101,10 @@ export const FilmDrawer = memo(function FilmDrawer({
   onClose,
 }: FilmDrawerProps) {
   const { t } = useI18n();
+  const theme = useTheme();
+  // 颜色必须在组件里现取（模块级 StyleSheet 会被加载那一刻的深浅色冻结），
+  // 而这层抽屉贴在取景器上，主题一切换它是最显眼的那块。
+  const styles = useMemo(() => createStyles(theme), [theme]);
   const window = useWindowDimensions();
   const insets = useSafeAreaInsets();
   // 0 → 1 的开合进度，同时驱动遮罩透明度、面板位移和整体淡出。
@@ -293,85 +299,91 @@ export const FilmDrawer = memo(function FilmDrawer({
   );
 });
 
-const styles = StyleSheet.create({
-  root: {
-    // 注意：RN 0.86 已移除 StyleSheet.absoluteFillObject，只能用 absoluteFill
-    ...StyleSheet.absoluteFill,
-    // 抽屉只占下半屏，所以遮罩是**半透明**的：上面那 40% 要能看见取景器。
-    justifyContent: 'flex-end',
-    backgroundColor: 'rgba(6, 6, 6, 0.55)',
-  },
-  scrim: {
-    ...StyleSheet.absoluteFill,
-  },
-  sheet: {
-    borderTopLeftRadius: 14,
-    borderTopRightRadius: 14,
-    // 面板底色 = 用户规格的深色磨砂 #1A1A1A（实心，理由见文件头）。
-    backgroundColor: '#1A1A1A',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    // 顶部一道亮边：让"纸从下面推上来"这件事有厚度，也是磨砂感的来源之一。
-    borderTopColor: 'rgba(255, 255, 255, 0.12)',
-    // 圆角要把内部的纹理层裁掉，否则四个角会露出直角。
-    overflow: 'hidden',
-  },
-  sheetTexture: {
-    ...StyleSheet.absoluteFill,
-    opacity: 0.35,
-  },
-  plate: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingLeft: GRID_PADDING,
-    paddingRight: GRID_PADDING - 8,
-    paddingTop: 14,
-    paddingBottom: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(229, 169, 60, 0.28)',
-  },
-  plateTitles: {
-    flexShrink: 1,
-    paddingRight: 8,
-  },
-  title: {
-    color: INK.amberSoft,
-    fontSize: 13,
-    letterSpacing: 2.4,
-    fontFamily: UI_MONO,
-  },
-  hint: {
-    marginTop: 3,
-    color: INK.paperDim,
-    fontSize: 9,
-    letterSpacing: 0.4,
-  },
-  close: {
-    width: CLOSE_TOUCH_SIZE,
-    height: CLOSE_TOUCH_SIZE,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  closeMark: {
-    color: INK.paperDim,
-    fontSize: 15,
-    fontFamily: UI_MONO,
-  },
-  pressed: {
-    opacity: 0.6,
-  },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: GRID_PADDING,
-    paddingTop: 12,
-    // 面板自己已经带了下安全区内边距，这里只留一点呼吸空间。
-    paddingBottom: 16,
-  },
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: GRID_GAP,
-  },
-});
+function createStyles(theme: Theme) {
+  const { ink } = theme;
+  return StyleSheet.create({
+    root: {
+      // 注意：RN 0.86 已移除 StyleSheet.absoluteFillObject，只能用 absoluteFill
+      ...StyleSheet.absoluteFill,
+      // 抽屉只占下半屏，所以遮罩是**半透明**的：上面那 40% 要能看见取景器。
+      // 这里刻意不跟 `theme.scrim`（它接近全不透明，是给整屏弹层用的）。
+      justifyContent: 'flex-end',
+      backgroundColor: 'rgba(6, 6, 6, 0.55)',
+    },
+    scrim: {
+      ...StyleSheet.absoluteFill,
+    },
+    sheet: {
+      borderTopLeftRadius: 14,
+      borderTopRightRadius: 14,
+      // 实心面板色（理由见文件头）：不跟 `theme.scrim` 走，因为那会让卡片上的
+      // 小字压着相机画面读不清。
+      backgroundColor: theme.panel,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      // 顶部一道亮边：让"纸从下面推上来"这件事有厚度，也是磨砂感的来源之一。
+      borderTopColor: ink.hairline,
+      // 圆角要把内部的纹理层裁掉，否则四个角会露出直角。
+      overflow: 'hidden',
+    },
+    sheetTexture: {
+      ...StyleSheet.absoluteFill,
+      opacity: 0.35,
+    },
+    plate: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingLeft: GRID_PADDING,
+      paddingRight: GRID_PADDING - 8,
+      paddingTop: 14,
+      paddingBottom: 10,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      // 标题下面那道暖色分隔线：琥珀色压到 28%，只留一点温度，不抢标题。
+      borderBottomColor: withAlpha(ink.amber, 0.28),
+    },
+    plateTitles: {
+      flexShrink: 1,
+      paddingRight: 8,
+    },
+    title: {
+      color: ink.amberSoft,
+      fontSize: 13,
+      letterSpacing: 2.4,
+      fontFamily: UI_MONO,
+    },
+    hint: {
+      marginTop: 3,
+      color: ink.paperDim,
+      fontSize: 9,
+      letterSpacing: 0.4,
+    },
+    close: {
+      width: CLOSE_TOUCH_SIZE,
+      height: CLOSE_TOUCH_SIZE,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    closeMark: {
+      color: ink.paperDim,
+      fontSize: 15,
+      fontFamily: UI_MONO,
+    },
+    pressed: {
+      opacity: 0.6,
+    },
+    scroll: {
+      flex: 1,
+    },
+    scrollContent: {
+      paddingHorizontal: GRID_PADDING,
+      paddingTop: 12,
+      // 面板自己已经带了下安全区内边距，这里只留一点呼吸空间。
+      paddingBottom: 16,
+    },
+    grid: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: GRID_GAP,
+    },
+  });
+}
