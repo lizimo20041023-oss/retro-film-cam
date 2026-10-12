@@ -232,6 +232,14 @@ export function CameraScreen() {
   const [countdown, setCountdown] = useState<number | null>(null);
   const [doubleExposure, setDoubleExposure] = useState(false);
   const [pendingExposureUri, setPendingExposureUri] = useState<string | null>(null);
+  /**
+   * 一框多图相框（半格双联）的**第一格**：按下第一次快门后先存在这里，等第二格。
+   *
+   * 为什么存整个 `CapturedPhoto` 而不是只存 uri：冲印管道要按"原图的实际长宽比"
+   * 选相框朝向、按原图尺寸算归一化目标（见 `processFilmPhoto` 第 2 步），
+   * 只留一个 uri 的话第二格就得拿另一张照片的尺寸去蒙。
+   */
+  const [halfFrameBuffer, setHalfFrameBuffer] = useState<CapturedPhoto | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraKey, setCameraKey] = useState(0);
   const [mountError, setMountError] = useState<string | null>(null);
@@ -253,6 +261,18 @@ export function CameraScreen() {
   const lensScale = useRef(new Animated.Value(1)).current;
 
   const frame = FRAMES[frameIndex] ?? FRAMES[0];
+  /**
+   * 这个相框是不是"一框多图"（半格双联：左右两个 3:4 竖槽）。
+   *
+   * 判据**从相框数据推**，不许写死 `frame.id === 'half-frame'`：将来再加一款双联框
+   * （竖版三格、2×2 四格）时，这里不用动一行。`FrameSpec.slots` 的类型是
+   * `FrameSlot[] | undefined`，所以先判 `undefined` 再判长度。
+   *
+   * 为什么必须拦快门：合成层对"有槽位但没给第二张"的行为是**那一格留黑**
+   * （`FilmCompositor.slotPhotoUri` 返回 null），于是第一次快门就能冲出一张
+   * 右半边全黑的成片 —— 那看起来就是"坏了"，而不是"半格只用了一半"。
+   */
+  const needsTwoShots = frame.slots !== undefined && frame.slots.length >= 2;
   const preset = PRESETS[presetIndex] ?? PRESETS[0];
   const grainLevel = grainLevelAt(findGrainLevelIndex(settings.grainLevel));
   const effectivePreset = useMemo(() => applyGrainLevel(preset, grainLevel.scale), [preset, grainLevel.scale]);
@@ -368,11 +388,24 @@ export function CameraScreen() {
 
   const handleFrameChange = useCallback((next: number) => {
     setFrameIndex(wrapIndex(next));
+    /*
+     * 换相框时把半格缓存**静默**丢掉（不弹提示、不冲印）。
+     *
+     * 为什么必须丢：缓存里那张是给**上一个相框**的槽位拍的 —— 槽位的宽高比、
+     * 位置都变了，拿它去填新相框的一格只会得到一张构图错的半格。
+     * 为什么静默：这是用户自己的选择（滑了一下相框），不是错误，
+     * 弹条提示等于拿一个"你刚才那张白拍了"去打断他。
+     * 为什么清得干脆（而不是留到切回来）：留一个跨相框的隐藏状态，
+     * 会出现"切回半格框，第一次快门直接出片"这种没人能预期的行为。
+     */
+    setHalfFrameBuffer(null);
   }, []);
 
   const handleBadgeFramePress = useCallback(() => {
     void Haptics.selectionAsync();
     setFrameIndex((current) => wrapIndex(current + 1));
+    // 顶栏徽标点一下也是换相框，和左右滑动同一条规则：静默丢掉半格缓存
+    setHalfFrameBuffer(null);
   }, []);
 
   const handleFlipCamera = useCallback(() => {
@@ -558,9 +591,16 @@ export function CameraScreen() {
   /**
    * 拍摄主流程。
    *
-   * 重曝（§一.7）在这里分叉：开着重曝时第一次按快门只把照片存进 `pendingExposureUri`，
-   * **不冲印**；第二次才把两张一起交给合成器。判据是"按下时手上有没有上一张"，
+   * 两条"要按两次才出片"的路径在这里分叉，**顺序不能换**：
+   *
+   * 1. **半格双联**（§五.3，`frame.slots` 至少两格）：第一次把底片存进
+   *    `halfFrameBuffer`，第二次连同缓存一起冲印成左右两格。
+   * 2. 重曝（§一.7）：开着重曝时第一次按快门只把照片存进 `pendingExposureUri`，
+   *    **不冲印**；第二次才把两张一起交给合成器。
+   *
+   * 两条判据都是"按下时手上有没有上一张"（`halfFrameBuffer` / `pendingExposureUri`），
    * 而不是"这是第几次" —— 中途关掉重曝不该把半成品冲出去。
+   * 半格必须排前面，理由见下面那条分支上的注释。
    */
   const handleShutter = useCallback(async () => {
     const camera = cameraRef.current;
@@ -588,6 +628,97 @@ export function CameraScreen() {
       }
       const captured: CapturedPhoto = { uri: shot.uri, width: shot.width, height: shot.height };
       const place = await locationPromise;
+
+      /*
+       * ---- 半格双联的第一格 ----
+       *
+       * 拦住这一张：只入缓存，**不冲印、不算曝光数**（`exposureCount` 是"已出片张数"，
+       * 底片长卷、顶栏计数、EXP. 代号全读它；半格两格合起来才是 1 张成片）。
+       * 这三件事必须一起做：漏了任一条，用户会在第一格就看见成片或看见计数 +1，
+       * 而那张成片的右半边是黑的。
+       */
+      if (needsTwoShots && halfFrameBuffer === null) {
+        setHalfFrameBuffer(captured);
+        setStatus({ kind: 'idle' });
+        // 不设 `notice`：`pendingExposureUri` 的提示是走横幅的，而这条提示要留在
+        // 取景器里一直看得见（见下面 `halfFrameBuffer !== null` 那块），两条都弹会打架
+        return;
+      }
+
+      /*
+       * ---- 半格双联的第二格（同时挡掉重曝）----
+       *
+       * ⚠️ 顺序关键：这两条分支在重曝分支**之前**，所以"半格 + 重曝同时开着"时
+       * 重曝被静默忽略。选这条规则的理由（为什么不是别的方案）：
+       *
+       * - 半格的两个槽是**并排**的，重曝是**叠在同一格**里的 —— 半格没有"往哪一格叠"
+       *   的答案。合成层的规则是"重曝只叠在第一格上"（`FilmCompositor` 里
+       *   `index === 0 && overlayUri !== null`），那正是半格框最不该有的东西：
+       *   左半格是两次曝光的鬼影、右半格是单次曝光，一卷半格片里混进一格
+       *   双重曝光的半格，用户看到只会觉得坏了。
+       * - "开半格时禁掉重曝"要多改一处开关状态并解释为什么灯自己灭了；
+       *   "半格优先"只在快门这一处分叉，用户拍的每一张都符合直觉。
+       *
+       * 代价（已知且接受）：重曝开关的灯还亮着，但它对半格框不生效。
+       */
+      if (needsTwoShots && halfFrameBuffer !== null) {
+        const first = halfFrameBuffer;
+        /*
+         * **先拍的进左格、后拍的进右格。**
+         *
+         * 这张照片站在哪个槽位不是这里说了算的，是合成层写死的：
+         * `FilmCompositor.slotPhotoUri(slotIndex, rawUri, secondUri)` 里
+         * `slotIndex === 0 → rawUri`、`=== 1 → secondUri`；而 `half-frame` 的
+         * `slots[0]` 窗口 x 更小（见 `src/constants/frames.ts`），就是**左格**。
+         * 所以要让先拍的落在左格，先拍的必须是**主图** `photo`（→ `rawUri` → 左格），
+         * 后拍的走 `secondUri`（→ 右格）。
+         *
+         * 用第一张当主图还有第二个理由：主图决定相框朝向与归一化尺寸
+         * （`processFilmPhoto` 按它的长宽比算 `FrameLayout`）。用户构第一格的时候
+         * 取景器里显示的就是这个相框，让它说了算才符合预期。
+         */
+        const result = await processAndSaveFilmPhoto({
+          photo: first,
+          frame,
+          preset: effectivePreset,
+          stage: stageBox,
+          host: filmStage.host,
+          place,
+          locale: localeId,
+          watermarkLayout: settings.watermarkLayout,
+          placeDetail: settings.placeDetail,
+          exposureIndex: exposureCount + 1,
+          secondUri: captured.uri,
+          onStage: (nextStage) => setStatus({ kind: 'developing', stage: nextStage }),
+        });
+
+        setStatus({ kind: 'done', uri: result.photo.uri, saved: result.save.ok });
+        // 半格两格 = 1 张成片，所以只 +1
+        setExposureCount((current) => current + 1);
+        /*
+         * 缓存必须在**冲印成功之后**才清：冲印抛错时它还在，用户可以直接补拍第二格。
+         * 这就是"只存 uri"不够用的第二个理由 —— 缓存得完整到能重试。
+         */
+        setHalfFrameBuffer(null);
+        setAlbumKey((current) => current + 1);
+        // 存 App 相册故意不 await：失败也不该让已经冲好的照片看起来像失败
+        void addShot({
+          sourceUri: result.photo.uri,
+          width: result.photo.width,
+          height: result.photo.height,
+          frameId: frame.id,
+          presetId: effectivePreset.id,
+        }).catch((error: unknown) => {
+          console.warn('[retro-film-cam] 存进 App 相册失败：', describeError(error));
+        });
+        if (!result.save.ok) {
+          setSaveIssue(result.save.message);
+        }
+        if (result.photo.warnings.length > 0) {
+          console.warn('[retro-film-cam] 非致命提示：', result.photo.warnings.join(' / '));
+        }
+        return;
+      }
 
       if (doubleExposure && overlayUri === null) {
         // 重曝第一张：先留着不冲，等第二张叠上去一起冲
@@ -645,6 +776,10 @@ export function CameraScreen() {
     developing,
     doubleExposure,
     pendingExposureUri,
+    // 半格那两条分支读的就是这两个：漏了 `halfFrameBuffer`，第二次快门会看到
+    // 第一帧的 `null`，于是把第二张又存一遍 —— 永远出不了片
+    needsTwoShots,
+    halfFrameBuffer,
     filmStage.host,
     frame,
     effectivePreset,
@@ -960,6 +1095,27 @@ export function CameraScreen() {
           </View>
         ) : null}
 
+        {/* 半格双联：第一格已经进缓存，等第二格。和下面重曝那条同一种写法
+            （不走 DevelopOverlay：那层会挡住取景器），常显不闪 —— 它是一条
+            "现在还差一张"的状态读数，不是一次性的提示 */}
+        {halfFrameBuffer !== null ? (
+          <View
+            style={styles.halfHint}
+            pointerEvents="none"
+            accessible
+            accessibilityLabel={t('camera.half.hint')}
+          >
+            <View style={styles.focusHintChip}>
+              <Text style={[styles.halfPlateText, { color: ink.amber }]} allowFontScaling={false}>
+                {t('camera.half.plate')}
+              </Text>
+              <Text style={[styles.halfHintText, { color: ink.paper }]} allowFontScaling={false}>
+                {t('camera.half.hint')}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
         {bannerMessage !== null ? (
           <View style={[styles.banner, { backgroundColor: theme.panel, borderColor: ink.amberDeep }]}>
             <Text style={[styles.bannerText, { color: ink.paper }]}>{bannerMessage}</Text>
@@ -1132,6 +1288,21 @@ function createStyles(ink: ThemeInk, scheme: 'dark' | 'light') {
     },
     doubleHint: { position: 'absolute', left: 0, right: 0, top: 26, alignItems: 'center' },
     doubleHintText: { fontFamily: UI_MONO, fontSize: 10, letterSpacing: 0.8 },
+    /*
+     * 半格提示固定在重曝提示**下面**一条（top 26 vs 54），而不是复用同一个位置：
+     * 两者虽然被"半格优先"这条规则挡住、不会同时显示（见 `handleShutter`），
+     * 但把它们叠在同一坐标上，将来任何一次规则调整都会直接变成两块字压在一起。
+     * 竖直排列顺序也正好对应"半格优先"。
+     */
+    halfHint: { position: 'absolute', left: 0, right: 0, top: 54, alignItems: 'center' },
+    halfPlateText: { fontFamily: UI_MONO, fontSize: 12, letterSpacing: 1.6 },
+    halfHintText: {
+      fontFamily: UI_MONO,
+      fontSize: 10,
+      letterSpacing: 0.8,
+      marginTop: 2,
+      opacity: 0.75,
+    },
     // 横幅抬到胶囊行上方：压住胶囊的话，出问题时连焦段都点不了
     banner: {
       position: 'absolute',

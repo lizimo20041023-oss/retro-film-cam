@@ -47,7 +47,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [23. v1.2.0：这一版改了什么（八件事）](#23-v120这一版改了什么八件事)
 - [24. v1.3.0：按十一节规格重构](#24-v130按十一节规格重构)
 - [25. v1.4.0：Dazz 级极简重构 + 六节增量 + 商标清理](#25-v140dazz-级极简重构--六节增量--商标清理)
-- [24. v1.3.0：按十一节规格重构](#24-v130按十一节规格重构)
+- [26. v1.4.1：日期"乱码"与半格双联](#26-v141日期乱码与半格双联)
 
 ---
 
@@ -2181,7 +2181,7 @@ INSTANTANÉ，`frame.instaxMini` = 迷你画幅 / ミニ / MINI），所以只�
 
 | 项 | 为什么没法在这台机器上验证 |
 | --- | --- |
-| **8pt 日期 / 6pt 灯管在成片上认不认得出** | **本版最大风险项**。算术上笔画宽 = 6 × 0.14 = 0.84pt，按 `captureLongEdge = 2048` 换算约 4~5px，但到底糊不糊必须看真机截图 |
+| ~~**8pt 日期 / 6pt 灯管在成片上认不认得出**~~ | **v1.4.1 已查明：认不出。** 6pt 七段管的竖段只有 0.74pt，比段厚 0.840pt 还短，整串退化成横虚线 —— 这就是当时担心的那件事成真了。见 **§26.1** |
 | EV 是否真的改变了画面亮度 | 补丁只扩了原生参数透传，端上没法验证曝光结果 |
 | 定时器精度 | 3s / 10s 倒计时在 JS 侧，真机后台会掉精度 |
 | 重曝叠合的观感、临时文件存活 | 需要真机拍两次；`overlayUri` 的临时文件生命周期依赖 `FileSystem` cache 目录 |
@@ -2190,7 +2190,125 @@ INSTANTANÉ，`frame.instaxMini` = 迷你画幅 / ミニ / MINI），所以只�
 | 浅色主题下的对比度 | 只能靠算，没有真机眼睛 |
 | 捏合缩放与 EV 滑块抢手势 | 两个手势在同一块区域内，`hitSlop` 也是算的 |
 | VoiceOver 朗读顺序 | 三层新控制台加了不少可聚焦元素，顺序只能上手听 |
-| 七段日期在 `centered` 6pt 下能显示几个字 | 需要真机截图 |
+| ~~七段日期在 `centered` 6pt 下能显示几个字~~ | 七段字模已在 v1.4.1 整体删除，这个问题不存在了 |
+
+---
+
+## 26. v1.4.1：日期"乱码"与半格双联
+
+`app.json` 版本 `1.4.0` → **`1.4.1`**。两处修复：一处是 v1.4.0 §五 字号收口的**后果**，
+一处是 v1.4.0 §六 新相框的**没做完**。
+
+### 26.1 日期的"水平虚线乱码" —— 真因不是字体
+
+用户报：成片右下角的日期渲染成"水平虚线乱码"，怀疑是第三方数码管字体（Digital-7 / DSEG）
+没在原生工程里 Link 上。
+
+**查证结果：本仓库从来没有加载过任何第三方字体。** 两条独立证据：
+
+| 证据 | 位置 |
+| --- | --- |
+| `CUSTOM_FONT` 恒为 `null`，`useFonts` 收到的是**空 map**，`customLoaded` 恒为 `false` | `src/hooks/useFilmFonts.ts`（v1.4.0 版 `:33`） |
+| 日期压根不是文字：纯 `View` 手绘七段，**不用 `Text`、不碰 `fontFamily`** | `src/components/SegmentDate.tsx`（v1.4.1 已删除） |
+
+所以"字体加载失败导致乱码"这条因果链在本仓库里**不可能成立**。
+
+**真因**：v1.4.0 §五 把日期字号收到"画布短边 2%"，落到 `MIN_DATE_FONT = 8pt`；
+而七段管的高度是 `fontSize × QUARTZ_HEIGHT_SCALE(0.58)` → **管高 6pt**。按 `SegmentDate` 的公式：
+
+```
+段厚 = 6 × STROKE_RATIO(0.14)                   = 0.840pt
+缝   = min(QUARTZ_SEGMENT_GAP(0.5), 6 × 0.105)  = 0.500pt
+竖段 = 6/2 − 0.840 × 1.5 − 0.5 × 2              = 0.740pt   ← 比段厚还短
+```
+
+竖段比它自己还"粗"的时候，视觉上就是一个**方点**；而横段是 `3.30 × 0.840pt` 的长条。
+整串于是只剩"一排横虚线"—— 这正是用户看到的东西。
+
+**不用真机也能复现**：`scripts/_quartz_repro.py`（**本地探针，未入库**，`.gitignore` 挡掉了）
+逐行照抄 `SegmentDate.tsx` 的常量与 `digitViews` 公式，按 **1pt = 64px** 画出 6 / 8 / 11 / 16pt 四行对照
+（统一放大倍数、不统一显示尺寸 —— 后者会把"字太小"这个事实藏起来）。
+同一套放大倍数下"修复前 / 修复后"的四行对照由 `scripts/_date_fix_preview.py` 生成：
+
+| 管高 | 竖段长 | 竖段/段厚 | 观感 |
+| --- | --- | --- | --- |
+| **6pt（v1.4.0 现状）** | 0.740pt | **0.881** | **完全认不出，就是横虚线** |
+| 8pt | 1.320pt | 1.179 | 勉强 |
+| 11pt | 2.190pt | 1.422 | 成形 |
+| 16pt | 3.640pt | 1.625 | 清楚 |
+
+**改法**：整个字模换成**系统等宽粗体 + 字距**，七段那套代码全部删掉。
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/hooks/useFilmFonts.ts` | 整体重写。`DATE_MONO_FAMILY = Platform.select({ ios: 'CourierNewPS-BoldMT', android: 'monospace', default: 'monospace' })`；`SYSTEM_MONO_FAMILY` 作为旧名保留（调用点一个没动）；`useFilmFonts()` 恒返回 `{ ready: true, customLoaded: false, fontFamily: DATE_MONO_FAMILY, source: 'system' }`。**`useFonts` / `expo-font` 的 import 彻底删除**，`CUSTOM_FONT` / `CUSTOM_FONT_FAMILY` 两个常量也没了 |
+| `src/components/DateStamp.tsx` | **新建**。`<DateStamp quartz color fontFamily />`，根容器 `{ flexShrink: 0, width: quartz.width }`，内部 `<Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.9} allowFontScaling={false}>` |
+| `src/components/SegmentDate.tsx` | **删除** |
+| `src/utils/geometry.ts` | 字宽模型换成 `dateStampWidth(text, fontSize, letterSpacing) = round2(n × (fontSize × MONO_ADVANCE_RATIO(0.6) + letterSpacing))`。删掉 `QUARTZ_DIGIT_WIDTH_RATIO` / `QUARTZ_MARK_WIDTH_RATIO` / `QUARTZ_CELL_GAP_RATIO` / `QUARTZ_SEGMENT_GAP` / `QUARTZ_HEIGHT_SCALE` / `MIN_QUARTZ_HEIGHT` / `quartzCellLayout()` / `segmentDateWidth()` 等一整套七段几何。`WatermarkQuartz` 从 `{ text, height, gap }` 变成 `{ text, width, fontSize, letterSpacing, fontWeight, shadowColor, shadowRadius }` |
+| `src/components/FilmCompositor.tsx` | `<SegmentDate>` → `<DateStamp>`；删掉 `TEXT_DESCENT_RATIO(0.21)` 与 `centered` 版式里那个 `marginBottom` 包层 —— 那 0.21 是给"没有降部的管子"补的，真 `<Text>` 的降部本来就在行盒里 |
+
+**为什么 `MONO_ADVANCE_RATIO = 0.6` 不需要 `Platform.select`**：Courier New 与 Android 的
+`monospace` 都是 600/1000 em，同一个数。宽度公式**不减尾字距**（RN 的 `letterSpacing` 走
+`NSKernAttributeName`，最后一个字形后面也加）—— 宁可多出 2pt，也不冒截断的险。
+
+### 26.2 半格双联必须拍两张才出片
+
+v1.4.0 §六 加了 `half-frame`（两个 `slots`），但**快门逻辑没跟上**：
+第一张就直接进冲印管道，`slots[0]` 有画面、`slots[1]` 留黑 —— 出来就是"左半边有像、右半边是黑板"。
+
+`src/components/CameraScreen.tsx` 新增缓存状态（判据从相框推导，**不硬编码 id**）：
+
+```ts
+const [halfFrameBuffer, setHalfFrameBuffer] = useState<CapturedPhoto | null>(null);
+const needsTwoShots = frame.slots !== undefined && frame.slots.length >= 2;
+```
+
+| 时机 | 行为 |
+| --- | --- |
+| 第一格 | 只入缓存 + `setStatus({ kind: 'idle' })` + `return` —— **不冲印、不增曝光数**（`exposureCount` 是"已出片张数"，半格两格合起来才是 1 张） |
+| 第二格 | 两张一起入管道，成功后 `exposureCount + 1`、清缓存、刷相册 |
+| 取景器 | 常显 `[ 1 / 2 ]` + 「再按一次完成」（i18n 新键 `camera.half.plate` / `camera.half.hint`，5 个语言包齐全） |
+| 切相框 | `handleFrameChange` 与 `handleBadgeFramePress` 两条路径都**静默清空**缓存 |
+
+**槽位归属是合成层写死的，不是这里说了算的**：`FilmCompositor.slotPhotoUri` 里
+`slotIndex === 0 → rawUri`、`=== 1 → secondUri`；而 `half-frame` 的 `slots[0]` 窗口 x 更小，就是**左格**。
+所以"先拍的进左格"要求先拍的当**主图** `photo`（→ `rawUri` → 左格），后拍的走 `secondUri`。
+
+**顺序关键**：两条半格分支排在重曝分支**之前**，所以"半格 + 重曝同时开着"时**重曝被静默忽略**。
+理由：半格的两个槽是并排的，重曝是叠在同一格里的 —— 半格没有"往哪一格叠"的答案；
+而合成层的规则是"重曝只叠在第一格"，那正是半格框最不该有的东西（左半格是鬼影、右半格是单次曝光）。
+代价：重曝开关的灯还亮着，但它对半格框不生效。
+
+**缓存必须在冲印成功之后才清** —— 冲印抛错时它还在，用户可以直接补拍第二格。
+`src/utils/processFilmPhoto.ts`（`:147` 早已有 `secondUri` 入参、`:227` 早已透传）与
+`src/hooks/useFilmStage.ts`（`:38-49` 的就绪计数已把第二张算进去）**零改动**。
+
+### 26.3 这一版**没有**照字面执行用户方案的两处，以及为什么
+
+1. **`#E5A93C` 没有采用。** 用户给的琥珀色是**深色机身**的 UI 强调色，但成片水印有一套
+   **两档墨色**规则，是按"印在什么材质上"分的：`anchor === 'window'`（压在照片上）要亮
+   （amber `#FF8A00`），`anchor === 'frame'`（印在相纸留白上）要暗（amber `#B45309`），
+   见 `geometry.ts` 的 `resolveInk`。把两者统一成 `#E5A93C` 会让印在白色相纸上的日期
+   对比度掉到读不清。**保留了现有规则**，只换了字模。
+2. **`letterSpacing: 2` 的代价必须知道**：日期串 `'26  10  12` 共 11 字符，
+   宽度从七段的 **30.80pt** 涨到 **74.8pt（2.43×）**。已逐款核算
+   `slotMaxWidth = max(24, region.width − quartz.width − SPLIT_GUTTER(12))`：
+   `neg-135` 最紧也只有 **138.8pt**，七款相框**全部不溢出**。
+
+`gamut` 的代价则是：日期从"画出来的形体"变成"真字体"，**字号下限不再自动等于可读下限** ——
+`MIN_DATE_FONT = 8pt` 现在是唯一的下限。要更大只改 `DATE_FONT_SHORT_EDGE_RATIO`。
+
+### 26.4 这一版**没有**在真机验证过的东西
+
+| 项 | 为什么没法在这台机器上验证 |
+| --- | --- |
+| `CourierNewPS-BoldMT` 在 iOS 上是否真的命中 | 它是 iOS 内置字体（Courier New 家族），但**只有真机/模拟器能确认没有回退**；`scripts/_date_fix_preview.py` 用的是 Windows 的 `courbd.ttf`，字形接近但不是同一个文件 |
+| 8pt 日期在成片像素下够不够大 | 宽度是算出来的，观感不是。按 `captureLongEdge = 2048` / 舞台 358pt 换算，8pt ≈ 46px 高的字面 |
+| 半格两格的实际左右顺序 | 只是静态推断 `slotPhotoUri` + `slots[0].window.x`，没拍过 |
+| 半格提示 `top: 54` 会不会压到别的控件 | 没有 375pt 真机 |
+| 缓存的生命周期 | 第一张的临时文件在 `FileSystem` cache 目录，**没有超时清理**：切后台几小时回来再拍第二格，可能拿一张很旧的画面凑格 |
+| 物理侧键 / 定时器是否也走半格分支 | 两条路径都汇入同一个 `handleShutter`，结构上继承，但没实机触发过 |
+| 仓库里没有测试 | `__tests__` 不存在，`expo export` 也不做类型检查 —— 唯一的自动防线是 `npm run typecheck` |
 
 ---
 

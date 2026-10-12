@@ -125,9 +125,13 @@ export const QUARTZ_DATE_FORMAT = "'YY  MM  DD";
  * - `formatTimestamp` 是**通用**文本日期，预设 `timestamp.format` 想印什么都行，
  *   相机页 LCD 上的日期预览也还是它；
  * - `formatQuartzDate` 是**成片水印专用**的固定字模。为什么不由预设决定格式：
- *   七段数码管的每一位字形是自己画的（`SegmentDate.tsx`），能画的只有 0-9 加
- *   引号 / 空格 / 小数点这几个窄格，`'YYYY.MM.DD'` 这种掩码画不出来。
- *   它内部就是 `formatTimestamp(date, QUARTZ_DATE_FORMAT)`，不是第二套实现。
+ *   这一行是成片右下角那个"石英后背"，格式换了整行的宽度、分组读法就全变了，
+ *   而宽度是 `dateStampWidth()` 提前算死给排版用的。它内部就是
+ *   `formatTimestamp(date, QUARTZ_DATE_FORMAT)`，不是第二套实现。
+ *
+ * ⚠️ 名字里的 "Quartz" 留着了（改它会牵动 `geometry.ts` / `FilmCompositor.tsx`
+ * 好几处，收益只是好看一点）。但要说清楚：**它现在印的是等宽粗体，不是七段数码管**——
+ * 七段那套在 v1.4.1 已经删掉，理由见 `src/components/DateStamp.tsx` 顶部。
  */
 export function formatQuartzDate(date: Date): string {
   return formatTimestamp(date, QUARTZ_DATE_FORMAT);

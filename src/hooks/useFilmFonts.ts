@@ -1,55 +1,52 @@
 /**
- * 日期水印用的数码管字体。
+ * 日期水印用的等宽字体。
  *
- * 核实结论（官方文档）：
- * - Expo Go 里**不能**用 expo-font 的 config plugin 嵌字体 —— 那需要 prebuild / 自定义原生工程；
- * - 只能用运行时 `useFonts()` 加载 ttf/otf；
- * - 没有自定义字体时的兜底：iOS 系统等宽 `'Menlo'`、Android `'monospace'`。
- *   这是"数码管"观感的第一近似，零依赖、零风险。
+ * ── 为什么这里**不再**加载任何第三方字体（v1.4.1 的核心改动）────────────────────
+ * 老版本留了一条"把 `CUSTOM_FONT` 换成一份 ttf 就能上数码管字体"的口子。这条路已经
+ * 被证明只有坏处：
  *
- * ─────────────────────────────────────────────────────────────────────────
- * 想要真·数码管（推荐免费的 DSEG7 / DSEG14，SIL OFL 协议）
- * ─────────────────────────────────────────────────────────────────────────
- * 1. 下载 `DSEG7Classic-Bold.ttf`（或 DSEG14）放进 `assets/fonts/`；
- * 2. 把下面 `CUSTOM_FONT` 那一行改成（保留注释掉的示例格式）：
- *      const CUSTOM_FONT = require('../../assets/fonts/DSEG7Classic-Bold.ttf');
- *    ⚠️ 千万别留一个指向**不存在文件**的 require：Metro 打包会直接失败，
- *       所以仓库里默认是 `null`（注释掉）。
- * 3. 热重载后日期就会自动换成数码管字体；想只让某个预设用，改
- *    `preset.timestamp.fontFamily`（会覆盖这里的全局兜底）。
- * ─────────────────────────────────────────────────────────────────────────
+ * 1. **它没有任何兜底**。Metro 只认静态 `require`，字体一旦没被 link 进原生工程，
+ *    iOS 就取不到字形 —— 画面上会掉成一串方框 / 虚线。而日期是**成片上的字**，
+ *    印错的那张照片是不可撤销的，用户往往几天后翻相册才发现。
+ * 2. **它从来就不是乱码的原因**。工程里 `CUSTOM_FONT` 一直是 `null`，
+ *    一次 ttf 都没加载过；日期的字形也不是字体给的，是 `SegmentDate` 用 `View` 手绘的。
+ *    真正的病因是**字号**：v1.4.0 按"画布短边 2%"把日期收口到 8pt 之后，七段管的管高
+ *    只剩 6pt，竖段 0.74pt **比段厚 0.84pt 还短**，整串退化成横虚线（详见
+ *    `src/components/DateStamp.tsx` 顶部的推导）。换字体的处方治不了这个病。
+ *
+ * 所以现在只剩一条路：**系统内置的等宽粗体**。
+ * - iOS：`CourierNewPS-BoldMT` —— Courier New Bold 的 PostScript 名，iOS 3.0 起自带，
+ *   **不可能加载失败**（它不是"有没有 link 进来"的问题，是系统字体表里的一项）。
+ * - Android：`monospace`（Roboto Mono / Droid Sans Mono）。
+ *
+ * 两边都是 **0.6 em 等宽**，所以 `geometry.ts` 里那条宽度公式不需要分平台 ——
+ * 这也是这个选择的一个隐性好处：算出来的宽度在 iOS 和 Android 上逐点相同。
+ * 将来要换字体（或换字重），**必须先确认新字体也是 0.6 em**，否则宽度会对不上。
  */
-import { useFonts } from 'expo-font';
 import { Platform } from 'react-native';
 import type { FilmFontsState } from '../types';
 
-/** 自定义字体的家族名（同时是 useFonts 的 key 和 fontFamily 的值）。 */
-export const CUSTOM_FONT_FAMILY = 'DSEG7Classic-Bold';
+/** 日期用的等宽字体族。两平台都是 0.6 em 等宽。 */
+export const DATE_MONO_FAMILY =
+  Platform.select({ ios: 'CourierNewPS-BoldMT', android: 'monospace', default: 'monospace' }) ?? 'monospace';
 
 /**
- * 自定义字体资源。
- * `null` = 用系统等宽字体。注意类型标成 `number | null`：RN 里 require 图片/字体返回资源 id。
+ * 旧名字，保留是为了不动 `CameraScreen` / `GalleryScreen` 的调用点。
+ *
+ * 两个名字现在指同一个值 —— 但**语义不同**：`DATE_MONO_FAMILY` 说的是"日期用哪个族"，
+ * `SYSTEM_MONO_FAMILY` 说的是"没有自定义字体时的兜底"。自定义字体这条路已经拆了，
+ * 于是两者重合。新代码请用 `DATE_MONO_FAMILY`。
  */
-const CUSTOM_FONT: number | null = null;
+export const SYSTEM_MONO_FAMILY = DATE_MONO_FAMILY;
 
-/** 系统等宽兜底字体（各平台都有）。 */
-export const SYSTEM_MONO_FAMILY =
-  Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }) ?? 'monospace';
-
-/** 其它可考虑的系统等宽字体：iOS 'Courier' / 'Courier New'、Android 'monospace'。 */
-export const MONO_FALLBACK_HINTS = ['Menlo', 'Courier', 'monospace'] as const;
-
+/**
+ * 仍然是 hook（而不是一个常量导出），因为两个调用点都是
+ * `const fonts = useFilmFonts(); ... fontFamily={fonts.fontFamily}`。
+ *
+ * `ready` 恒为 `true`：系统字体从第一帧就在，没有任何异步加载需要等 ——
+ * 这也顺手消掉了"字体没加载完时日期空一拍"的概率。
+ * `source` 恒为 `'system'`，留着是为了让调试面板还能区分"字体来自哪"。
+ */
 export function useFilmFonts(): FilmFontsState {
-  // 空 map 是安全的（官方 useFonts 支持），加载完 loaded 会变 true
-  const [loaded, error] = useFonts(CUSTOM_FONT === null ? {} : { [CUSTOM_FONT_FAMILY]: CUSTOM_FONT });
-
-  const customLoaded = CUSTOM_FONT !== null && loaded && error == null;
-
-  return {
-    // ready = 加载结束（成功或失败都算结束，失败就降级用系统字体，不能卡住 UI）
-    ready: loaded || error != null,
-    customLoaded,
-    fontFamily: customLoaded ? CUSTOM_FONT_FAMILY : SYSTEM_MONO_FAMILY,
-    source: customLoaded ? 'custom' : 'system',
-  };
+  return { ready: true, customLoaded: false, fontFamily: DATE_MONO_FAMILY, source: 'system' };
 }

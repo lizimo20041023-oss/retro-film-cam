@@ -221,6 +221,8 @@ export const zhHant: Messages = {
   'camera.focus.hint': '輕觸對焦',
   'camera.exposure.a11y': '曝光滑桿，上下滑動調整',
   'camera.frame.slot2': '拍第二格',
+  'camera.half.plate': '[ 1 / 2 ]',
+  'camera.half.hint': '再按一次完成',
   'frame.fp100c': '撕拉片',
   'frame.halfFrame': '半格雙聯',
   'frame.sheet8x10': '8×10 散頁',

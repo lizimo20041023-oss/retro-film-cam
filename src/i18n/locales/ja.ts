@@ -227,6 +227,8 @@ export const ja: Messages = {
   'camera.focus.hint': 'タップしてピント合わせ',
   'camera.exposure.a11y': '露出スライダー、上下にスワイプして調整',
   'camera.frame.slot2': '2 コマ目を撮影',
+  'camera.half.plate': '[ 1 / 2 ]',
+  'camera.half.hint': 'もう一度押すと完成',
   'frame.fp100c': 'ピールアパート',
   'frame.halfFrame': 'ハーフ判二連',
   'frame.sheet8x10': '8×10 シート',

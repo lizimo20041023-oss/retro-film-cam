@@ -10,11 +10,12 @@
  *   ③ 水印。日期和定位**一起**排在最后：
  *      烧在画面内部时画在照片之上，烧在相框留白里时必须盖在相框之上，
  *      两种锚点都是"最后画"最安全 —— 所以它们共用一个 `pieces` 数组、一次渲染。
- *      ⚠️ **七段日期契约（`src/utils/geometry.ts` 的 `WatermarkLine.quartz` 上另有一份）**：
- *      `piece.quartz` 存在时**必须**用 `<SegmentDate/>` 画，**不能**退回 `<Text>`，
- *      容器宽度只能用 `quartz.width` 并且不许被压缩。曾经日期就是一个普通 `<Text>`，
- *      被 `flexShrink` 压成了 `26 10...` —— 这一行就是那个 bug 的修复面。
- *      而 `piece.text` 是紧挨在数码管**前面**的那一小段文字（只有 `centered` 版式非空），
+ *      ⚠️ **日期块契约（`src/utils/geometry.ts` 的 `WatermarkLine.quartz` 上另有一份）**：
+ *      `piece.quartz` 存在时**必须**用 `<DateStamp/>` 画进一个固定宽度的容器，
+ *      容器宽度只能用 `quartz.width` 并且不许被压缩（`flexShrink: 0`）。
+ *      曾经日期就是一个普通 `<Text>`，被 `flexShrink` 压成了 `26 10...` ——
+ *      这一行就是那个 bug 的修复面。
+ *      而 `piece.text` 是紧挨在日期块**前面**的那一小段文字（只有 `centered` 版式非空），
  *      它才是可以被省略号收掉的一段。
  *
  * 为什么调色层要关在 `overflow: 'hidden'` 的窗口容器里？
@@ -59,7 +60,7 @@ import {
 } from '../utils/geometry';
 import type { WatermarkQuartz } from '../utils/geometry';
 import { buildGradeLayers } from '../utils/gradeLayers';
-import { SegmentDate } from './SegmentDate';
+import { DateStamp } from './DateStamp';
 
 export interface FilmCompositorProps {
   /** 要合成的一切数据（由 `useFilmStage` 提供）。 */
@@ -108,7 +109,7 @@ export interface WatermarkPiece {
    */
   shadowColor?: string;
   /**
-   * 七段日期（见 `WatermarkLine.quartz` 的契约）：有它就**必须**用 `<SegmentDate/>` 画。
+   * 日期块（见 `WatermarkLine.quartz` 的契约）：有它就**必须**用 `<DateStamp/>` 画。
    * `width` 是算好的固定宽度，渲染时必须原样用、且不可压缩。
    */
   quartz?: WatermarkQuartz;
@@ -519,7 +520,7 @@ export function FilmCompositor({
                 },
               ]}
             >
-              <QuartzPiece piece={piece} />
+              <QuartzPiece piece={piece} fontFamily={fontFamily} />
             </View>
           );
         }
@@ -555,9 +556,13 @@ export function FilmCompositor({
             >
               {piece.text}
             </Text>
-            <View style={{ marginBottom: Math.round(piece.fontSize * TEXT_DESCENT_RATIO) }}>
-              <QuartzPiece piece={piece} />
-            </View>
+            {/*
+              日期块与旁边的文字**下沿对齐**（`centeredRow` 的 `alignItems: 'flex-end'`）。
+              老实现还要在这里补一个 `marginBottom: fontSize × 0.21`，因为那时日期是画出来的
+              管子、没有降部，直接对齐下沿会显得往下掉。现在日期就是一行 `<Text>`，
+              降部本来就在行盒里 —— 再补一次反而会把它抬高一截。
+            */}
+            <QuartzPiece piece={piece} fontFamily={fontFamily} />
           </View>
         );
       })}
@@ -637,15 +642,11 @@ function GradeLayerView({ layer, rawUri, photoFit, onImageLoad }: GradeLayerView
 
 const FLIP_X = [{ scaleX: -1 }];
 
-/**
- * 居中版式里数码管要抬高多少 —— 文字行盒的**降部**高度（× 字号）。
- *
- * iOS 默认行高 ≈ 1.16 × 字号，基线以下那一截约占 0.21。`alignItems: 'flex-end'`
- * 会把两个片段的下沿对齐，于是管子看起来比文字低了小半行（管子没有降部）；
- * 抬高这么多，两者就坐在同一条基线上。
- * 其余三种版式不用它：那边的管子位置由 `geometry.ts` 的 `quartzBottom` 算好了。
+/*
+ * v1.4.1 删掉了 `TEXT_DESCENT_RATIO`（0.21）。
+ * 那时 `centered` 版式要把画出来的七段管抬高"一个降部"，好和旁边的文字坐在同一条基线上；
+ * 日期换成真实 `<Text>` 之后降部本来就在行盒里，抬高反而错位。
  */
-const TEXT_DESCENT_RATIO = 0.21;
 
 /**
  * 一行文字的样式。普通文字行与居中版式的文字片段共用一套。
@@ -672,24 +673,19 @@ function stampTextStyle(piece: WatermarkPiece, fontFamily: string, glowEnabled: 
 }
 
 /**
- * 七段日期片段。参数**全部**来自 `piece.quartz` 与 `piece.color`，
+ * 日期片段。参数**全部**来自 `piece.quartz` 与 `piece.color`，
  * 这里不做任何判断（阴影该不该发、发什么颜色都由 `geometry.ts` 定好了）。
+ *
+ * 字体族是单独的参数、不塞进 `quartz`：`quartz` 装的是"排版算出来的数"，
+ * 字体是"这台机器上装了哪个族" —— 混在一起会让 `geometry.ts` 那个纯函数
+ * 不得不认识 `Platform`。
  */
-function QuartzPiece({ piece }: { piece: WatermarkPiece }) {
+function QuartzPiece({ piece, fontFamily }: { piece: WatermarkPiece; fontFamily: string }) {
   const quartz = piece.quartz;
   if (quartz === undefined) {
     return null;
   }
-  return (
-    <SegmentDate
-      text={quartz.text}
-      height={quartz.height}
-      gap={quartz.gap}
-      color={piece.color}
-      shadowColor={quartz.shadowColor}
-      shadowRadius={quartz.shadowRadius}
-    />
-  );
+  return <DateStamp quartz={quartz} color={piece.color} fontFamily={fontFamily} />;
 }
 
 const styles = StyleSheet.create({

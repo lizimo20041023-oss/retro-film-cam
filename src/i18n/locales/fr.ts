@@ -234,6 +234,8 @@ export const fr: Messages = {
   'camera.focus.hint': 'Touchez pour faire le point',
   'camera.exposure.a11y': 'Curseur d\'exposition, balayez vers le haut ou le bas',
   'camera.frame.slot2': 'Prenez la deuxième vue',
+  'camera.half.plate': '[ 1 / 2 ]',
+  'camera.half.hint': 'Appuyez encore pour terminer',
   'frame.fp100c': 'Pelable',
   'frame.halfFrame': 'Demi-format',
   'frame.sheet8x10': 'Feuille 8×10',

@@ -231,6 +231,8 @@ export const en: Messages = {
   'camera.focus.hint': 'Tap to focus',
   'camera.exposure.a11y': 'Exposure slider, swipe up or down',
   'camera.frame.slot2': 'Shoot the second frame',
+  'camera.half.plate': '[ 1 / 2 ]',
+  'camera.half.hint': 'Press once more to finish',
   'frame.fp100c': 'Peel-apart',
   'frame.halfFrame': 'Half frame',
   'frame.sheet8x10': '8×10 sheet',

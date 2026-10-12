@@ -279,7 +279,12 @@ export interface TimestampConfig {
   glow?: boolean;
   /** 字重，默认 `'700'`。 */
   fontWeight?: FontWeight;
-  /** 自定义字体族：需先用 `useFilmFonts` 加载本地 ttf；不填 = 系统等宽字体兜底。 */
+  /**
+   * 自定义字体族。**v1.4.1 起不要再用了** —— 自定义字体这条路已经拆掉
+   * （见 `src/hooks/useFilmFonts.ts` 顶部：Metro 只认静态 `require`，字体没 link 进
+   * 原生工程时 iOS 取不到字形，而日期是成片上的字、印错不可撤销）。
+   * 留字段是为了不改老预设的数据，填了也会被系统等宽字体覆盖。
+   */
   fontFamily?: string;
   /** 覆盖相框自带的锚点。 */
   anchor?: TimestampAnchor;

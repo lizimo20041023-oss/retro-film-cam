@@ -232,6 +232,10 @@ export const zhHans = {
   'camera.focus.hint': '轻触对焦',
   'camera.exposure.a11y': '曝光滑块，上下滑动调整',
   'camera.frame.slot2': '拍第二格',
+  // 半格双联：第一格已入缓存、等第二格时的提示。`plate` 里是"第几张 / 共几张"，
+  // 数字在两格里写死 —— 半格就是 2 格，不做成占位符省得将来有人传错参数。
+  'camera.half.plate': '[ 1 / 2 ]',
+  'camera.half.hint': '再按一次完成',
   'frame.fp100c': '撕拉片',
   'frame.halfFrame': '半格双联',
   'frame.sheet8x10': '8×10 散页',

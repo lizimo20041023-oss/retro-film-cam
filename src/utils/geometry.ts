@@ -25,11 +25,17 @@
  *   2. 边距是**相框宽度**的比例：留白随图放大缩小；
  *   3. `frame` 锚点在**下留白里垂直居中**，用 0.62 修正基线（数码管字面偏上）。
  *
- * ④ **七段日期**：日期行不再是一串文字，而是 `SegmentDate` 画出来的石英数码管。
- *    宽度由 `segmentDateWidth()` **精确算出**、写进 `WatermarkLine.quartz`，
- *    渲染层把这一行当**固定宽度**容器画 —— 这就是"时间被截断成 `26 10...`"的根治办法
- *    （文字行会被 `flexShrink` 压，固定宽度压不动）。字宽 / 格距的比例常量也放在这里
- *    （`QUARTZ_*`），和 `SegmentDate.tsx` 共用同一份，两边不会漂。
+ * ④ **日期块**：日期行是一个**宽度算得出来**的等宽粗体块，不再是普通文字行。
+ *    宽度由 `dateStampWidth()` 精确算出、写进 `WatermarkLine.quartz`，
+ *    渲染层把这一行当**固定宽度**容器画（`<DateStamp/>`，`flexShrink: 0`）——
+ *    这就是"时间被截断成 `26 10...`"的根治办法（文字行会被 `flexShrink` 压，
+ *    固定宽度压不动）。字宽的常量（`MONO_ADVANCE_RATIO` / `DATE_LETTER_SPACING`）
+ *    也放在这里，和 `DateStamp.tsx` 共用同一份，两边不会漂。
+ *
+ *    ⚠️ v1.4.1 起这一行**不再是七段数码管**（原 `SegmentDate.tsx` 已删除）。
+ *    七段是画出来的形体，字号收到 8pt 时管高只剩 6pt、竖段 0.74pt 比段厚 0.84pt 还短，
+ *    整串退化成"一排横虚线" —— 那才是用户报的"时间乱码"，和字体无关。
+ *    推导与复现脚本见 `src/components/DateStamp.tsx` 顶部。
  */
 import type { LocaleId } from '../i18n/types';
 import { CENTERED_SEPARATOR, pad2, timestampTracking } from './formatTimestamp';
@@ -293,92 +299,50 @@ export function resolveTimestampAnchor(
 export type WatermarkLineKind = 'place' | 'date' | 'code';
 
 /* ==========================================================================
- * 七段数码管（Quartz Date）的字宽
+ * 日期串的字宽（等宽字体的 advance）
  * ========================================================================== */
 
 /**
- * 一位数字的宽度 ÷ 数码管高度。
+ * 等宽字体一个字符的 advance ÷ 字号。
  *
- * 0.55 是七段数码管的经典字宽比（比等宽字体的 0.6 窄一点）：
- * 横段够长才像"管子"，再宽就会像三个方块拼起来的方格纸。
+ * **0.6 是两平台可以共用同一个数的原因**：iOS 的 `CourierNewPS-BoldMT`（Courier New）
+ * 与 Android 的 `monospace`（Roboto Mono / Droid Sans Mono）都是 600/1000 em 的等宽字。
+ * 也就是说这条宽度公式不需要 `Platform.select`，算出来的宽度在两个平台上逐点相同。
+ *
+ * **换字体之前先把这一条重新量一遍。** 它错了不会报错，只会让日期行的宽度整体偏 ——
+ * 靠右时表现为"离相框边多远不对"，靠左时表现为"压没压到地名"。
  */
-export const QUARTZ_DIGIT_WIDTH_RATIO = 0.55;
-/** 窄格（引号 / 空格 / 小数点）宽度 ÷ 高度。规格给的 0.2。 */
-export const QUARTZ_MARK_WIDTH_RATIO = 0.2;
-/** 相邻两格之间的空档 ÷ 高度。 */
-export const QUARTZ_CELL_GAP_RATIO = 0.06;
-/** 段与段之间的缝宽（逻辑点），也是 `SegmentDate` 的 `gap` 默认值。 */
-export const QUARTZ_SEGMENT_GAP = 0.5;
+export const MONO_ADVANCE_RATIO = 0.6;
 
-/** 石英日期里的一个格子。 */
-export interface QuartzCell {
-  /** 这格里是哪个字符（数字走七段，其余走窄格）。 */
-  char: string;
-  /** 距整串左沿的距离（逻辑点）。 */
-  left: number;
-  /** 格宽（逻辑点）：数字 ≈ `height * 0.55`，窄格 `height * 0.2`。 */
-  width: number;
-}
-
-/** 一整串石英日期的格子排布。渲染层**只照着画**，不再自己算宽度。 */
-export interface QuartzCellLayout {
-  /** 整串宽度 —— 这就是 `WatermarkLine.quartz.width` 的来源。 */
-  width: number;
-  height: number;
-  gap: number;
-  cells: QuartzCell[];
-}
+/**
+ * 日期串的默认字距（逻辑点）。
+ *
+ * 值由用户直接指定（"等宽粗体 + letterSpacing 2"要的那种数字显示感）。
+ * 它不只是好看：等宽字在小字号下字与字挨得很近，2pt 的缝把每一位分开，
+ * 压在杂乱的照片上更容易一眼读出来 —— 这一点在 8pt 时比在大字号时重要得多。
+ */
+export const DATE_LETTER_SPACING = 2;
 
 /** 两位小数。水印全链路的"精度收敛点"，免得 `0.55 * 10` 的浮点尾巴跑到宽度上。 */
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-/** 数字格 / 窄格各占多宽。 */
-function quartzCellWidth(char: string, height: number): number {
-  const ratio = char >= '0' && char <= '9' ? QUARTZ_DIGIT_WIDTH_RATIO : QUARTZ_MARK_WIDTH_RATIO;
-  return round2(height * ratio);
-}
-
-/** 格与格之间的空档：至少一个缝宽，免得相邻数字挤在一起。 */
-function quartzCellGap(height: number, gap: number): number {
-  return round2(Math.max(gap, height * QUARTZ_CELL_GAP_RATIO));
-}
-
 /**
- * 把一串石英日期摊成格子：`'26  10  12` → 11 格（引号 1 + 数字 6 + 空格 4）。
- *
- * 空格也占格：它是"年月日分组"的空档，宽度和引号 / 小数点一样是窄格
- * （`SegmentDate.tsx` 里写了为什么空格不落墨）。
- */
-export function quartzCellLayout(text: string, height: number, gap: number = QUARTZ_SEGMENT_GAP): QuartzCellLayout {
-  const cellGap = quartzCellGap(height, gap);
-  const cells: QuartzCell[] = [];
-  let left = 0;
-  for (const char of text) {
-    const width = quartzCellWidth(char, height);
-    cells.push({ char, left: round2(left), width });
-    left += width + cellGap;
-  }
-  return {
-    // 最后一个格子后面没有空档
-    width: cells.length === 0 ? 0 : round2(left - cellGap),
-    height,
-    gap,
-    cells,
-  };
-}
-
-/**
- * 石英日期的总宽度（逻辑点）。
+ * 日期串的渲染宽度（逻辑点）。
  *
  * **这是"日期行宽度"的唯一定义**：`computeWatermarkPlan` 用它算 `quartz.width`，
- * `SegmentDate` 用它算容器宽度和每个格子的落点。两边共用同一个函数，
- * "算出来的宽度"和"画出来的宽度"在结构上不可能不一致 ——
- * 这正是"日期被截断"那个 bug（宽度由文字排版挤出来）的修复方式。
+ * `DateStamp` 拿它当容器宽度。两边共用同一个函数，"算出来的宽度"和"画出来的宽度"
+ * 在结构上不可能不一致 —— 这正是"日期被截断"那个 bug 的修复方式。
+ *
+ * 为什么是 `length × (advance + letterSpacing)` 而**不减掉**尾字距：
+ * RN 的 `letterSpacing` 在 iOS 走 `NSKernAttributeName`，**每个**字形后面都加一笔，
+ * 最后一个也加。所以整块的真实占宽就是 `n × (advance + ls)`。
+ * 减掉尾字距会让容器比文字窄 2pt，靠右的那一行就有被省略号收掉的风险 ——
+ * 宁可让日期离右边多出 2pt（肉眼看不出来），也不能冒截断的险。
  */
-export function segmentDateWidth(text: string, height: number, gap: number = QUARTZ_SEGMENT_GAP): number {
-  return quartzCellLayout(text, height, gap).width;
+export function dateStampWidth(text: string, fontSize: number, letterSpacing: number = DATE_LETTER_SPACING): number {
+  return round2(text.length * (fontSize * MONO_ADVANCE_RATIO + letterSpacing));
 }
 
 /** 一段水印文字的水平贴边方式。 */
@@ -423,31 +387,39 @@ export interface WatermarkLine {
    */
   shadowColor?: string;
   /**
-   * 这一行是**石英数码管**而不是文字（不填 = 普通 `<Text>` 行）。
+   * 这一行是**日期块**（固定宽度的独立容器）而不是普通文字行（不填 = 普通 `<Text>` 行）。
    *
    * ⚠️ **契约（和 `FilmCompositor.tsx` 里各写一份）**：给了 `quartz` 就必须用
-   * `<SegmentDate .../>` 渲染，**不能**退回 `<Text>` —— 文字行会被 `flexShrink` 压缩，
-   * 一压就成了 `26 10...`，那正是要修掉的 bug。同时：
-   * - 容器的宽度**只能**用 `quartz.width`，而且不许被任何 flex 规则改小；
-   * - `text` 是紧挨在数码管**前面**的那一小段文字（`centered` 版式里的"地名 + 分隔符"，
+   * `<DateStamp .../>` 渲染，容器宽度**只能**用 `quartz.width`，而且不许被任何 flex
+   * 规则改小（`flexShrink: 0`）—— 普通文字行会被 `flexShrink` 压缩，一压就成了
+   * `26 10...`，那正是要修掉的 bug。同时：
+   * - `text` 是紧挨在日期块**前面**的那一小段文字（`centered` 版式里的"地名 + 分隔符"，
    *   其它版式是空串），它才是可以被省略号收掉的那一段。
    */
   quartz?: WatermarkQuartz;
 }
 
-/** 一行石英数码管的渲染参数。宽度来自 `segmentDateWidth()`，渲染层照抄，不再自己算。 */
+/** 一行日期的渲染参数。宽度来自 `dateStampWidth()`，渲染层照抄，不再自己算。 */
 export interface WatermarkQuartz {
-  /** 数码管本身要画的串：`formatQuartzDate()` 的输出（例如 `'26  10  12`）。 */
+  /** 要印的串：`formatQuartzDate()` 的输出（例如 `'26  10  12`）。 */
   text: string;
   /** 整串宽度（逻辑点）：容器宽度必须是它，且不可压缩。 */
   width: number;
-  /** 一位数字的高度（逻辑点）。 */
-  height: number;
-  /** 段与段之间的缝宽（逻辑点）。 */
-  gap: number;
-  /** 管外那圈阴影的颜色（见 `quartzShadow`）。 */
+  /** 字号（逻辑点）。 */
+  fontSize: number;
+  /** 字距（逻辑点）。 */
+  letterSpacing: number;
+  /**
+   * 字重。
+   *
+   * **跟着这一块走，不跟地名走**：地名可能是 400 的打字机体（graphite 墨色），
+   * 而日期要的是"数字显示"的粗体 —— 两者在 `centered` 版式里会并排出现，
+   * 让它们共用一个字重就会有一边不对。
+   */
+  fontWeight: FontWeight;
+  /** 字外那圈阴影的颜色（见 `quartzShadow`）。 */
   shadowColor: string;
-  /** 阴影半径（逻辑点）。 */
+  /** 阴影半径（逻辑点）。0 = 不投影。 */
   shadowRadius: number;
 }
 
@@ -608,34 +580,20 @@ const BASELINE_CORRECTION = 0.62;
 const STACKED_LEADING = 1.32;
 
 /**
- * 石英数码管的管高 ÷ 日期字号。
+ * 日期块的行高 ÷ 字号（iOS 默认行高 ≈ 1.16 × 字号）。
  *
- * 为什么不 1:1：日期字号是**排字用的行高**，管子是**画出来的形体**，两者不必等大；
- * 而且管子本来就该比行高矮一点，才能和旁边那行地名平视。
+ * **导出给 `DateStamp` 用**：那里用它算 `lineHeight`，这里用它算 `bottom`。
+ * 两边必须是同一个数 —— v1.4.0 之前靠一条"把管子从行盒中心挪下来"的经验公式去对齐，
+ * 现在两边同源，没有可以对不齐的空间。
  *
- * 改版后的实际效果（舞台短边 358）：
- * - 手机档：日期 8pt → 8 × 0.58 = 4.64 → 被 `MIN_QUARTZ_HEIGHT` 兜到 **6pt**，
- *   也就是管子高度由下限决定（段厚 0.84pt、缝 0.5pt，成片放大 ~4.7× 后是 4px / 2.3px，还认得出）；
- * - 平板档（舞台短边 700）：日期 14pt → **8pt**，这时才由这条比例说话。
- * 想再缩小日期，改的是 `DATE_FONT_SHORT_EDGE_RATIO`，不是这条 —— 这条只决定"管子比字矮多少"。
+ * 顺带说明**被删掉的两个常量**（v1.4.1）：
+ * `QUARTZ_HEIGHT_SCALE = 0.58` 与 `MIN_QUARTZ_HEIGHT = 6` 是给**手绘七段管**用的 ——
+ * 管子的"高"是画出来的形体，本来就该比行高矮一点。日期换成真实字形之后，
+ * "字号"就是字形自己的尺寸，再乘一次系数等于把字又缩小一档。
+ * 那个 0.58 正是把管高压到 6pt、进而让竖段比段厚还短（0.74pt < 0.84pt）、
+ * 整串日期退化成"一排横虚线"的直接原因。两个常量连同这条数学一起删除。
  */
-const QUARTZ_HEIGHT_SCALE = 0.58;
-/**
- * 数码管最小管高（逻辑点）。
- *
- * 再小下去段厚只剩 0.8pt、缝 0.5pt，管子和缝会糊成一片。
- * 日期字号下限 `MIN_DATE_FONT = 8` 乘 0.58 是 4.64，所以这条兜底真的会被用到
- * （窄幅相框 + 小屏）。
- */
-const MIN_QUARTZ_HEIGHT = 6;
-/**
- * 文字行盒高度 ÷ 字号（iOS 默认行高 ≈ 1.16 × 字号）。
- *
- * 用来把数码管摆在**原来那一行文字的位置上垂直居中**：`bottom` 是给文字行盒算的，
- * 直接把管子的下沿放到 `bottom` 会显得偏下（管子没有降部）。
- * 0.62 基线修正那套规则一个字没动，这里只是把"文字行盒的中心"换算成"管子的下沿"。
- */
-const QUARTZ_LINE_BOX_RATIO = 1.16;
+export const QUARTZ_LINE_BOX_RATIO = 1.16;
 /** 摄影代号行字号 ÷ 地名行字号（规格：代号比地名再小一档）。 */
 const CODE_FONT_SCALE = 0.9;
 /** `split` 版式里地名与日期之间至少留的空档（逻辑点），免得两段字贴在一起。 */
@@ -774,7 +732,7 @@ export function formatExposureCode(presetName: string, exposureIndex?: number): 
  * 文字是压在照片上的浅色小字，要大半径的彩色辉光才浮得出来；管子是**细线**，
  * 半径一大就糊成一根亮棒，所以规格给的也是固定的 3。
  * 印在相纸留白上的管子不发辉光，但要描一圈极淡的暗边：白纸上的亮橙会"发飘"，
- * 没有边就看不出管子在哪（这就是 `SegmentDate` 那个 `shadowColor` 参数的用途）。
+ * 没有边就看不出管子在哪（这就是 `WatermarkQuartz.shadowColor` 参数的用途）。
  */
 function quartzShadow(
   anchor: TimestampAnchor,
@@ -796,7 +754,7 @@ function quartzShadow(
  *
  * 输入输出单位：`layout` 是逻辑点；返回的 `bottom` / `left` / `right` / `maxWidth` /
  * `fontSize` / `letterSpacing` / `quartz.*` **全部是逻辑点**，交给 `<Text style>` 或
- * `<SegmentDate>` 直接用，不要在这里乘 `PixelRatio`（成片像素由 `captureOptions` 统一决定）。
+ * `<DateStamp>` 直接用，不要在这里乘 `PixelRatio`（成片像素由 `captureOptions` 统一决定）。
  *
  * 退化情形都在这里处理完（合成层不做任何判断）：
  * - 没有地名 → 只剩日期行，四种版式都成立；
@@ -870,26 +828,45 @@ export function computeWatermarkPlan(
    * 被 `flexShrink` 一压就成了 `26 10...`；现在它是一个算好的数，压不动。
    */
   const quartzText = dateText.trim();
-  const quartzHeight = Math.max(MIN_QUARTZ_HEIGHT, Math.round(dateFont * QUARTZ_HEIGHT_SCALE));
+  /*
+   * 日期块的字号**就是日期字号**，不再乘任何系数。
+   *
+   * 见 `QUARTZ_LINE_BOX_RATIO` 上面那段：0.58 是给"画出来的管子"用的，
+   * 真实字形的字号就是它自己的尺寸。8pt 在成片里是
+   * `2048 / 358 ≈ 5.7` 倍 → 字高约 46px，一点都不小。
+   */
   const quartz: WatermarkQuartz = {
     text: quartzText,
-    width: hasDate ? segmentDateWidth(quartzText, quartzHeight, QUARTZ_SEGMENT_GAP) : 0,
-    height: quartzHeight,
-    gap: QUARTZ_SEGMENT_GAP,
+    width: hasDate ? dateStampWidth(quartzText, dateFont, DATE_LETTER_SPACING) : 0,
+    fontSize: dateFont,
+    letterSpacing: DATE_LETTER_SPACING,
+    /*
+     * 粗体。iOS 那个族（`CourierNewPS-BoldMT`）本身就是 Bold 面，写 700 是为了让
+     * Android 的 `monospace` 也跟着加粗 —— 两平台观感一致。
+     */
+    fontWeight: '700',
     ...quartzShadow(anchor, tone, config),
   };
-  // 管子在"原来那一行文字"的位置上垂直居中：`bottom` 是给文字行盒算的，管子没有降部。
-  const quartzBottom = round2(bottom + (dateFont * QUARTZ_LINE_BOX_RATIO - quartzHeight) / 2);
+  /*
+   * 日期块的底沿 = 文字行的底沿，不再有"把管子从行盒中心挪下来"的修正。
+   *
+   * 为什么现在不需要：`bottom` 是给"一行文字的行盒"算的，而日期块现在**就是**一行文字，
+   * 行盒高度由 `DateStamp` 按同一个 `QUARTZ_LINE_BOX_RATIO` 给。
+   * 老实现要修正，是因为管子是一个画出来的形体、和行盒没有关系。
+   */
+  const quartzBottom = bottom;
 
   const dateLine = (overrides: Partial<WatermarkLine>): WatermarkLine => ({
     kind: 'date',
-    // 七段日期不是文字：`text` 留空，内容在 `quartz.text` 里（见 `WatermarkLine.quartz`）
+    // 日期块不是文字：`text` 留空，内容在 `quartz.text` 里（见 `WatermarkLine.quartz`）
     text: '',
     bottom: quartzBottom,
-    // 靠右时**不补**尾字距：数码管的右沿就是水印区右沿
+    // 靠右时**不补**尾字距：`quartz.width` 里已经把 `letterSpacing`（含最后一个字形
+    // 后面那一笔）算进去了，右沿就是水印区右沿
     align: { right: regionRight },
     fontSize: dateFont,
-    // 数码管没有字距（格宽已经算进字形里）；这个字段只对 `centered` 那半行文字有意义
+    // 这一行的字距对日期块本身没有意义（`DateStamp` 读的是 `quartz.letterSpacing`）；
+    // 这个字段只作用于 `centered` 版式里紧挨在日期块**前面**的那半行文字
     letterSpacing: 0,
     color: ink.color,
     fontWeight: ink.fontWeight,
