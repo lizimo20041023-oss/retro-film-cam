@@ -14,6 +14,11 @@ assets/textures/_grade-*.png
 assets/frames/_*.png
 .ui-preview.png
 scripts/__pycache__/
+# 我自己写提交信息 / 一次性检查用的临时文件，一律下划线开头放在仓库根
+/_*.txt
+/_*.py
+/_*.ps1
+/_*.json
 
 # 原生工程（本项目是纯 managed，用不到；prebuild 后才会出现）
 /ios/
