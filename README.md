@@ -1484,10 +1484,22 @@ App 里打包了 Expo、React Native、React、Hermes、SDWebImage 等开源组�
 - **Release 里的 IPA 直链失效了** —— 私有仓库的资产不登录下载不了。
   给朋友装 App 现在只能**直接把 `.ipa` 文件发过去**，
   见 [给朋友：怎么装 FretroCam.md](给朋友：怎么装%20FretroCam.md) 第 8 节。
-- **GitHub Actions 开始计费**：Free 账号私有仓库每月 2000 分钟，macOS 机器按 **10 倍**扣，
-  一次约 5 分钟的构建记掉约 50 分钟 —— 一个月只够跑 4 次。
+- **GitHub Actions 开始计费**：Free 账号私有仓库每月 **2000 分钟**，macOS 机器按
+  [**约 10 倍**](https://docs.github.com/en/billing/reference/actions-runner-pricing)扣
+  （Linux 2 核 $0.006/分钟，macOS 3~4 核 $0.062/分钟），
+  折成**真实的 macOS 时间大约是每月 200 分钟**。本项目一次构建实测 4~5 分钟
+  （release 版 `pod install` + `xcodebuild`）—— 也就是**一个月大约能跑 40 次**。
+  作为参照：从 v1.0 到 v1.3.0 整个开发过程一共跑了 **21 次**，合计约 **70 分钟**真实
+  macOS 时间、折算约 **700 分钟**额度，大概是**一个月份额的 1/3**。
   所以 `.github/workflows/build-ios-ipa.yml` 的 push 触发器加了 `paths-ignore`，
-  纯文档提交不再构建。
+  纯文档提交（`**.md` 等）不再构建。
+  另一条容易撞的墙是**工件存储上限 500 MB**（分钟数是按月清零的，存储是按小时累计的）：
+  每个 ipa 约 9 MB，本仓库当前存了 11 个工件、共 88 MB（约 17.6%）。
+  留着一堆旧工件不会额外扣分钟数，但会占满这 500 MB。
+  真不够用了有四条路：① 把仓库改成 **public** —— 公开仓库的标准 runner **完全不限量**；
+  ② 在 Actions 页面把本 workflow 整个 **Disable** 掉，需要时再手动 `Run workflow`；
+  ③ 删掉旧工件腾存储；④ 直接买额度，macOS 是 **$0.062/分钟**，
+  一次 5 分钟的构建约 **$0.31**。
 - 已经 fork 出去的副本不受影响（转私有收不回来）。本仓库转私有当刻的 fork 数是 **0**。
 
 ---
