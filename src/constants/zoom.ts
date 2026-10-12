@@ -1,81 +1,72 @@
 /**
- * 变焦 ZOOM 的取值规则。
+ * 变焦行程的常量与换算。
  *
- * ## 为什么用原生 zoom，而不是自己裁一刀
+ * ## 这一层为什么存在
  *
- * expo-camera 的 `zoom` 属性最终落到 iOS 的 `AVCaptureDevice.videoZoomFactor`
- * （`node_modules/expo-camera/ios/Current/CameraSessionManager.swift:221`）：
+ * `<CameraView zoom={...}>` 不是"放大 N 倍"，而是喂给原生的一段**指数行程**：
  *
- *     device.videoZoomFactor = minZoom * pow(device.activeFormat.videoMaxZoomFactor / minZoom, delegate.zoom)
+ *   iOS:  device.videoZoomFactor = minZoom * pow(videoMaxZoomFactor / minZoom, zoom)
+ *   And.: ratio = pow(videoMaxZoomFactor / minZoom, zoom)（源码里同一套公式）
  *
- * 两件事值得注意：
+ * 也就是说 `zoom = 0` 是这颗镜头的原生视场，`zoom = 1` 才是"该格式的最大数码变焦"。
+ * 这里刻意**不**把 UI 暴露成绝对倍率：`videoMaxZoomFactor` 从 JS 侧读不到
+ * （expo-camera 没有暴露），只能假定一个值，任何"绝对倍率"都是假的。所以对外只有
+ * 一条抽象的 0~`ZOOM_MAX` 行程，UI 上另有一个百分比读数。
  *
- * 1. 它是**指数插值**的（`minZoom` 写死 1.0），所以行程的手感像真实变焦环 ——
- *    每往上一格，放大倍率乘一个固定系数，而不是线性加一点。
- * 2. `videoZoomFactor` 是**设备级**属性：预览和 `takePicture()` 的输出一起吃这个值。
+ * 另一个必须记住的性质：`zoom` 是**设备级**的，预览流和拍照走同一个 `videoZoomFactor`，
+ * 所以"取景器里看到的构图 = 存下来的构图"，不存在按下快门瞬间跳变的问题。
  *
- * 第 2 点是这里不去自己写裁剪的根本原因 —— 「取景器里看到多大，成片就是多大」
- * 是白送的，而且成片是相机自己按传感器裁出来的全分辨率结果，比「先拍全图、
- * 再拿缩到 2048px 的图去裁中心」清楚一个数量级。
+ * ## 为什么上限是 0.75 而不是 1
  *
- * ## 为什么量程上限只到 0.75
+ * 假定 `videoMaxZoomFactor = 16`（见 `lenses.ts` 里 `ASSUMED_MAX_ZOOM_FACTOR` 的注释），
+ * 行程 1.0 意味着 16 倍数码变焦 —— 像素级糊掉，对一台"胶片相机"毫无意义。
+ * 0.75 大约对应 8 倍，远超实用范围但留了余量，也给 2× 档留出了空间。
  *
- * `zoom = 1` 的含义是「设备允许的最大数码变焦」。iPhone 后置广角这个值普遍在
- * 十几倍（部分机型更高），而本项目拍完还要把长边缩到 2048px ——
- * 拉满就是一坨糊掉的颜色，没有任何可用画面。
+ * ## 档位制的现状（ZoomBar → ZoomStops）
  *
- * 具体数字只能靠假定：JS 读不到 `videoMaxZoomFactor`（见下节），`src/constants/lenses.ts`
- * 里按 **16** 算（`ASSUMED_MAX_ZOOM_FACTOR`）。按 16 算，0.75 大约是 8 倍，已经够用；
- * 就算真机是 8 倍或 32 倍，因为这个刻度和倍率之间是**对数**关系，差别也只有一档左右。
- * 宁可少给一段，不要给一段全是噪点的行程。
- *
- * ## 为什么显示的是百分比，而不是「×N 倍」
- *
- * `videoMaxZoomFactor` 只有原生侧读得到，JS 拿不到，所以**设备真实的最大倍率是未知的**，
- * 也就没法把 0~1 换成准确的倍数。写死一个「×8」在 16 倍的机型和 8 倍的机型上
- * 总有一边是错的，而错的数字比没有数字更糟。百分比永远是对的，
- * 也符合本 App 到处是仪表读数的调性（LCD 上本来就写着 `颗粒 STD .30 · 暗角 .18`）。
+ * 早期这里给一条可拖动的连续滑轨（`ZoomBar.tsx`）用：`ZOOM_TICKS` / `zoomTickRatios()`
+ * 生成轨上的刻度比例，`ZOOM_STEP` 给无障碍的 increment / decrement 用。现在滑轨换成了
+ * 三个固定档位（`ZoomStops.tsx`），档位表在 `lenses.ts` 里、每档自带换算好的 zoom 字面量，
+ * 所以**刻度和步进都不再需要**，只剩"夹取 + 量化 + 百分比"这三件仍然有用：
+ * 捏合手势（`usePinchZoom`）依旧是连续的，它必须经过这里的 `clampZoom` / `toCameraZoom`。
  */
 
-/** 不放大。 */
+/** 行程下界：0 = 当前镜头的原生视场，不做任何数码放大。 */
 export const ZOOM_MIN = 0;
 
-/** 量程上限（**是传给 zoom 的值，不是倍数**，见文件头）。 */
+/** 行程上界：见文件头"为什么上限是 0.75"。 */
 export const ZOOM_MAX = 0.75;
 
-/** 开机默认：不放大。 */
+/** 默认档：开机 / 翻转镜头后回到原生视场。 */
 export const DEFAULT_ZOOM = ZOOM_MIN;
 
-/** 轨道上刻几道参考刻度（不含两端）。 */
-export const ZOOM_TICKS = 4;
-
-/** 无障碍「增大 / 减小」一格的步长：整条轨道分成 20 格。 */
-export const ZOOM_STEP = ZOOM_MAX / 20;
-
+/** 把任意输入收回 [ZOOM_MIN, ZOOM_MAX]；非有限值落到默认档（比落到 0 语义更明确）。 */
 export function clampZoom(value: number): number {
   if (!Number.isFinite(value)) {
     return DEFAULT_ZOOM;
   }
-  return Math.min(Math.max(value, ZOOM_MIN), ZOOM_MAX);
+  if (value <= ZOOM_MIN) {
+    return ZOOM_MIN;
+  }
+  if (value >= ZOOM_MAX) {
+    return ZOOM_MAX;
+  }
+  return value;
 }
 
 /**
- * 真正传给 `<CameraView zoom={...}>` 的值。
+ * 量化到 1% 再交给原生。
  *
- * 量化到 1%：拖动时每一帧都会走一次 setState，不量化的话原生侧每帧都要
- * `lockForConfiguration()` 改一次 `videoZoomFactor`，纯属浪费。
- * 1% 对 0.75 的量程来说远超肉眼的区分能力。
+ * `zoom` 只在 prop 变化时才写进原生，但连续捏合会产生成百上千个中间值，
+ * 每个都触发一次 `lockForConfiguration()` 是纯浪费 —— 1% 的行程差异人眼也看不出。
+ * 注意这是**对外**的量化；`lenses.ts` 内部给档位写死字面量时用更高精度（1e-5），
+ * 免得档位在 `toCameraZoom` 里被抹平到相邻档。
  */
 export function toCameraZoom(value: number): number {
   return Math.round(clampZoom(value) * 100) / 100;
 }
 
-/** 0~100，相对量程上限。用于界面读数。 */
+/** 行程 → 0~100 的读数百分比，只用于取景器右下角那个放大读数。 */
 export function zoomPercent(value: number): number {
   return Math.round((clampZoom(value) / ZOOM_MAX) * 100);
-}
-
-/** 刻度的归一化位置（0~1，不含两端），从左往右。 */
-export function zoomTickRatios(): number[] {
-  return Array.from({ length: ZOOM_TICKS }, (_, index) => (index + 1) / (ZOOM_TICKS + 1));
 }

@@ -90,7 +90,7 @@ export const DEFAULT_TIMESTAMP: Omit<ResolvedTimestampConfig, 'fontFamily' | 'an
 export const PRESETS: FilmPreset[] = [
   {
     id: 'retro-400',
-    name: 'RETRO 400',
+    name: 'RT-400',
     description: '默认。微暖、中等颗粒、明显暗角，橙色液晶日期（YY MM DD）',
     color: {
       temperature: 0.28,
@@ -108,7 +108,7 @@ export const PRESETS: FilmPreset[] = [
   },
   {
     id: 'portra-400',
-    name: 'PORTRA 400',
+    name: 'PR-400',
     description: '柔和人像卷：低对比、暖肤色、细颗粒，几乎不动结构',
     color: {
       temperature: 0.2,
@@ -125,7 +125,7 @@ export const PRESETS: FilmPreset[] = [
   },
   {
     id: 'gold-200',
-    name: 'GOLD 200',
+    name: 'AU-200',
     description: '暖黄日光卷 + 右上角漏光，适合下午逆光人像',
     color: {
       temperature: 0.42,
@@ -144,7 +144,7 @@ export const PRESETS: FilmPreset[] = [
   },
   {
     id: 'superia-x',
-    name: 'SUPERIA X',
+    name: 'SP-400',
     description: '冷调偏绿，像阴天街拍；饱和度略降',
     color: {
       temperature: -0.24,
@@ -161,7 +161,7 @@ export const PRESETS: FilmPreset[] = [
   },
   {
     id: 'velvia-50',
-    name: 'VELVIA 50',
+    name: 'VV-50',
     description: '反转片：浓艳、暗部结实、颗粒细，适合风景和花',
     color: {
       temperature: 0.06,
@@ -178,7 +178,7 @@ export const PRESETS: FilmPreset[] = [
   },
   {
     id: 'ccd-cyber',
-    name: 'CCD CYBER',
+    name: 'CCD-CYBER',
     description: '千禧年 CCD 小 DC：青蓝暗部 + 暖高光 + 重色噪，夜景和闪光灯最像',
     color: {
       temperature: -0.12,
@@ -197,7 +197,7 @@ export const PRESETS: FilmPreset[] = [
   },
   {
     id: 'cinestill-800t',
-    name: 'CINESTILL 800T',
+    name: '800-T',
     description: '钨丝灯电影卷：冷调 + 强烈高光晕开（halation），夜里霓虹最出味',
     color: {
       temperature: -0.34,
@@ -217,7 +217,7 @@ export const PRESETS: FilmPreset[] = [
   },
   {
     id: 'digicam-2002',
-    name: 'DIGICAM 2002',
+    name: 'DIGI-02',
     description: '2002 年的卡片机：发灰、偏绿、色噪和暗角都很重，糊得刚刚好',
     color: {
       temperature: 0.12,
@@ -237,7 +237,7 @@ export const PRESETS: FilmPreset[] = [
   },
   {
     id: 'tri-x-400',
-    name: 'TRI-X 400',
+    name: 'TX-400',
     description: '黑白：饱和度归零 + 高对比 + 重颗粒；日期改浅灰（演示颜色可配）',
     color: {
       temperature: 0,
@@ -256,7 +256,7 @@ export const PRESETS: FilmPreset[] = [
   },
   {
     id: 'expired-64',
-    name: 'EXPIRED 64',
+    name: 'EXP-64',
     description: '过期卷：重褪色 + 漏光 + 紫调，日期格式改成 YY-MM-DD',
     color: {
       temperature: 0.15,
@@ -323,7 +323,7 @@ export function resolvePreset(preset: FilmPreset): ResolvedFilmPreset {
     fontWeight: timestamp?.fontWeight ?? DEFAULT_TIMESTAMP.fontWeight,
     // null = 交给 useFilmFonts 决定系统等宽字体
     fontFamily: timestamp?.fontFamily ?? null,
-    // null = 用相框自带的 defaultTimestampAnchor
+    // null = 用相框自带的 watermark.anchor
     anchor: timestamp?.anchor ?? null,
     insetRatio: timestamp?.insetRatio ?? DEFAULT_TIMESTAMP.insetRatio,
   };

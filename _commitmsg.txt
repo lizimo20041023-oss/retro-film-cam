@@ -1,0 +1,30 @@
+feat(v1.2.0): 硬件侧键快门、顶栏重做、变焦三档、水印四版式、相框重做
+
+八项改动：
+1. 新增本地 Expo 模块 modules/physical-shutter —— 用 iOS 17.2+ 的
+   AVCaptureEventInteraction，让 Camera Control 与音量键可以按快门。
+   deployment target 保持 16.4，低于 17.2 时 supported=false、静默 no-op。
+2. 顶栏重做：左上画幅徽标（按真实比例画矩形 + 整数比 + n/N，可点切换）、
+   右上胶片计数 [00A]；去掉四枚拨轮下方的小字说明。
+3. 十个预设显示名改工业代号（RT-400 / PR-400 / AU-200 / ... ），
+   id 一律不动（id 是持久化标识，写进相册索引）。底部改成单行文字
+   + 长按 400ms 开胶卷抽屉，序号定宽不再抖。
+4. 变焦改三档 0.5x / 1x / 2x，等宽容器居中、选中不位移；
+   删掉 ZoomBar.tsx 与主屏颗粒条（颗粒搬进设置页）。
+5. 水印四版式（split/stacked/centered/dateOnly）+ 地名详细度两档
+   + 五语言地名（港澳台在任何语言下都带「中国」前缀）。
+   墨色按 window/frame 锚点分档 —— 修掉白留白上的隐形字与字距双乘。
+6. 相框按真实物理规格重做为 4 款（polaroid-600 / instax-mini /
+   neg-135 / slide-mount），剔除所有伪做旧污渍；素材从 350KB 降到 36.4KB。
+7. 相册灯箱（捏合缩放 + 下拖关闭）+ 存进 RETRO CAM 专用相簿（三级降级）
+   + 设置页新增语言/详细度/版式/颗粒；模态遮罩改成不透明 #0E0F11；
+   全局触觉收敛成 selectionAsync 与 impactAsync(Light) 两档。
+8. App 图标按方案 B 重绘（1024x1024、RGB 无 alpha、扁平矢量）。
+
+顺手修掉三个「设置项只是装饰」的缺陷：grainLevel、watermarkLayout、
+placeDetail 都曾没被传进出片管线，改了设置成片不变。
+
+验证：npm run typecheck exit 0；npx expo export --platform ios exit 0
+（1.2MB bundle）；7 个 python 脚本 py_compile exit 0；4 张相框窗口
+逐像素与设计表一致；5 语言 121 键零漂移。
+未在真机验证的项见 README §23.9（Swift 能否编译、pod install、按键触发）。

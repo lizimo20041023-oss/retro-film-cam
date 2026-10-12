@@ -31,22 +31,30 @@ export const zhHant: Messages = {
   'camera.shutter.a11y': '拍照',
   'camera.shutter.busy': '正在顯影',
 
+  /* ---------------- 底片庫（長按觀景窗下方的底片名打開） ---------------- */
+  // 面板標題是印上去的英文標牌，和 LCD 上的字一樣不翻譯，五種語言共用同一串。
+  'film.drawer.title': 'SELECT FILM STOCK',
+  'film.drawer.a11y': '底片庫，選擇底片預設',
+  'film.drawer.close': '完成',
+  'film.drawer.hint': '長按觀景窗下方的底片名稱也可以打開這裡',
+  'film.card.a11y': '{name}，{description}',
+  'film.card.selected': '已選擇',
+
   /* ---------------- 相框名（頂列那行小字裡顯示） ---------------- */
-  'frame.classicWhite': '纖維相紙',
-  'frame.instant': '拍立得',
-  'frame.film35': '35mm 片邊',
-  'frame.darkroom': '暗房放大',
+  'frame.polaroid600': '一次成像',
+  'frame.instaxMini': '迷你畫幅',
+  'frame.neg135': '135 負片',
   'frame.slideMount': '幻燈裝裱',
-  'frame.orangeBase': '負片片基',
-  'frame.cropMarks': '打樣張',
-  'frame.archiveCard': '檔案卡',
+  'frame.badge.a11y': '畫幅 {name}，第 {count} 張',
 
   /* ---------------- ② 取景器右緣的變焦軌道 ---------------- */
-  'zoom.a11y': '變焦 {percent}%，左右拖動調整',
+  'zoom.a11y': '變焦 {percent}%，左右輕點切換檔位',
   'zoom.label': '變焦',
   'zoom.role.ultraWide': '超廣角',
   'zoom.role.wide': '標準',
+  'zoom.role.tele': '長焦',
   'zoom.stop.a11y': '切換到 {label}',
+  'zoom.stop.digital': '數位變焦',
   'camera.gallery.a11y': '打開 App 相簿',
   'camera.gallery.label': '相簿',
   'gallery.title': '相簿',
@@ -56,6 +64,12 @@ export const zhHant: Messages = {
   'gallery.photo': '第 {index} 張，{date}',
   'gallery.delete': '刪除這張',
   'gallery.cancel': '取消',
+  'gallery.lightbox.a11y': '第 {index} 張，點擊關閉',
+  'gallery.share': '分享',
+  'gallery.shareFailed': '分享失敗：{message}',
+  'gallery.saved': '已存到「{album}」',
+  // 系統相簿名：五種語言共用同一串，使用者要在「照片」裡認出是同一個相簿。
+  'album.name': 'RETRO CAM',
   'camera.focus.a11y': '點擊畫面手動對焦',
 
   /* ---------------- ③.5 顆粒強度 ---------------- */
@@ -66,6 +80,7 @@ export const zhHant: Messages = {
   'grain.level.std': '標準',
   'grain.level.heavy': '重',
   'grain.level.max': '極重',
+  'grain.note': '在底片自帶的顆粒上再乘一檔濃淡。',
 
   /* ---------------- ④ LCD 狀態列 ---------------- */
   'lcd.date.off': '日期 已關閉',
@@ -115,6 +130,8 @@ export const zhHant: Messages = {
   /* ---------------- 設定介面 ---------------- */
   'settings.close': '完成',
   'settings.footer': '改完立刻生效，並且會記住 —— 下次打開還是這個設定。',
+  'settings.grain.title': '顆粒',
+  'settings.grain.a11y': '顆粒強度，目前 {level}',
   'settings.language.head': '語言 LANGUAGE',
   'settings.language.system': '跟隨系統',
   'settings.location.head': '定位浮水印 LOCATION',
@@ -125,8 +142,19 @@ export const zhHant: Messages = {
   'settings.location.coords': '座標',
   'settings.locationMode.a11y': '定位浮水印：{label}',
   'settings.locale.a11y': '介面語言：{label}',
+  'settings.placeDetail.title': '地名詳細度',
+  'settings.placeDetail.a11y': '地名詳細度：{label}',
+  'settings.placeDetail.archive': '精簡（城市 · 代碼）',
+  'settings.placeDetail.full': '完整（行政全稱）',
+  'settings.placeDetail.note': '港澳台會帶上「中國」前綴。',
   'settings.subtitle': 'SETTINGS',
   'settings.title': '設定',
+  'settings.watermark.title': '水印版式',
+  'settings.watermark.a11y': '水印版式：{label}',
+  'settings.watermark.split': '地名在左 · 日期在右',
+  'settings.watermark.stacked': '地名在上 · 日期在下',
+  'settings.watermark.centered': '合成一行 · 置中',
+  'settings.watermark.dateOnly': '只打日期',
 
   /* ---------------- 定位 ---------------- */
   'location.denied': '定位權限被拒絕，請到 系統設定 → 隱私權與安全性 → 定位服務 裡打開。',

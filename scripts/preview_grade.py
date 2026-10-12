@@ -38,9 +38,12 @@ FRAME_DIR = os.path.join(ROOT, "assets", "frames")
 PRESETS_TS = os.path.join(ROOT, "src", "constants", "presets.ts")
 
 PIXEL_SCALE = 3                     # 舞台 1 逻辑点 -> 捕获后 3 像素
-CANVAS = (1050, 1400)               # 预览画布 = 接近真实成片的像素尺寸
-FRAME_FILE = "classic-white.png"
-FRAME_WINDOW = (0.055556, 0.050000, 0.888889, 0.888333)   # 与 frames.ts 一致
+# 预览画布 = polaroid-600 的等比缩小（1408x1712 的 0.75 倍）。
+# 下面第 480 行把相框 PNG **拉伸**到画布尺寸，所以画布宽高比必须等于相框宽高比
+# （1408/1712 = 0.822430），否则纸边会被拉变形。
+CANVAS = (1056, 1284)
+FRAME_FILE = "polaroid-600.png"
+FRAME_WINDOW = (0.051136, 0.042056, 0.897727, 0.738318)   # 与 frames.ts 一致
 GRAIN_TILE_PT = 512                 # grain.png 的逻辑点边长（= 文件像素，1x 资源）
 
 

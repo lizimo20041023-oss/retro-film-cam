@@ -18,8 +18,10 @@
  * │              'multiply'、light-leak 拉伸 + 'screen'                      │
  * │ 3. 日期烧录  <Text> 叠在画面右下角（或相框下留白）：橙色 #FF8A00、         │
  * │              等宽数码字体、可配 letterSpacing / 格式串                   │
- * │ 3.5 定位水印  同一基线的左下角，纸白色小字（地名或经纬度）。             │
- * │              **取值在按快门那一刻完成**，见 input.locationText            │
+ * │ 3.5 定位水印  地名或经纬度，按**当前水印版式**排在日期旁边。             │
+ * │              四种版式（split / stacked / centered / dateOnly）只决定      │
+ * │              「地名和日期怎么摆」，摆在哪块矩形里由相框的 watermark 决定。│
+ * │              **取值在按快门那一刻完成**，见 input.place / locationText     │
  * │ 4. 套相框    相框 PNG `resizeMode="stretch"` 铺满合成舞台，压在照片之上   │
  * │ 5. 截图      react-native-view-shot 的 captureRef（Expo Go 内置）         │
  * │ 6. 存相册    expo-media-library 新 API：`Asset.create(uri)`               │
@@ -42,10 +44,14 @@ import type {
   FilmStageHost,
   FilmStageInput,
   FrameSpec,
+  PlaceDetail,
   ProcessedPhoto,
+  ResolvedPlace,
   SaveOutcome,
   Size,
+  WatermarkLayout,
 } from '../types';
+import type { LocaleId } from '../i18n/types';
 import { planCapture } from './captureOptions';
 import { computeFrameLayout } from './geometry';
 import { buildGradeLayers } from './gradeLayers';
@@ -78,6 +84,23 @@ export interface ProcessFilmPhotoInput {
    * 单测也就不用造位置桩。不传 / `null` / 空串 = 这张不写定位。
    */
   locationText?: string | null;
+  /**
+   * 结构化地名（`{ city, region, country, countryCode, coords }`）。
+   *
+   * 为什么不能只用上面的 `locationText`：那一行字是在**上次界面语言**下拼好的，
+   * 用户切成英文以后，已经烧进照片的字不会变。传结构进来，合成层才可能按当前语言
+   * 重排。只有 `locationText` 没有它时，合成层原样印那一行字（向后兼容）。
+   */
+  place?: ResolvedPlace | null;
+  /**
+   * 拍这张时的界面语言。合成层用它把 `place` 拼成那一行字。
+   * 不传 = 简体中文。
+   */
+  locale?: LocaleId;
+  /** 水印版式（四选一）；不传 = `'split'`。 */
+  watermarkLayout?: WatermarkLayout;
+  /** 地名详细度；不传 = `'archive'`。只影响 `place` 的渲染，不影响经纬度档。 */
+  placeDetail?: PlaceDetail;
   /** 进度回调：'normalizing' → 'capturing' → 'saving'。 */
   onStage?: (stage: DevelopStage) => void;
 }
@@ -122,6 +145,10 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     frame,
     capturedAt,
     locationText: input.locationText ?? null,
+    place: input.place ?? null,
+    locale: input.locale ?? 'zh-Hans',
+    watermarkLayout: input.watermarkLayout ?? 'split',
+    placeDetail: input.placeDetail ?? 'archive',
   };
   input.onStage?.('capturing');
   let uri = '';

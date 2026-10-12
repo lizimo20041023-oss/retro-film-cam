@@ -1,5 +1,5 @@
 /**
- * 定位水印的取数与格式化。
+ * 定位水印的取数（原生模块那一层）。
  *
  * 隐私前提（写在这里也是给以后改代码的人看）：
  * - **默认关**，且关的时候连权限都不申请（`expo-location` 一行都不调）；
@@ -7,11 +7,19 @@
  *   所以设置界面里必须原样告诉用户；
  * - 坐标模式是**纯本地格式化**，拿到经纬度就完事，不请求任何网络。
  *
- * 三个 helper 都能单独调用（`formatCoords` 是纯函数，测试/调试时很好用）。
+ * 本文件只负责"拿到什么"，不负责"这一行长什么样"：
+ * 字符串怎么拼在 `placeNames.ts`（纯函数、可单测），这里只做取数 + 降级。
  */
 import * as Location from 'expo-location';
-import type { MessageKey } from '../i18n/types';
-import type { LocationFailureReason, LocationMode, LocationStampOutcome } from '../types';
+import type { LocaleId, MessageKey } from '../i18n/types';
+import type {
+  LocationFailureReason,
+  LocationMode,
+  LocationStampOutcome,
+  PlaceDetail,
+  ResolvedPlace,
+} from '../types';
+import { formatCoords, formatResolvedPlace, resolvePlaceFromGeocode } from './placeNames';
 
 /**
  * 单次定位最长等多久。
@@ -43,54 +51,52 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | typeof TIM
 }
 
 /**
- * 经纬度 → 一行等宽字符：`31.230°N 121.474°E`。
+ * 经纬度 → `31.230°N 121.474°E`。
  *
- * 为什么不用 N/E 之外的写法：度数符号 + 方位字母是胶片机 GPS 背板的通行写法，
- * 而且**不含逗号**，跟在左下角当水印时不会被误读成"两个数字"。
+ * 实现已经搬到 `placeNames.ts`（它是纯字符串逻辑，和"要不要联网"无关），
+ * 这里**重新导出**只是为了不打断已有的 import 路径 —— 新代码请直接从 `placeNames` 引。
  */
-export function formatCoords(latitude: number, longitude: number): string {
-  const lat = `${Math.abs(latitude).toFixed(3)}°${latitude >= 0 ? 'N' : 'S'}`;
-  const lon = `${Math.abs(longitude).toFixed(3)}°${longitude >= 0 ? 'E' : 'W'}`;
-  return `${lat} ${lon}`;
-}
+export { formatCoords };
 
 /**
- * 反查结果 → `城市 · 国家`。
+ * 反查结果 → 给 LCD / 日志看的一行字。
  *
- * 逐级降级是必须的：小镇、海上、机场反查出来经常没有 `city`，
- * 但一般还有 `region` / `country`。实在什么都没有才返回 `null`。
+ * 已经不需要它来做水印了（水印消费的是结构化地名，见 `fetchLocationStamp`）。
+ * 保留是因为两处仍然有用：排查"反查到底给了什么"，以及日志打点。
+ * 内部直接复用新的渲染器，所以它和成片里的那行字**永远一致**。
+ *
+ * 单位：无（纯字符串）。
  */
 export function describePlace(
   address: Location.LocationGeocodedAddress | undefined,
+  locale: LocaleId = 'zh-Hans',
+  detail: PlaceDetail = 'archive',
 ): string | null {
   if (!address) {
     return null;
   }
-  const parts = [address.city, address.region, address.country].filter(
-    (part): part is string => typeof part === 'string' && part.trim().length > 0,
-  );
-  // 去掉相邻重复（有些地区 city 和 region 同名，比如"东京都/东京"）。
-  const unique: string[] = [];
-  for (const part of parts) {
-    const trimmed = part.trim();
-    if (unique[unique.length - 1] !== trimmed) {
-      unique.push(trimmed);
-    }
-  }
-  if (unique.length === 0) {
-    return null;
-  }
-  // 最多两级：`上海市 · 中国`，比 `上海市 · 上海市 · 中国` 好看得多。
-  return unique.slice(0, 2).join(' · ');
+  const text = formatResolvedPlace(resolvePlaceFromGeocode(address, 0, 0), locale, detail);
+  return text.length > 0 ? text : null;
 }
 
 /**
- * 取一次定位水印文字。
+ * 取一次定位水印。
  *
  * 返回 `{ ok: false, reason }` 而不是抛异常 —— 调用方（拍照流程）只需要决定
  * "这次不写定位"，不该被异常打断出片。
+ *
+ * 成功时同时给出两样东西：
+ * - `place`：结构化地名，**成片水印只认它**（这样切语言后旧照片能重排）；
+ * - `text`：已经拼好的一行，给 LCD 状态条直接显示。
+ *
+ * 坐标模式下 `place` 是"只有坐标、没有国家"的结构化结果：城市和国别都是空串，
+ * 渲染出来就是坐标本身 —— 调用方不需要为两种模式写两套分支。
  */
-export async function fetchLocationStamp(mode: LocationMode): Promise<LocationStampOutcome> {
+export async function fetchLocationStamp(
+  mode: LocationMode,
+  locale: LocaleId = 'zh-Hans',
+  detail: PlaceDetail = 'archive',
+): Promise<LocationStampOutcome> {
   if (mode === 'off') {
     return { ok: false, reason: 'services-off' };
   }
@@ -132,7 +138,15 @@ export async function fetchLocationStamp(mode: LocationMode): Promise<LocationSt
     }
 
     if (mode === 'coords') {
-      return { ok: true, text: formatCoords(coords.latitude, coords.longitude) };
+      const place: ResolvedPlace = {
+        city: '',
+        region: '',
+        country: '',
+        countryCode: '',
+        coords: formatCoords(coords.latitude, coords.longitude),
+      };
+      // 坐标模式下"要显示的那一行"就是坐标本身：文件名 / 相册条目里没有城市可写。
+      return { ok: true, text: formatResolvedPlace(place, locale, detail), place };
     }
 
     const places = await withTimeout(
@@ -142,8 +156,12 @@ export async function fetchLocationStamp(mode: LocationMode): Promise<LocationSt
     if (places === TIMEOUT) {
       return { ok: false, reason: 'failed' };
     }
-    const text = describePlace(places[0]);
-    return text === null ? { ok: false, reason: 'failed' } : { ok: true, text };
+
+    const place = resolvePlaceFromGeocode(places[0], coords.latitude, coords.longitude);
+    const text = formatResolvedPlace(place, locale, detail);
+    // 反查"成功"但一个字都没解析出来（海上、极地）：这一行没有任何信息量，
+    // 与其烧一串空字符串，不如老老实实报"这次没拿到"。
+    return text.trim().length > 0 ? { ok: true, text, place } : { ok: false, reason: 'failed' };
   } catch (error) {
     console.warn('[retro-film-cam] 取定位失败：', error);
     return { ok: false, reason: 'failed' };
@@ -173,5 +191,7 @@ export const LOCATION_FAILURE_COPY: Record<
 > = {
   'services-off': { short: 'lcd.location.servicesOff', full: 'location.servicesOff' },
   denied: { short: 'lcd.location.denied', full: 'location.denied' },
+  // 注意 `short` 复用长句的 `location.failed`：五个语言包里都没有 `lcd.location.failed`
+  // 这个键（"定位失败"本来就是四个字，LCD 一行放得下，没必要为它单独造一个短版）。
   failed: { short: 'location.failed', full: 'location.failed' },
 };

@@ -6,9 +6,9 @@
  * - 不出现 `any`：需要"RN 支持的混合模式"这类联合类型时，直接从 RN 自带类型反推。
  */
 import type { ImageSourcePropType, TextStyle, ViewStyle } from 'react-native';
-// 只借一个**类型**：显示名怎么翻译。`import type` 编译后整行消失，
+// 只借两个**类型**：显示名怎么翻译、界面语言是谁。`import type` 编译后整行消失，
 // 所以 types ↔ i18n 之间不会产生任何运行时循环依赖。
-import type { MessageKey } from '../i18n/types';
+import type { LocaleId, MessageKey } from '../i18n/types';
 
 /* ==========================================================================
  * 1. 基础几何
@@ -58,6 +58,48 @@ export type FontWeight = NonNullable<TextStyle['fontWeight']>;
 export type TimestampAnchor = 'window' | 'frame';
 
 /**
+ * 成片水印的四种版式（设置里四选一）。
+ *
+ * 注意"水印区"是**按相框算出来的一块矩形**：`anchor === 'frame'` 时是整个下留白，
+ * `anchor === 'window'` 时是画面内部的下缘。四种版式只是把"地名"和"日期"两块内容
+ * 在这块矩形里排成不同样子 —— 所以加版式不用改任何相框，加相框也不用改任何版式。
+ *
+ * - `split`    地名贴左、日期贴右，同一条基线（默认，最像傻瓜相机的后背印字）
+ * - `stacked`  地名在上、日期在下，两行都靠右
+ * - `centered` 合成一行 `地名 · 'YY MM DD'`，整行居中
+ * - `dateOnly` 只烧日期，靠右（不想暴露位置时用）
+ */
+export type WatermarkLayout = 'split' | 'stacked' | 'centered' | 'dateOnly';
+
+/**
+ * 地名详细度：
+ * - `archive` 精简档案风 —— `上海 · CHN`（城市 + 三字母代码，克制）
+ * - `full`    完整行政层级 —— `上海市 · 中国`（省/州 + 国家全称）
+ */
+export type PlaceDetail = 'archive' | 'full';
+
+/**
+ * 相框自带的水印偏好。
+ *
+ * 为什么水印样式挂在**相框**上而不是预设上：纸是什么颜色、留白多宽、有没有印字，
+ * 是相框的物理属性；同一张相框换任何胶卷，该给它配什么墨色都不变。
+ */
+export interface FrameWatermarkStyle {
+  /** 烧在照片画面内（`window`）还是相框留白里（`frame`）。 */
+  anchor: TimestampAnchor;
+  /**
+   * 墨色：
+   * - `amber`    经典橙色点阵液晶，`#FF8A00`；
+   * - `graphite` 极细灰色打字机体，给拍立得/幻灯卡这类"下巴默认纯留白"的相框用。
+   */
+  tone?: 'amber' | 'graphite';
+  /** 水印区里贴哪一边（`anchor === 'frame'` 时才有意义）。 */
+  align?: 'left' | 'right';
+  /** 强制大写（打字机体英文小字）。 */
+  uppercase?: boolean;
+}
+
+/**
  * 一个相框 = 一张透明 PNG + 一个归一化镂空窗口。
  * 新增相框只需要往 `src/constants/frames.ts` 的数组里加一条，核心逻辑一行都不用改。
  */
@@ -81,8 +123,11 @@ export interface FrameSpec {
   window: NormalizedRect;
   /** 照片填窗口的方式：`cover`（默认，裁切填满）/ `contain`（完整放入，可能留黑边）。 */
   photoFit?: 'cover' | 'contain';
-  /** 该相框默认把日期烧在哪（`preset.timestamp.anchor` 优先于它）。 */
-  defaultTimestampAnchor?: TimestampAnchor;
+  /**
+   * 该相框默认的水印样式。`preset.timestamp.anchor` 只覆盖它的 `anchor`，
+   * 墨色 / 对齐 / 大写始终听相框的。
+   */
+  watermark?: FrameWatermarkStyle;
   /** PNG 的设计像素尺寸，仅用于文档与自检提示。 */
   designSize?: Size;
   /** 一句话说明。 */
@@ -197,7 +242,7 @@ export interface ResolvedTimestampConfig {
   fontWeight: FontWeight;
   /** null = 用系统等宽字体兜底。 */
   fontFamily: string | null;
-  /** null = 用相框的 `defaultTimestampAnchor`。 */
+  /** null = 用相框的 `watermark.anchor`。 */
   anchor: TimestampAnchor | null;
   insetRatio: number;
 }
@@ -376,6 +421,41 @@ export interface FilmStageInput {
    * `null` / 不填 = 这次不烧定位 —— 拍照前没拿到定位时就是这个样子。
    */
   locationText?: string | null;
+  /**
+   * 结构化地名。**有它时合成层自己按当前语言渲染**（这样切换语言后旧照片也能重排），
+   * 只有 `locationText` 没有它时才回退成"直接印那一行字"。
+   */
+  place?: ResolvedPlace | null;
+  /**
+   * 拍这张照片时的**界面语言**。合成层用它把 `place` 拼成那一行字
+   * （中文写「上海市 · 中国」、英文写 `SHANGHAI · CHN`）。
+   * 不填 = 合成层按简体中文渲染，宁可有一个确定的行为，也不要半对的状态。
+   */
+  locale?: LocaleId;
+  /** 水印版式（四选一）。不填 = `'split'`。 */
+  watermarkLayout?: WatermarkLayout;
+  /** 地名详细度。不填 = `'archive'`。 */
+  placeDetail?: PlaceDetail;
+}
+
+/**
+ * 反查出来的结构化地名。
+ *
+ * 为什么不在 hook 里就拼成一整行字符串：地名要跟**当前界面语言**走
+ * （中文写「上海市 · 中国」、英文写「Shanghai · CHN」），而照片可能是在另一种
+ * 语言下拍的。存结构、渲染时才拼，语言一换旧照片也能重排。
+ */
+export interface ResolvedPlace {
+  /** 城市 / 一级地名，例如 `'上海市'`、`'Shanghai'`。 */
+  city: string;
+  /** 省 / 州 / 大区，例如 `'上海市'`、`'California'`。拿不到就空串。 */
+  region: string;
+  /** 国家或地区的本地语言名，例如 `'中国'`。 */
+  country: string;
+  /** ISO 3166-1 alpha-2 代码，例如 `'CN'`、`'TW'`、`'HK'`、`'MO'`。 */
+  countryCode: string;
+  /** 已格式化好的经纬度，例如 `'31.230°N 121.474°E'`。纯离线算的。 */
+  coords: string;
 }
 
 /**
@@ -459,6 +539,12 @@ export type LocationMode = 'off' | 'place' | 'coords';
 export interface AppSettings {
   locale: LocalePreference;
   locationMode: LocationMode;
+  /** 成片水印版式（四选一），默认 `'split'`。 */
+  watermarkLayout: WatermarkLayout;
+  /** 地名详细度，默认 `'archive'`。只影响 `locationMode === 'place'`。 */
+  placeDetail: PlaceDetail;
+  /** 颗粒档位（原来在取景器底部那条横向滑块上，现在挪进设置）。 */
+  grainLevel: GrainLevelId;
 }
 
 /** 写字机里定位这一格的状态（只影响 LCD 显示，不影响能否拍照）。 */
@@ -479,7 +565,8 @@ export type LocationFailureReason =
 
 /** 取一次定位水印的结果。 */
 export type LocationStampOutcome =
-  | { ok: true; text: string }
+  /** `text` 给 LCD 状态条直接显示；`place` 给成片水印按语言重排。 */
+  | { ok: true; text: string; place: ResolvedPlace }
   | { ok: false; reason: LocationFailureReason };
 
 /** 字体就绪状态。 */

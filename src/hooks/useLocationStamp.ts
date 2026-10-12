@@ -5,11 +5,15 @@
  * 取不到就这张不烧 —— 不影响出片，也不阻塞快门。
  * 之所以不"进屏幕就取一次然后一直用"：那样烧进照片的可能是一小时前在另一个地方
  * 拿到的坐标，比没有定位更糟。
+ *
+ * 这个 hook 只做三件事：读设置（模式 / 语言 / 地名档位）、加截止线、把结果分别交给
+ * 「LCD 显示」和「成片水印」。字符串怎么拼、结构长什么样全在 `utils/placeNames.ts`。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useI18n } from '../i18n';
 import { useSettings } from './useSettings';
 import { fetchLocationStamp, trimLocationText } from '../utils/locationStamp';
-import type { LocationStampState } from '../types';
+import type { LocationStampState, ResolvedPlace } from '../types';
 
 const IDLE_STATE: LocationStampState = { kind: 'off' };
 
@@ -46,17 +50,23 @@ export interface LocationStampController {
   /** 当前状态，只用于 LCD 显示。 */
   state: LocationStampState;
   /**
-   * 按当前设置取一次定位，返回要烧进照片的那行字。
+   * 按当前设置取一次定位，返回要烧进照片的**结构化地名**。
    * `off` / 失败 / 用户没给权限时都返回 `null`。
+   *
+   * 为什么返回结构而不是拼好的字符串：成片水印要按**当前语言**重排
+   * （见 `types.ResolvedPlace` 的说明）。LCD 上那行字由本 hook 顺手拼好，
+   * 因为 LCD 只认"现在这一刻的语言"，不需要重排。
    */
-  resolveForShot: () => Promise<string | null>;
+  resolveForShot: () => Promise<ResolvedPlace | null>;
   /** 重新探测一次（用户刚从设置里打开定位时调）。 */
   refresh: () => void;
 }
 
 export function useLocationStamp(): LocationStampController {
   const { settings } = useSettings();
+  const { localeId } = useI18n();
   const mode = settings.locationMode;
+  const detail = settings.placeDetail;
 
   const [state, setState] = useState<LocationStampState>(IDLE_STATE);
   const [probeToken, setProbeToken] = useState(0);
@@ -74,6 +84,9 @@ export function useLocationStamp(): LocationStampController {
    * 总开关关掉就立刻复位；打开时先显示"定位中"，再异步探测一次用于 LCD 预览。
    * 这一步纯粹是给用户看的反馈（LCD 上会从"定位 关"变成地名），
    * 真正烧进照片的值永远走 `resolveForShot`。
+   *
+   * `localeId` / `detail` 进依赖数组是有意的：在设置里切换语言或地名档位后，
+   * LCD 上那行预览必须立刻跟着变，否则用户会以为设置没生效。
    */
   useEffect(() => {
     if (mode === 'off') {
@@ -84,7 +97,7 @@ export function useLocationStamp(): LocationStampController {
     let cancelled = false;
     setState({ kind: 'locating' });
 
-    void fetchLocationStamp(mode).then((outcome) => {
+    void fetchLocationStamp(mode, localeId, detail).then((outcome) => {
       if (cancelled || !aliveRef.current) return;
       if (outcome.ok) {
         setState({ kind: 'ready', text: trimLocationText(outcome.text) });
@@ -96,14 +109,14 @@ export function useLocationStamp(): LocationStampController {
     return () => {
       cancelled = true;
     };
-  }, [mode, probeToken]);
+  }, [mode, localeId, detail, probeToken]);
 
-  const resolveForShot = useCallback(async (): Promise<string | null> => {
+  const resolveForShot = useCallback(async (): Promise<ResolvedPlace | null> => {
     if (mode === 'off') {
       return null;
     }
     // 到这里才带截止线：LCD 上那次探测可以慢慢等，按快门这次不行。
-    const outcome = await withinDeadline(fetchLocationStamp(mode), SHOT_DEADLINE_MS);
+    const outcome = await withinDeadline(fetchLocationStamp(mode, localeId, detail), SHOT_DEADLINE_MS);
     if (outcome === null) {
       return null;
     }
@@ -114,8 +127,8 @@ export function useLocationStamp(): LocationStampController {
         setState({ kind: 'error', reason: outcome.reason });
       }
     }
-    return outcome.ok ? trimLocationText(outcome.text) : null;
-  }, [mode]);
+    return outcome.ok ? outcome.place : null;
+  }, [mode, localeId, detail]);
 
   const refresh = useCallback(() => setProbeToken((n) => n + 1), []);
 

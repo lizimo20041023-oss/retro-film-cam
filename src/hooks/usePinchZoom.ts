@@ -19,7 +19,8 @@
  * 翻倍 = `zoom` 加一个固定量，直接线性叠加就对了。
  * 注意不能写成 `start.zoom * k`：起始值是 0 时乘任何数还是 0，永远捏不动。
  *
- * 视觉反馈由 `ZoomBar` 负责 —— 捏合走的是同一个 `onChange`，轨道和读数会跟着动。
+ * 视觉反馈由 `ZoomStops` 的档位灯和右下角倍率读数负责 —— 捏合走的是同一个
+ * `onChange`，读数会跟着动（捏合不算落在任何一档上，所以档位灯会灭掉）。
  */
 import { useMemo, useRef } from 'react';
 import { PanResponder, type NativeTouchEvent } from 'react-native';

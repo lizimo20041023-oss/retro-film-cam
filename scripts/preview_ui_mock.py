@@ -5,6 +5,12 @@
 真机效果仍以 Expo Go 为准（字体的实际度量、`resizeMode="repeat"` 的接缝、
 阴影与透明度叠加都和这里略有出入）。
 
+⚠️⚠️ **这张图停在 v1.1 的界面**。v1.2.0 重做了顶栏（画幅徽标 + 胶片计数徽章，
+去掉了图标下的小字）和底部（胶片行改成单行文字 + ◀▶，变焦条换成三档按钮，
+颗粒条搬进设置页），本脚本**没有跟着改**。所以底栏那些 `PRESET / 相框 / 颗粒`
+字样描述的是旧布局。保留它的理由只剩一个：相框和取景器的比例核对仍然有效
+（相框已更新为 `polaroid-600.png`）。要看新界面请跑 Expo Go。
+
 用法：python scripts/preview_ui_mock.py
 输出：assets/ui/_mock-camera-screen.png（临时产物，不进版本库）
 """
@@ -147,7 +153,7 @@ def draw_top_panel(img: Image.Image) -> None:
     _text(
         img,
         (left + 2 + 8, cy),
-        "白边印刷  ·  2/3  ·  RETRO 400",
+        "RT-400",
         cjk(10),
         rgba(PAPER, PAPER_DIM),
         anchor="lm",
@@ -198,22 +204,24 @@ def draw_preview(img: Image.Image) -> tuple[float, float, float, float]:
     top = TOP_PANEL_H
     draw_mock_scene(img, (0, px(top), img.width, px(top + PREVIEW_H)))
 
-    # 相框 canvas：fitBox(aspect=0.75) 到 (W-20, PREVIEW_H-20)
+    # 相框 canvas：按 polaroid-600 的宽高比 fitBox 到 (W-20, PREVIEW_H-20)
+    # （1408/1712 = 0.822430；下面第 212 行把 PNG 拉伸到 canvas，比值必须一致）
+    FRAME_ASPECT = 1408 / 1712
     avail_w, avail_h = W - PREVIEW_PADDING * 2, PREVIEW_H - PREVIEW_PADDING * 2
     cw = avail_w
-    ch = cw / 0.75
+    ch = cw / FRAME_ASPECT
     if ch > avail_h:
         ch = avail_h
-        cw = ch * 0.75
+        cw = ch * FRAME_ASPECT
     cx = (W - cw) / 2
     cy = (PREVIEW_H - ch) / 2
 
-    frame = Image.open(os.path.join(FRAMES_DIR, "classic-white.png")).convert("RGBA")
+    frame = Image.open(os.path.join(FRAMES_DIR, "polaroid-600.png")).convert("RGBA")
     frame = frame.resize((px(cw), px(ch)), Image.LANCZOS)
     img.alpha_composite(frame, (px(cx), px(top + cy)))
 
-    # 画面窗口（frames.ts 的 classic-white window 归一化值）
-    win = (0.055556, 0.05, 0.888889, 0.888333)
+    # 画面窗口（frames.ts 的 polaroid-600 window 归一化值）
+    win = (0.051136, 0.042056, 0.897727, 0.738318)
     wx = cx + win[0] * cw
     wy = top + cy + win[1] * ch
     ww, wh = win[2] * cw, win[3] * ch
@@ -283,7 +291,7 @@ def draw_dashboard(img: Image.Image) -> None:
     )
     _paste_at(img, card, card_x, cy - card_h / 2)
     _text(img, (card_x + 8, cy - card_h / 2 + 6), "预设 PRESET", mono(7.5), rgba(AMBER_SOFT, 0.62))
-    _text(img, (card_x + 8, cy - card_h / 2 + 16), "RETRO 400", mono(12), AMBER_SOFT + (255,))
+    _text(img, (card_x + 8, cy - card_h / 2 + 16), "RT-400", mono(12), AMBER_SOFT + (255,))
     _text(img, (card_x + 8, cy - card_h / 2 + 32), "2/5 · 轻触切换", cjk(8.5), rgba(PAPER, PAPER_DIM))
 
     # 中：快门

@@ -10,7 +10,11 @@
 为什么值得单独有个脚本：相框的镂空窗口是**全透明**的，在系统看图器里
 只会看到一片棋盘格 —— 光看 PNG 根本判断不出"照片放进去是什么样"。
 这个脚本把每张相框按自己的 window 归一化值贴到同一张照片上，
-8 张并排放，改一版看一版。
+四张并排放，改一版看一版。
+
+四张分别是：polaroid-600 / instax-mini / neg-135 / slide-mount。
+（本脚本只贴相框，**不画水印** —— 定位/日期水印是 App 运行时烧进照片的，
+锚点写在 `src/constants/frames.ts` 里，`assets/frames/README.md` 有对照表。）
 """
 
 from __future__ import annotations
@@ -24,17 +28,24 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 FRAMES_DIR = os.path.join(ROOT, "assets", "frames")
 
-# 和 src/constants/frames.ts 一一对应。这里只是预览用，真正的排版依据在那边，
-# 但两处必须一致 —— 所以本脚本会顺便校验 PNG 尺寸和这里的 aspect 对不对得上。
+# 和 src/constants/frames.ts 一一对应：(PNG 宽, PNG 高, 镂空窗口 (x, y, w, h))
+# 归一化值**由这里算出来**，不手抄 —— 手抄一份 6 位小数迟早会错一位，
+# 而错一位就是照片在成片里整体错位，肉眼还看不出来。
+SPECS = [
+    ("polaroid-600", "polaroid 600", (1408, 1712), (72, 72, 1264, 1264)),
+    ("instax-mini", "instax mini", (1080, 1720), (81, 90, 918, 1224)),
+    ("neg-135", "35mm negative", (1350, 1950), (212, 280, 926, 1389)),
+    ("slide-mount", "slide mount", (1350, 1350), (189, 351, 972, 648)),
+]
+
 FRAMES = [
-    ("classic-white", "classic white", 1350 / 1800, (0.056296, 0.046667, 0.886667, 0.886667)),
-    ("instant-square", "instant", 1425 / 1800, (0.054737, 0.051111, 0.890526, 0.705000)),
-    ("film-35mm", "35mm rebate", 1350 / 1950, (0.155556, 0.138462, 0.688889, 0.635897)),
-    ("darkroom", "darkroom", 1350 / 1800, (0.057778, 0.051111, 0.865185, 0.883333)),
-    ("slide-mount", "slide mount", 1350 / 1350, (0.125926, 0.311111, 0.748148, 0.499259)),
-    ("orange-base", "orange base", 1350 / 1800, (0.111111, 0.144444, 0.777778, 0.777778)),
-    ("crop-marks", "crop marks", 1350 / 1800, (0.071111, 0.060000, 0.857778, 0.880000)),
-    ("archive-card", "archive card", 1350 / 1800, (0.222222, 0.083333, 0.711111, 0.711111)),
+    (
+        name,
+        label,
+        w / h,
+        (wx / w, wy / h, ww / w, wh / h),
+    )
+    for name, label, (w, h), (wx, wy, ww, wh) in SPECS
 ]
 
 CELL_W = 430  # 每格宽度（px），4×2 排布

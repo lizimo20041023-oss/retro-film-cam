@@ -14,6 +14,12 @@
  *    删完不可恢复；网格里一格才 1/3 屏宽，误触成本远高于多弹一次 `Alert` 的成本。
  * 3. **不可见时返回 `null`**。见下面 `if (!visible)` 那段。
  *
+ * ── 本次改动 ──────────────────────────────────────────────────────────────
+ * · `root` 改成**完全不透明**：以前是 `rgba(12,12,11,0.97)`，相机屏把本屏当覆盖层挂着，
+ *   取景器的实时预览会从那 3% 的透明里透出来，看着像渲染故障（用户报的 bug）。
+ * · 内嵌的"大图 + 两个按钮"整块抽成 `Lightbox.tsx`，顺手补上保存到系统相簿和分享。
+ *   抽出去的理由见那个文件的文件头。
+ *
  * ── 验证状态（诚实记录）──────────────────────────────────────────────────
  * 本文件写完后用任务指定的 `npx tsc ... src/components/GalleryScreen.tsx` 过了类型，
  * 但**没有在真机 / 模拟器上跑过**：`FlatList` 的 `numColumns` 分栏效果、`Alert` 在
@@ -32,9 +38,11 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Haptics from 'expo-haptics';
 import { INK, UI_MONO } from '../constants/theme';
 import { useI18n } from '../i18n';
 import { useGallery } from '../hooks/useGallery';
+import { Lightbox, type LightboxToast } from './Lightbox';
 import type { GalleryShot } from '../utils/galleryStore';
 
 /** 三列。改这里必须同步改下面 `tileWidth` 的计算，否则最后一行会溢出屏幕。 */
@@ -46,8 +54,28 @@ const GAP = 3;
 /** 网格左右内边距。 */
 const PADDING = 12;
 
-/** 大图下方的操作条高度，用来给大图留出不被压住的空间。 */
+/**
+ * lightbox 底部操作条占的高度（按钮 36 + 上边距 12 + 一点余量）。
+ * 只用来给大图**预留**空间：算少了图会被按钮压住，算多了图会小一圈，
+ * 所以这个数必须和 `Lightbox.tsx` 里 `actionBar` 的实际高度对得上。
+ * 提示条也按它往上让位（见下面 `styles.toast` 的 `bottom`）。
+ */
 const ACTION_BAR_HEIGHT = 72;
+
+/**
+ * 覆盖层的不透明底色。
+ *
+ * 为什么必须**不透明**：本屏是挂在相机屏上的整屏覆盖层，取景器一直在后面跑。
+ * 只要留一点透明度，实时预览就会透过来（用户报的就是这个"渲染故障"）。
+ * 色值贴近 `INK` 那套深色，比纯黑轻一点，和设置界面是同一个"机身背板"。
+ *
+ * 为什么写在这里而不是 `src/constants/theme.ts`：常量目录不在本次改动的写入范围内，
+ * 而且这两个值只服务于"覆盖层"这一个场景，放在用它的两个文件里更好找。
+ */
+const SCRIM = '#0E0F11';
+
+/** 提示条停留时长（ms）。够读一句话，又不至于挡着下一张照片。 */
+const TOAST_MS = 2400;
 
 /** 网格一格的边长：窗口宽减去两侧内边距和所有缝，再三等分。 */
 function computeTileWidth(windowWidth: number): number {
@@ -73,6 +101,37 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
    */
   const [openedId, setOpenedId] = useState<string | null>(null);
 
+  /** 当前那条提示（保存/分享的结果）。`null` = 不显示。 */
+  const [toast, setToast] = useState<LightboxToast | null>(null);
+
+  /**
+   * `setTimeout` 的句柄。存 ref 是为了两件事：
+   * ① 新提示来了要把旧定时器清掉，否则前一条会在后一条刚显示时把它关掉；
+   * ② 组件卸载时清掉，避免对已卸载的组件 setState。
+   */
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = useCallback((next: LightboxToast): void => {
+    if (toastTimer.current !== null) {
+      clearTimeout(toastTimer.current);
+    }
+    setToast(next);
+    toastTimer.current = setTimeout(() => {
+      toastTimer.current = null;
+      setToast(null);
+    }, TOAST_MS);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (toastTimer.current !== null) {
+        clearTimeout(toastTimer.current);
+        toastTimer.current = null;
+      }
+    },
+    [],
+  );
+
   /**
    * **每次打开**相册都重新读一次索引。
    *
@@ -97,10 +156,11 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
     }
     wasVisible.current = true;
     setOpenedId(null);
+    setToast(null);
     void refresh();
   }, [visible, refresh]);
 
-  /** 当前大图对应的记录；记录被删掉后自动变回 `null`，详情视图随之关闭。 */
+  /** 当前大图对应的记录；记录被删掉后自动变回 `null`，lightbox 随之关闭。 */
   const opened = useMemo(
     () => (openedId === null ? null : (shots.find((shot) => shot.id === openedId) ?? null)),
     [shots, openedId],
@@ -131,6 +191,21 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
     [remove, t],
   );
 
+  /** 点开某一格。触感放这里而不是 `Pressable` 的 `onPress` 里，是为了只写一次。 */
+  const handleOpen = useCallback((id: string): void => {
+    void Haptics.selectionAsync();
+    setOpenedId(id);
+  }, []);
+
+  const handleCloseLightbox = useCallback((): void => {
+    setOpenedId(null);
+  }, []);
+
+  const handleCloseScreen = useCallback((): void => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    onClose();
+  }, [onClose]);
+
   // 不可见时直接不渲染：省掉一整套 FlatList 的布局开销，
   // 也避免相册里的无障碍焦点被取景屏幕抢走。
   if (!visible) {
@@ -138,8 +213,11 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
   }
 
   const tileWidth = computeTileWidth(width);
-  /** 大图区域：铺满宽度，高度扣掉标题栏、操作条和上下安全区。 */
-  const detailHeight = Math.max(160, height - insets.top - insets.bottom - ACTION_BAR_HEIGHT - 56);
+  /**
+   * 大图可用高度：扣掉标题栏、底部操作条和上下安全区。
+   * lightbox 自己会再按画幅比算 `contain` 之后的确切尺寸，这里只给"画框"。
+   */
+  const stageHeight = Math.max(160, height - insets.top - insets.bottom - ACTION_BAR_HEIGHT - 56);
 
   return (
     <View style={styles.root}>
@@ -150,7 +228,7 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
         </Text>
         {/* 关闭键写"完成"而不是 ×：和设置界面同一个理由 —— 这个 App 的语汇里没有叉号。 */}
         <Pressable
-          onPress={onClose}
+          onPress={handleCloseScreen}
           accessibilityRole="button"
           accessibilityLabel={t('gallery.close')}
           hitSlop={8}
@@ -199,7 +277,7 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
           showsVerticalScrollIndicator={false}
           renderItem={({ item, index }) => (
             <Pressable
-              onPress={() => setOpenedId(item.id)}
+              onPress={() => handleOpen(item.id)}
               accessibilityRole="image"
               accessibilityLabel={t('gallery.photo', {
                 // 序号从 1 开始：这是说给人听的序号，不是数组下标
@@ -228,40 +306,37 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
         />
       ) : null}
 
-      {/* 大图 */}
-      {opened !== null ? (
-        <View style={styles.detail}>
-          <Image
-            source={{ uri: opened.uri }}
-            style={[styles.detailImage, { height: detailHeight }]}
-            // 大图必须完整看到，任何裁切都会让用户以为照片拍坏了
-            resizeMode="contain"
-          />
-          <View style={[styles.actionBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-            <Pressable
-              onPress={() => confirmDelete(opened)}
-              accessibilityRole="button"
-              accessibilityLabel={t('gallery.delete')}
-              hitSlop={8}
-              style={({ pressed }) => [styles.action, pressed && styles.closePressed]}
-            >
-              <Text style={styles.actionDanger} numberOfLines={1}>
-                {t('gallery.delete')}
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setOpenedId(null)}
-              accessibilityRole="button"
-              accessibilityLabel={t('gallery.close')}
-              hitSlop={8}
-              style={({ pressed }) => [styles.action, pressed && styles.closePressed]}
-            >
-              <Text style={styles.closeText} numberOfLines={1}>
-                {t('gallery.close')}
-              </Text>
-            </Pressable>
-          </View>
+      {/* 提示条：操作的结果（存到哪个相簿 / 分享失败）要有回音，
+          否则用户按了"保存"却什么都没发生，只能自己跑去系统相册翻。 */}
+      {toast !== null ? (
+        <View
+          style={[styles.toast, { bottom: insets.bottom + ACTION_BAR_HEIGHT + 24 }]}
+          // 读一句提示，别让它变成要用户去点掉的挡板
+          accessibilityLiveRegion="polite"
+          pointerEvents="none"
+        >
+          <Text style={styles.toastText} numberOfLines={2}>
+            {toast.message}
+          </Text>
         </View>
+      ) : null}
+
+      {/*
+        大图（lightbox）。整块盖住本屏，连标题栏一起 —— 看图时不该还看见网格的标题。
+        `key` 用照片 id：换一张图就重挂一次，缩放/平移状态天然复位，
+        不然从"放大过的第 3 张"切到第 4 张会带着上一张的 3 倍缩放。
+      */}
+      {opened !== null ? (
+        <Lightbox
+          key={opened.id}
+          uri={opened.uri}
+          position={shots.findIndex((shot) => shot.id === opened.id) + 1}
+          aspectRatio={opened.height > 0 ? opened.width / opened.height : 1}
+          availableHeight={stageHeight}
+          onClose={handleCloseLightbox}
+          onDelete={() => confirmDelete(opened)}
+          onToast={showToast}
+        />
       ) : null}
     </View>
   );
@@ -274,7 +349,8 @@ const styles = StyleSheet.create({
     // 压在 DevelopOverlay（zIndex 20）之上、与 SettingsScreen（30）同级：
     // 显影过程中打开相册不该被盖住，两者也不会同时打开
     zIndex: 30,
-    backgroundColor: 'rgba(12, 12, 11, 0.97)',
+    // 必须不透明：取景器的实时预览就在这块下面跑（见上面 SCRIM 的注释）
+    backgroundColor: SCRIM,
   },
   header: {
     flexDirection: 'row',
@@ -356,33 +432,23 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
-  detail: {
-    ...StyleSheet.absoluteFill,
-  },
-  detailImage: {
-    width: '100%',
-  },
-  actionBar: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 12,
-    marginTop: 12,
-  },
-  action: {
-    minWidth: 88,
-    height: 36,
-    paddingHorizontal: 16,
-    borderRadius: 18,
+  toast: {
+    position: 'absolute',
+    left: 20,
+    right: 20,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: INK.hairline,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
-  actionDanger: {
-    color: INK.amberDeep,
+  toastText: {
+    color: INK.paper,
     fontFamily: UI_MONO,
-    fontSize: 12,
-    letterSpacing: 1.2,
+    fontSize: 11,
+    lineHeight: 16,
+    letterSpacing: 0.6,
+    textAlign: 'center',
   },
 });

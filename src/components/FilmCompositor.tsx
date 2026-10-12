@@ -6,10 +6,9 @@
  *        · 原照片（cover / contain）
  *        · 调色图层（纯色层 / 同图自叠 / 纹理层，全部用 mixBlendMode 混合）
  *   ② 相框 PNG（resizeMode="stretch" 铺满整个合成舞台，透明处露出照片）
- *   ③ 日期水印（永远画在最后：烧在画面内部时相框在那里是透明的，
- *      烧在相框留白里时必须盖在相框之上，所以两种锚点都放最后最安全）
- *   ④ 定位水印（左下角，和日期同一条基线；这张没拿到定位就整块不画 ——
- *      绝不留一行"定位失败"，那是 UI 该说的话，不该烧进照片里）
+ *   ③ 水印。日期和定位**一起**排在最后：
+ *      烧在画面内部时画在照片之上，烧在相框留白里时必须盖在相框之上，
+ *      两种锚点都是"最后画"最安全 —— 所以它们共用一个 `pieces` 数组、一次渲染。
  *
  * 为什么调色层要关在 `overflow: 'hidden'` 的窗口容器里？
  * RN 没有现成的 `isolation` 便捷写法可用（它是 layout prop 不是 style prop，写错会静默失效），
@@ -19,18 +18,33 @@
  * 关于截图尺寸：`ViewShot` 的 options 里**故意不传 width/height**，
  * 这样输出像素 = 这里的逻辑尺寸 × PixelRatio（官方原话：不传就是原始像素尺寸），
  * 也就是"屏幕上多大，成片就多清晰"，不会因为放大而变糊。
+ *
+ * 关于水印版式：这个组件**不认识"预设"和"版式"的语义**，它只做两件事 ——
+ * 把"这次要印什么字、印在哪"算成一份 `WatermarkPiece[]`（纯函数，见 `planWatermark`），
+ * 然后照着画。加第五种版式 = 改那一个 switch，渲染这一段一行都不用动。
  */
 import { useMemo } from 'react';
 import type { RefObject } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
-import type { StyleProp, ViewStyle } from 'react-native';
+import type { StyleProp, TextStyle, ViewStyle } from 'react-native';
 import ViewShot from 'react-native-view-shot';
 import type { ViewShotRef } from 'react-native-view-shot';
 import { textureSource } from '../constants/textures';
-import type { FilmStageInput, GradeLayer } from '../types';
+import type { LocaleId } from '../i18n/types';
+import type {
+  FilmStageInput,
+  FrameLayout,
+  FrameSpec,
+  GradeLayer,
+  PlaceDetail,
+  ResolvedPlace,
+  ResolvedTimestampConfig,
+  WatermarkLayout,
+} from '../types';
 import { formatTimestamp } from '../utils/formatTimestamp';
+import { formatResolvedPlace } from '../utils/placeNames';
 import { planCapture } from '../utils/captureOptions';
-import { computeLocationLayout, computeTimestampLayout, resolveTimestampAnchor } from '../utils/geometry';
+import { computeWatermarkPlan } from '../utils/geometry';
 import { buildGradeLayers } from '../utils/gradeLayers';
 
 export interface FilmCompositorProps {
@@ -47,6 +61,127 @@ export interface FilmCompositorProps {
   style?: StyleProp<ViewStyle>;
 }
 
+/* ==========================================================================
+ * 一、水印排布（纯函数）
+ * ========================================================================== */
+
+/** 一块要印的字：印什么、印在哪、什么颜色。 */
+export interface WatermarkPiece {
+  key: string;
+  text: string;
+  /** 距舞台左沿（不填 = 由 `right` 决定水平位置）。 */
+  left?: number;
+  /** 距舞台右沿。 */
+  right?: number;
+  /** 距舞台下沿。日期用 `TimestampLayout.bottom`，定位行与它齐平或叠在它上方。 */
+  bottom: number;
+  /** 超长时的截断宽度。 */
+  maxWidth: number;
+  textAlign?: TextStyle['textAlign'];
+  fontSize: number;
+  letterSpacing: number;
+  color: string;
+  /** 投影半径。0 = 不投影（印在相纸留白上的字不需要）。 */
+  shadowRadius: number;
+}
+
+export interface WatermarkPlanInput {
+  layout: FrameLayout;
+  frame: FrameSpec;
+  timestamp: ResolvedTimestampConfig;
+  /** 按快门那一刻。 */
+  capturedAt: Date;
+  /**
+   * 已经拼好的定位行（经纬度档，或拿不到结构时的降级文本）。
+   * 只有 `place` 为 `null` 时才用它 —— 见下面的注释。
+   */
+  locationText: string;
+  place: ResolvedPlace | null;
+  locale: LocaleId;
+  watermarkLayout: WatermarkLayout;
+  placeDetail: PlaceDetail;
+}
+
+/*
+ * 墨色不在这里定：`computeWatermarkPlan` 已经按"压在照片上 / 印在相纸留白上"
+ * 两种情形把每行的 `color` 和 `glowRadius` 算好了，这里只负责画。
+ */
+
+/**
+ * 「这次水印要印哪几块字」。
+ *
+ * 四种版式（`split` / `stacked` / `centered` / `dateOnly`）**只决定地名和日期怎么摆**，
+ * 摆在哪个矩形里由相框的 `watermark.anchor` 决定 —— 所以加版式不用改相框，
+ * 加相框也不用改版式。两块内容永远是"日期为主、地名为附注"：
+ * 地名比日期小一档（几何那边已经算好 0.62 倍），墨色也更淡。
+ */
+export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
+  const { layout, frame, timestamp, capturedAt, locationText, place, locale } = input;
+
+  const dateText = timestamp.enabled ? formatTimestamp(capturedAt, timestamp.format).trim() : '';
+  /*
+    有结构就用结构按**当前界面语言**重排（切语言后旧照片也能重排）。
+    `locationText` 只是向后兼容的兜底：相机页现在一律传 `place`
+    —— 经纬度档也走 `place`（`locationStamp.ts` 会返回一个"只有坐标、
+    城市和国别都是空串"的结构，拼出来正好是坐标本身），
+    所以正常管线里走不到下面那个分支。
+  */
+  const placeText = place
+    ? formatResolvedPlace(place, locale, input.placeDetail).trim()
+    : locationText.trim();
+
+  if (dateText.length === 0 && placeText.length === 0) {
+    return [];
+  }
+
+  /*
+   * 排版**全部**交给 `computeWatermarkPlan` —— 它是四种版式的唯一实现。
+   *
+   * 这里曾经是第二套实现（自己挑墨色、自己乘 `tracking.letterSpacingScale`、
+   * 自己算叠行位置），代价是两边互相漂移。最典型的一处是字距被乘了两次：
+   * `computeTimestampLayout` 内部走的就是 `computeWatermarkPlan(..., 'en', 'dateOnly')`，
+   * 它返回的 `letterSpacing` **已经**乘过一次倍数；这里再乘一次，英文 + graphite
+   * 相框（拍立得 / 幻灯卡）的字距就被放大到约 1.66 倍。
+   * 现在这里只做一件事：把 `WatermarkLine[]` 原样翻译成渲染层要的 `WatermarkPiece[]`。
+   */
+  const plan = computeWatermarkPlan(
+    layout,
+    timestamp,
+    frame,
+    placeText,
+    dateText,
+    locale,
+    input.watermarkLayout,
+  );
+
+  // `centered` 与 `split` 的行由 geometry 给了 `maxWidth`（要避让对面那块字）；
+  // `dateOnly` / `stacked` 的靠边行没有对立面，退回"整幅减两侧 inset"。
+  const fullWidth = Math.max(
+    24,
+    layout.width - Math.max(2, Math.round(layout.width * timestamp.insetRatio)) * 2,
+  );
+
+  return plan.lines.map((line) => ({
+    key: line.kind === 'date' ? 'timestamp' : 'place',
+    text: line.text,
+    ...(line.align.left === undefined ? {} : { left: line.align.left }),
+    ...(line.align.right === undefined ? {} : { right: line.align.right }),
+    bottom: line.bottom,
+    maxWidth: line.align.maxWidth ?? fullWidth,
+    ...(line.align.textAlign === undefined ? {} : { textAlign: line.align.textAlign }),
+    fontSize: line.fontSize,
+    letterSpacing: line.letterSpacing,
+    color: line.color,
+    // geometry 只在"压在照片上"时给辉光；印在相纸留白上的是 0（白纸上围一圈阴影
+    // 看着像蹭脏了）。直接搬过来，不再自己按锚点猜。
+    shadowRadius: line.glowRadius,
+  }));
+}
+
+/* ==========================================================================
+ * 二、渲染
+ * ========================================================================== */
+
 export function FilmCompositor({
   stage,
   viewShotRef,
@@ -55,7 +190,7 @@ export function FilmCompositor({
   timestampFontFamily,
   style,
 }: FilmCompositorProps) {
-  const { layout, preset, frame, rawUri, capturedAt, locationText } = stage;
+  const { layout, preset, frame, rawUri, capturedAt } = stage;
 
   // 调色层：纯函数算出来的声明式图层，渲染层只按 kind 分发
   const layers = useMemo(() => buildGradeLayers(preset), [preset]);
@@ -71,23 +206,22 @@ export function FilmCompositor({
     [layout.width, layout.height, preset.captureLongEdge],
   );
 
-  const anchor = useMemo(
-    () => resolveTimestampAnchor(frame, preset.timestamp),
-    [frame, preset.timestamp],
-  );
-  const timestampLayout = useMemo(
-    () => computeTimestampLayout(layout, preset.timestamp, anchor),
-    [layout, preset.timestamp, anchor],
-  );
-  const timestampText = preset.timestamp.enabled
-    ? formatTimestamp(capturedAt, preset.timestamp.format)
-    : '';
-
-  // 定位水印：空串 / 全空格 / 没传 = 这张不写定位
-  const locationLine = typeof locationText === 'string' ? locationText.trim() : '';
-  const locationLayout = useMemo(
-    () => computeLocationLayout(layout, preset.timestamp, anchor),
-    [layout, preset.timestamp, anchor],
+  const pieces = useMemo(
+    () =>
+      planWatermark({
+        layout,
+        frame,
+        timestamp: preset.timestamp,
+        capturedAt,
+        locationText: typeof stage.locationText === 'string' ? stage.locationText : '',
+        place: stage.place ?? null,
+        // 宿主没给语言时按简体中文渲染。宁可有一个确定的行为，
+        // 也不要出现"英文界面下地名是中文"这种半对的状态。
+        locale: stage.locale ?? 'zh-Hans',
+        watermarkLayout: stage.watermarkLayout ?? 'split',
+        placeDetail: stage.placeDetail ?? 'archive',
+      }),
+    [layout, frame, preset.timestamp, capturedAt, stage.locationText, stage.place, stage.locale, stage.watermarkLayout, stage.placeDetail],
   );
 
   return (
@@ -139,54 +273,45 @@ export function FilmCompositor({
         fadeDuration={0}
       />
 
-      {/* ③ 日期水印 */}
-      {timestampText.length > 0 ? (
+      {/* ③ 水印（日期 + 定位，一次画完） */}
+      {pieces.map((piece) => (
         <Text
-          allowFontScaling={false}
-          style={[
-            styles.timestamp,
-            {
-              right: timestampLayout.right,
-              bottom: timestampLayout.bottom,
-              color: preset.timestamp.color,
-              fontSize: timestampLayout.fontSize,
-              letterSpacing: timestampLayout.letterSpacing,
-              fontFamily: preset.timestamp.fontFamily ?? timestampFontFamily,
-              fontWeight: preset.timestamp.fontWeight,
-              // 液晶辉光：同色 textShadow（比嵌套 Text 便宜）
-              textShadowColor: preset.timestamp.glow ? preset.timestamp.color : 'transparent',
-              textShadowRadius: preset.timestamp.glow
-                ? Math.max(3, Math.round(timestampLayout.fontSize * 0.45))
-                : 0,
-              textShadowOffset: { width: 0, height: 0 },
-            },
-          ]}
-        >
-          {timestampText}
-        </Text>
-      ) : null}
-
-      {/* ④ 定位水印（左下角） */}
-      {locationLine.length > 0 ? (
-        <Text
+          key={piece.key}
           allowFontScaling={false}
           numberOfLines={1}
           ellipsizeMode="tail"
           style={[
-            styles.location,
+            styles.stamp,
             {
-              left: locationLayout.left,
-              bottom: locationLayout.bottom,
-              fontSize: locationLayout.fontSize,
-              letterSpacing: locationLayout.letterSpacing,
+              left: piece.left,
+              right: piece.right,
+              bottom: piece.bottom,
+              maxWidth: piece.maxWidth,
+              textAlign: piece.textAlign,
+              color: piece.color,
+              fontSize: piece.fontSize,
+              letterSpacing: piece.letterSpacing,
               fontFamily: preset.timestamp.fontFamily ?? timestampFontFamily,
               fontWeight: preset.timestamp.fontWeight,
+              // 液晶辉光：同色 textShadow（比嵌套 Text 便宜）。
+              // 只在压在照片上、且预设开了 glow 时才有 —— 相纸上不发光。
+              textShadowColor:
+                piece.shadowRadius > 0
+                  ? preset.timestamp.glow
+                    ? piece.color
+                    : 'rgba(0, 0, 0, 0.55)'
+                  : 'transparent',
+              textShadowRadius:
+                piece.shadowRadius > 0 && preset.timestamp.glow
+                  ? Math.max(3, Math.round(piece.fontSize * 0.45))
+                  : piece.shadowRadius,
+              textShadowOffset: { width: 0, height: piece.shadowRadius > 0 ? 1 : 0 },
             },
           ]}
         >
-          {locationLine}
+          {piece.text}
         </Text>
-      ) : null}
+      ))}
     </ViewShot>
   );
 }
@@ -263,9 +388,6 @@ function GradeLayerView({ layer, rawUri, photoFit, onImageLoad }: GradeLayerView
 
 const FLIP_X = [{ scaleX: -1 }];
 
-/** 定位水印的纸白（比 UI 的 INK.paper 略暗一点，免得在相纸上显得发亮）。 */
-const LOCATION_INK = 'rgba(236, 232, 224, 0.88)';
-
 const styles = StyleSheet.create({
   stage: {
     overflow: 'hidden',
@@ -285,24 +407,7 @@ const styles = StyleSheet.create({
     left: 0,
     top: 0,
   },
-  timestamp: {
+  stamp: {
     position: 'absolute',
-  },
-  /**
-   * 定位水印。
-   *
-   * 颜色刻意**不用**日期那支琥珀色：琥珀是"液晶数码管"的语义，只该出现在日期上；
-   * 地点是印在相纸上的小字，用略暗的纸白，和 35mm 相框上印的
-   * `36 EXP · PROCESS C-41` 是同一种东西。
-   *
-   * 那圈黑色投影也不是装饰：白边印刷框的锚点是 `window`，左下角下面是**照片本身**，
-   * 可能是白墙、雪地、过曝的天空 —— 没有投影这一行就直接消失了。
-   */
-  location: {
-    position: 'absolute',
-    color: LOCATION_INK,
-    textShadowColor: 'rgba(0, 0, 0, 0.55)',
-    textShadowRadius: 2,
-    textShadowOffset: { width: 0, height: 1 },
   },
 });

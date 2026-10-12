@@ -40,24 +40,32 @@ export const zhHans = {
   'camera.shutter.a11y': '拍照',
   'camera.shutter.busy': '正在显影',
 
+  /* ---------------- 胶卷库（长按取景器下方的胶片名打开） ---------------- */
+  // 面板标题是印上去的英文标牌，和 LCD 上的字一样不翻译，五种语言共用同一串。
+  'film.drawer.title': 'SELECT FILM STOCK',
+  'film.drawer.a11y': '胶卷库，选择胶卷预设',
+  'film.drawer.close': '完成',
+  'film.drawer.hint': '长按取景器下方胶片名也可以打开这里',
+  'film.card.a11y': '{name}，{description}',
+  'film.card.selected': '已选择',
+
   /* ---------------- 相框名（顶栏那行小字里显示） ----------------
      名字一律 2~5 个字：顶栏是单行等宽小字，名字长了会把右边的预设名挤掉。
      相框本身是 `src/constants/frames.ts` 里的数据，这里的键只负责"叫什么"。 */
-  'frame.classicWhite': '纤维相纸',
-  'frame.instant': '拍立得',
-  'frame.film35': '35mm 片边',
-  'frame.darkroom': '暗房放大',
+  'frame.polaroid600': '一次成像',
+  'frame.instaxMini': '迷你画幅',
+  'frame.neg135': '135 负片',
   'frame.slideMount': '幻灯装裱',
-  'frame.orangeBase': '负片片基',
-  'frame.cropMarks': '打样张',
-  'frame.archiveCard': '档案卡',
+  'frame.badge.a11y': '画幅 {name}，第 {count} 张',
 
   /* ---------------- ② 变焦条 / 相册 / 手动对焦 ---------------- */
-  'zoom.a11y': '变焦 {percent}%，左右拖动调整',
+  'zoom.a11y': '变焦 {percent}%，左右轻点切换档位',
   'zoom.label': '变焦',
   'zoom.role.ultraWide': '超广角',
   'zoom.role.wide': '标准',
+  'zoom.role.tele': '长焦',
   'zoom.stop.a11y': '切换到 {label}',
+  'zoom.stop.digital': '数码变焦',
   'camera.gallery.a11y': '打开 App 相册',
   'camera.gallery.label': '相册',
   'gallery.title': '相册',
@@ -67,6 +75,12 @@ export const zhHans = {
   'gallery.photo': '第 {index} 张，{date}',
   'gallery.delete': '删除这张',
   'gallery.cancel': '取消',
+  'gallery.lightbox.a11y': '第 {index} 张，点击关闭',
+  'gallery.share': '分享',
+  'gallery.shareFailed': '分享失败：{message}',
+  'gallery.saved': '已存到「{album}」',
+  // 系统相簿名：五种语言共用同一串，用户要在「照片」里认出是同一个相簿。
+  'album.name': 'RETRO CAM',
   'camera.focus.a11y': '点击画面手动对焦',
 
   /* ---------------- ③.5 颗粒强度 ---------------- */
@@ -77,6 +91,7 @@ export const zhHans = {
   'grain.level.std': '标准',
   'grain.level.heavy': '重',
   'grain.level.max': '极重',
+  'grain.note': '在胶卷自带的颗粒上再乘一档浓淡。',
 
   /* ---------------- ④ LCD 状态条 ---------------- */
   'lcd.date.off': '日期 已关闭',
@@ -126,6 +141,8 @@ export const zhHans = {
   /* ---------------- 设置界面 ---------------- */
   'settings.close': '完成',
   'settings.footer': '改完立刻生效，并且会记住 —— 下次打开还是这个设置。',
+  'settings.grain.title': '颗粒',
+  'settings.grain.a11y': '颗粒强度，当前 {level}',
   'settings.language.head': '语言 LANGUAGE',
   'settings.language.system': '跟随系统',
   'settings.location.head': '定位水印 LOCATION',
@@ -136,8 +153,19 @@ export const zhHans = {
   'settings.location.coords': '坐标',
   'settings.locationMode.a11y': '定位水印：{label}',
   'settings.locale.a11y': '界面语言：{label}',
+  'settings.placeDetail.title': '地名详细度',
+  'settings.placeDetail.a11y': '地名详细度：{label}',
+  'settings.placeDetail.archive': '精简（城市 · 代码）',
+  'settings.placeDetail.full': '完整（行政全称）',
+  'settings.placeDetail.note': '港澳台会带上「中国」前缀。',
   'settings.subtitle': 'SETTINGS',
   'settings.title': '设置',
+  'settings.watermark.title': '水印版式',
+  'settings.watermark.a11y': '水印版式：{label}',
+  'settings.watermark.split': '地名在左 · 日期在右',
+  'settings.watermark.stacked': '地名在上 · 日期在下',
+  'settings.watermark.centered': '合成一行 · 居中',
+  'settings.watermark.dateOnly': '只打日期',
 
   /* ---------------- 定位 ---------------- */
   'location.denied': '定位权限被拒绝，请到 系统设置 → 隐私与安全性 → 定位服务 里打开。',

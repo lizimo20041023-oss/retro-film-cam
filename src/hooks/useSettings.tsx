@@ -10,7 +10,14 @@
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { AppSettings, LocalePreference, LocationMode } from '../types';
+import type {
+  AppSettings,
+  GrainLevelId,
+  LocalePreference,
+  LocationMode,
+  PlaceDetail,
+  WatermarkLayout,
+} from '../types';
 import { DEFAULT_SETTINGS, loadSettings, persistSettings } from '../utils/settingsStore';
 
 export interface SettingsContextValue {
@@ -19,6 +26,12 @@ export interface SettingsContextValue {
   hydrated: boolean;
   setLocalePreference: (next: LocalePreference) => void;
   setLocationMode: (next: LocationMode) => void;
+  /** 水印版式（四选一）。 */
+  setWatermarkLayout: (next: WatermarkLayout) => void;
+  /** 地名详细度（精简 / 完整）。 */
+  setPlaceDetail: (next: PlaceDetail) => void;
+  /** 颗粒档位。原来在取景器底部那条横向滑块上，现在归设置页管。 */
+  setGrainLevel: (next: GrainLevelId) => void;
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
@@ -61,15 +74,46 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     [update],
   );
 
+  const setWatermarkLayout = useCallback(
+    (next: WatermarkLayout) => update({ watermarkLayout: next }),
+    [update],
+  );
+
+  const setPlaceDetail = useCallback(
+    (next: PlaceDetail) => update({ placeDetail: next }),
+    [update],
+  );
+
+  const setGrainLevel = useCallback(
+    (next: GrainLevelId) => update({ grainLevel: next }),
+    [update],
+  );
+
   const value = useMemo<SettingsContextValue>(
-    () => ({ settings, hydrated, setLocalePreference, setLocationMode }),
-    [settings, hydrated, setLocalePreference, setLocationMode],
+    () => ({
+      settings,
+      hydrated,
+      setLocalePreference,
+      setLocationMode,
+      setWatermarkLayout,
+      setPlaceDetail,
+      setGrainLevel,
+    }),
+    [
+      settings,
+      hydrated,
+      setLocalePreference,
+      setLocationMode,
+      setWatermarkLayout,
+      setPlaceDetail,
+      setGrainLevel,
+    ],
   );
 
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>;
 }
 
-/** 取设置与两个 setter。必须在 `<SettingsProvider>` 之内使用。 */
+/** 取设置与五个 setter。必须在 `<SettingsProvider>` 之内使用。 */
 export function useSettings(): SettingsContextValue {
   const value = useContext(SettingsContext);
   if (value === null) {

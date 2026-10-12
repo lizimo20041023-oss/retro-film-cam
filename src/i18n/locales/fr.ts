@@ -32,24 +32,34 @@ export const fr: Messages = {
   'camera.shutter.a11y': 'Prendre une photo',
   'camera.shutter.busy': 'Développement',
 
+  /* ---------------- filmothèque (appui long sur le nom de la pellicule sous le viseur) ---------------- */
+  // Le titre du panneau est une plaque anglaise imprimée : comme les libellés du
+  // LCD, il n'est pas traduit et reste identique dans les cinq langues.
+  'film.drawer.title': 'SELECT FILM STOCK',
+  'film.drawer.a11y': 'Filmothèque, choisir un préréglage de pellicule',
+  'film.drawer.close': 'Terminé',
+  'film.drawer.hint':
+    'Un appui long sur le nom de la pellicule sous le viseur ouvre aussi ce panneau',
+  'film.card.a11y': '{name}, {description}',
+  'film.card.selected': 'Sélectionné',
+
   /* ---------------- noms des cadres (barre du haut) ----------------
      Restez court : la barre du haut est une seule ligne en 10pt monospace,
      un nom trop long pousse le nom du préréglage hors de l'écran. */
-  'frame.classicWhite': 'FIBRE',
-  'frame.instant': 'INSTANT',
-  'frame.film35': '35mm',
-  'frame.darkroom': 'LABO',
+  'frame.polaroid600': 'INSTANTANÉ',
+  'frame.instaxMini': 'MINI',
+  'frame.neg135': '135',
   'frame.slideMount': 'DIAPO',
-  'frame.orangeBase': 'NÉGATIF',
-  'frame.cropMarks': 'ÉPREUVE',
-  'frame.archiveCard': 'ARCHIVE',
+  'frame.badge.a11y': 'Cadre {name}, photo {count}',
 
   /* ---------------- ② rail de zoom sur le viseur ---------------- */
-  'zoom.a11y': 'Zoom {percent} %, faites glisser vers la gauche ou la droite',
+  'zoom.a11y': 'Zoom {percent} %, touchez une focale pour changer',
   'zoom.label': 'ZOOM',
   'zoom.role.ultraWide': 'ultra grand-angle',
   'zoom.role.wide': 'standard',
+  'zoom.role.tele': 'téléobjectif',
   'zoom.stop.a11y': 'Passer à {label}',
+  'zoom.stop.digital': 'zoom numérique',
   'camera.gallery.a11y': 'Ouvrir l’album de l’app',
   'camera.gallery.label': 'ALBUM',
   'gallery.title': 'ALBUM',
@@ -59,6 +69,13 @@ export const fr: Messages = {
   'gallery.photo': 'Photo {index}, {date}',
   'gallery.delete': 'Supprimer cette photo',
   'gallery.cancel': 'Annuler',
+  'gallery.lightbox.a11y': 'Photo {index}, toucher pour fermer',
+  'gallery.share': 'Partager',
+  'gallery.shareFailed': 'Échec du partage : {message}',
+  'gallery.saved': 'Enregistré dans « {album} »',
+  // Le nom de l’album est identique dans les cinq langues : l’utilisateur doit
+  // retrouver un seul et même album dans l’app Photos.
+  'album.name': 'RETRO CAM',
   'camera.focus.a11y': 'Touchez l’image pour faire le point',
 
   /* ---------------- ③.5 grain ---------------- */
@@ -69,6 +86,7 @@ export const fr: Messages = {
   'grain.level.std': 'Standard',
   'grain.level.heavy': 'Fort',
   'grain.level.max': 'Extrême',
+  'grain.note': 'Ajoute un cran de densité par-dessus le grain propre à la pellicule.',
 
   /* ---------------- ④ bandeau LCD ---------------- */
   'lcd.date.off': 'DATE · AUCUNE',
@@ -123,6 +141,8 @@ export const fr: Messages = {
   'settings.close': 'Terminé',
   'settings.footer':
     "Les changements s'appliquent immédiatement et sont conservés à la prochaine ouverture.",
+  'settings.grain.title': 'Grain',
+  'settings.grain.a11y': 'Intensité du grain, actuellement {level}',
   'settings.language.head': 'LANGUE',
   'settings.language.system': 'Suivre le système',
   'settings.location.head': 'FILIGRANE DE POSITION',
@@ -133,8 +153,19 @@ export const fr: Messages = {
   'settings.location.coords': 'Coordonnées',
   'settings.locationMode.a11y': 'Filigrane de position : {label}',
   'settings.locale.a11y': 'Langue : {label}',
+  'settings.placeDetail.title': 'Niveau de détail',
+  'settings.placeDetail.a11y': 'Niveau de détail : {label}',
+  'settings.placeDetail.archive': 'Compact (ville · code)',
+  'settings.placeDetail.full': 'Complet (administratif)',
+  'settings.placeDetail.note': 'Taïwan, Hong Kong et Macao sont préfixés par « Chine ».',
   'settings.subtitle': 'RÉGLAGES',
   'settings.title': 'Réglages',
+  'settings.watermark.title': 'Disposition du filigrane',
+  'settings.watermark.a11y': 'Disposition du filigrane : {label}',
+  'settings.watermark.split': 'Lieu à gauche · date à droite',
+  'settings.watermark.stacked': 'Lieu au-dessus · date en dessous',
+  'settings.watermark.centered': 'Une ligne · centré',
+  'settings.watermark.dateOnly': 'Date seule',
 
   /* ---------------- localisation ---------------- */
   'location.denied':

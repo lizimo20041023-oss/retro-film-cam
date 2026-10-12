@@ -26,135 +26,107 @@
  *
  * 3. 往下面数组里加一条：
  *    { id: 'my-frame', name: '我的相框', source: require('../../assets/frames/my-frame.png'),
- *      aspect: 宽/高, window: { x, y, width, height }, defaultTimestampAnchor: 'window' }
+ *      aspect: 宽/高, window: { x, y, width, height },
+ *      watermark: { anchor: 'window', tone: 'amber', align: 'right' } }
  *    （`name` 直接写中文也行 —— 只有内置相框会配 `nameKey` 走多语言翻译。）
  *
  * ⚠️ 改了相框以后，相机取景窗口和成片画幅会自动跟着变 —— 因为两者都由这一份数据算出来
  *    （见 `src/utils/geometry.ts` 的 computeFrameLayout）。
  *
- * ⚠️ `defaultTimestampAnchor` 决定日期烧在哪，**加相框时一定要顺手核一遍**：
- *    · 'frame'  烧在下留白里（右对齐，距底 insetRatio × 相框宽）。下留白 < 110px
- *               的相框千万别选它，日期会压到边框外；留白里已有的文字（色标条、
- *               档案卡的红线）也要给它让位 —— 具体位置见 scripts/generate_frames.py
- *               里每张图的注释，那里标了"这里是日期水印的地盘"。
- *    · 'window' 烧在画面内部右下角，永远不会和边框上的字打架。
+ * ─────────────────────────────────────────────────────────────────────────
+ * 这四款是怎么来的：**每一款对应一种真实存在的物理产物**
+ * ─────────────────────────────────────────────────────────────────────────
+ * 上一版有 8 款，问题不在数量，在于其中几款是"滤镜思维"的产物 —— 靠撒噪点、
+ * 撒污渍、印一行 `RT-400 · 36 EXP · C-41` 来暗示"我很旧"。真实相纸不长那样：
+ * 纸面是干净的，做旧是**时间和使用**留下的，不是印刷时喷上去的。所以这一版：
+ *
+ *   1. 每款的画幅比、留白比例、开孔位置都照**真实规格**算（86×54 的 instax mini、
+ *      88×107 的 600 系即时成像、35mm 的 24×36 开孔、50×50 幻灯卡）；
+ *   2. 只保留**工艺决定的**细节（片边齿孔、片基代号、幻灯卡的纸纹），
+ *      删掉一切"为了像旧照片而画上去的"脏点；
+ *   3. 留白不说话 —— 字只出现在真有信息的地方（片边代号、卡纸上的规格印字）。
+ *
+ * ⚠️ `watermark` 决定水印烧在哪，**加相框时一定要顺手核一遍**：
+ *    · `{ anchor: 'frame' }`  烧在下留白里。下留白 < 110px 的相框千万别选它，
+ *      日期会压到边框外；留白里已有的印字（片基代号、卡纸规格字）也要给它让位。
+ *    · `{ anchor: 'window' }` 烧在画面内部右下角，永远不会和边框上的字打架。
+ *    · `tone`：`'graphite'` 给"下巴默认纯留白"的相框（拍立得、幻灯卡）用，
+ *      它输出的是一行极细灰色打字机体小字，不是橙色点阵液晶。
  * ─────────────────────────────────────────────────────────────────────────
  */
 import type { FrameSpec } from '../types';
 
 export const FRAMES: FrameSpec[] = [
   {
-    id: 'classic-white',
-    name: '白边印刷',
-    nameKey: 'frame.classicWhite',
-    // 1350×1800，镂空窗口 1197×1596（3:4）。通篇无字 —— 留白就是它的设计。
-    source: require('../../assets/frames/classic-white.png'),
-    aspect: 1350 / 1800,
-    window: { x: 0.056296, y: 0.046667, width: 0.886667, height: 0.886667 },
+    id: 'polaroid-600',
+    name: '一次成像',
+    nameKey: 'frame.polaroid600',
+    // 1408×1712 = 88:107（600 系即时成像的真实外框比）。
+    // 画面区 1264×1264 正方形，四周留白 72px，底部下巴 376px —— 三边等宽、下重，
+    // 这个"头轻脚重"的比例就是拍立得的辨识度来源，改一点点都不像。
+    source: require('../../assets/frames/polaroid-600.png'),
+    aspect: 1408 / 1712,
+    window: { x: 0.051136, y: 0.042056, width: 0.897727, height: 0.738318 },
     photoFit: 'cover',
-    // 下留白只有 120px，装不下日期 → 烧在画面内部右下角
-    defaultTimestampAnchor: 'window',
-    designSize: { width: 1350, height: 1800 },
-    description: '纤维相纸：暖白 + 低频不匀 + 内缩细线 + 窗口压痕，无任何印刷字',
+    // 下巴默认纯留白（真的拍立得是留给你写字的）→ 水印走灰色打字机体、贴左
+    watermark: { anchor: 'frame', tone: 'graphite', align: 'left', uppercase: true },
+    designSize: { width: 1408, height: 1712 },
+    description: '600 系一次成像：1:1 正方形画面 + 三边等宽 + 厚重下巴，纸面干净无印花',
   },
   {
-    id: 'instant-square',
-    name: '拍立得',
-    nameKey: 'frame.instant',
-    // 1425×1800，镂空窗口是正方形（1269×1269）
-    source: require('../../assets/frames/instant-square.png'),
-    aspect: 1425 / 1800,
-    window: { x: 0.054737, y: 0.051111, width: 0.890526, height: 0.705 },
+    id: 'instax-mini',
+    name: '迷你画幅',
+    nameKey: 'frame.instaxMini',
+    // 1080×1720 = 54:86（instax mini 的真实外框比）。
+    // 画面区 918×1224 严格 3:4 竖构图，上留白 90px、下巴 406px。
+    source: require('../../assets/frames/instax-mini.png'),
+    aspect: 1080 / 1720,
+    window: { x: 0.075, y: 0.052326, width: 0.85, height: 0.711628 },
     photoFit: 'cover',
-    // 下白边 439px 很宽：日期烧在留白里，就像真机打印上去的那样
-    defaultTimestampAnchor: 'frame',
-    designSize: { width: 1425, height: 1800 },
-    description: '1:1 画面 + 宽下白边，纸面带涂层杂质，下白边刻意留空（真宝丽来是给你写字的）',
+    watermark: { anchor: 'frame', tone: 'amber', align: 'right' },
+    designSize: { width: 1080, height: 1720 },
+    description: '迷你即时成像：3:4 竖幅 + 6px 圆角画面区，冷白细腻无杂质',
   },
   {
-    id: 'film-35mm',
-    name: '35mm 胶片',
-    nameKey: 'frame.film35',
-    // 1350×1950，镂空窗口 930×1330，上下片边 + 两侧透明齿孔
-    source: require('../../assets/frames/film-35mm.png'),
+    id: 'neg-135',
+    name: '135 负片',
+    nameKey: 'frame.neg135',
+    // 1350×1950。按 35mm 胶片的真实毫米数放大（约 38.6 px/mm）：
+    // 画面区 926×1389 = 24×36mm 竖拍，两侧各 212px 是齿孔带，
+    // 上下各留 280/281px 片头片尾用来印代号。
+    source: require('../../assets/frames/neg-135.png'),
     aspect: 1350 / 1950,
-    window: { x: 0.155556, y: 0.153846, width: 0.688889, height: 0.682051 },
+    window: { x: 0.157037, y: 0.14359, width: 0.685926, height: 0.712308 },
     photoFit: 'cover',
-    defaultTimestampAnchor: 'frame',
+    // 片边已经印满了字（齿孔代号 / C-41），日期改烧画面内部右下角，谁也不挤谁
+    watermark: { anchor: 'window', tone: 'amber', align: 'right' },
     designSize: { width: 1350, height: 1950 },
-    description: '真实片边：齿孔 + 帧号（▶ 12A / 13 ▷）+ 片基代号，日期烧在下片边',
-  },
-  {
-    id: 'darkroom',
-    name: '暗房放大',
-    nameKey: 'frame.darkroom',
-    // 1350×1800，镂空窗口 1168×1590，四边宽度刻意不等（手工裁切）
-    source: require('../../assets/frames/darkroom.png'),
-    aspect: 1350 / 1800,
-    window: { x: 0.057778, y: 0.051111, width: 0.865185, height: 0.883333 },
-    photoFit: 'cover',
-    defaultTimestampAnchor: 'frame',
-    designSize: { width: 1350, height: 1800 },
-    description: '纯黑卡纸 + 手工裁切的毛边窗口 + 左下角一枚小编号，最"摄影师"的一张',
+    description: '135 负片：两侧真齿孔 + 橙黄片边代号（▷ 12A / C-41 135），纯黑片基无污渍',
   },
   {
     id: 'slide-mount',
     name: '幻灯装裱',
     nameKey: 'frame.slideMount',
-    // 1350×1350 方卡，镂空窗口 1010×674（3:2 横向）—— 唯一一张横构图
+    // 1350×1350 = 1:1（50×50mm 幻灯卡纸的真实外形）。
+    // 开孔 972×648 = 36×24mm 横幅，居中，这就是唯一一张横构图。
     source: require('../../assets/frames/slide-mount.png'),
     aspect: 1350 / 1350,
-    window: { x: 0.125926, y: 0.266667, width: 0.748148, height: 0.499259 },
+    window: { x: 0.14, y: 0.26, width: 0.72, height: 0.48 },
     photoFit: 'cover',
-    defaultTimestampAnchor: 'frame',
+    watermark: { anchor: 'frame', tone: 'graphite', align: 'right' },
     designSize: { width: 1350, height: 1350 },
-    description: '方形冷灰卡纸 + 圆角 + 压纹 + 3:2 横向开孔，唯一一张横构图',
-  },
-  {
-    id: 'orange-base',
-    name: '负片片基',
-    nameKey: 'frame.orangeBase',
-    // 1350×1800，镂空窗口 1050×1400
-    source: require('../../assets/frames/orange-base.png'),
-    aspect: 1350 / 1800,
-    window: { x: 0.111111, y: 0.144444, width: 0.777778, height: 0.777778 },
-    photoFit: 'cover',
-    defaultTimestampAnchor: 'frame',
-    designSize: { width: 1350, height: 1800 },
-    description: '彩色负片的橙色 mask 当整块边框 + 齿孔，辨识度最高的一张',
-  },
-  {
-    id: 'crop-marks',
-    name: '打样张',
-    nameKey: 'frame.cropMarks',
-    // 1350×1800，镂空窗口 1158×1584
-    source: require('../../assets/frames/crop-marks.png'),
-    aspect: 1350 / 1800,
-    window: { x: 0.071111, y: 0.06, width: 0.857778, height: 0.88 },
-    photoFit: 'cover',
-    // 下留白里已经排了四色色标条 → 日期改烧画面内部，不跟色标抢位置
-    defaultTimestampAnchor: 'window',
-    designSize: { width: 1350, height: 1800 },
-    description: '印刷打样张：四角裁切线 + 套准十字 + 底部 C/M/Y/K 色标条',
-  },
-  {
-    id: 'archive-card',
-    name: '牛皮档案卡',
-    nameKey: 'frame.archiveCard',
-    // 1350×1800，镂空窗口 960×1280，左侧留出装订打孔的位置
-    source: require('../../assets/frames/archive-card.png'),
-    aspect: 1350 / 1800,
-    window: { x: 0.222222, y: 0.083333, width: 0.711111, height: 0.711111 },
-    photoFit: 'cover',
-    defaultTimestampAnchor: 'frame',
-    designSize: { width: 1350, height: 1800 },
-    description: '牛皮纸 + 左侧三个装订孔 + 红线 + 打字机打的编号（基线是抖的）',
+    description: '幻灯装裱卡：1:1 象牙白卡纸 + 3:2 横幅开孔 + 顶部极细 SLIDE MOUNT 印字',
   },
   // ↓↓↓ 在这里继续加你的相框 ↓↓↓
 ];
 
-/** 冷启动时用哪个相框（必须是上面某个 id）。 */
-export const DEFAULT_FRAME_ID = 'classic-white';
+/**
+ * 冷启动时用哪个相框（必须是上面某个 id）。
+ *
+ * 选 `polaroid-600` 而不是 `neg-135`：它的 0.822 画幅比最接近手机屏幕，
+ * 取景器里浪费的黑边最少；而且正方形画面 + 厚下巴是所有胶片形态里辨识度最高的。
+ */
+export const DEFAULT_FRAME_ID = 'polaroid-600';
 
 /**
  * 按 id 找相框下标；找不到返回 0，绝不抛错（用户改了 id 也不至于白屏）。

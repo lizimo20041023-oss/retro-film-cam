@@ -31,23 +31,31 @@ export const ja: Messages = {
   'camera.shutter.a11y': '撮影',
   'camera.shutter.busy': '現像中',
 
+  /* ---------------- フィルムライブラリ（ファインダー下のフィルム名を長押しで開く） ---------------- */
+  // パネル見出しは印刷された英語のプレート。LCD の文字と同じく翻訳せず、5言語で同じ表記。
+  'film.drawer.title': 'SELECT FILM STOCK',
+  'film.drawer.a11y': 'フィルムライブラリ、フィルムプリセットを選択',
+  'film.drawer.close': '完了',
+  'film.drawer.hint': 'ファインダー下のフィルム名を長押ししても開けます',
+  'film.card.a11y': '{name}、{description}',
+  'film.card.selected': '選択中',
+
   /* ---------------- フレーム名（上部バーの小さい文字） ----------------
      名前は短く。日本語は特に長くなりやすいので 2〜5 文字に抑えています。 */
-  'frame.classicWhite': 'ファイバー',
-  'frame.instant': 'ポラロイド',
-  'frame.film35': '35mm',
-  'frame.darkroom': '暗室',
+  'frame.polaroid600': 'インスタント',
+  'frame.instaxMini': 'ミニ',
+  'frame.neg135': '135',
   'frame.slideMount': 'スライド',
-  'frame.orangeBase': 'ネガ',
-  'frame.cropMarks': '校正刷り',
-  'frame.archiveCard': '台帳',
+  'frame.badge.a11y': 'フレーム {name}、{count} 枚目',
 
   /* ---------------- ② ファインダー右端のズームレール ---------------- */
-  'zoom.a11y': 'ズーム {percent}%、左右にドラッグして調整',
+  'zoom.a11y': 'ズーム {percent}%、左右をタップして切り替え',
   'zoom.label': 'ズーム',
   'zoom.role.ultraWide': '超広角',
   'zoom.role.wide': '標準',
+  'zoom.role.tele': '望遠',
   'zoom.stop.a11y': '{label} に切り替え',
+  'zoom.stop.digital': 'デジタルズーム',
   'camera.gallery.a11y': 'アプリ内アルバムを開く',
   'camera.gallery.label': 'アルバム',
   'gallery.title': 'アルバム',
@@ -57,6 +65,12 @@ export const ja: Messages = {
   'gallery.photo': '{index} 枚目、{date}',
   'gallery.delete': 'この写真を削除',
   'gallery.cancel': 'キャンセル',
+  'gallery.lightbox.a11y': '{index} 枚目、タップで閉じる',
+  'gallery.share': '共有',
+  'gallery.shareFailed': '共有に失敗：{message}',
+  'gallery.saved': '「{album}」に保存しました',
+  // アルバム名は5言語で同じ文字列。写真アプリで同じアルバムだと分かる必要がある。
+  'album.name': 'RETRO CAM',
   'camera.focus.a11y': '画面をタップしてピントを合わせる',
 
   /* ---------------- ③.5 粒子の強さ ---------------- */
@@ -67,6 +81,7 @@ export const ja: Messages = {
   'grain.level.std': '標準',
   'grain.level.heavy': '強',
   'grain.level.max': '最強',
+  'grain.note': 'フィルム本来の粒子に、濃淡を一段重ねます。',
 
   /* ---------------- ④ LCD ステータスバー ---------------- */
   'lcd.date.off': '日付 オフ',
@@ -119,6 +134,8 @@ export const ja: Messages = {
   /* ---------------- 設定画面 ---------------- */
   'settings.close': '完了',
   'settings.footer': '変更はすぐ反映され、次に開いたときも保持されます。',
+  'settings.grain.title': '粒子',
+  'settings.grain.a11y': '粒子の強さ、現在 {level}',
   'settings.language.head': '言語 LANGUAGE',
   'settings.language.system': 'システムに従う',
   'settings.location.head': '位置情報スタンプ LOCATION',
@@ -129,8 +146,19 @@ export const ja: Messages = {
   'settings.location.coords': '座標',
   'settings.locationMode.a11y': '位置情報スタンプ：{label}',
   'settings.locale.a11y': '表示言語：{label}',
+  'settings.placeDetail.title': '地名の詳しさ',
+  'settings.placeDetail.a11y': '地名の詳しさ：{label}',
+  'settings.placeDetail.archive': '簡略（都市・コード）',
+  'settings.placeDetail.full': '詳細（行政名）',
+  'settings.placeDetail.note': '香港・マカオ・台湾には「中国」の接頭辞が付きます。',
   'settings.subtitle': 'SETTINGS',
   'settings.title': '設定',
+  'settings.watermark.title': '透かしのレイアウト',
+  'settings.watermark.a11y': '透かしのレイアウト：{label}',
+  'settings.watermark.split': '地名は左・日付は右',
+  'settings.watermark.stacked': '地名は上・日付は下',
+  'settings.watermark.centered': '一行に結合・中央揃え',
+  'settings.watermark.dateOnly': '日付のみ',
 
   /* ---------------- 位置情報 ---------------- */
   'location.denied':

@@ -44,6 +44,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [20. App 内相册：沙盒里的第二份拷贝](#20-app-内相册沙盒里的第二份拷贝)
 - [21. 补光改成闪光灯：一次改名、零行改图](#21-补光改成闪光灯一次改名零行改图)
 - [22. 许可证与隐私](#22-许可证与隐私)
+- [23. v1.2.0：这一版改了什么（八件事）](#23-v120这一版改了什么八件事)
 
 ---
 
@@ -257,15 +258,11 @@ retro-film-cam/
 │
 ├── assets/
 │   ├── icon.png                  # App 图标 1024×1024（由 scripts/generate_app_icon.py 生成）
-│   ├── frames/                   # 相框 PNG（透明镂空）+ 规范文档 —— 共 8 款
-│   │   ├── classic-white.png     #   纤维相纸 1350×1800
-│   │   ├── instant-square.png    #   拍立得 1425×1800
-│   │   ├── film-35mm.png         #   35mm 片边 1350×1950（含透明齿孔）
-│   │   ├── darkroom.png          #   暗房放大 1350×1800（窗口是毛边）
-│   │   ├── slide-mount.png       #   幻灯装裱 1350×1350（方形装裱卡）
-│   │   ├── orange-base.png       #   负片片基 1350×1800（橙色片基 + 齿孔）
-│   │   ├── crop-marks.png        #   打样张 1350×1800（规矩线 + 四色色标）
-│   │   ├── archive-card.png      #   档案卡 1350×1800（牛皮纸 + 打孔）
+│   ├── frames/                   # 相框 PNG（透明镂空）+ 规范文档 —— 共 4 款
+│   │   ├── polaroid-600.png      #   一次性成像 1408×1712（方形画面 + 厚下巴）
+│   │   ├── instax-mini.png       #   迷你画幅 1080×1720（3:4 竖画面）
+│   │   ├── neg-135.png           #   135 负片 1350×1950（片基 + 透明齿孔 + 片边代号）
+│   │   ├── slide-mount.png       #   幻灯装裱 1350×1350（方形卡纸 + 3:2 开孔）
 │   │   └── README.md             #   ★ 自己加相框看这里
 │   ├── textures/                 # 颗粒 / 色噪 / 灰尘 / 暗角 / 漏光贴图
 │   │   ├── grain.png             #   512×512 无缝平铺颗粒（8 位灰度，σ=62）
@@ -443,7 +440,7 @@ iOS 上 RN 的 `filter` **只支持 `brightness` 和 `opacity`**
   所以换相框比例也不会跑版。
 - **位置**：`anchor: 'window'`（烧在画面里）或 `'frame'`（烧在相框留白里），
   由 `geometry.ts` 的 `computeTimestampLayout()` 结合相框的 `bottomStripHeight` / `rightMargin` 算出 right/bottom。
-  没写就用相框自己的 `defaultTimestampAnchor`。
+  没写就用相框自己的 `watermark.anchor`。
 - **字体**：默认 **iOS `Menlo` / Android `monospace`**（系统等宽，零依赖）；
   想要真·数码管就放一个 DSEG7 ttf 进 `assets/fonts/` 并改 `useFilmFonts.ts` 一行 —— 见
   [`assets/fonts/README.md`](assets/fonts/README.md)。加载失败会自动降级，不会白屏。
@@ -792,7 +789,7 @@ SideStore 的无线续签靠 [LocalDevVPN](https://apps.apple.com/app/localdevvp
 
 ```
 ┌───────────────────────────────────────┐
-│ ① topPanel   真实布局行（不是浮层）      │  ← 竖线 + "白边印刷 · 2/3 · RETRO 400" ｜ 四枚拨轮
+│ ① topPanel   真实布局行（不是浮层）      │  ← 左：画幅徽标（比例 + 1/4）｜ 右：胶片计数 [00A] + 四枚拨轮
 ├───────────────────────────────────────┤
 │                                       │
 │ ② preview    flex:1, overflow:hidden  │  ← CameraView 实时原始画面（双指捏合变焦）
@@ -955,14 +952,15 @@ iOS 平滑插值把纯白噪声的 σ 从 42 抹到约 15），再乘 0.16 的 o
 
 ```powershell
 python scripts/generate_placeholder_assets.py   # 只重新生成 assets/textures/ 里那 5 张贴图
-python scripts/generate_frames.py                # 重新生成 assets/frames/ 里那 8 张相框
-python scripts/generate_frames.py darkroom       # 只重画其中一张
+python scripts/generate_frames.py                # 重新生成 assets/frames/ 里那 4 张相框
+python scripts/generate_frames.py neg-135        # 只重画其中一张
+python scripts/preview_frames.py                 # 把 4 张相框拼成一张对照图（assets/frames/_preview.png）
 python scripts/preview_grade.py                  # 模拟调色结果，打印每个预设的颗粒 σ
 ```
 
 > ⚠️ `generate_placeholder_assets.py` **只管贴图，不会再碰 `assets/frames/`**。
 > 它早期版本里也有相框生成函数，那些已经被 `generate_frames.py` 取代并**删掉了** ——
-> 留着的话，谁跑一次就会把 8 张新相框悄悄覆盖回旧设计。
+> 留着的话，谁跑一次就会把 4 张新相框悄悄覆盖回旧设计。
 
 `preview_grade.py` 会用与 CoreImage 同源的混合公式，把 `presets.ts` 里的数值**解析出来重放一遍**
 （不抄第二份参数表，避免两边漂移），输出两张九宫格临时图 —— 这是在没有 iPhone 的情况下
@@ -1481,6 +1479,222 @@ App 里打包了 Expo、React Native、React、Hermes、SDWebImage 等开源组�
   所以 `.github/workflows/build-ios-ipa.yml` 的 push 触发器加了 `paths-ignore`，
   纯文档提交不再构建。
 - 已经 fork 出去的副本不受影响（转私有收不回来）。本仓库转私有当刻的 fork 数是 **0**。
+
+---
+
+## 23. v1.2.0：这一版改了什么（八件事）
+
+这一版没有加新功能，是把"看起来像复古相机"换成"用起来像一台相机"。
+八件事按用户提的顺序列，每条都说清**为什么这么做**以及**哪些还没在真机验证过**。
+
+### 23.1 硬件侧键：Camera Control 与音量键可以按快门
+
+新增本地 Expo 模块 [`modules/physical-shutter/`](modules/physical-shutter/)，
+暴露一个事件 `onPhysicalShutterPress`，JS 侧封装成
+[`src/hooks/usePhysicalShutter.ts`](src/hooks/usePhysicalShutter.ts)：
+
+```tsx
+const shutter = usePhysicalShutter({
+  enabled: isFocused && !isCapturing,
+  onPress: handleShutter,   // 快门忙时由这里忽略
+});                          // 返回 { supported, active }
+```
+
+几条不能改的事实：
+
+| 事实 | 出处 / 理由 |
+| --- | --- |
+| 框架是 **AVKit**，不是 AVFoundation | `AVCaptureEventInteraction` 的声明框架 |
+| 可用性是 **iOS 17.2+**，不是 18 | Apple 文档；本项目 deployment target 仍是 **16.4**，所以每处引用都包在 `if #available(iOS 17.2, *)` 里 —— **不要提高 deployment target** |
+| podspec 的 `s.platforms` 必须写 `{:ios => '16.4'}` | `expo-modules-autolinking` 会把 deployment target 不兼容的 pod **静默跳过**，只打一行 `UI.warn`；写 17.2 等于模块凭空消失 |
+| `AVCaptureEvent` **没有**按键身份字段 | 只有 `phase` / `shouldPlaySound` / `play(_:)`，所以事件里也没有 `source` —— **区分不了 Camera Control 和音量键**，三者都接同一个快门 |
+| 拍照取 `.ended`（松手） | Apple 官方示例即如此；`.began` 用来预热 |
+| 必须自己强引用 interaction | Apple 示例里 `view.addInteraction(...)` 之后还有 `eventInteraction = interaction` |
+| 挂在 key window 的 `rootViewController.view`，**不加覆盖层** | alpha=1 的透明 UIView 默认会被 hit-test 命中，会把点按对焦 / 捏合 / 快门一起吃掉 |
+| `OnStartObserving` 挂、`OnStopObserving` 摘 | 相机页不活跃时把实体键还给系统，否则按键变死键 |
+
+**iOS 17.2 以下没有公开 API 能拿音量键** —— 17.2 之前那套
+（`MPVolumeView` KVO、KVC `AVSystemController`、`_UIApplicationVolumeUpButtonDownNotification`）
+全是私有 API，本项目一条都不用。那些设备上 `supported === false`，功能就是空操作。
+
+> ⚠️ **未验证**：这台开发机是 Windows，没有 Xcode，**Swift 代码从未编译过**。
+> 能不能编过、`pod install` 能不能解析、真机上按键会不会触发，全部要靠 GitHub Actions
+> 和真机。风险集中在 `@MainActor` 隔离与尾随闭包对应的具体 Swift 名。
+
+### 23.2 顶栏重做：画幅徽标 + 胶片计数
+
+原来顶栏是一整行等宽文字 `白边印刷 · 2/3 · RETRO 400`，信息密度低、还占一行，
+而且那串字描述的"白边印刷"在新相框上根本不成立。现在：
+
+- **左上** `FrameBadge`：用两层嵌套 `View` 按真实比例画出外纸边与画面窗口，
+  旁边是整数画幅比（`1:1` / `3:4`，由浮点比 ×1000 求 GCD 化简，化不出来才退两位小数）
+  与 `{当前}/{总数}`。**点一下切下一个画幅**（原来是左右滑动，见 23.6 的说明）。
+- **右上** 胶片计数徽章 `` `[${String(n).padStart(2,'0')}${A|B}]` ``，
+  A = 后摄、B = 前摄，翻转相机归零，每存一张 +1。从 `[00A]` 起。
+- 四枚拨轮（闪光灯 / 翻转 / 设置 / 相册）保留，**去掉了下方的小字说明** ——
+  图标本身已经说明问题，小字在 38pt 的按钮下面只是噪点。
+
+### 23.3 十个预设改工业代号
+
+原来直接写着柯达、富士、CineStill 的注册商标（`PORTRA 400`、`VELVIA 50`、
+`CINESTILL 800T` …）。这是这一版唯一的**法律动机**改动：仓库已经闭源，
+但商标风险与开源无关，谁都能投诉。
+
+| 旧显示名 | 新显示名 | `id`（**一个都没动**） |
+| --- | --- | --- |
+| RETRO 400 | `RT-400` | `retro-400` |
+| PORTRA 400 | `PR-400` | `portra-400` |
+| GOLD 200 | `AU-200` | `gold-200` |
+| SUPERIA X | `SP-400` | `superia-x` |
+| VELVIA 50 | `VV-50` | `velvia-50` |
+| CCD CYBER | `CCD-CYBER` | `ccd-cyber` |
+| CINESTILL 800T | `800-T` | `cinestill-800t` |
+| DIGICAM 2002 | `DIGI-02` | `digicam-2002` |
+| TRI-X 400 | `TX-400` | `tri-x-400` |
+| EXPIRED 64 | `EXP-64` | `expired-64` |
+
+> `id` 是**持久化标识** —— 它写进相册索引和每张成片的元数据，改了老用户的照片就对不上号。
+> 所以只改 `name`，`id` 里残留的品牌词是有意留下的。
+
+胶片行也从"左右滑动换预设"改成**整行一个按钮**：轻点切下一个（`selectionAsync` 震一下，
+按住时整行左移 7pt 当作按压反馈），**长按 400ms** 弹出胶卷抽屉（十张卡两列网格，
+面板完全不透明）。序号用 `padStart(2,'0')` 定宽槽 —— 一位数和两位数宽度不同，
+不定宽的话每切一张整行都在抖。
+
+### 23.4 变焦改成三档：0.5× / 1× / 2×
+
+原来的百分比变焦条读数是"数码变焦倍率的百分比"，用户看不懂，而且它压在取景器底部、
+和快门抢视线。现在换成三个**等宽**档位按钮，位置挪到快门上方：
+
+| 档 | 对应 | `factor` |
+| --- | --- | --- |
+| `0.5×` | 超广角镜头 | 1 |
+| `1×` | 主摄 | 1 |
+| `2×` | 主摄数码裁切（角落标一个 `D`） | 2 |
+
+为什么用 0.5/1/2 而不是 13/26/35mm：这三个数就是 iPhone 自己的相机语言，
+用户不用换算。**判据是 `factor > 1` 才算数码裁切** —— 拿 `multiplier` 去比会把
+0.5× 判反（0.5 < 1）。
+
+> 一个反复踩到的回归点：档位容器的宽度**只由窗口宽度决定**
+> （`Math.min(232, round(window.width * 0.62))`，写死在轨道上），三格 `flex: 1` 均分，
+> 选中态是画在格子**内部**的绝对定位"抬起柱"。早期版本用 flex 分配轨道宽度，
+> 结果点最左边那档时整排会往左挪 —— 这个回归在 `ZoomStops.tsx` 的文件头里写成了禁止项。
+
+双指捏合保留（`usePinchZoom`，每八度 0.5 的指数刻度）；捏合之后档位高亮清空，
+因为此时倍率不再等于任何一个档。主屏原来那条**颗粒强度分段条删掉了**，
+搬进设置页 —— 见 23.7。
+
+### 23.5 水印：四种版式 + 两档地名详细度 + 五语言地名
+
+设置页新增两项，加上原有的定位三档，水印这一块现在有四个自由度：
+
+| 设置 | 取值 |
+| --- | --- |
+| 定位水印 `locationMode` | `off`（默认）/ `place`（地名）/ `coords`（经纬度） |
+| 地名详细度 `placeDetail` | `archive`（城市 + 国家）/ `full`（省/区 + 城市 + 国家） |
+| 水印版式 `watermarkLayout` | `split` / `stacked` / `centered` / `dateOnly` |
+| 颗粒 `grainLevel` | `off` / `light` / `std`（默认）/ `heavy` / `max` |
+
+**四种版式只决定"地名和日期怎么摆"，摆在哪个矩形里由相框的 `watermark.anchor` 决定** ——
+所以加版式不用改相框，加相框也不用改版式。四种版式在
+[`src/utils/geometry.ts`](src/utils/geometry.ts) 的 `computeWatermarkPlan()` 里
+归约成同一个 `WatermarkLine[]`，合成层只负责画，没有任何 `switch`。
+
+**墨色是按"压在照片上还是印在相纸留白上"分的，不是按预设颜色直接取**：
+
+| 锚点 | 日期 | 地名 | 辉光 |
+| --- | --- | --- | --- |
+| `window`（压在照片上） | 预设的 `timestamp.color`（默认 `#FF8A00`） | `rgba(236,232,224,0.88)` | 有（琥珀辉光或黑投影） |
+| `frame`（印在相纸留白上） | 石墨相框 `#5F6368`、琥珀相框 `#B45309` | 同左 | **无** |
+
+这一条是修 bug 修出来的：原来墨色只看 `tone` 不看锚点，而 `polaroid-600` 与
+`slide-mount` 恰好是"白相纸 + 石墨调"，于是白纸上印了一行接近纸白的字。
+反方向同理 —— 白留白上用液晶琥珀 `#FF8A00` 太亮，必须暗一档。
+辉光也是：白纸上围一圈阴影看着像蹭脏了，所以 `frame` 锚点一律 `glowRadius = 0`。
+
+**港澳台在**所有五种语言**里都带本语言的「中国」前缀**，且**永远不会输出裸的
+「台湾 / 香港 / 澳门」**（`src/utils/placeNames.ts` 的 `CHINA_PREFIX`，
+类型是 `Record<LocaleId, string>` —— 将来加语言时 `tsc` 会在那里报错提醒）。
+
+> ⚠️ **已知局限，写在代码注释里也写在这里**：英文档的罗马字化不完整。
+> iOS 中文系统下 `reverseGeocodeAsync` 基本只回本地名，
+> 于是英文界面下可能看到 `台北 · China台湾` 这种中英混排。
+> 没有音译表就不做依赖，**宁可混排也不猜**。
+
+### 23.6 相框按真实物理规格重做，从 8 款砍到 4 款
+
+旧 8 款里"暗房放大""打样张""档案卡"都是**为了像旧照片而画上去的**东西
+（污渍、划痕、四色色标、打孔）。真实的相纸不长那样。新版四款各自对应一件真实实物，
+**留白不说话、纸要像纸**：
+
+| `id` | PNG | 画面窗口（px） | 宽高比 | 实物依据 |
+| --- | --- | --- | --- | --- |
+| `polaroid-600` | 1408×1712 | `72,72,1264,1264` | 0.822430 | 600 系即时成像（88:107），方形画面 + 厚下巴 |
+| `instax-mini` | 1080×1720 | `81,90,918,1224` | 0.627907 | instax mini 画幅（54:86） |
+| `neg-135` | 1350×1950 | `212,280,926,1389` | 0.692308 | 35mm 胶片 24×36mm 与 2.8×1.98mm 齿孔，按 38.6 px/mm 放大 |
+| `slide-mount` | 1350×1350 | `189,351,972,648` | 1.0 | 50×50mm 幻灯卡与 36×24mm 开孔 |
+
+默认相框从 `classic-white` 改成 **`polaroid-600`** —— 0.822 的画幅比最接近手机屏幕，
+取景器里浪费的黑边最少。相框素材只占 36.4 KB（旧 8 张约 350 KB），
+因为新版是**调色板 PNG + 透明索引**，而不是带抗锯齿渐变的 24 位图。
+
+`neg-135` 的齿孔是**真透明**：片基画到画布边缘，透明处露出
+[`FilmCompositor.tsx`](src/components/FilmCompositor.tsx) 里 `styles.stage` 的
+`backgroundColor: '#000000'` —— 所以在 App 里孔是黑的。
+（预览脚本 [`scripts/preview_frames.py`](scripts/preview_frames.py) 会把照片铺满整格，
+所以那张对照图里孔透出的是照片。**两张图不一样是对的**，不是 bug。）
+
+相框从 8 款砍到 4 款还有一个交互上的后果：`FrameSwitcher` 的左右滑动
+不再是唯一的切换方式，左上角画幅徽标点一下也能切 —— 4 款的话滑动反而不如点。
+`FrameSwitcher.tsx` 一行没改，它只做手势与 `Animated.View` 包装，不渲染相框名字。
+
+### 23.7 相册灯箱、`RETRO CAM` 相簿、设置页扩充
+
+- **灯箱**（[`src/components/Lightbox.tsx`](src/components/Lightbox.tsx)）：全屏看图，
+  可捏合缩放（1~4 倍）、下拖关闭（96pt 或 `vy > 1.2`）、双击复位。
+  它**没有用** `usePinchZoom` —— 那个 hook 的量纲是"相机变焦"的 0~1 指数刻度 + 增量回调，
+  既没有平移也没有下拖；灯箱里自建了一个本地 PanResponder，量纲是视觉缩放倍数。
+  "捏合时那次单击不算关闭"落在两处：`onStartShouldSetPanResponderCapture` 只在
+  双指时抢手势；松手时要求"没捏过 && 位移 ≤ 12pt && 手指已离开"才认点击。
+- **存进专用相簿** `RETRO CAM`：`Album.get()` → 没有就 `Album.create()` →
+  `album.add(asset)`。**三级降级，全部不抛错**：拿不到相簿就直接写相机胶卷；
+  相簿拿到了但后续失败也**返回成功并标 `destination: 'camera-roll'`** ——
+  理由是 `Asset.create` 很可能已经把照片写进库了，异常里判断不出"到底写没写"，
+  再调一次就是在赌会不会多出一张**重复照片**。"宁可少一个相簿归类，不能多一张重复照片"。
+- **模态遮罩改成完全不透明** `#0E0F11`。这是用户报的真实 bug：原来遮罩是半透明的，
+  取景器的实时预览会透到设置页和相册页上，看着像花屏。
+  （`#0E0F11` 在 `SettingsScreen.tsx` 与 `GalleryScreen.tsx` 里各写了一份，
+  **改一处必须同时改另一处** —— 常量目录里没有它的位置。）
+- **全局触觉收敛成两档**：`selectionAsync()` 与 `impactAsync(Light)`，
+  原来的 `Medium` 全部降档。同一个 App 里出现重、中、轻三种强度，手感反而是乱的。
+- **地名详细度在定位为 `off` / `coords` 时置灰而不是隐藏** —— 隐藏会让用户以为
+  这一项不存在，置灰能看出"它得先开地名档才有意义"。
+
+### 23.8 App 图标按方案 B 重绘
+
+`assets/icon.png`：1024×1024、**RGB 无 alpha**（iOS 要求，带 alpha 会被拒），
+深灰底 `#141518`、暗盒筒身 `#2A2C31`、银色顶盖 `#C8CCD2`、
+橙色标带 `#E8551F` 写 `ISO 400`、下端一个六叶光圈符号。扁平矢量，无渐变无噪点。
+
+生成脚本 [`scripts/generate_app_icon.py`](scripts/generate_app_icon.py) 用 4096 超采样
+再缩回 1024（所以实测有 926 种颜色，**全部来自抗锯齿**，设计本身只有 4 个色）。
+`ISO 400` 在 40px 下读不出字（缩成两道暗痕），这是小字号的必然，不是渲染问题。
+
+> 已知弱点：筒身 `#2A2C31` 与底色 `#141518` 的亮度只差约 2 倍，40px 下剪影偏弱。
+> 想更硬气需要把筒身提亮到 `#3A3D44` 一类，但那偏离了指定的色号。
+
+### 23.9 这一版**没有**在真机验证过的东西
+
+| 项 | 为什么没法在这台机器上验证 |
+| --- | --- |
+| 侧键模块的 Swift 能否编译 | Windows 没有 Xcode，代码从未编译过 |
+| `pod install` 能否解析 `ExpoPhysicalShutter` | 本机没有 CocoaPods |
+| 真机按 Camera Control / 音量键是否触发 | 没有真机跑过 |
+| `.ended` 是不是正确的触发相位 | 同上；改一行常量即可换 `.began` |
+| 灯箱的双指捏合能否与父层 `Pressable` / `FlatList` 抢到手势 | 需要真机 |
+| 英文档地名罗马字化的实际输出 | 依赖 iOS 反查返回什么 |
+| 分享在 Android 上不完好 | `expo-sharing` / `expo-clipboard` 都不在依赖里，只能用 RN 内置 `Share.share`，Android 只认 `message`（分享出去是文字不是图片） |
 
 ---
 

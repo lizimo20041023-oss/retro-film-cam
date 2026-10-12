@@ -32,24 +32,33 @@ export const en: Messages = {
   'camera.shutter.a11y': 'Take a photo',
   'camera.shutter.busy': 'Developing',
 
+  /* ---------------- film library (long-press the film name under the viewfinder) ---------------- */
+  // The panel heading is a printed English plate: like the LCD labels it stays
+  // untranslated, and all five locales carry the identical string.
+  'film.drawer.title': 'SELECT FILM STOCK',
+  'film.drawer.a11y': 'Film library, choose a film preset',
+  'film.drawer.close': 'Done',
+  'film.drawer.hint': 'You can also long-press the film name under the viewfinder',
+  'film.card.a11y': '{name}, {description}',
+  'film.card.selected': 'Selected',
+
   /* ---------------- frame names (shown in the top bar) ----------------
      Keep these short: the top bar is a single line of 10pt mono,
      and a long frame name pushes the preset name off the right edge. */
-  'frame.classicWhite': 'FIBRE',
-  'frame.instant': 'INSTANT',
-  'frame.film35': '35mm',
-  'frame.darkroom': 'DARKROOM',
+  'frame.polaroid600': 'INSTANT',
+  'frame.instaxMini': 'MINI',
+  'frame.neg135': '135',
   'frame.slideMount': 'SLIDE',
-  'frame.orangeBase': 'NEGATIVE',
-  'frame.cropMarks': 'PROOF',
-  'frame.archiveCard': 'ARCHIVE',
+  'frame.badge.a11y': 'Frame {name}, photo {count}',
 
   /* ---------------- ② zoom rail on the viewfinder ---------------- */
-  'zoom.a11y': 'Zoom {percent} percent, drag left or right to adjust',
+  'zoom.a11y': 'Zoom {percent} percent, tap a stop to switch',
   'zoom.label': 'ZOOM',
   'zoom.role.ultraWide': 'ultra wide',
   'zoom.role.wide': 'standard',
+  'zoom.role.tele': 'telephoto',
   'zoom.stop.a11y': 'Switch to {label}',
+  'zoom.stop.digital': 'digital zoom',
   'camera.gallery.a11y': 'Open the in-app album',
   'camera.gallery.label': 'ALBUM',
   'gallery.title': 'ALBUM',
@@ -59,6 +68,13 @@ export const en: Messages = {
   'gallery.photo': 'Photo {index}, {date}',
   'gallery.delete': 'Delete this photo',
   'gallery.cancel': 'Cancel',
+  'gallery.lightbox.a11y': 'Photo {index}, tap to close',
+  'gallery.share': 'Share',
+  'gallery.shareFailed': 'Share failed: {message}',
+  'gallery.saved': 'Saved to "{album}"',
+  // The album name is the same string in all five locales: the user has to
+  // recognise one and the same album in the Photos app.
+  'album.name': 'RETRO CAM',
   'camera.focus.a11y': 'Tap the frame to focus',
 
   /* ---------------- ③.5 grain ---------------- */
@@ -69,6 +85,7 @@ export const en: Messages = {
   'grain.level.std': 'Standard',
   'grain.level.heavy': 'Heavy',
   'grain.level.max': 'Extreme',
+  'grain.note': 'Adds one more step of density on top of the grain the film already has.',
 
   /* ---------------- ④ LCD ---------------- */
   'lcd.date.off': 'DATE · OFF',
@@ -121,6 +138,8 @@ export const en: Messages = {
   /* ---------------- settings screen ---------------- */
   'settings.close': 'Done',
   'settings.footer': 'Changes apply right away and are remembered next time you open the app.',
+  'settings.grain.title': 'Grain',
+  'settings.grain.a11y': 'Grain strength, currently {level}',
   'settings.language.head': 'LANGUAGE',
   'settings.language.system': 'Follow system',
   'settings.location.head': 'LOCATION STAMP',
@@ -131,8 +150,19 @@ export const en: Messages = {
   'settings.location.coords': 'Coordinates',
   'settings.locationMode.a11y': 'Location stamp: {label}',
   'settings.locale.a11y': 'Language: {label}',
+  'settings.placeDetail.title': 'Place detail',
+  'settings.placeDetail.a11y': 'Place detail: {label}',
+  'settings.placeDetail.archive': 'Compact (city · code)',
+  'settings.placeDetail.full': 'Full (administrative)',
+  'settings.placeDetail.note': 'Taiwan, Hong Kong and Macau are prefixed with “China”.',
   'settings.subtitle': 'SETTINGS',
   'settings.title': 'Settings',
+  'settings.watermark.title': 'Watermark layout',
+  'settings.watermark.a11y': 'Watermark layout: {label}',
+  'settings.watermark.split': 'Place left · date right',
+  'settings.watermark.stacked': 'Place above · date below',
+  'settings.watermark.centered': 'One line · centred',
+  'settings.watermark.dateOnly': 'Date only',
 
   /* ---------------- location ---------------- */
   'location.denied':
