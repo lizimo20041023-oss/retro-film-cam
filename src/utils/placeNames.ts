@@ -221,9 +221,12 @@ function coordPart(value: number, positive: string, negative: string): string {
  * - 纬度在前、经度在后，中间一个空格，前面分别加 `LAT ` / `LON `；
  * - 北纬 / 东经 `N` / `E`，南纬 / 西经 `S` / `W`。
  *
- * 测试点（实测）：
+ * 测试点（实测，度与方向之间**没有空格**）：
  *   `(23.0333, 114.4)   → "LAT 23°02'N LON 114°24'E"`
  *   `(-33.8688, 151.2093) → "LAT 33°52'S LON 151°13'E"`
+ *
+ * ⚠️ 本文件早先的注释与任务书里把这两条写成 `LAT 23°02' N`（度与方向之间带空格），
+ * 与 `coordPart` 的模板串不符；全仓库从未有过带空格的实现，探针按真实输出断言。
  *
  * ⚠️ 规格给的第二组测试点写的是 `LON 151°12'E`，但 0.2093° = 12.558 分，
  * 按"四舍五入到整分"是 `13'`（要得到 `12'` 必须改成截断，那样第一组又会变成 `23°01'`）。
@@ -536,7 +539,19 @@ function countryWord(place: ResolvedPlace, locale: LocaleId): string {
   return place.country.length > 0 ? place.country : place.countryCode;
 }
 
-/** 与城市同名的省 / 州不算"另一级行政区"（`上海市` / `上海市`、`东京都` / `东京`）。 */
+/**
+ * `region` 与城市不同名时返回它，否则返回空串。
+ *
+ * ⚠️ **`compactPlace` 也用它**：精简（把 `region` 置空）只能动"真的另有一级行政区"的那种
+ * region。`region === city` 的那些（香港 / 澳门，反查两边给的都是地区名本身）一旦被置空，
+ * `full` 档就会少掉「香港」这半截、又给城市补一个「市」—— 变成 `中国市` 这种既缺字
+ * 又荒谬的串（`isTerritoryCity` 只在 city 还在时才认得出升格）。所以两处共用同一个判据，
+ * 别在 `compactPlace` 里重写一遍。
+ *
+ * 实测（探针 `.probe-geo/hk-check.js`，走真函数）：`region` 空或等于 `city` 时，
+ * 香港 `full` 档都是 `中国香港特别行政区` —— 这是 v1.5.0 起的现状，
+ * **不是本轮引入的**；`compactPlace` 在这两种形状下都原样返回、一个字段都不动。
+ */
 function distinctRegion(place: ResolvedPlace): string {
   return place.region.length > 0 && place.region !== place.city ? place.region : '';
 }
@@ -771,4 +786,50 @@ export function formatResolvedPlace(
 /** 坐标 / 地名都没拿到时，这一行是否还有意义（空串 = 这次不烧定位）。 */
 export function isEmptyPlaceLine(text: string): boolean {
   return text.trim().length === 0;
+}
+
+/**
+ * 地名的**精简形**：只留国家 + 城市，把中间的省 / 州整个让出去。
+ *
+ * ## 为什么是"把 `region` 置成空串"而不是另写一套拼接
+ *
+ * 两条渲染路径本来就依赖"`region` 这一格有没有东西"：
+ * · 中文 `archive` 拼的是 `[国家, 地区, 城市]`，地区那一段来自
+ *   `stripAdminSuffix(distinctRegion(place))` —— `region` 一空，它自己就是空串；
+ * · 拉丁 `archive` 拼的是 `[城市, 地区].join(', ')`，同样自然少一段。
+ * 所以置空 `region` 之后**渲染器原样跑一遍**就得到「中国 · 上海」/「CHINA, 上海」，
+ * 不需要在这里写第二套拼装。
+ *
+ * ⚠️ **红线不受影响，而且是靠"不碰"来保证的**：港澳台的「中国 / 中國 / CN」前置
+ * 规则住在 `formatChinesePlace` / `formatLatinPlace` / `countryWord` 里，走的是
+ * `countryCode` 与 `GREATER_CHINA_LABEL`，**一眼都没看 `region`**：
+ * · 香港（`region` 与 `city` 都是「香港」）精简前后都渲染成 `中国 · 香港`；
+ *   `distinctRegion` 本来就把"与城市同名的省"判成空串，置空等于什么都没有改变。
+ * · 台北（`countryCode: TW`）精简后是 `中国 · 台湾 · 台北` —— 地区段来自
+ *   `greaterChinaLabel`，不是 `place.region`，所以照样带国家。
+ * 换句话说：**这个函数只影响"中国大陆 / 外国"的省名，一个字段都没动红线**。
+ *
+ * ## 什么时候用它
+ *
+ * 只在 `split` 版式里地名塞不进 `splitPlaceAvailableWidth` 时用
+ * （判定见 `geometry.shouldCompactPlaceText`）。压缩是**全有或全无**的：
+ * 与其把「上海市 · 黄浦…」截断，不如给一个完整的小地名。
+ *
+ * ⚠️ `full` 档（`中国上海市`）用的是 `distinctRegion` + `ensureAdminSuffix`，
+ * 置空 `region` 同样会少掉省那一段 —— 这是有意的：压缩形在两档详细度下都得"更短"，
+ * 否则压缩了还是放不下。
+ *
+ * ⚠️ **只有 `distinctRegion` 认得的那种 region 才清**（本轮修）：`region` 与 `city` 同名的
+ * （香港 / 澳门，反查两边给的都是地区名本身）**必须原样返回** —— 清了以后 `full` 档会少掉
+ * 「香港」那半截、再给空掉的城市补一个「市」，输出从 `中国香港特别行政区` 退化成缺字的
+ * `中国市`；`archive` 档则因为地区段本来就来自城市，反而看起来"没事"，属于**只在完整档
+ * 才暴露的坏味道**。用 `distinctRegion` 当判据 = 与渲染器共用同一条"这算不算另一级行政区"
+ * 的定义，不在两个地方各写一遍。探针逐字断言了精简前后：
+ * 香港 `archive` 恒为 `中国 · 香港`、`full` 恒为 `中国香港特别行政区`；
+ * 台北 `archive` 恒为 `中国 · 台湾 · 台北`、`full` 恒为 `中国台湾省台北市`。
+ */
+export function compactPlace(place: ResolvedPlace): ResolvedPlace {
+  const region = distinctRegion(place);
+  // 没有"另一级行政区"可让 —— 原样返回，别为了"看起来精简了"去动任何字段。
+  return region.length === 0 ? place : { ...place, region: '' };
 }

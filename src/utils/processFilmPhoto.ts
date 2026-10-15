@@ -263,6 +263,7 @@ function resolveCropAspect(frame: FrameSpec, layout: FrameLayout): number | null
  *
  * 单位：`CroppedPhoto` 的 `width` / `height` 是**像素**。
  */
+
 async function centerCropPhoto(photo: NormalizedPhoto, aspect: number): Promise<CroppedPhoto> {
   const { width, height } = photo;
   if (!(width > 0) || !(height > 0)) {
@@ -292,8 +293,7 @@ async function centerCropPhoto(photo: NormalizedPhoto, aspect: number): Promise<
     if (cropWidth < 1 || cropHeight < 1) {
       return { ...photo, cropped: false, note: '裁切跳过：算出来的裁切矩形宽或高为 0' };
     }
-    const originX = Math.floor((width - cropWidth) / 2);
-    const originY = Math.floor((height - cropHeight) / 2);
+    const { originX, originY } = centerCropOrigin(width, height, cropWidth, cropHeight);
 
     const context = ImageManipulator.manipulate(photo.uri);
     context.crop({ originX, originY, width: cropWidth, height: cropHeight });
@@ -316,6 +316,38 @@ async function centerCropPhoto(photo: NormalizedPhoto, aspect: number): Promise<
 }
 
 /**
+ * 最大内接矩形的**居中落点** —— 裁切框左上角在归一化图里的像素坐标。
+ *
+ * 为什么单独抽成一个纯函数（而不是留两行在 `centerCropPhoto` 里）：这是"严格居中"这条
+ * 产品要求的**唯一落点**，两轮真机反馈里那句"照片缩在相纸一角"一度被怀疑是这里算错了。
+ * 抽出来之后它可以在 Node 里跑真函数直接断言（`core = (i - c) / 2`，两侧余量最多差 1px），
+ * 而不必为了验算去 mock `expo-image-manipulator` —— `centerCropPhoto` 里剩下的部分
+ * 只有原生调用和降级分支，那些在 Node 里本来就跑不起来。
+ *
+ * ⚠️ 结论先写在这里，免得下一轮再怀疑一次：**这段公式没有错**。`floor` 让余量偏向
+ * 左上，所以"左余量 + 裁切宽 = 右余量"最多差 1px（奇数差的那 1px 永远归左边）——
+ * 这是随手可证的，不是"看着差不多"。至于真机上"横图缩在相纸一角 + 另一侧一条大白边"，
+ * 病根不在这里，而在**当时那张成片用的是横版纸**：横版 PNG 是竖版纸转 90° 出来的，
+ * 窗口坐标跟着转了 90°，于是窗口本身就落在纸的一侧（见 `frames.ts` 里
+ * `polaroid-600-landscape` 的 `window.x = 0.219626`）。朝向已在
+ * `resolveFrameOrientation` 里钉死成竖版，那条路现在不可达。
+ *
+ * `cropWidth` / `cropHeight` 由调用方按"图比窗口宽就裁左右、高就裁上下"算好传进来，
+ * 这里只回答"往哪落"，不重复判一次方向（判两次就可能出现"按宽度裁、按高度居中"的错配）。
+ */
+function centerCropOrigin(
+  imageWidth: number,
+  imageHeight: number,
+  cropWidth: number,
+  cropHeight: number,
+): { originX: number; originY: number } {
+  return {
+    originX: Math.floor((imageWidth - cropWidth) / 2),
+    originY: Math.floor((imageHeight - cropHeight) / 2),
+  };
+}
+
+/**
  * 显影：调色 → 颗粒/暗角 → 烧日期 → 套相框 → 截图，返回成片信息。
  * 不写相册（写相册是 `saveToLibrary` 的事，方便单独重试一次保存）。
  */
@@ -327,11 +359,16 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
 
   // 2) 排版：相框 + 照片窗口 + 日期位置，全部由数据算出来
   /*
-   * 先按**原图的实际长宽比**选朝向（§六.1），再拿这个朝向去算布局。
-   * 顺序不能反过来：横构图遇上只有竖版窗口的相框，窗口会把照片裁掉两边，
-   * 而横版变体自带的 `window` 就是为这个比例准备的。
-   * `photo` 而不是 `normalized`：归一化只改像素不改比例，用原图更贴近"用户拍到的"，
-   * 而且在归一化失败降级时也不会拿到一个不存在的尺寸。
+   * 朝向：`resolveFrameOrientation` 现在**恒返回 `'portrait'`**（v1.6.0 的有意回退，
+   * 完整理由写在该函数顶部），所以这里的 `photo` 只用于满足签名 —— 它不再影响结果。
+   *
+   * ⚠️ 这段注释以前写的是"先按原图的实际长宽比选朝向"，那句话在横版变体真的会被选中时
+   * 是对的，现在**已经不成立**了。之所以改写而不是删掉：留下的这行 `orientation` 是
+   * "相纸永远正向直立"这条产品决定的**唯一语义锚点** —— 布局拿竖版几何、渲染层再反推
+   * 也必然是竖版，整条链都从这里出发。哪天要按比例重新选朝向，改的是这里一处。
+   *
+   * 形参仍传 `photo` 而不是 `normalized`（老习惯，保持调用形状不变）：
+   * 归一化只改像素不改比例，两者换算出的形状是同一个。
    */
   const orientation = resolveFrameOrientation(frame, photo);
   const layout = computeFrameLayout(frame, stage.width, stage.height, orientation);

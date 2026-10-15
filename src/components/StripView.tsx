@@ -23,17 +23,16 @@
  *    这样轨道天然是一条连续的带子（它根本没有"每张"这个概念），
  *    而底片和它**同速**移动，观感上就是"底片在轨道上滑过"。
  *
- * ② **6% 打滑必须是确定性的（`slipAt(index)`，用帧序号哈希）**。
- *    用 `Math.random()` 的话，每次 re-render（滚动、选中、切语言都会 re-render）
- *    都会重新掷一次骰子，画面会不停地抖 —— 那不是"机械故障彩蛋"，那是坏掉了。
- *    哈希 = 一个整数位混合函数（见 `slipAt`），同一个 index 永远得到同一个结果。
+ * ② **叠合（打滑）机制已被删除，不要再加回来。**
+ *    原先有一套"6% 打滑"：第 16 张一张（`index % 16 === 0`）会让后一张向左压过去叠合
+ *    `frameWidth × 15%~20%`（`SLIP_*` 常量 / `slipAt()` / 渲染层的 `translateX: -overlap`）。
+ *    **用户实测：后一张的相纸边缘盖住前一张，长卷里照片被挤成细缝，故整体废除。**
+ *    现在的规矩是**硬性的**：格子之间只有正的 `marginRight: FRAME_GAP`，
+ *    严禁任何负位移、负边距或 `transform` 位移。
  *
- * ③ **`A` 后缀的规则（只在需要时出现）**。
- *    真实胶片上 `01A` 表示"第 1 格和第 2 格之间的半格"。本组件里唯一会让帧号
- *    偏离"每张一格"的东西就是打滑 —— 打滑的那一刻，后一张不是正常过片到第 2 格，
- *    而是压在 01 的边缘上。所以规则只有一条：
- *      **`indexBefore` 打滑时，`index` 那一张的号是 `{indexBefore 的号}A`；否则是 `{index+1}`。**
- *    没打滑就永远不会出现 `A`，绝不为了好看乱加。
+ * ③ **帧号后缀 `A`（`frameSuffix`）同批删除。**
+ *    `A` 只在"上一张打滑"时出现；打滑没了，`A` 就永远不该出现。
+ *    帧号现在是纯粹的顺序读数 `{index + 1}` —— 不为了好看乱加后缀。
  *
  * ── 没能验证的 ────────────────────────────────────────────────────────────
  * 真机上的手感（滚动阻尼、`Haptics.selectionAsync` 的间隔是否太密）、以及
@@ -77,20 +76,19 @@ const PERF_HEIGHT = 11;
 const PERF_RADIUS = 2;
 /** 两个齿孔中心之间的距离。真实 35mm 是 4.75mm 孔距 / 8 孔一帧，这里按视觉取整。 */
 const PERF_PITCH = 26;
-/** 底片之间的标准间距。打滑时后一张会吃掉它的一部分甚至全部。 */
-const FRAME_GAP = 10;
+/**
+ * 底片之间的标准间距（pt）。
+ *
+ * **用户明确指定 16**，而且是**正的右间距**（`marginRight`，见 `FilmFrame`）——
+ * 不是 `marginLeft`、更不是位移。废除打滑叠合之后，两个数字必须分得清：
+ *   · 间距 = **16pt**（下面这个常量，唯一真源）；
+ *   · 位移 = **0**（没有负位移这回事了）。
+ * 滚动吸附步长（`sweepStep = frameWidth + FRAME_GAP`）与 `FlatList` 的 item 宽
+ * 都直接用它，所以它是**几何的唯一真源**，不是可以随手调的观感数字。
+ */
+const FRAME_GAP = 16;
 /** 帧号暗码离轨道上沿的位置。 */
 const RAIL_TEXT_TOP = 2;
-
-/**
- * 打滑概率。任务是"约 6%"—— 用 `i % 16 === 0` 实现：
- * 16 张里恰好 1 张，即 **6.25%**，而且完全确定、可复现、可断言。
- * （比"哈希后取 6% 阈值"更好：那个的实际比例会随张数浮动，也没法一眼看出来。）
- */
-const SLIP_MARK = 16;
-/** 打滑量：后一张与前一张**边缘叠合**宽度占一张底片宽度的比例（任务书 15%~20%）。 */
-const SLIP_RATIO_MIN = 0.15;
-const SLIP_RATIO_MAX = 0.2;
 
 /** 切片导出支持的张数（任务书：连续 3 张或 4 张）。 */
 export const STRIP_EXPORT_COUNTS = [3, 4] as const;
@@ -102,54 +100,26 @@ const POSTER_GAP = 12;
 const POSTER_PADDING = 16;
 
 /* ==========================================================================
- * 纯函数（确定性伪随机 + 帧号规则）
+ * 纯函数（帧号）
  * ========================================================================== */
 
 /**
- * 第 `index` 张**自己**会不会打滑 → 返回叠合比例（0 = 不打滑，0.15~0.2 = 打滑）。
- *
- * 为什么是"自己会不会打滑"而不是"要不要和上一张叠"：叠合这件事需要两张都参与，
- * 而只在**一张**上做判断、让后一张去响应它，规则最简单也最好解释 ——
- * `index` 打滑 ⇒ `index + 1` 压过来。于是：
- *   · `indexBefore = index - 1`，`indexBefore < 0` 时不可能打滑（`-1 % 16 !== 0`，天然正确）
- *   · 成对出现，不会出现"被叠了但没人叠它"这种半截状态
- *
- * 三个系数（`0x45d9f3b` / `0x119de1f3` / `0x27d4eb2d`）是整数位混合（bit-mixing）
- * 里常用的质数种子，作用是让相邻 index 的输出**不相关** —— 否则会出现
- * "打滑的总是连着的几张"这种一眼能看穿的规律。
+ * 帧号：`▷ 01` = 三角 + 两位序号。三位以上不补零（`▷ 100`），补了反而难读。
  */
-export function slipAt(index: number): number {
-  if (!Number.isFinite(index) || index < 0) {
-    return 0;
-  }
-  const rounded = Math.floor(index);
-  if (rounded % SLIP_MARK !== 0) {
-    return 0;
-  }
-  let hash = (rounded * 0x45d9f3b) >>> 0;
-  hash = (hash ^ (hash >>> 16)) >>> 0;
-  hash = Math.imul(hash, 0x119de1f3) >>> 0;
-  hash = (hash ^ (hash >>> 13)) >>> 0;
-  hash = Math.imul(hash, 0x27d4eb2d) >>> 0;
-  hash = (hash ^ (hash >>> 16)) >>> 0;
-  const ratio = SLIP_RATIO_MIN + (hash % 1000) / 1000 * (SLIP_RATIO_MAX - SLIP_RATIO_MIN);
-  // 钉到三位小数：叠合比例是"画面参数"，浮点尾巴留着只会让截图对比没法复现
-  return Math.round(ratio * 1000) / 1000;
-}
-
-/** 第 `index` 张的帧号后缀（`''` 或 `'A'`）。规则见文件头 ③。 */
-export function frameSuffix(index: number, hasPreviousSlip: boolean): string {
-  return hasPreviousSlip ? 'A' : '';
-}
-
-/** 帧号：`▷ 01` = 三角 + 两位序号。三位以上不补零（`▷ 100`），补了反而难读。 */
 export function frameLabel(index: number): string {
   return `▷ ${String(Math.max(1, Math.floor(index) + 1)).padStart(2, '0')}`;
 }
 
-/** 帧号 + `A` 后缀，拼成轨道上真正印的那串。 */
+/**
+ * 帧号 + `A` 后缀，拼成轨道上真正印的那串。
+ *
+ * 以前这里是 `${frameLabel(index)}${frameSuffix(...)}`，后缀只在"上一张打滑"时出现。
+ * **打滑叠合已废除，`A` 随之删除**，所以这个函数现在就是"直接返回帧号"。
+ * 保留它（而不是让调用处直接改用 `frameLabel`）是为了让"轨道上印什么"
+ * 仍然只有**一个**出口，将来要加别的前缀/后缀也只改这里一处。
+ */
 export function frameRailText(index: number): string {
-  return `${frameLabel(index)}${frameSuffix(index, index > 0 && slipAt(index - 1) > 0)}`;
+  return frameLabel(index);
 }
 
 /**
@@ -225,16 +195,19 @@ interface FrameProps {
   shot: GalleryShot;
   index: number;
   total: number;
-  /** 一张底片的显示宽度（pt）。 */
+  /** 一张底片的显示宽度（pt）。**固定值**，与照片自己的宽高比无关（见文件头 ②）。 */
   frameWidth: number;
-  /** 底片图像区高度（pt）。 */
+  /** 底片图像区高度（pt）。**固定值**。 */
   frameHeight: number;
-  /** 本张左沿相对"上一张右沿"的位移：正 = 标准间距，负 = 打滑叠合。 */
-  spacing: number;
-  /** 本张**自己**的打滑比例（只影响帧号后缀）。 */
-  ownSlip: number;
-  /** 上一张的打滑比例（决定本张要不要压过去叠合）。 */
-  previousSlip: number;
+  /**
+   * 本张是不是最后一张。
+   *
+   * 唯一的作用是决定要不要留那个 16pt 的右间距 —— **最后一张不留**。
+   * 为什么是布尔值而不是传一个间距数字：间距一旦能被调用方逐张改，
+   * "间距恒为 FRAME_GAP"这条就成了调用方的纪律，而不是组件的保证；
+   * 出过打滑那档子事之后，这里宁可不给那个自由度。
+   */
+  isLast: boolean;
   /** 胶卷代号那一行要印的串（`PR-400`）。 */
   code: string;
   /** 选中态（只有切片导出模式才非 null）。 */
@@ -243,20 +216,17 @@ interface FrameProps {
 }
 
 /**
- * 一张底片：**图像按覆盖铺满一条**（所以打滑时右侧露出的还是这张图本身），
- * 帧号印在图像左上角之外，不盖住画面。
+ * 一张底片。格子有**固定宽高比**（`frameWidth` × `frameHeight`），画面用 `contain`
+ * 整张完整居中地放进格子里 —— 关键尺寸是 `StyleSheet.absoluteFillObject` 的四条边，
+ * 它是相对**父窗口**算的，所以图片绝不会由自己的宽高比把格子撑大。
  */
 function FilmFrame(props: FrameProps): React.ReactElement {
-  const { shot, index, total, frameWidth, frameHeight, spacing, ownSlip, previousSlip, code, selected, onPress } = props;
+  const { shot, index, total, frameWidth, frameHeight, isLast, code, selected, onPress } = props;
 
   const board = themeFor('dark');
   const styles = useMemo(() => createStyles(board), [board]);
 
-  const aspect = shot.height > 0 ? shot.width / shot.height : 1;
   const codeText = frameCodeText(index, total, code);
-  // 打滑时本张向左平移，压到上一张的右边缘上 → 双重曝光交错感
-  const overlap = previousSlip > 0 ? frameWidth * previousSlip : 0;
-  const suffix = frameSuffix(index, previousSlip > 0);
 
   return (
     <Pressable
@@ -265,25 +235,29 @@ function FilmFrame(props: FrameProps): React.ReactElement {
       accessibilityLabel={`${index + 1} / ${total}`}
       style={({ pressed }) => [
         styles.frameSlot,
-        { width: frameWidth, marginLeft: spacing, transform: [{ translateX: -overlap }] },
+        // 固定宽高比：宽高都写死，格子绝不随图片或文字伸缩。
+        // 间距是**正的右间距**，而且最后一张不留 —— 留了就等于给卷尾加了一段空白。
+        // 废除打滑叠合的理由（用户实测后一张盖住前一张）见文件头 ②。
+        { width: frameWidth, height: frameHeight, marginRight: isLast ? 0 : FRAME_GAP },
         selected === false ? styles.frameSlotMuted : null,
         pressed ? styles.frameSlotPressed : null,
       ]}
     >
-      <View style={[styles.frameWindow, { height: frameHeight }]}>
+      <View style={[styles.frameWindow, { width: frameWidth, height: frameHeight }]}>
         <Image
           source={{ uri: shot.thumbUri }}
-          // 宽高比用 shot 自己的：竖拍横拍混在一卷里时，画面比例必须是各自的原样。
-          // `frameWindow` 是 `overflow: hidden` 的定尺窗口，所以这里按比例算宽度居中。
-          style={{ width: Math.max(1, frameHeight * aspect), height: frameHeight }}
-          resizeMode="cover"
+          // 四条边全部钉死（绝对定位 + 四个 0），尺寸完全由此处的父窗口决定 ——
+          // 图片**不再**由自己的宽高比去撑宽度（那正是"格子被图片撑大、
+          // 后一张盖住前一张"的成因之一，故废除）。
+          // 不用 `StyleSheet.absoluteFillObject`：RN 0.86 的 typings 里已经**没有**
+          // 这个成员（只有 `absoluteFill`），写了直接 TS2551。四个 0 一样清楚。
+          // `contain`（原来是 `cover`）：整张成片含相框与水印必须完整看见，
+          // 宁可留黑边也**不许裁切**。`frameWindow` 的 `alignItems/justifyContent: center`
+          // 负责把这张图在格子里居中。
+          style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 }}
+          resizeMode="contain"
           accessible={false}
         />
-        {/* 打滑时上一张露出来的那条边缘：半透明压一层，模拟未完全过片的双重曝光 */}
-        {previousSlip > 0 ? (
-          <View style={[styles.overlapVeil, { width: overlap }]} pointerEvents="none" />
-        ) : null}
-        {ownSlip > 0 ? <View style={styles.slipMark} pointerEvents="none" /> : null}
         {selected === true ? (
           <View style={styles.frameSelected} pointerEvents="none">
             <Text style={styles.frameSelectedMark}>✓</Text>
@@ -292,7 +266,7 @@ function FilmFrame(props: FrameProps): React.ReactElement {
       </View>
       <View style={styles.frameFooter}>
         <Text style={styles.frameRailNo} numberOfLines={1}>
-          {`${String(index + 1).padStart(2, '0')}${suffix}`}
+          {`${String(index + 1).padStart(2, '0')}`}
         </Text>
         {codeText === null ? null : (
           <Text style={styles.frameCode} numberOfLines={1}>
@@ -355,30 +329,35 @@ export function StripPoster({ shots, code, width, height, shotRef, onFrameLoad }
         </View>
       </View>
 
-      {/* 底片排 */}
+      {/* 底片排。
+          这里原来也有一份打滑叠合（`slipAt` + `translateX: -overlap`），**同批删除**：
+          理由与浏览态完全相同（见文件头 ②），而且海报这条路更经不起叠合 ——
+          调用方是按"所有格宽 + 所有间隙"算出海报宽度的，一旦某张负位移，
+          那张就会往左压住前一张、同时整排比海报窄，成片里直接出现一块叠影。
+          现在的规矩：**格子之间只有正的 `POSTER_GAP`**，一格不压一格。 */}
       <View style={styles.posterFrames}>
-        {shots.map((shot, index) => {
-          const previousSlip = index > 0 ? slipAt(index - 1) : 0;
-          const overlap = previousSlip > 0 ? frameWidths[index] * previousSlip : 0;
-          return (
-            <View
-              key={shot.id}
-              style={{
-                width: frameWidths[index],
-                marginLeft: index === 0 ? 0 : POSTER_GAP,
-                transform: [{ translateX: -overlap }],
-              }}
-            >
-              <Image
-                source={{ uri: shot.uri }}
-                style={{ width: frameWidths[index], height: frameHeight }}
-                resizeMode="cover"
-                onLoad={onFrameLoad}
-                fadeDuration={0}
-              />
-            </View>
-          );
-        })}
+        {shots.map((shot, index) => (
+          <View
+            key={shot.id}
+            style={{
+              width: frameWidths[index],
+              marginLeft: index === 0 ? 0 : POSTER_GAP,
+            }}
+          >
+            <Image
+              source={{ uri: shot.uri }}
+              // `cover` 保持不变：这里的格子高度固定 748pt、宽度是**按这张自己的
+              // 宽高比**算出来的，两者比值恰好等于图片自己的比值，
+              // 所以 `cover` 与 `contain` 的成片**像素级相同**，改了纯属无谓的改动。
+              // 浏览态那一格不同：它的宽高是固定值（固定宽高比），必须用 `contain`
+              // 才能保证整张成片不被裁掉 —— 两处要求不一样，别一起改。
+              style={{ width: frameWidths[index], height: frameHeight }}
+              resizeMode="cover"
+              onLoad={onFrameLoad}
+              fadeDuration={0}
+            />
+          </View>
+        ))}
       </View>
 
       {/* 下轨：冲印工艺 + 胶卷代号 */}
@@ -414,9 +393,23 @@ export const EXPORT_BAR_HEIGHT = 54;
 /**
  * 纯函数：按可用宽度和底片数，算出整条底片的几何。
  *
- * 抽出来是为了能**单独验算**（这是本文件里唯一有算术的部分）：
- * 底片宽度取"一张不超过屏宽的 62%"与"不超过 300pt"里的小者 —— 竖拍照片在高屏上
- * 如果按 `height = 可用高` 去反算宽度，会宽到一张就占满屏，失去"长卷"的意义。
+ * 抽出来是为了能**单独验算**（这是本文件里唯一有算术的部分）。几何一共四个数，
+ * 全部有闭式解，删掉打滑之后不再有任何逐张变化的量：
+ *   · 一个格子多宽：`frameWidth`
+ *     = `clamp(widest, 140, min(availableWidth × 0.62, 300))`
+ *       `widest` = 所有照片里最宽的那张在 `frameHeight` 下的宽度（`frameHeight × aspect`）。
+ *       底片宽度取"一张不超过屏宽的 62%"与"不超过 300pt"里的小者 —— 竖拍照片在高屏上
+ *       如果按 `height = 可用高` 去反算宽度，会宽到一张就占满屏，失去"长卷"的意义。
+ *   · 一个格子多高：`frameHeight` = `clamp(usableHeight, 120, 520)`，
+ *     `usableHeight` = `availableHeight − 上下轨道 − 导出条`。
+ *     **宽高都是常量、与是哪一张无关**，所以"单格固定宽高比"是这一层保证的。
+ *   · 间距多少：`FRAME_GAP`（= 16pt，**正的**，由 `FilmFrame` 的 `marginRight` 施加；
+ *     最后一张不留）。
+ *   · 总内容宽多少：`contentWidth = shots.length × frameWidth + (shots.length − 1) × FRAME_GAP`。
+ *     闭式写出来而不是拿循环累加，是为了让"总宽"能被一眼验算 —— 它必须与
+ *     `FlatList` 的 item 宽之和、以及 `snapToInterval` 完全一致，
+ *     这里差一个 `FRAME_GAP` 就会让滚动位置和眼睛看到的帧错开。
+ *     `shots` 为空时不能算出负数，故与 `frameWidth` 取大者兜底。
  */
 export function computeStripLayout(
   availableWidth: number,
@@ -432,16 +425,18 @@ export function computeStripLayout(
   // 一张不超过屏宽的 62%，也不超过 300pt：既能一屏看到两张，也不至于小到看不清
   const frameWidth = Math.max(140, Math.min(widest, Math.min(availableWidth * 0.62, 300)));
 
-  const offsets: number[] = [];
-  let cursor = 0;
-  for (let index = 0; index < shots.length; index += 1) {
-    const previousSlip = index > 0 ? slipAt(index - 1) : 0;
-    // 打滑时后一张往左压 `frameWidth × slip`：间距是**被吃掉**的，不是额外加的
-    cursor -= frameWidth * previousSlip;
-    offsets.push(cursor);
-    cursor += frameWidth + FRAME_GAP;
-  }
-  const contentWidth = Math.max(frameWidth, cursor);
+  // 每张的左沿 = index × (frameWidth + FRAME_GAP)，前缀和。
+  // `offsets` 目前**没有任何消费方**（`git grep offsets` 在 `StripView.tsx` 之外零命中，
+  // 文件内也只出现在这个函数的返回里）—— 它是给未来"按绝对位置定位某一张"留的，
+  // 不是死代码要删。请注意：**它以前含有 `cursor -= frameWidth × previousSlip` 的打滑减法，
+  // 那是"同一个叠合量被算了两次"的第二处**，现在一并删除。
+  const step = frameWidth + FRAME_GAP;
+  const offsets = shots.map((_shot, index) => index * step);
+  // `shots.length - 1` 个间隙（最后一张不留右间距）。空数组时 `-1 × FRAME_GAP` 会算出负数，
+  // 所以按"一个格子"兜底 —— 空卷不进这个分支（调用方 `shots.length === 0` 时直接返回空 View），
+  // 但纯函数不该对空输入给出负宽度。
+  const contentWidth =
+    shots.length === 0 ? frameWidth : shots.length * frameWidth + (shots.length - 1) * FRAME_GAP;
 
   return {
     frameWidth,
@@ -497,8 +492,12 @@ export function StripView(props: StripViewProps): React.ReactElement {
 
   /**
    * 帧号是一条**按吸附位置**算的直线：底片宽度 + 标准间距 = 一格的步长。
-   * 故意**不**把打滑算进去 —— 打滑是"机械故障"，它不该改变"现在过到第几格"这个
-   * 读数（真实机器上打滑恰恰是"过片轮咬不住"，读数会跳，但那是另一个彩蛋了）。
+   *
+   * 删掉打滑之后这条直线才**第一次真正等于视觉位置**：以前视觉上每张只前进
+   * `frameWidth + FRAME_GAP − overlap`，而吸附步长是 `frameWidth + FRAME_GAP`，
+   * 两者每过一张就错开 `overlap`（越往后错得越多）。现在位移恒为 0，
+   * `sweepStep` 与 `FilmFrame`（`marginRight: FRAME_GAP`）用的是同一个 `FRAME_GAP`，
+   * 不存在第二个数可以漂移。
    */
   const sweepStep = layout.frameWidth + FRAME_GAP;
 
@@ -640,11 +639,19 @@ export function StripView(props: StripViewProps): React.ReactElement {
   const posterFrameWidths = selectedShots.map((shot) =>
     shot.height > 0 ? posterFrameHeight * (shot.width / shot.height) : posterFrameHeight,
   );
+  /**
+   * 海报宽度必须是**所有格宽 + 所有间隙 + 左右内边距**的精确和。
+   *
+   * 以前这里逐张减掉 `frameWidth × previousSlip`（打滑叠合），而 `StripPoster` 里
+   * 同时又在渲染层 `translateX: -overlap` 减了同一个量 —— **这才是那句话真正成立的地方：
+   * 同一个叠合量在"海报宽度"和"海报渲染"两处各算了一次。** 于是海报宽度比实际排出来的
+   * 画面窄，`posterFrames` 比外框还宽，成片直接溢出、贴边被裁。
+   * 打滑已废除，这里只剩加法：`shots.length` 个格宽 + `(shots.length − 1)` 个间隙。
+   * 这个和式必须与 `StripPoster` 里的 `marginLeft: index === 0 ? 0 : POSTER_GAP` 严格对应，
+   * 改一边就要改另一边。
+   */
   const posterWidth =
-    posterFrameWidths.reduce((sum, frameWidth, index) => {
-      const previousSlip = index > 0 ? slipAt(index - 1) : 0;
-      return sum + frameWidth + (index === 0 ? 0 : POSTER_GAP) - frameWidth * previousSlip;
-    }, 0) +
+    posterFrameWidths.reduce((sum, frameWidth, index) => sum + frameWidth + (index === 0 ? 0 : POSTER_GAP), 0) +
     POSTER_PADDING * 2;
   const posterHeight = posterFrameHeight + POSTER_RAIL_HEIGHT * 2 + POSTER_PADDING * 2;
 
@@ -667,27 +674,23 @@ export function StripView(props: StripViewProps): React.ReactElement {
           style={[styles.strip, { transform: [{ translateX: -offset }], paddingLeft: 8 }]}
           pointerEvents="box-none"
         >
-          {shots.map((shot, index) => {
-            const previousSlip = index > 0 ? slipAt(index - 1) : 0;
-            return (
-              <FilmFrame
-                key={shot.id}
-                shot={shot}
-                index={index}
-                total={shots.length}
-                frameWidth={layout.frameWidth}
-                frameHeight={layout.frameHeight}
-                // 间距恒为标准值：打滑靠 `translateX` 把后一张**拉回来**叠上去，
-                // 而不是把间距改小 —— 后者会让整条底片的总长也变，吸附步长就跟着乱
-                spacing={index === 0 ? 0 : FRAME_GAP}
-                ownSlip={slipAt(index)}
-                previousSlip={previousSlip}
-                code={filmCode}
-                selected={exporting ? selectedIds.includes(shot.id) : null}
-                onPress={(pressed) => handleFramePress(pressed, index)}
-              />
-            );
-          })}
+          {shots.map((shot, index) => (
+            <FilmFrame
+              key={shot.id}
+              shot={shot}
+              index={index}
+              total={shots.length}
+              frameWidth={layout.frameWidth}
+              frameHeight={layout.frameHeight}
+              // 间距只有这一个来源：`FilmFrame` 内部那个 `marginRight: FRAME_GAP`。
+              // 这里不再传任何逐张变化的位移量 —— 原来传的 `previousSlip`
+              // 正是"后一张压到前一张上"的开关（见文件头 ②）。
+              isLast={index === shots.length - 1}
+              code={filmCode}
+              selected={exporting ? selectedIds.includes(shot.id) : null}
+              onPress={(pressed) => handleFramePress(pressed, index)}
+            />
+          ))}
         </Animated.View>
       </View>
 
@@ -718,7 +721,13 @@ export function StripView(props: StripViewProps): React.ReactElement {
               delayLongPress={420}
               accessibilityRole="imagebutton"
               accessibilityLabel={`${index + 1} / ${shots.length}`}
-              style={{ width: layout.frameWidth + FRAME_GAP, height: layout.frameHeight + 26 }}
+              // 宽度就是 `sweepStep`：视觉上一格推进多少，这个透明项就必须多宽。
+              // 原来写的是 `layout.frameWidth + FRAME_GAP`，与"视觉推进量"确实同源，
+              // 但视觉层每张还有个 `translateX: -overlap` 的负位移在偷走宽度，
+              // 于是 item 盒比画面长，滚动/吸附与眼睛看到的帧逐张错位。
+              // 负位移已废除（见文件头 ②），这里现在与 `FilmFrame` 的
+              // `width + marginRight` 逐项相等，两边不可能再对不上。
+              style={{ width: sweepStep, height: layout.frameHeight + 26 }}
             />
           )}
         />
@@ -812,7 +821,7 @@ export function StripView(props: StripViewProps): React.ReactElement {
  * 那是这次要修的病（模块加载时把颜色烧死，切机身一行都不变）。
  *
  * 这里也只有"墨色"来自配色表。`DARKROOM` / `RAIL` / `#000000`（片窗）/
- * `slipMark` / `frameSelected` 这些是**底片本身的颜色**，跟 App 的外壳无关，
+ * `frameSelected` 这些是**底片本身的颜色**，跟 App 的外壳无关，
  * 保持写死 —— 它们是这一屏的物性，不是主题。
  */
 function createStyles(theme: Theme) {
@@ -890,24 +899,21 @@ function createStyles(theme: Theme) {
     overflow: 'hidden',
     backgroundColor: '#000000',
     borderRadius: 2,
+    // 这两行是"整张成片在格子里完整居中"的关键，**不要删**：
+    // `<Image>` 的样式是显式的 `position: 'absolute'` + 四条边 0（钉死在窗口上），
+    // 所以图片既不撑宽窗口、也不会自己偏移，`contain` 之后剩下的黑边就靠这里居中。
+    // 顺带记一笔：RN 0.86 的 `StyleSheet` 已经**没有** `absoluteFillObject` 了
+    // （`StyleSheet.d.ts` 里只剩 `absoluteFill`），写成 `...StyleSheet.absoluteFillObject`
+    // 会直接 `TS2551` 编译不过，所以这里手写四边。
+    // 以前 `cover` + "图片宽度按 frameHeight × aspect 算"那套写法下，图片宽度可以
+    // 超过 frameWidth，`overflow: hidden` 就从两侧裁掉，观感正是"画面被压缩/被盖住"。
+    // 现在图片不再参与撑宽，那条路径也一并消失。
     alignItems: 'center',
     justifyContent: 'center',
   },
-  overlapVeil: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(232, 228, 220, 0.10)',
-  },
-  slipMark: {
-    position: 'absolute',
-    right: 0,
-    top: 0,
-    width: 2,
-    bottom: 0,
-    backgroundColor: 'rgba(210, 139, 42, 0.75)',
-  },
+  // `overlapVeil`（打滑叠合的那层半透明遮罩）与 `slipMark`（打滑角标）
+  // 随打滑机制一同删除 —— 删除理由见文件头 ②：用户实测负边距叠合会
+  // 把后一张盖住前一张，故废除，任何"叠合"相关的装饰也一并废除。
   frameSelected: {
     position: 'absolute',
     right: 4,

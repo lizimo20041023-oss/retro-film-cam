@@ -177,8 +177,14 @@ export interface FrameSpec {
   /** PNG 的设计像素尺寸，仅用于文档与自检提示。 */
   designSize?: Size;
   /**
-   * 横拍变体。照片是横构图时合成层改用它，而不是把横照片硬塞进竖版窗口。
-   * 不写 = 这款相框只有竖版，横照片仍按 `window` + `photoFit` 处理。
+   * 横拍变体。**当前不可达**：`geometry.ts` 的 `resolveFrameOrientation()` 自 v1.6.0 起
+   * 恒返回 `'portrait'`（理由写在那边的注释里 —— 横版 PNG 是把竖版纸整体转 90° 生成的，
+   * 窗口跟着转，导致画面被挤到纸的一侧），所以 `frameSourceOf()` 永远给竖版 `source`。
+   *
+   * 字段与 4 款已有变体**仍然保留**：将来若真为横构图独立设计横版纸，只要把那一个开关
+   * 改回按比例判就能重新启用这条路径。**不要**为了让它们"活起来"去改 `frameSourceOf`
+   * 或绕过 `resolveFrameOrientation`。
+   * 不写 = 这款相框本来就只有竖版（`fp100c` / `half-frame` / `sheet8x10`）。
    */
   landscape?: FrameOrientationVariant;
   /**

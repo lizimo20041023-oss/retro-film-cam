@@ -48,7 +48,7 @@ import type {
   WatermarkLayout,
 } from '../types';
 import { formatQuartzDate } from '../utils/formatTimestamp';
-import { formatResolvedPlace } from '../utils/placeNames';
+import { compactPlace, formatResolvedPlace } from '../utils/placeNames';
 import { planCapture } from '../utils/captureOptions';
 import {
   computeSlotRects,
@@ -56,7 +56,9 @@ import {
   formatExposureCode,
   frameOrientationOfLayout,
   frameSourceOf,
+  shouldCompactPlaceText,
   slotBounds,
+  splitPlaceAvailableWidth,
 } from '../utils/geometry';
 import type { WatermarkQuartz } from '../utils/geometry';
 import { buildGradeLayers } from '../utils/gradeLayers';
@@ -167,7 +169,7 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
     城市和国别都是空串"的结构，`formatResolvedPlace` 现在会退回坐标本身），
     所以正常管线里走不到下面那个分支。
   */
-  const placeText = place
+  let placeText = place
     ? formatResolvedPlace(place, locale, input.placeDetail).trim()
     : locationText.trim();
 
@@ -192,7 +194,7 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
    * 相框（拍立得 / 幻灯卡）的字距就被放大到约 1.66 倍。
    * 现在这里只做一件事：把 `WatermarkLine[]` 原样翻译成渲染层要的 `WatermarkPiece[]`。
    */
-  const plan = computeWatermarkPlan(
+  let plan = computeWatermarkPlan(
     layout,
     timestamp,
     frame,
@@ -202,6 +204,67 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
     input.watermarkLayout,
     codeText,
   );
+
+  /*
+    用户 m07186 的硬要求：「左侧地名超出就自动精简成国家 + 城市，右侧日期绝不被挤压」。
+    判定与重排都走 `geometry.ts` 里那一套唯一算术，这里只负责"发现放不下就再排一次"：
+
+    1. 先按**完整地名**排一次版。这一版里的 `region.width` 与日期行的 `quartz.width`
+       就是"留白区里到底还剩多少宽度给地名"的真值 —— `splitPlaceAvailableWidth()` 抽出来
+       就是给这里用的，它和 `computeWatermarkPlan` 内部的 `split` 分支是同一行算术，
+       所以"算出来的可用宽"与"画出来的可用宽"永远是同一个数，不会漂移。
+    2. 只有**真的放不下**（估算上界 > 可用宽 × 0.98）才用 `compactPlace` 去掉省/州一级，
+       然后用精简后的地名重排一次。重排后仍落在同一条 `place` 行、仍走
+       `formatResolvedPlace`，所以港澳台前置规则、多语言、详细度档全部自动继承，
+       **不存在第二套格式化**。
+
+    为什么不做"截断 + 省略号"：`上海市 · 黄浦…` 比 `中国 · 上海` 更没用 ——
+    后者至少是个完整地名。
+
+    为什么只重排一次、不做迭代：精简形已经是这一版式下最短的有意义形态，
+    反复精简没有下一档可去，多迭代只会白算版式。
+
+    为什么 `compactText === placeText` 就跳过：坐标档走的是 `coordsOnlyPlace`，
+    它的 `region` 本来就是空串，`compactPlace` 会原样返回；跳过能省一次整版重算。
+    顺带这也是"坐标档绝不被精简逻辑动到"的守卫。
+
+    为什么只在 `split` 版式里做：只有这一版式才是"地名与日期左右并排抢同一条宽度"。
+    其余三种版式里日期要么独占一行、要么和地名分两层叠放，不存在挤压。
+  */
+  if (place !== null && placeText.length > 0 && plan.layout === 'split') {
+    const placeLine = plan.lines.find((line) => line.kind === 'place');
+    const dateQuartzWidth = plan.lines.find((line) => line.kind === 'date')?.quartz?.width;
+    if (placeLine !== undefined && dateQuartzWidth !== undefined) {
+      const available = splitPlaceAvailableWidth(plan.region.width, dateQuartzWidth);
+      if (
+        shouldCompactPlaceText(
+          placeLine.text,
+          placeLine.fontSize,
+          placeLine.letterSpacing,
+          available,
+        )
+      ) {
+        const compactText = formatResolvedPlace(
+          compactPlace(place),
+          locale,
+          input.placeDetail,
+        ).trim();
+        if (compactText.length > 0 && compactText !== placeText) {
+          placeText = compactText;
+          plan = computeWatermarkPlan(
+            layout,
+            timestamp,
+            frame,
+            placeText,
+            dateText,
+            locale,
+            input.watermarkLayout,
+            codeText,
+          );
+        }
+      }
+    }
+  }
 
   // `centered` 与 `split` 的行由 geometry 给了 `maxWidth`（要避让对面那块字）；
   // `dateOnly` / `stacked` 的靠边行没有对立面，退回"整幅减两侧 inset"。
@@ -455,11 +518,22 @@ export function FilmCompositor({
       </View>
 
       {/*
-        ② 相框：横构图（原图 width > height）且相框有横版变体时换成横版 PNG。
-        朝向**从 `layout.aspect` 反推**，不在这里重判一次横竖：`stage` 里没有原图像素尺寸
-        （`rawUri` 只是字符串），而布局是上游按同一次选择算好的 —— 判两次就可能出现
-        "布局按横版算、PNG 铺了竖版"的错位。没有横版变体时 `frameSourceOf` 返回原 PNG，
-        所以这一行对现有四款相框（都还没有 `landscape`）是零行为变化。
+        ② 相框：PNG 与 layout 必须同版。朝向**从 `layout` 反推**，不在这里重判一次横竖：
+        `stage` 里没有原图像素尺寸（`rawUri` 只是字符串），而布局是上游按同一次选择算好的
+        —— 判两次就可能出现"布局按横版算、PNG 铺了竖版"的错位。
+
+        ⚠️ 这段注释以前写的是"横构图（原图 width > height）且相框有横版变体时换成横版 PNG…
+        这一行对现有四款相框（都还没有 `landscape`）是零行为变化"，**两句都已不成立**，留着会
+        误导下一轮排查：
+        · 7 款相框里有 **4 款真的带 `landscape` 变体**（polaroid-600 / instax-mini / neg-135 /
+          slide-mount，见 `constants/frames.ts`），"都还没有"是当时凭印象写的；
+        · 上游 `resolveFrameOrientation` 现在**恒返回 `'portrait'`**，所以**永远走不到横版分支**。
+        · 真机上"横图缩在相纸一角、另一侧一条大白边"正是这里选错版的后果：横版 PNG 是竖版
+          纸转 90° 出来的，窗口坐标跟着转，`polaroid-600-landscape` 的 `window.x = 0.219626`
+          意味着画面区被推到纸的右侧、左边留一条 376px 竖白边 —— 和"宽下巴转到侧边"是同一个病。
+          朝向钉死之后这条路径不可达，但**相框数组仍保留横版变体**：所以这里不能顺手改成直接
+          `frame.source`，否则哪天朝向开关被放开，PNG 与 layout 又会各走一边。反推逻辑留着，
+          它现在是"永远推出竖版"的保险丝，而不是死代码。
       */}
       <Image
         source={frameSourceOf(frame, frameOrientationOfLayout(frame, layout))}

@@ -97,22 +97,33 @@ export interface PhotoFrameShape {
 }
 
 /**
- * 这次该用竖版还是横版（§六.1 的渲染侧规则）。
+ * 这次该用竖版还是横版（§六.1）—— **v1.6.0 起恒为竖版**。
  *
- * 判据是**原图的实际长宽比**，不是相框自己 —— 同一张相框遇到横着拍的照片要换横版 PNG，
- * 否则竖版窗口会把横构图裁掉两边。
+ * ⚠️ 这是一处**有意的回退**，不是漏改。原实现按"原图的实际长宽比"给横构图换横版 PNG，
+ * 真机实测两头都不对：
  *
- * - 相框没有 `landscape` 变体 → 永远竖版：相框数据还没填完时，渲染结果与 v1.3.0 一字不差；
- * - `width === height` 的正方图 → 竖版。用严格大于号是**刻意**的：正方图两边都说得通，
- *   选竖版才能让"横竖都不吃亏"的照片保持和以前完全一样的结果（少一次无谓的换版）。
+ *   1. 横版 PNG 是**竖版纸转 90°** 出来的（见 `scripts/generate_frames.py` 的 `landscape()`），
+ *      拍立得那条宽下巴跟着转到了侧边 —— `frames.ts` 自己就写明了"竖版的下巴转 90° 之后
+ *      就是右边那条"。用户看到的"相纸方向乱转"就是它。
+ *   2. 窗口坐标跟着一起转，照片在那个歪窗口里落在角上，另一侧留出一条不成比例的大白边 ——
+ *      用户看到的"缩在相纸左上角"是同一个病的另一面，**不是居中算错了**：
+ *      `centerCropPhoto` 的 `originX/originY` 一直是 `floor((w - crop) / 2)`，居中本身没错。
+ *
+ * 产品决定（用户明确要求）：相纸永远是正向直立的纸，宽下巴与水印永远在正底部；原图按窗口
+ * 比例居中裁切，横构图宁可多裁两边也不许把纸转过来。
+ *
+ * 为什么保留 `frame.landscape` 与 `frameSourceOf` / `frameOrientationOfLayout`：它们现在是
+ * **不可达**的 —— 本函数恒返回 `'portrait'`，`computeFrameLayout` 因此永远拿竖版几何，
+ * 反推也必然得到 `'portrait'`。留着是为了哪天做一版**真正为横构图设计**的横版纸
+ * （下巴仍在下方、窗口水平居中）时，这条路还在。**不要**为了让它们"活起来"而改回按比例判。
+ *
+ * 两个形参保留不删：签名稳定，调用点不必跟着改。
  */
 export function resolveFrameOrientation(frame: FrameSpec, photo: PhotoFrameShape): FrameOrientation {
-  if (frame.landscape === undefined) {
-    return 'portrait';
-  }
-  const width = Number.isFinite(photo.width) ? photo.width : 0;
-  const height = Number.isFinite(photo.height) ? photo.height : 0;
-  return width > height ? 'landscape' : 'portrait';
+  // 恒为竖版这一条不受形参影响；`void` 是给 `noUnusedParameters` 的显式交代。
+  void frame;
+  void photo;
+  return 'portrait';
 }
 
 /**
@@ -329,6 +340,33 @@ function round2(value: number): number {
 }
 
 /**
+ * 每个字形后面留的**冗余**（逻辑点）。
+ *
+ * ## 为什么必须有这一条（本轮的改动，别删）
+ *
+ * 本轮把 `0.6em` 这条公式拿真字体验过一遍：Windows 的 `courbd.ttf`
+ * （CoreText 上 `CourierNewPS-BoldMT` 的同族）里 `'` `0`-`9` 空格 `A` `M` 的 advance
+ * **全部逐位等于 600/1000 em**，`"'26  10  12"` 的 11 个字形加起来正好 6.6em。
+ * 也就是说 `length × (fontSize × 0.6 + letterSpacing)` 算出来的数**恰好等于**
+ * 这段字墨迹的真实占宽 —— 一分不多。
+ *
+ * "恰好相等"在渲染层是个危险值：容器宽度一旦等于（而不是大于）文字宽度，
+ * 就得靠 `Text` 自己四舍五入到同一侧才不会截断。CoreText 里
+ * `CTLineGetTypographicBounds` 与每个 `CGGlyph` 的 advance 各自取整，
+ * 亚点级的差值（<1pt）是必然存在的；此时 iOS 的行为是**从尾部收掉字形**
+ * （表现为用户报的「掉字」），而不是优雅地缩小 —— 因为 `adjustsFontSizeToFit`
+ * 有 `minimumFontScale` 下限，一旦缩到下限还塞不下就只剩截断一条路。
+ *
+ * 所以这里给每个字形留 0.5pt：11 个字形 = 5.5pt 的确定性余量，
+ * 相对 94.6pt 的日期块是 5.8%，肉眼看不出来，但足以让"容器 ≥ 文字"永远为真。
+ * **它不是对 0.6em 的不信任，是对"两边各自取整"这件事的保险。**
+ *
+ * ⚠️ 上限：只有 `MAX_DATE_FONT`（96pt）那一档会真的碰到它，那时它是 5.5pt，
+ * 而日期块的宽度已经是 650pt 量级。
+ */
+export const DATE_GLYPH_SLACK = 0.5;
+
+/**
  * 日期串的渲染宽度（逻辑点）。
  *
  * **这是"日期行宽度"的唯一定义**：`computeWatermarkPlan` 用它算 `quartz.width`，
@@ -340,9 +378,88 @@ function round2(value: number): number {
  * 最后一个也加。所以整块的真实占宽就是 `n × (advance + ls)`。
  * 减掉尾字距会让容器比文字窄 2pt，靠右的那一行就有被省略号收掉的风险 ——
  * 宁可让日期离右边多出 2pt（肉眼看不出来），也不能冒截断的险。
+ *
+ * 尾字距 + 每个字形的冗余（`DATE_GLYPH_SLACK`，理由见上方那段）就是"容器永远比
+ * 文字宽"的全部来源。**改小这两个数之前先读 `DateStamp.tsx` 的注释**。
  */
 export function dateStampWidth(text: string, fontSize: number, letterSpacing: number = DATE_LETTER_SPACING): number {
-  return round2(text.length * (fontSize * MONO_ADVANCE_RATIO + letterSpacing));
+  return round2(text.length * (fontSize * MONO_ADVANCE_RATIO + letterSpacing + DATE_GLYPH_SLACK));
+}
+
+/**
+ * 全角字形判定（CJK / 假名 / 全角标点）—— 地名宽度估算用。
+ *
+ * ⚠️ 与 `placeNames.ts` 里那个 `CJK`（判断"中文之间不留分隔符"）**不是一回事**，
+ * 别合并：那个是排版语义，这个是**字形宽度**（全角 ≈ 1em）。
+ */
+const FULL_WIDTH_GLYPH = /[\u2E80-\u303F\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFF60\uFFE0-\uFFE6]/u;
+
+/**
+ * 一个地名串大概占多宽（逻辑点）。**这是估算，不是量出来的。**
+ *
+ * 为什么需要估算：`split` 版式里地名和日期共用一条基线，地名太长就必须**先精简**
+ * （用户的要求是"超出就只留国家 + 城市"），而"太长"只有算过才知道。
+ * 地名用的是**比例字体**（中文按全角、拉丁按等宽 0.6em 近似），拿不到真字体度量，
+ * 所以这里按"全角 1em / 其余 0.6em"取上界估。
+ *
+ * ⚠️ 估算偏保守的方向是刻意的：**宁可多精简一次，也不要让地名去挤日期**
+ * —— 这一整轮的红线就是"日期永远是完整的 8 位"。宁可错杀地名，不可错放日期。
+ */
+export function estimatePlaceTextWidth(
+  text: string,
+  fontSize: number,
+  letterSpacing: number,
+): number {
+  let em = 0;
+  for (const glyph of text) {
+    em += FULL_WIDTH_GLYPH.test(glyph) ? 1 : MONO_ADVANCE_RATIO;
+  }
+  return round2(text.length * letterSpacing + em * fontSize);
+}
+
+/**
+ * 这个地名是不是"太长了、该降级成国家 + 城市"。
+ *
+ * `maxWidth` 传的是这一行**真正能用的宽度**（`split` 里就是
+ * `region.width - quartz.width - SPLIT_GUTTER`）。留 2% 的缝给估算误差。
+ *
+ * 为什么压缩比是**全有或全无**、不做"截断加省略号"：地名被截成
+ * 「上海市 · 黄浦…」比「中国 · 上海」更没用 —— 后者至少是个完整的地名。
+ * 压缩形由 `placeNames.compactPlace` 产出，走的还是同一套渲染器（红线不受影响）。
+ */
+export function shouldCompactPlaceText(
+  text: string,
+  fontSize: number,
+  letterSpacing: number,
+  maxWidth: number,
+): boolean {
+  if (text.length === 0) {
+    return false;
+  }
+  return estimatePlaceTextWidth(text, fontSize, letterSpacing) > maxWidth * 0.98;
+}
+
+/**
+ * `split` 版式下地名那一行**还剩多少宽度**（逻辑点）。返回值可能是 0。
+ *
+ * 为什么要有这个函数：本轮的硬要求是「日期永远是完整的 8 位，绝不被左侧地名挤压」，
+ * 而"地名放不放得下"只有把日期块和缝扣掉之后才知道。这个算法原先**内联**在
+ * `computeWatermarkPlan` 的 `split` 分支里，调用方（合成层）看不到也就算不出来 ——
+ * 于是"地名超长就自动精简成国家 + 城市"无从落地。抽出来的同时保持**逐字相同的算术**，
+ * `computeWatermarkPlan` 自己调它，所以"算出来的宽度"和"画出来的宽度"还是同一个数。
+ *
+ * 公式：`可利用水位 = 水印区宽 − 日期块宽 − 缝`。日期块用的是 `quartz` 里
+ * **算好的那个宽度**（含尾字距与 `DATE_GLYPH_SLACK`），所以这里不存在第二套量法。
+ *
+ * ⚠️ 返回 0 表示"这一档连日期块都占满了"——调用方应当按 0 处理（不印地名），
+ * **不许**拿它去反推日期块的宽度然后压缩日期。日期块是不可协商的那一方。
+ */
+export function splitPlaceAvailableWidth(
+  regionWidth: number,
+  quartzWidth: number,
+  gutter: number = SPLIT_GUTTER,
+): number {
+  return Math.max(0, round2(regionWidth - quartzWidth - gutter));
 }
 
 /** 一段水印文字的水平贴边方式。 */
@@ -1016,10 +1133,24 @@ export function computeWatermarkPlan(
       );
     }
   } else {
-    // split：地名贴左、日期贴右，共用同一条基线。
-    // ⚠️ 两行**不再是各分一半宽度**：日期那一行的宽度是 `segmentDateWidth` 算出来的确定值，
-    // 剩下的宽度全部留给地名（可压缩的那一行），所以窄幅相框也不会再挤掉日期。
-    const slotMaxWidth = hasDate ? Math.max(24, region.width - quartz.width - SPLIT_GUTTER) : region.width;
+    /*
+     * split：地名贴左、日期贴右，共用同一条基线。
+     *
+     * ⚠️ 两行**不再是各分一半宽度**：日期那一行的宽度是 `dateStampWidth` 算出来的确定值，
+     * 剩下的宽度全部留给地名（可压缩的那一行），所以窄幅相框也不会再挤掉日期。
+     *
+     * 本轮的硬次序**写在这里**（别再反着来）：
+     *   ① 日期块先拿满自己算出来的宽度（含尾字距与 `DATE_GLYPH_SLACK` 的余量）；
+     *   ② 扣掉一条 `SPLIT_GUTTER` 的缝；
+     *   ③ 剩下的才是地名的上限 —— 地名超了就由调用方换成精简形
+     *      （`splitPlaceAvailableWidth` + `shouldCompactPlaceText` + `placeNames.compactPlace`），
+     *      再超就让 RN 按 `maxWidth` 收省略号。
+     * **绝不允许为了塞下地名去动 `quartz.width`** —— "日期永远是完整的 8 位"是这一轮的
+     * 验收线，用户报的「掉字」就是反着来造成的。
+     */
+    const slotMaxWidth = hasDate
+      ? splitPlaceAvailableWidth(region.width, quartz.width, SPLIT_GUTTER)
+      : region.width;
     if (hasSlot) {
       const spacing = spacingOf(slotFont);
       lines.push(

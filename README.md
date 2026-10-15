@@ -51,6 +51,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [27. v1.5.0：液态玻璃取景器 + 真光学变焦 + 导入反查地名](#27-v150液态玻璃取景器--真光学变焦--导入反查地名)
 - [28. v1.5.1：真机实测反馈的七条](#28-v151真机实测反馈的七条)
 - [29. 打包机换镜像这件事（v1.5.1 发布时踩出来的）](#29-打包机换镜像这件事v151-发布时踩出来的)
+- [30. v1.6.0：四模块重构（胶囊刻度尺 / 相纸正向 / 长卷不再叠合 / 地名与日期）](#30-v160四模块重构胶囊刻度尺--相纸正向--长卷不再叠合--地名与日期)
 
 ---
 
@@ -2747,6 +2748,269 @@ Kumamoto Airport市
 修法是让 `ensureAdminSuffix` 对「非中日韩字符的名字」不粘后缀、或把「県」补进它的后缀表 ——
 本轮没做，因为 `fe72d69` 已经推送、CI 已在队列里，不想为一个非默认档位的观感问题多烧一次
 CI 额度（私有仓库每月约 2000 分钟，macOS 按 10 倍计费 ≈ 每月 200 分钟真实时间）。
+
+---
+
+## 30. v1.6.0：四模块重构（胶囊刻度尺 / 相纸正向 / 长卷不再叠合 / 地名与日期）
+
+这一版是用户一次性提的四条需求，四条都动了**真代码**，没有一条是"看起来改了"。
+四条各自都有可复现的探针证据（探针脚本跑完即删，命令与输出记在下面）。
+
+### 30.1 模块一：悬浮参数胶囊 → `<ParameterScrubBar />`
+
+三颗胶囊（色温 / 焦段 / 曝光）从"点一下切一档"升级成**单击快切 + 长按一滑到底**。
+
+- 新文件 `src/components/ParameterScrubBar.tsx`（1154 行）：手势状态机 + 三轴纯换算 + 尺子几何。
+- `src/components/ViewfinderBar.tsx` 重写为**两态视觉**（三胶囊 ↔ 展开态），里面**一行手势代码都没有** ——
+  真实触摸在 `ParameterScrubBar` 的**捕获阶段**就被接走，所以胶囊内部的 `Pressable` 不会抢走长按。
+- 依赖方向 `CameraScreen` → `ParameterScrubBar` → `ViewfinderBar`，单向，无 require 循环。
+
+| 交互 | 判据 | 行为 |
+| --- | --- | --- |
+| 短按 | `< 160ms` 且 `\|dx\| < 5px` | 焦段循环 13→26→35→52；色温/曝光非 0 则归零 + `Light` |
+| 长按 | `>= 160ms` | 展开刻度尺 + `Medium` |
+| 起拖 | `\|dx\| > 5px`（不等时间） | 同上，立即展开 |
+| 展开后 | 同一次 `PanResponder` 会话 | **不抬手**继续左右滑就改值 |
+| 松手 | `Release` / `Terminate` | `COLLAPSE_DELAY_MS = 350` 后收拢 |
+
+映射与触感：`wb` −1.00~+1.00、**每 6px 变 0.02**（`WB_PER_PX = 0.02 / 6`）、每 0.05 一次
+`selectionAsync`、过 0.00 磁吸 + `Light`；`zoom` 13~52mm、四档标准位磁吸 + `Medium`、
+13↔26 临界点换物理镜头（沿用 `lenses.ts` 的 `factorToZoom` / `ZoomLensRole`，没有第二套映射）；
+`ev` −2.0~+2.0 步进 0.1，每跨 0.1 一次 `selectionAsync`。
+
+**防卡顿是这一节的硬指标**（v1.5.1 刚修过掉帧）：
+- 尺子位移由单个 `Animated.Value` 驱动，`RulerStrip` 唯一的 prop 就是这个引用恒定的值 →
+  读数每 25ms 变一次时，**200 根刻度一根都不重建**。
+- 写回 `CameraScreen` 严格按 `EMIT_INTERVAL_MS = 25` 节流，松手时 `settle()` 补发最后一帧。
+- `CameraScreen` 顶层只在节流窗口被写；`cameraFocusProps` 仍走 `useMemo`。
+
+**色温覆盖新加了一层 `gradedPreset`**（`CameraScreen.tsx`）：`applyGrainLevel`（设置项）与
+"用户拧色温"（手势）各占一层，互不抹除。`color` 必须**整块展开复制** ——
+就地改 `preset.color` 会污染 `PRESETS` 共享常量表。只有成片链路读它（快门 3 处 + 导入 1 处），
+取景器实时预览不跑 `buildGradeLayers`，所以覆盖是"按下快门才生效"，不会把预览染色。
+
+三处**有意偏离**（都写在代码注释里）：
+1. **删掉了契约里的 `onPickFilm()`**。色温胶囊短按按规格改为**归零**；底片抽屉另有主入口
+   （控制台右侧那颗 `DialButton` → `handleOpenFilmDrawer`），胶囊只是重复了一遍，
+   而色温旧版**没有任何回到 0.00 的路**。
+2. **`RULER_PAD_PX` / `RULER_RANGE_PX` 从契约的 360 / 1080 改成 800 / 1600**。
+   契约那两个数**不够长**：最长的轴是 `ev`（整程 800px），滚到底时 `translateX = -800`，
+   此刻指针（在 86% 屏宽的中线）底下还需要 `800 + 屏宽 × 0.86` 的刻度存在，
+   1080 撑不住，会露出空白尾巴。
+3. **`props` 增补**：`ParameterScrubBar` 增加 `focalMinMm`（只有父级知道这一面有没有超广角）、
+   去掉 `onPickFilm`；`ViewfinderBar` 增加 `onCycleFocal` / `onReset(dial)` / `onAdjust(dial, dir)`
+   （胶囊在它里面渲染，这三条通路必须由它转发）。
+
+收拢态胶囊里**只有图标 + 读数**，删掉了旧版那三个 9px 中文词（色温/焦段/曝光）——
+`CAPSULE_WIDTH = 86` 装不下 `13 + 18 + 33 + 22 = 96`。这是有意的视觉变更。
+
+### 30.2 模块二：相纸**永远垂直正向**
+
+用户报"横图把宝来来的宽下巴转到左侧、竖图缩在相纸左上角、右侧一条畸形白边"。
+
+**真因不是居中公式错**，而是**横版 PNG 是把竖版纸整体转 90° 生成的**：
+`scripts/generate_frames.py` 的 `landscape()` 自述「窗口跟着转：竖版 `(x, y, w, h)` 顺时针转 90°
+之后落在 `(W − y − h, x, h, w)`」。代入 `polaroid-600` 得 `(1712 − 72 − 1264, 72) = (376, 72)`，
+`376 / 1712 = 0.219626` —— 正是 `src/constants/frames.ts` 里 `landscape.window.x` 的值。
+横向缺口左 72 / 右 **376**，所以"一侧大白边"是窗口坐标跟着纸转出来的，与照片居中无关。
+
+**修法是一个单点开关**：`src/utils/geometry.ts` 的
+`resolveFrameOrientation(frame, photo)` 自 v1.6.0 起**恒返回 `'portrait'`**。于是：
+
+```
+resolveFrameOrientation → 'portrait'（唯一开关）
+  → computeFrameLayout 永远拿竖版 aspect / window
+  → frameOrientationOfLayout 反推必为 'portrait'
+  → frameSourceOf 恒取竖版 PNG（唯一的横版分支前置条件永不满足）
+```
+
+`computeFrameLayout` 全仓只有 2 个调用点（`processFilmPhoto.ts:373-374` 与
+`CameraScreen.tsx` 的取景器预览，后者**根本不传 orientation**）→ **取景器与成片必然同版**。
+
+顺带把"居中"这件事也钉死：`processFilmPhoto.ts` 新增纯函数
+`centerCropOrigin(imageWidth, imageHeight, cropWidth, cropHeight)`（`originX/Y` 都是
+`Math.floor((尺寸 − 裁切尺寸) / 2)`），探针 21 组余量全部 `|左−右| ≤ 1px`、`|上−下| ≤ 1px`
+（奇数差那 1px 永远归左/上，是 `floor` 的必然结果）。渲染层同样没有 `(0,0)` 偏移：
+`FilmCompositor.tsx` 用 `left/top/width/height` 定位窗口，照片是 `StyleSheet.absoluteFill` +
+`cover`，`cover` 语义下 RN 在窗口内水平垂直都居中。
+
+`frame.landscape` 字段与 4 款已有变体**保留不动**（现在不可达），留给将来真正为横构图
+独立设计的横版纸；只要把那一个开关改回按比例判就能重新启用。**不要**为了让它们"活起来"
+去改 `frameSourceOf` 或绕过 `resolveFrameOrientation`。
+
+> ⚠️ 一处**口径收窄**：探针实测 4 款横版里 **`neg-135` 的横版窗口本来就是居中的**
+> （`frames.ts:161` `x: 0.144103, width: 0.712308`，左右各 245px）。所以"宽下巴被转到侧边"
+> 对 `polaroid-600` / `instax-mini` / `slide-mount` 精确成立，对 `neg-135` 不成立 ——
+> 它顶多表现为"留白被搬到另一侧 + 齿孔带从左右转到上下"。
+
+### 30.3 模块三：长卷底片不再互相叠合
+
+**转述报告里的 `isOverlapBleed` 这个标识符在仓库里根本不存在**（`git grep` 零命中），
+但它描述的打滑机制是真的。机制与量级（`StripView.tsx`）：
+
+- `overlap = frameWidth × slip`，`slip` 只有 `index % 16 === 0` 的下一张有，取值 0.15~0.2。
+- 但格子本来就有**正间距**，所以真正盖住前一张的是 **`overlap − FRAME_GAP`**：
+  slip 0.15 → 26.27pt（帧宽 10.9%），slip 0.2 → 38.36pt（帧宽 15.9%），
+  理论上限（`frameWidth` 300、slip 0.2）50pt = **帧宽 16.7%**。
+- **"同一个量被减两次"在浏览态不成立**：布局层 `computeStripLayout()` 里那行
+  `cursor -= frameWidth * previousSlip` 只污染 `offsets[16]` 这一个**从未被读的值**
+  （渲染层传的间距是常量 `FRAME_GAP`）。实测 17 张时 `contentWidth` 新旧同为 **4366.6**、
+  `holes` 同为 **191**，可见量零变化。
+- **它真正成立的地方是海报导出路径**：`posterWidth` 的 reduce 减一次、`StripPoster` 渲染层
+  又 `translateX: -overlap` 减一次 → 海报容器比画面窄、右侧被裁。已删，实测 3 张 / 4 张海报溢出 **0.00pt**。
+
+**真正"越滚越对不上"的来源是第三个**：`contentWidth` 与视觉总宽的差值 = **`Σ overlap`**。
+原先视觉层每张只推进 `frameWidth + FRAME_GAP − overlap`，而那个透明 `FlatList` 的 item 宽
+与 `snapToInterval` 都写的是 `frameWidth + FRAME_GAP` → 每过一张错开 `overlap`，
+17 张长卷在 `index 15` 打滑，从第 17 张起累计错位 **36.27pt**（约帧宽 15%）。
+**现已归零**：视觉推进量 / `snapToInterval` / FlatList item 宽三者全部派生自同一个
+`const sweepStep = layout.frameWidth + FRAME_GAP;`（实测三处同为 257.8pt）。
+
+删除清单（全仓库 grep 剩下的 8 处命中**全是"说明为什么删"的注释**，无一处活代码）：
+`SLIP_MARK` / `SLIP_RATIO_MIN` / `SLIP_RATIO_MAX` / `slipAt()` / `frameSuffix()` /
+`overlap` / `overlapVeil` / `slipMark` / `translateX: -overlap` / `cursor -=`。
+
+其它：单格容器改成**与是哪一张无关**的固定几何（`frameHeight = clamp(usableHeight, 120, 520)`、
+`frameWidth = clamp(widest, 140, min(availableWidth × 0.62, 300))`，验算 n = 1/3/5/17 张时逐项相同）；
+`FRAME_GAP` 10 → **16**，位移改用**正的右间距** `marginRight: isLast ? 0 : FRAME_GAP`；
+图片 `resizeMode="contain"` 并改成显式 `position:'absolute'` + 四边 0 钉死，不再由自己的宽高比撑宽。
+海报导出那格**有意保留 `cover`**：格高固定 748pt、格宽 = `748 × 图片宽高比`，
+格子宽高比 ≡ 图片宽高比，`cover` 与 `contain` 像素级相同（理由写在 `:349-355`）。
+
+> ⚠️ **`contain` 会留黑边**，这是行为改变不是 bug：格 241.8×520（宽高比 0.465），
+> 竖版 3:4 画面实为 241.8×322.4，**上下各留约 98.8pt**。这是"单格固定宽高比"这条要求的
+> 直接代价 —— 因为 7 款相框的宽高比本来就各不相同（0.6278 ~ 1.0077），任何单一格宽高比
+> 都不可能让每一款都填满。
+>
+> ⚠️ **"约 80%"从这份代码里复现不出来**：能算出的最大遮挡只有"叠合 ≤ 帧宽 16.7%" +
+> "旧 `cover` 两侧合计裁图宽 38%~65%"（竖版 3:4 图宽 390pt vs 帧宽 241.8pt → 可见 62%）。
+> 合起来能解释"被挤/被盖"的观感，但 80% 这个数字找不到对应的代码路径。
+
+### 30.4 模块四：地名**绝不回退坐标** + 双通道反查 + 日期不被截断
+
+**① 不读 `GPSLatitudeRef` / `GPSLongitudeRef` —— 补读才是 bug。**
+`node_modules/expo-image-picker/ios/ImageUtils.swift:317-333` 的 `readExifFrom(imageMetadata:)`
+把 `kCGImagePropertyGPSDictionary` 里的**每一个键加 `GPS` 前缀拍平进 EXIF 顶层**，
+取值来自 CoreLocation，**已经是折过符号的十进制度数**。对已带符号的值再按 `Ref === 'S'` 取负
+= 南半球 / 西半球**坐标翻面**（悉尼变北纬东经）。探针实测：巴黎 `48.8566` 原样、悉尼 `−33.8688`
+符号未丢、旧金山 `−122.4194` 符号未丢，越界 `91 → null`、只有纬度 `→ null` 也符合预期。
+**结论：维持现状**，并把这条证据链写进 `importPhoto.ts` 的 `readExifGps` 上方注释。
+
+**② 地名档绝不回退坐标。** `importPhoto.ts` 主循环改成三档语义：
+
+```ts
+const mode: LocationMode = options.locationMode ?? 'place';
+const wantsPlace = mode === 'place';
+const geocoded = gps !== null && wantsPlace ? await resolvePlaceFromExifGps(gps) : null;
+const place = geocoded ?? (gps !== null && mode === 'coords' ? toResolvedPlace(gps) : null);
+```
+
+老写法 `geocoded ?? (gps === null ? null : toResolvedPlace(gps))` 在地名档失败时**也印坐标**，
+正是要消掉的。`mode === 'coords'`（用户显式选坐标模式）那条路与 `coordsOnlyPlace`
+**一字未动**。地名档反查无果时**左侧留空、不印胶卷编号** —— 因为 `FilmCompositor.tsx:179`
+本来就有 `codeText = placeText.length === 0 ? formatExposureCode(...) : ''`：
+地名空时左边**自动**变成胶卷编号，不需要在 `locationStamp` 里再造一份（那样会抢同一格）。
+
+**③ 双通道反查（BigDataCloud 兜底）。** `Location.reverseGeocodeAsync` 失败 / 超时 / 返回空城市时，
+用 `fetch` 打 `https://api.bigdatacloud.net/data/reverse-geocode-client`：
+- `AbortController` + `fetchWithAbortTimeout(url, ms)`，**绝不抛**，失败只 `console.warn` 留痕。
+- 提取顺序 `countryName` → `principalSubdivision` → `city`（`city` 缺失才退 `locality`）。
+  **刻意不读 `localityInfo.administrative[]`** —— 实测香港那次回 7 条，会带出
+  「香港特别行政区」这种越级名字。
+- 格式化**完全复用** `resolvePlaceFromGeocode` + `formatResolvedPlace`，港澳台前置规则自动生效，
+  没有第二套格式化。
+- 复用 v1.5.1 那套常量（`GEOCODE_ATTEMPT_TIMEOUT_MS = 5000` / `GEOCODE_MAX_ATTEMPTS = 2` /
+  `GEOCODE_TOTAL_BUDGET_MS = 10000`），**新增唯一一个** `GEOCODE_NETWORK_TIMEOUT_MS = 4000`。
+  **最坏等待 = 10s + 4s = 14s**（网络通道不重试），写进了注释。
+- 新增 `resolvePlaceFromCoords(coords, locale?, uiLocale?)` 作为**唯一入口**，
+  返回 `{status:'ok', address, place, channel:'native'|'network'}` 或 `{status:'failed', reason, ...}`；
+  `locationStamp.ts` 与 `importPhoto.ts` 共用它。
+
+**④ 日期掉字的真因是"零余量"，不是"和地名拼在一行"。**
+转述报告说的因果链是错的。逐条否掉全部候选：
+1. **`dateStampWidth()` 低估字宽 —— 否。** PIL 读 `C:\Windows\Fonts\courbd.ttf`
+   （iOS `CourierNewPS-BoldMT` 同族）实测 advance **精确 0.6000 em**，
+   `MONO_ADVANCE_RATIO = 0.6` 本来就准。
+2. **v1.5.1 抬字号（8→11pt）导致预留不够 —— 否。** 容器宽度与字号是同一条线性函数（同一个 `dateFont`），同比缩放。
+3. **`region` 宽度不够 —— 否。** 490 组（5 舞台 × 7 相框 × 2 档）**全部** `reserved > measured`。
+4. **日期块与地名槽相交 —— 否。** 35 组相交 **0**，两者之间恒为一条 `SPLIT_GUTTER`（12pt）。
+5. **split 里日期会跟着 `frame.watermark.align` 贴左 —— 否。** `geometry.ts:1170` 无条件右贴。
+
+**唯一真实存在的风险 = 容器宽度与文字 advance 恰好相等、余量 0**：
+模型 = 真字体 = 94.60pt，多出的 2pt 只来自"RN 是否给最后一个字形也加字距"这条**未写进文档的假设**；
+iOS CoreText 逐字形取整，11 个字形各差零点几 pt 累起来就超容器 → `numberOfLines={1}` 给省略号。
+**修法（最小）**：新增 `export const DATE_GLYPH_SLACK = 0.5`，`dateStampWidth()` 末尾 `+ DATE_GLYPH_SLACK`
+（每个字形留 0.5pt，11 字形 = 5.5pt ≈ 5.8% 确定余量，**只在日期这一处**）；
+`DateStamp.tsx` 容器改成 `{ width: quartz.width, maxWidth: quartz.width }` 两者同值钉死。
+`adjustsFontSizeToFit` / `minimumFontScale={0.9}` 保留为兜底，但注释改成"不是宽度来源"。
+
+**⑤ 顺带修掉的真 bug**：`placeNames.ts` 的 `compactPlace` 原来**无条件**
+`return { ...place, region: '' }`。对"`region` 与 `city` 同名"的港澳形状会清空 region →
+`full` 档少掉「香港」半截、再给空城市补「市」→ **`中国市` 这种缺字串**（`archive` 档看不出来）。
+修法是把 `distinctRegion` 的判据抽成共享定义，`region` 为空时原样返回。验证：香港精简前后
+`archive` = `中国 · 香港`、`full` = `中国香港特别行政区` **逐字不变**。
+
+**⑥ 超长地名自动精简（用户要求）已接进渲染链。** `geometry.ts` 抽出
+`splitPlaceAvailableWidth(regionWidth, quartzWidth, gutter)` —— 它和 `computeWatermarkPlan` 的
+`split` 分支**是同一行算术**（`geometry.ts:1152` 自己就调它），所以"算出来的可用宽"与
+"画出来的可用宽"永远是同一个数。`FilmCompositor.tsx` 的 `planWatermark` 里做**两趟排**：
+
+```
+第一趟：按完整地名 computeWatermarkPlan
+  → 从 plan.region.width 与日期行的 quartz.width 算出地名可用宽
+  → shouldCompactPlaceText(地名, 字号, 字距, 可用宽) 为真才精简
+第二趟：用 compactPlace(地名) 重排一次（只排一次，不迭代）
+```
+
+精简形仍走 `formatResolvedPlace`，所以港澳台规则 / 多语言 / 详细度档全部自动继承。
+**不做"截断 + 省略号"**：`上海市 · 黄浦…` 比 `中国 · 上海` 更没用。
+
+### 30.5 三条「转述报告说错了」的更正（如实记）
+
+| 转述报告的说法 | 核实结果 |
+| --- | --- |
+| `isOverlapBleed` 逻辑要删 | **这个标识符在仓库里不存在**（`git grep` 零命中）；机制真存在，已删干净 |
+| "地名与日期拼在同一个字符串里单行渲染导致日期被截断" | **因果链错**。`split`（左地名右日期）本来就是默认版式；真因是**日期容器零余量** |
+| "EXIF GPS 要按 `GPSLatitudeRef === 'S'` 处理正负号" | **照做反而会出 bug**。`expo-image-picker` 给的值已带符号，补读 Ref = 双重取负 → 南半球翻面 |
+| "后一张盖住前一张约 80% 画面" | **复现不出来**。最大叠合 ≤ 帧宽 16.7%；旧 `cover` 两侧合计裁图宽 38%~65% |
+| 历史注释里的 `中国香港市` | **该字面量在仓库里从未存在过**（`git grep` exit 1）。香港 `full` 档自 v1.5.0 起恒为 `中国香港特别行政区` |
+
+### 30.6 没有照做 / 办不到 / 留作后续
+
+1. **没有真机验证**（最大缺口）。本机是 Windows、无 iOS 运行时；`tsc` 只证类型，
+   `expo export` 只证能打包，**两者都不证视觉与触摸**。所有手势（160ms / 5px / 350ms / 磁吸手感）、
+   触感频度、玻璃观感、变焦是否闪黑、VoiceOver 四条通道**一次都没在设备上跑过**。
+2. **缺一个 i18n 键**：`camera.bar.scrub.hint`（"长按滑动调整，轻点归零"）。
+   现在**完全没有**这层提示 —— 上一位作者选择"宁可空着也不传旧版那句错的"
+   （`camera.bar.ev.hint` 原值"上下滑动调整曝光"是旧版竖直拖的说法，与本轮"长按展开后横向滑"
+   不是一回事）。另建议修订 `camera.bar.focal.a11y`（现值"焦段 {label}，轻点切换"在长按可搓之后语义不完整）。
+   **这两个键本轮没加**（要动 5 个语言包 + 一个渲染位）。
+3. **曝光读数口径不一致**：胶囊按用户规格走 **0.1 步进**（`+0.4`），
+   而 `FocusExposure.formatExposure` 会把同一个值**量化到 1/3 EV** 显示（`+0.3`）。
+   同一份 `exposure` state，两个控件读数会差一档。判断是胶囊更接近真值
+   （原生 `setExposureTargetBias` 收连续量），**没有统一**。
+4. **§29.4 那条观感回归仍然没修**：`full`（完整）档 POI 名会被 `ensureAdminSuffix` 粘行政区后缀
+   （`日本熊本県省熊本空港市`）。默认 `archive` 档不受影响。
+5. **`contain` 的黑边**（见 30.3 的 ⚠️）与**横版变体仍然不可达**（见 30.2）都是有意保留的状态。
+6. **没有自动化回归测试**：`devDependencies` 只有 `typescript` / `babel-preset-expo` / `patch-package`，
+   按"不新增依赖"的约束没有引入测试框架，所以那些探针断言**未来不会被重跑**。
+
+### 30.7 这一版验证到什么程度
+
+| 项目 | 命令 / 方式 | 结果 |
+| --- | --- | --- |
+| 类型 | `npm run typecheck` | **exit 0** |
+| 打包 | `npx expo export --platform ios --no-bytecode` | **exit 0**，bundle `index-c661d9ba51706c9677431d379015219d.js`（1.3MB） |
+| 模块二 | 21 组（7 相框 × 竖/横/正方）真函数探针 | **326 项断言全绿**，取到横版 PNG 的组数 **= 0**（期望 0）；含反向守卫与 `stage=0x0` / `photo=-5x-5` 边界 |
+| 模块三 | 40 项断言（含空数组、极矮屏、窄屏、横版、`height=0`、帧号 `A` 后缀必须消失、海报宽度不溢出） | **ALL PASS**；`contentWidth` 新旧同为 4366.6、海报溢出 0.00pt |
+| 模块四 | 2660 项断言（42 条地名 × 语言/档位、红线逐字基线 + 20 条守护、地名档零 LAT/LON、EXIF 符号保真、BigDataCloud 5 结局、490 组 split 宽度） | **2660 通过 / 0 失败** |
+| 红线 | 港澳台中文简繁基线 | `中国 · 香港`、`中国 · 台湾 · 台北`、`中国台湾省台北市`、`中國 · 台灣 · 台北` **逐字一致** |
+
+**真机未验证清单**（要盖章就得在设备上过一遍）：
+胶囊长按展开与不抬手续滑 · 三颗胶囊的磁吸手感与触感频度 · 展开态 86%×48 玻璃的观感与
+`alignSelf:'stretch'` 下 `86%` 的实际解析值 · 13↔26 换镜头时 `CameraView` 是否闪黑 ·
+相纸是否真的永远正向直立、宽下巴回到正底部 · 日期是否真的不再出省略号 ·
+长卷单格是否真的完整居中不叠合 · 地名档在真实无网/弱网下是否 14s 内必有结论。
 
 ---
 

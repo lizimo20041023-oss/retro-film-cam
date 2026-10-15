@@ -27,10 +27,27 @@
  * 曾经的 bug 就是日期行的宽度由 `<Text>` 排版排出来、被 `flexShrink` 压成 `26 10...`；
  * 现在的宽度是 `dateStampWidth()` 算出来的确定值，谁也压不动。
  *
+ * ── 为什么容器宽度现在是"实测字形宽 + 一点余量"（v1.5.1 修）──────────────────
+ * 本轮专门量过真字体：`C:\Windows\Fonts\courbd.ttf`（= iOS `CourierNewPS-BoldMT`
+ * 的同族 Courier New Bold）里 `'` / 数字 / 空格 / `A` / `M` 的 advance **全部是
+ * 600/1000 em = 0.6000 em**，`'26  10  12` 合计 6.6000 em —— 也就是说
+ * `dateStampWidth()` 用的 0.6 **本来就是准的**，"模型低估了字宽"这个诊断不成立。
+ *
+ * 但"算得准"恰好意味着**余量为零**：容器宽度与文字 advance 精确相等，剩下能救命的
+ * 只有"RN 会不会给最后一个字形也加字距"这一条未写进文档的假设。而 iOS 的 CoreText
+ * 是**逐字形取整**的，11 个字形各差零点几个 pt 累起来就可能超过容器，
+ * 于是 `numberOfLines={1}` 给出省略号 —— 用户看到的就是"日期掉字"。
+ *
+ * 所以排版层（`geometry.ts` 的 `DATE_GLYPH_SLACK`）给每个字形留了 0.5pt 的确定余量
+ * （11 个字形 = 5.5pt，约 5.8%），渲染层在这里**再多钉一道** `maxWidth`：
+ * 容器既不会小于它该有的宽度（`width` 固定），也不会大于文本真正能画的范围
+ * （`maxWidth` 等于同一个数），宽度再也不是"排出来的"，而是"发下来的"。
+ *
  * ── 为什么还要 `adjustsFontSizeToFit` ──────────────────────────────────────
- * 宽度算得再准，也是"按 0.6 em 等宽"算出来的**预期**值；万一系统对某个字符的 advance
- * 有出入，`numberOfLines={1}` 会给出省略号 —— 成片上出现一个 `…` 就是废片。
- * 让它缩一点（下限 0.9）比给省略号安全得多，而正常情况下这条分支永远不触发。
+ * 现在这条分支比上面的余量**更**不可能触发，但留着它是刻意的：
+ * 万一某个字形的真实 advance 比实测值大（换字体族、iOS 版本改了度量），
+ * 缩到 0.9 倍仍然比在成片上出现一个 `…` 好得多。**它只是兜底，不是宽度来源**——
+ * 宽度来源永远是 `quartz.width`（见上一条契约）。
  */
 import { memo } from 'react';
 import type { ReactElement } from 'react';
@@ -51,7 +68,12 @@ const LINE_HEIGHT_RATIO = 1.16;
 
 function DateStampImpl({ quartz, color, fontFamily }: DateStampProps): ReactElement {
   return (
-    <View style={[styles.root, { width: quartz.width }]}>
+    /*
+     * `width` 与 `maxWidth` 用**同一个数**：`width` 保证它不会被父级的 flex 分配压小，
+     * `maxWidth` 保证它也不会被"文字想要更宽"撑开（撑开就会盖住左边的地名）。
+     * 两个一起写 = 这一块的宽度完全由排版层决定，和渲染层的排版结果无关。
+     */
+    <View style={[styles.root, { width: quartz.width, maxWidth: quartz.width }]}>
       <Text
         allowFontScaling={false}
         numberOfLines={1}

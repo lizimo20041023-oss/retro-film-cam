@@ -59,7 +59,16 @@ import { usePinchZoom } from '../hooks/usePinchZoom';
 import { useSettings } from '../hooks/useSettings';
 import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex, wrapIndex } from '../constants/frames';
 import { applyGrainLevel, findGrainLevelIndex, grainLevelAt } from '../constants/grain';
-import { ASSUMED_LENS_NATIVE_MM, ZOOM_STOPS, resolveStop, zoomToFactor } from '../constants/lenses';
+import {
+  ASSUMED_LENS_NATIVE_MM,
+  ZOOM_STOPS,
+  factorToZoom,
+  pickDefaultLens,
+  pickTelephotoLens,
+  pickUltraWideLens,
+  resolveStop,
+  zoomToFactor,
+} from '../constants/lenses';
 import { DEFAULT_PRESET_ID, PRESETS, findPresetIndex, resolvePreset } from '../constants/presets';
 import { UI_MONO, useTheme } from '../constants/theme';
 import { DEFAULT_ZOOM, ZOOM_MAX, toCameraZoom } from '../constants/zoom';
@@ -78,16 +87,16 @@ import { FrameBadge } from './FrameBadge';
 import { FrameSwitcher } from './FrameSwitcher';
 import { GalleryScreen } from './GalleryScreen';
 import { GLASS_TEXT_COLOR, LiquidGlassView } from './LiquidGlassView';
+import { ParameterScrubBar, focalStopIndex } from './ParameterScrubBar';
 import { PermissionNotice } from './PermissionNotice';
 import { SettingsScreen } from './SettingsScreen';
 import { ShutterButton } from './ShutterButton';
 import { ToolRow } from './ToolRow';
-import { ViewfinderBar } from './ViewfinderBar';
 import { ViewfinderWindow } from './ViewfinderWindow';
 import type { FocusTarget } from './FocusReticle';
 import type { TimerSeconds } from './ToolRow';
 import type { ThemeInk } from '../constants/theme';
-import type { ZoomStop } from '../constants/lenses';
+import type { ZoomLensRole, ZoomStop } from '../constants/lenses';
 import type { CapturedPhoto, DevelopStatus, Rect, Size } from '../types';
 
 /** 画幅参考线四周留白：贴着屏幕边看不出画幅比，留一点才像取景框 */
@@ -300,12 +309,36 @@ export function CameraScreen() {
   /** 直接就是 `CameraView` 的 zoom 值（0~1 归一化），捏合与档位都往这里写 */
   const [zoom, setZoom] = useState<number>(DEFAULT_ZOOM);
   const [stopIndex, setStopIndex] = useState(DEFAULT_STOP_INDEX);
+  /**
+   * 刻度尺搓出来的**连续**焦段（读数 + 当前真正挂着的那支镜头）。
+   *
+   * 为什么另开一份 state，而不是只把 `stopIndex` 对齐到最近的档：`stopIndex` 是"档位"
+   * （五个固定值），而搓出来的读数是**连续**的；13~26mm 那一段尤其致命 —— 读数是 20mm
+   * （超广角数字变焦）时它最近的档是 `wide10`（`stop.lens === 'wide'`），于是拿档位反推
+   * 读数会算出 `26mm × 1.54 = 40mm`，胶囊上直接显示一个用户从没拧到过的数字。
+   * 所以"读数/镜头"由这里说了算，"档位"只负责给短按循环定位。
+   * 五个固定档被点选（`applyStop`）、捏合（`handleZoomChange`）、换前后摄
+   * （`handleFlipCamera`）时都要清回 `null`，让那三条路各自的口径重新生效。
+   */
+  const [scrubFocal, setScrubFocal] = useState<{ readonly mm: number; readonly role: ZoomLensRole } | null>(null);
   const [lenses, setLenses] = useState<readonly string[]>([]);
   const [lens, setLens] = useState<string | undefined>(undefined);
   const [exposureCount, setExposureCount] = useState(0);
   const [focusTarget, setFocusTarget] = useState<FocusTarget>(null);
   const [focusSeen, setFocusSeen] = useState(false);
   const [exposure, setExposure] = useState(0);
+  /**
+   * 色温刻度尺拧出来的**临时**色温覆盖（−1 ~ +1）。
+   *
+   * 为什么要单独一份 state 而不是直接改 `preset`：预设是"这卷胶片的本色"，是数据；
+   * 手感旋钮只是**这一轮取景**的临时倾向，改数据会让"换卷"失去意义（用户下次进来
+   * 发现胶卷默认值被自己上次拧歪了）。所以覆盖只活在本次会话里，且：
+   *   · `null` = 没有覆盖，用胶卷自带的色温；
+   *   · `0` = **合法的覆盖值**（中性），不等于"没覆盖" —— 不能拿 0 当"空"用，
+   *     否则用户把色温拧到 0 会被理解成"恢复胶卷默认"，读数当场跳回 +0.28；
+   *   · 换卷（`handleFilmDrawerSelect`）时清回 `null`，这是唯一的"复位"入口。
+   */
+  const [temperatureOverride, setTemperatureOverride] = useState<number | null>(null);
   const [timerSeconds, setTimerSeconds] = useState<TimerSeconds>(0);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [doubleExposure, setDoubleExposure] = useState(false);
@@ -364,7 +397,28 @@ export function CameraScreen() {
   const preset = PRESETS[presetIndex] ?? PRESETS[0];
   const grainLevel = grainLevelAt(findGrainLevelIndex(settings.grainLevel));
   const effectivePreset = useMemo(() => applyGrainLevel(preset, grainLevel.scale), [preset, grainLevel.scale]);
-  const resolved = useMemo(() => resolvePreset(effectivePreset), [effectivePreset]);
+  /**
+   * 真正拿去冲印/导入的预设 = 胶卷本色 + 刻度尺拧出来的临时色温覆盖。
+   *
+   * 为什么新加一层而不是就地改 `effectivePreset`：`applyGrainLevel`（设置项）与
+   * "用户拧色温"（手势）是两条互不相干的链路，各占一层，谁也不会把对方抹掉，
+   * 将来再加"临时对比度"之类的旋钮也是同一个插槽。`color` 必须**整块展开复制**：
+   * `preset.color` 是 `PRESETS` 里的共享对象，就地改会污染常量表（下次启动还是被改过的值）。
+   *
+   * 只有成片链路读它（快门 3 处 + 导入 1 处）。取景器的实时预览不跑 `buildGradeLayers`，
+   * 所以覆盖是"按下快门才生效"，不会把预览画面染色 —— 这同时也意味着覆盖值**不必**
+   * 每帧进 state 才算对，25ms 节流上报的那一版就是最终版本。
+   */
+  const gradedPreset = useMemo(() => {
+    if (temperatureOverride === null) {
+      return effectivePreset;
+    }
+    return {
+      ...effectivePreset,
+      color: { ...effectivePreset.color, temperature: temperatureOverride },
+    };
+  }, [effectivePreset, temperatureOverride]);
+  const resolved = useMemo(() => resolvePreset(gradedPreset), [gradedPreset]);
   const frameName = frame.nameKey !== undefined ? t(frame.nameKey) : frame.name;
   const developing = status.kind === 'developing';
   const cameraGranted = cameraPermission?.granted === true;
@@ -372,8 +426,29 @@ export function CameraScreen() {
   const lensesKnown = lenses.length > 0;
   const stop: ZoomStop = ZOOM_STOPS[stopIndex] ?? ZOOM_STOPS[DEFAULT_STOP_INDEX];
   // 焦段读数按"这颗镜头的原生等效焦距 × 当前变焦倍数"算：JS 读不到真实焦距，
-  // 用的是 `ASSUMED_LENS_NATIVE_MM` 里的假定值，捏合变焦时它也跟着连续变
-  const focalMm = Math.round(ASSUMED_LENS_NATIVE_MM[stop.lens] * zoomToFactor(zoom));
+  // 用的是 `ASSUMED_LENS_NATIVE_MM` 里的假定值，捏合变焦时它也跟着连续变。
+  // 刻度尺搓过之后（`scrubFocal`）由搓出来的读数直接说了算 —— 理由见那份 state 的注释
+  const focalMm = scrubFocal?.mm ?? Math.round(ASSUMED_LENS_NATIVE_MM[stop.lens] * zoomToFactor(zoom));
+  /** 当前**实际**挂着的镜头：优先信搓动记录，其次信档位。它同时是刻度尺的死区记忆初值。 */
+  const focalRole: ZoomLensRole = scrubFocal?.role ?? stop.lens;
+  /**
+   * 刻度尺焦段轴的低端：这台机器**当前这一面**够不够得到超广角。
+   *
+   * 判据直接从 `ZOOM_STOPS` 里那支 0.5× 档问 `resolveStop`，不自己调 `pickUltraWideLens`
+   * 再判空：档位可不可用是 `lenses.ts` 早就定好的口径（挑不出镜头就 `available: false`，
+   * 且**刻意不退化**成默认镜头），照抄一份只会在将来改规则时对不上。
+   * `!lensesKnown` 时按"够得到"放行，与 `handleCycleFocal` 的 `!lensesKnown || ...` 同一约定：
+   * 镜头列表还没回来就先别把用户的手限制住。
+   *
+   * 为什么需要这个数：没有超广角时相机的 `zoom` 不可能小于 1，主摄最小就是 26mm，
+   * 于是焦段尺必须在 26mm 处**硬停**——若还留着 13mm 那一段，用户会拖出一整段
+   * 读数在变、画面不动的死区。
+   */
+  const ultraWideStop = ZOOM_STOPS.find((candidate) => candidate.lens === 'ultraWide');
+  const focalMinMm =
+    ultraWideStop === undefined || !lensesKnown || resolveStop(ultraWideStop, { lenses, facing }).available
+      ? ASSUMED_LENS_NATIVE_MM.ultraWide
+      : ASSUMED_LENS_NATIVE_MM.wide;
 
   /**
    * 对焦点与曝光补偿一起下发给原生。EV 归零时故意省略 `exposureBias` 键：
@@ -545,6 +620,8 @@ export function CameraScreen() {
     setFocusTarget(null);
     setExposureCount(0);
     setStopIndex(DEFAULT_STOP_INDEX);
+    // 换镜头等于换了一支光学系统，搓出来的读数一律作废
+    setScrubFocal(null);
   }, []);
 
   const handleZoomChange = useCallback(
@@ -563,17 +640,23 @@ export function CameraScreen() {
        * - 不直接无视这次捏合：那会让五档里有两档的手势像坏了一样；
        * - 不调 `applyStop()`：它会把 `zoom` 归零，而 `usePinchZoom` 的基准是
        *   捏合开始那一刻的 `zoom`，中途归零会让接下来的每一帧都跳一下。
+       *
+       * 判据用 `focalRole`（实际挂着的镜头）而不是 `stop.lens`：刻度尺搓到 20mm 时档位
+       * 已经被对齐到 `wide10`，但物理上留在超广角上 —— 那时捏合如果信档位，就会拿主摄的
+       * 变焦底数去算超广角的画面。
        */
-      if (stop.lens !== 'wide') {
+      if (focalRole !== 'wide') {
         const wideStop = ZOOM_STOPS[DEFAULT_STOP_INDEX];
         if (wideStop !== undefined) {
           setStopIndex(DEFAULT_STOP_INDEX);
           setLens(resolveStop(wideStop, { lenses, facing }).lens);
         }
       }
+      // 捏合也是"另一种改焦段的方式"，读数从此由 `zoom` 说了算
+      setScrubFocal(null);
       setZoom(quantized);
     },
-    [facing, lenses, stop.lens],
+    [facing, focalRole, lenses],
   );
 
   // 捏合与档位共用同一个 `zoom`：两条路都只改这一个值，切档时不会把捏合的结果丢掉
@@ -594,6 +677,8 @@ export function CameraScreen() {
       setStopIndex(index);
       setLens(resolution.lens);
       setZoom(resolution.zoom);
+      // 档位是"离散的权威"：点了档，搓出来的读数就该让位给档位
+      setScrubFocal(null);
       // 推拉只作用在画面容器上：参考线和对焦层跟着缩的话，等于告诉用户"画幅变了"
       lensScale.setValue(LENS_PUSH_SCALE);
       Animated.spring(lensScale, {
@@ -630,6 +715,52 @@ export function CameraScreen() {
   const handleExposureChange = useCallback((next: number) => {
     setExposure(next);
   }, []);
+
+  /**
+   * 色温刻度尺改值。25ms 一次的写入点就在这里（见 `ParameterScrubBar` 的
+   * `EMIT_INTERVAL_MS`）—— 它是本项目唯一一条"手势直接写顶层 state"的路径，
+   * 所以刻意做得极薄：只 `setState`，不碰相机、不做换算。
+   */
+  const handleTemperatureChange = useCallback((next: number) => {
+    setTemperatureOverride(next);
+  }, []);
+
+  /**
+   * 焦段刻度尺改值：把"读数 + 镜头 + 真实倍率"落到相机上。
+   *
+   * 三件事必须**一起**做完，不能拆成两次 `setState` 分给别处：镜头与倍率是两个独立的
+   * `CameraView` prop，中间任何一帧的错配都会让原生侧真的按错组合去配会话（画面闪黑）。
+   * React 18 会把同一事件里的多次 `setState` 合并成一次提交，所以这里三个 setter 是安全的。
+   *
+   * 为什么不复用 `applyStop()`：那个函数是给"点档位跳转"用的，它会按 `ZOOM_STOPS` 里的
+   * 固定 `zoom` 取值（每个磁吸档一个数），而搓动给出的是**连续**倍率；而且它还会触发
+   * `lensScale` 弹一下——那是"换档"的动效，搓动时每帧弹一次会变成抖。所以这里直接写
+   * `zoom`，只把 `stopIndex` 对齐到最近的标准位（让焦段胶囊的短按循环能从搓到的位置接着走）。
+   *
+   * 用 `factorToZoom()` 而不是自己写 `log16`：那是 `lenses.ts` 里唯一的换算口径，
+   * 与 `ZOOM_STOPS`/捏合变焦共用，保证"搓到 52mm"和"点 2× 档"落在同一个 `zoom` 上。
+   */
+  const handleFocalScrub = useCallback(
+    (nextFocalMm: number, role: ZoomLensRole, factor: number) => {
+      if (role === 'ultraWide' && lensesKnown && pickUltraWideLens(lenses) === null) {
+        // 这台机器没有超广角（SE / 模拟器 / 前摄）：读数已经被上层钳在 26mm 以上，
+        // 这里再兜一次底，避免把 `selectedLens` 清成 undefined 导致原生换成默认镜头
+        return;
+      }
+      setLens(
+        role === 'ultraWide'
+          ? pickUltraWideLens(lenses) ?? undefined
+          : role === 'telephoto'
+            ? pickTelephotoLens(lenses) ?? undefined
+            : pickDefaultLens(lenses) ?? undefined,
+      );
+      setZoom(factorToZoom(factor));
+      setStopIndex(focalStopIndex(nextFocalMm));
+      // 读数以搓出来的连续值为准（而不是拿档位反推），理由见 `scrubFocal` 的注释
+      setScrubFocal({ mm: nextFocalMm, role });
+    },
+    [lenses, lensesKnown],
+  );
 
   const handleFocusIdle = useCallback(() => {
     // 对焦框和滑块由 FocusExposure 自己淡出，淡完才回来清状态，
@@ -721,6 +852,15 @@ export function CameraScreen() {
   const handleFilmDrawerSelect = useCallback((presetId: string) => {
     void Haptics.selectionAsync();
     setPresetIndex(findPresetIndex(presetId));
+    /*
+     * 换卷 = 回到这卷自己的本色：把刻度尺拧出来的临时色温覆盖清掉。
+     *
+     * 为什么复位放在这儿而不是"再搓回原值就自动清"：色温的覆盖值可以是 0（中性），
+     * 而 0 和"没有覆盖"在读数和画面上都不同 —— 靠值本身回推"用户是不是想恢复"
+     * 永远会猜错。换卷是一个语义明确的动作，借它当复位入口既不占新手势，
+     * 也符合直觉：换了一卷，上一卷的临时调整跟着走。
+     */
+    setTemperatureOverride(null);
     setFilmDrawerVisible(false);
   }, []);
 
@@ -829,7 +969,7 @@ export function CameraScreen() {
         const result = await processAndSaveFilmPhoto({
           photo: first,
           frame,
-          preset: effectivePreset,
+          preset: gradedPreset,
           stage: stageBox,
           host: filmStage.host,
           place,
@@ -931,7 +1071,9 @@ export function CameraScreen() {
     halfFrameBuffer,
     filmStage.host,
     frame,
-    effectivePreset,
+    // 依赖写 `gradedPreset` 而不是 `effectivePreset`：色温覆盖一变，这个回调必须拿到
+    // 新的预设，否则"拧完色温立刻按快门"会冲印出上一版色温（回调被 useCallback 冻住）
+    gradedPreset,
     stageBox,
     locationStamp.resolveForShot,
     localeId,
@@ -1016,7 +1158,7 @@ export function CameraScreen() {
     const result = await importAndDevelop({
       host: filmStage.host,
       frame,
-      preset: effectivePreset,
+      preset: gradedPreset,
       stage: stageBox,
       locale: localeId,
       watermarkLayout: settings.watermarkLayout,
@@ -1045,7 +1187,8 @@ export function CameraScreen() {
     }
   }, [
     developing,
-    effectivePreset,
+    // 同快门那处：导入也要用"含临时色温覆盖"的那一版预设
+    gradedPreset,
     filmStage.host,
     frame,
     localeId,
@@ -1313,13 +1456,23 @@ export function CameraScreen() {
           style={[styles.barLayer, { bottom: consoleHeight + BAR_LAYER_GAP }]}
           pointerEvents="box-none"
         >
-          <ViewfinderBar
+          {/*
+            三颗胶囊**无条件渲染**：`ParameterScrubBar` → `ViewfinderBar` 里没有任何
+            "镜头列表为空就把变焦胶囊藏起来"的门控（本轮逐行核实过）。上一轮那份报告
+            把"胶囊看不见"归因于 `availableLenses` 为空 —— 那是**误诊**，真实原因未定
+            （本轮没有真机，无法复现）。所以这里不许补任何可用性门控：镜头列表回来之前
+            （`lenses` 为空）也该看得见胶囊，藏起来只会让同一个 bug 换个形式复发。
+          */}
+          <ParameterScrubBar
             temperature={resolved.color.temperature}
             focalMm={focalMm}
             exposure={exposure}
-            onPickFilm={handleOpenFilmDrawer}
-            onCycleFocal={handleCycleFocal}
+            focalRole={focalRole}
+            focalMinMm={focalMinMm}
+            onTemperature={handleTemperatureChange}
+            onFocal={handleFocalScrub}
             onExposure={handleExposureChange}
+            onCycleFocal={handleCycleFocal}
           />
         </View>
       </View>
