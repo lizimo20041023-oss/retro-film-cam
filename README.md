@@ -50,6 +50,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [26. v1.4.1：日期"乱码"与半格双联](#26-v141日期乱码与半格双联)
 - [27. v1.5.0：液态玻璃取景器 + 真光学变焦 + 导入反查地名](#27-v150液态玻璃取景器--真光学变焦--导入反查地名)
 - [28. v1.5.1：真机实测反馈的七条](#28-v151真机实测反馈的七条)
+- [29. 打包机换镜像这件事（v1.5.1 发布时踩出来的）](#29-打包机换镜像这件事v151-发布时踩出来的)
 
 ---
 
@@ -2656,6 +2657,96 @@ v1.5.0 把 `styles.preview` 从"占屏幕中间一块"改成了 `position: 'abso
 | 预热有没有真的命中同一条缓存 | `Image.prefetch` 的 `RCTImageCache` 与 `<Image>` 是否同一个 key、写内存还是只写盘，都无法在本机确认 |
 | 垫底缩略图会不会让"成片盖上来"闪一下清晰 | 400px 的 JPEG 放大版与 2048px 成片的锐度差，在纯黑底上可能被放大成一次跳变 |
 | 水印 11pt 在大画幅上会不会顶到边界 | 探针只验证了"七款相框 × 三种版式都算得出 86pt 宽"，没有跑真实合成 |
+
+### 29. 打包机换镜像这件事（v1.5.1 发布时踩出来的）
+
+#### 29.1 经过
+
+| 次序 | 镜像 | 结果 |
+| --- | --- | --- |
+| 1 | `macos-latest`（= macOS 26 **arm64**） | 连续 **3 次**排队满 15 分钟被 GitHub 取消，每次 `steps=0`，一步都没跑 |
+| 2 | `macos-15-intel`（macOS 15 x64） | 机器**秒分配**，前 7 步全过（`npm ci` / `prebuild` / `pod install` 都成功），第 8 步 `xcodebuild` **退出码 65** |
+| 3 | **`macos-26-intel`**（macOS 26 x64） | ✅ 一次通过，产出 `FretroCam-unsigned.ipa` |
+
+第 1 次的两条标注原文：
+
+```
+[failure] The job was not acquired by Runner of type hosted even after multiple attempts
+[notice]  Due to capacity constraints, jobs targeting macOS arm64 runners may experience longer queue times.
+```
+
+**排队没排上机器不消耗 Actions 额度**，但也产不出 ipa。用 `POST /actions/runs/{id}/rerun` 重跑同一
+次 run（不改 commit、不新开 run）连续三轮同样被取消 —— 纯粹是 arm64 池没机器，与代码无关。
+
+#### 29.2 第 2 次为什么编译不过（这条最值得记）
+
+失败的不是我们的代码，是一个 CocoaPods 脚本阶段：
+
+```
+** BUILD FAILED **
+The following build commands failed:
+	PhaseScriptExecution [CP-User]\ Build\ ExpoModulesJSI\ xcframework
+	  (in target 'ExpoModulesJSI' from project 'Pods')
+	Building workspace FretroCam with scheme FretroCam and configuration Release
+(2 failures)
+```
+
+那个脚本内部又嵌套调用了 `xcodebuild`，后者报的是：
+
+```
+xcodebuild: error: Could not resolve package dependencies:
+```
+
+**根因是镜像自带的 Xcode 版本，不是 CPU 架构。** 本工作流**刻意不 pin Xcode**，所以「换镜像 =
+换工具链」：
+
+| 镜像 | 自带 Xcode |
+| --- | --- |
+| `macos-15-intel` | `/Applications/Xcode_16.4.app` ← 太旧 |
+| `macos-latest` / `macos-26-intel` | `Xcode_26.6.app` ✅ |
+
+RN 0.86 / Expo SDK 57 的 `ExpoModulesJSI` xcframework 构建需要 Xcode 26 那一代的 SPM 工具链，
+在 16.4 上会以「包依赖解析不了」这种**完全看不出真因**的方式失败。
+
+**规矩**：以后改 `runs-on` 时，**macOS 大版本必须跟着一起保**（要 Xcode 26 就得选 macOS 26 的
+标签）。宿主机是 Intel 还是 arm64 不影响未签名 ipa 的内容 —— 我们只做 `prebuild` + `xcodebuild`。
+
+标签事实（`actions/runner-images` 的 README）：macOS 26 x64 = `macos-26-intel` / `macos-26-large`；
+macOS 26 arm64 = `macos-latest` / `macos-26`；macOS 15 x64 = `macos-15-intel`。
+只有带 `-large` / `-xlarge` 后缀的才是**计费的** larger runner，别改过去。
+
+#### 29.3 v1.5.1 的产物
+
+| 项 | 值 |
+| --- | --- |
+| 提交 | `eca224c4f5c17feabcdea3f846acb4a351592baa` |
+| CI run | `38753851213`（job `116486964319`，`macos-26-intel`，全绿） |
+| 工件 id | `11982897979`（`10864665` B 的 zip，内含 `FretroCam-unsigned.ipa`） |
+| Release | `v1.5.1`，release id `413941631`，asset id `644208984` |
+| ipa | `FretroCam-v1.5.1-unsigned.ipa`，**10,977,887 B** |
+| sha256 | `e83cc6e5a0c62c5dcfe36fd9c566329634cc57f33f5e44f5e5be3b17057116a8` |
+
+发布后回读 `Payload/FretroCam.app/main.jsbundle`（1,925,275 B）的字符串表：新增符号
+`reverseGeocodeWithRetry` / `describeGeocodeFailure` / `refreshSilently` / `warmImageCache` /
+`scheduleWarmImageCache` 各命中 1 次；`withGeocodeTimeout` / `IMPORT_GEOCODE_TIMEOUT_MS` /
+`SegmentDate` / `FocusBrackets` / `AspectGuide` / `expo-font` / `reanimated` /
+`POLAROID` / `INSTAX` / `KODAK` 全部 **0 次**；11 张相框 PNG 全部在包里。
+
+#### 29.4 已知但这一版**没修**的一处观感回归（如实记）
+
+v1.5.1 给 `placeNames.ts` 的降级链补了 `name`（POI 名）之后，在**「地名详细度 = 完整」**这一档
+会出现行政区后缀被粘到 POI 名后面的现象：
+
+```
+日本熊本県省熊本空港市      ← 「省」「市」都是 ensureAdminSuffix 无条件粘上去的
+Kumamoto Airport市
+1-1 Chome市
+```
+
+**默认档位（`archive` 简略）不受影响**，输出是 `日本 · 熊本県 · 熊本空港`，正确。
+修法是让 `ensureAdminSuffix` 对「非中日韩字符的名字」不粘后缀、或把「県」补进它的后缀表 ——
+本轮没做，因为 `fe72d69` 已经推送、CI 已在队列里，不想为一个非默认档位的观感问题多烧一次
+CI 额度（私有仓库每月约 2000 分钟，macOS 按 10 倍计费 ≈ 每月 200 分钟真实时间）。
 
 ---
 

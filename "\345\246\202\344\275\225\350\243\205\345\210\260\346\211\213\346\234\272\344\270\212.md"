@@ -1,0 +1,470 @@
+# 把 App 装到 iPhone 上（零基础全程版）
+
+> 目标：让「复古胶片相机」在 iPhone 桌面上有自己的图标，**出门不用带电脑**就能拍照。
+> 这条路 0 元，不需要苹果开发者账号（99 美元/年那个）。
+
+---
+
+## 0. 先花 2 分钟看清代价（重要！）
+
+| 项目 | 实际情况 |
+|---|---|
+| 💰 花多少钱 | **0 元** |
+| ⏱ 第一次要多久 | 大约 1.5～2 小时（绝大部分时间在等云端打包和下载） |
+| 🔁 有什么代价 | **签名每 7 天过期一次**。但续签在**手机上点一下**就行，**电脑不用开** |
+| 💻 电脑要一直开着吗 | **完全不用**。电脑只在第一次安装时用一次，之后再也不碰 |
+| 📷 会丢照片吗 | **不会**。照片存在系统相册里，跟 App 本身没关系，App 过期了照片也在 |
+| 🆚 跟现在的 Expo Go 有什么区别 | 独立图标、离线可用、不用开电脑跑 Metro；代价就是上面那条 7 天续签 |
+
+**为什么是 7 天？** iPhone 只认苹果认可的签名。免费 Apple ID 也能签，但苹果只给 7 天有效期——这是苹果的限制，不是本项目的限制。想变成 1 年，唯一的办法是买 99 美元/年的开发者账号。
+
+> ⚠️ 别去买淘宝/闲鱼的「企业签名 / 超级签名 / 代签 / 永久证书」服务。那些证书随时会被苹果吊销，而且装的是别人重签过的包，有夹带私货的风险。
+
+---
+
+## 整体流程（一共 3 大步）
+
+```
+【第 1 大步】代码上传到 GitHub
+    注册账号 → 装 GitHub Desktop → 点「Publish repository」
+                    ↓
+【第 2 大步】GitHub 免费借你一台 Mac 打包
+    网页点「Run workflow」→ 等 5~10 分钟 → 下载 .ipa
+                    ↓
+【第 3 大步】在手机上装好 SideStore，把 App 签进去
+    电脑装 iTunes + iloader → 插线装 SideStore → 手机上信任
+    → 把 .ipa 传进手机 → SideStore 安装
+```
+
+一次性做完之后，以后只需要**在手机上**每 7 天点一下续签。
+
+---
+
+# 第 1 大步：把代码传到 GitHub
+
+## 1.1 注册 GitHub 账号（已经有就跳过）
+
+1. 打开 https://github.com/signup
+2. 填邮箱 → 设密码 → 起用户名 → 邮箱收验证码
+3. 免费，不需要信用卡
+
+> 💡 **可以直接用 Google 账号登录**：在 https://github.com/login 页面点 **Continue with Google**，用你的 Google 账号一键登录/注册，不用另外记一个新密码。
+
+## 1.2 装 GitHub Desktop
+
+为什么不用网页上传？因为 GitHub 网页的「拖文件上传」会**跳过 `.github` 这种隐藏文件夹**，而我们的自动打包脚本正好藏在里面。用 GitHub Desktop 就完全没这个问题。
+
+1. 打开 https://desktop.github.com/ ，点 **Download for Windows**
+2. 双击安装（一路下一步就行）
+3. 打开 GitHub Desktop → 菜单 **File → Options → Accounts → Sign in**
+   - 用 Google 登录 GitHub 的话，这里选 **Sign in with your browser**，然后在浏览器里点 **Continue with Google** 即可
+
+## 1.3 把项目加进去
+
+1. 菜单 **File → Add local repository…**
+2. 点 **Choose…**，选择这个文件夹：
+
+   ```
+   C:\Users\lizim\Documents\deepseek-harness\default-workspace\retro-film-cam
+   ```
+
+   > 💡 如果提示 "not a Git repository"，说明选错了文件夹。要选到 `retro-film-cam` 这一层，**不要**选到里面的 `src` 或 `assets`。
+
+3. 点 **Add repository**
+
+## 1.4 发布到 GitHub
+
+1. 顶部会有一条蓝底横条，点右边的 **Publish repository**
+2. 弹窗里：
+   - **Name**：保持 `retro-film-cam` 就行
+   - **Description**：随便写，比如「我的复古胶片相机」
+   - ☑️ **Keep this code private**：
+     - **建议取消勾选（= 公开）** —— 公开仓库的自动构建**完全不限量、永远免费**
+     - 如果勾上（私有），每月的免费额度大约只够跑 **10 次左右**（GitHub 的 Mac 机器按 10 倍扣额度）
+     - 公开的话，你的**邮箱会出现在提交记录里**。介意就选私有，10 次也够用很久了
+3. 点 **Publish repository**，等进度条跑完
+
+**发布成功的瞬间，打包任务就已经自动开始在云端跑了。** 直接进入下一大步。
+
+---
+
+# 第 2 大步：让 GitHub 免费借你一台 Mac 打包
+
+你的电脑是 Windows，而打 iOS 的包**必须在 Mac 上做**（Expo 在 Windows 上会直接拒绝生成 iOS 工程）。GitHub 免费提供 Mac 机器，我们借它用。
+
+## 2.1 看构建进度
+
+1. 打开你的仓库网页：`https://github.com/你的用户名/retro-film-cam`
+2. 点顶部菜单的 **Actions**
+3. 左边列表点 **Build unsigned iOS IPA**
+4. 右边会看到一条正在跑的记录（黄色小圆点转圈），点进去
+
+> 如果看到黄色提示条 "Workflows aren't being run on this runner" 或 "…enable them"，点 **Enable** / **I understand my workflows, go ahead and enable them** 就行。
+
+## 2.2 等 15～30 分钟
+
+第一次构建要下载一大堆东西（Node、CocoaPods、依赖包），慢是正常的。列表里每一步前面：
+
+- 🟡 转圈 = 正在跑
+- ✅ 绿勾 = 成功
+- ❌ 红叉 = 失败 → 看下面「排错」一节
+
+## 2.3 下载 ipa
+
+全绿之后：
+
+1. 回到这次构建的页面，**滚到最底下**
+2. 找到 **Artifacts** 区域
+3. 点 **FretroCam-unsigned-ipa** 下载
+4. 会得到一个 `.zip`，**解压它**，里面就是 `FretroCam-unsigned.ipa`
+
+> `unsigned` = 「未签名」。这是故意的——签名这一步在你手机上用免费 Apple ID 现场做。
+
+**这个 zip 你可以选择在电脑上下载，也可以直接在手机上（Safari）下载**，第 3 大步的 3.8 会讲。
+
+### 更省事的办法：让脚本去下载
+
+在电脑上跑（不用开浏览器、不用手点）：
+
+```powershell
+cd retro-film-cam
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\fetch_ipa.ps1
+```
+
+它会自己找**最新一次成功的构建** → 下载 → 解压 → 把 `FretroCam-unsigned.ipa`
+放在仓库的上一级目录（也就是工作区根目录），最后打印文件大小和 sha256。
+也可以直接**双击** `scripts\fetch_ipa.cmd`。
+
+> 为什么需要脚本：artifact 的下载链接是要 GitHub 身份的（匿名访问直接 401）。
+> 脚本从 git 的凭据里取 token —— 和 `git push` 用的是同一份 —— 只放进请求头，不打印。
+>
+> 如果报 `is not digitally signed`，就是漏了 `-ExecutionPolicy Bypass`；
+> 如果报一堆 `Missing expression after ','` 之类的语法错，说明这个 `.ps1`
+> 的 UTF-8 BOM 被编辑器吃掉了（PowerShell 5.1 会按 GBK 解码中文注释）。
+
+---
+
+# 第 3 大步：把 App 签进 iPhone
+
+这一步用的是一个叫 **SideStore** 的工具。它和别的签名工具最大的区别是：
+
+> **装好之后，续签在手机自己完成 —— 电脑不用开机、不用插数据线、不用在同一个 Wi-Fi 下。**
+
+代价是第一次的步骤比「插线点一下」多几步。照着做就行。
+
+## 3.0 先看懂这套东西各自是干什么的
+
+| 名字 | 是什么 | 装在哪个设备 |
+|---|---|---|
+| **iTunes** | 让 Windows 能认出 iPhone 的驱动 | 💻 电脑 |
+| **iloader** | 免费开源的小工具，负责把 SideStore 第一次塞进手机 | 💻 电脑 |
+| **SideStore** | 装在你手机上的「App 商店」，负责签名、安装、**续签** | 📱 手机 |
+| **LocalDevVPN** | 让 SideStore 能在手机内部跟自己的服务通信（**不是翻墙软件，不连外网**） | 📱 手机 |
+
+以后你每次要装新 App 或者续签，用的都只有**手机上的 SideStore**。
+
+## 3.0.5 关于你的 iOS 27（先看这段）
+
+iOS 27 是很新的系统，侧载工具普遍还在适配中。**好消息是：iOS 27 上 SideStore 有了新能力 —— 配对可以在手机本地完成，理论上不再需要电脑。**
+
+所以顺序建议是这样：
+
+1. **先按 3.1 往下走（电脑 + iloader 路线）** —— 这是 SideStore 官方推荐的主路线，最稳。
+2. 如果卡在「iloader 看不到手机」或者「装完 SideStore 打不开」，再用**附录三**那条「完全不用电脑」的路。
+
+> ⚠️ 不管你走哪条路，**下面的 3.6（信任 + 开发者模式）和 3.7（LocalDevVPN）都是一样的，一步都不能少。**
+
+## 3.1 装 iTunes（💻 电脑）
+
+1. 打开 https://apple.co/ms —— 这是 iloader 官网给出的官方链接，会跳到微软商店
+2. 点「**获取**」安装（发布者必须显示是 **Apple Inc.**）
+3. 装完**重启一次电脑**
+
+> 如果那个短链接打不开：打开微软商店，搜索 `iTunes`，认准发布者 **Apple Inc.**。
+> 也可以顺带在微软商店装上「**Apple 设备**」这个 App，它提供同样的驱动。
+
+## 3.2 装 iloader（💻 电脑）
+
+1. 打开 https://iloader.app
+2. 找到 **Windows** 那一栏，下载 **MSI Installer**（直链：https://github.com/nab138/iloader/releases/latest/download/iloader-windows-x64.msi ）
+3. 双击安装
+
+> ⚠️ **iloader 只有两个官方发布地**：官网 https://iloader.app 和它的 GitHub https://github.com/nab138/iloader 。
+> 别从百度网盘、论坛附件、任何群里下载 —— 它会经手你的 Apple ID 密码，来源必须干净。
+
+## 3.3 装 LocalDevVPN（📱 手机）
+
+1. 在 iPhone 的 App Store 里搜 **LocalDevVPN**（直链：https://apps.apple.com/app/localdevvpn/id6755608044 ）
+2. 安装
+3. 打开它 → 弹「**Allow VPN Configurations**」→ 点 **Allow** → 输入手机锁屏密码
+4. **先不用点 Connect**，等下会用到
+
+> 它名字里带 VPN，但你不用管它是怎么工作的，它连的不是国外服务器，只是让手机内部几个服务能互相说话。
+
+## 3.4 用数据线连接手机（💻📱）
+
+1. 用**数据线**把 iPhone 插到电脑上（要能传数据的线，纯充电线不行）
+2. iPhone 会弹「**要信任此电脑吗？**」→ 点「**信任**」→ 输入手机锁屏密码
+3. **手机保持解锁状态**
+
+## 3.5 用 iloader 把 SideStore 装进手机（💻）
+
+1. 打开 **iloader**
+2. 用你的 **Apple 账户（Apple ID）** 登录
+   - 就是你在 iPhone 上登录的那个 Apple ID
+   - **密码大小写敏感**，注意别开大写锁定
+   - 开了双重认证的话，会让你输手机上弹出的 **6 位验证码**
+3. 在设备列表里选中你的 **iPhone**
+4. 选择「**Install SideStore (Stable)**」（装 SideStore 稳定版）
+5. 等进度条跑完
+
+> 💡 **你的 Apple ID 设备列表里会多出一台 Mac**，这是正常的。iloader 的工作原理是模拟一台 Mac 来跟苹果服务器要签名，官方文档里说明了这一点。这只是一个用于签名的虚拟身份，不是别人登录了你的账号。
+>
+> 💡 这里登录的 Apple 账户**不必和手机上登录的那个相同**（官方文档原话）。但为了省事，用同一个就行。
+
+## 3.6 手机上放行（📱，不做这步 SideStore 打不开！）
+
+1. 打开 iPhone「**设置**」→「**通用**」→ 滑到底 →「**VPN 与设备管理**」
+   （某些系统版本叫「描述文件与设备管理」，总之在「通用」的最下面）
+2. 在「**开发者 App**」这一栏里，点以你 **Apple 账户**命名的那个 → 点「**信任 …**」→ 再点「**允许并重启**」
+3. 输入手机锁屏密码确认
+4. 重启后回到「设置」→「**隐私与安全性**」→ 滑到底 →「**开发者模式**」→ 打开 → **手机会再重启一次**
+   （这一项 iOS 16 及以上才有，**必须开**，否则 App 一点就闪退）
+5. 重启后再进「隐私与安全性」确认开发者模式是开着的
+
+## 3.7 连上 LocalDevVPN（📱）
+
+打开 **LocalDevVPN** → 点「**Connect**」
+
+> **以后每次要在 SideStore 里装 App、更新 App、续签，都要先保证：Wi-Fi 连着 + LocalDevVPN 是 Connect 状态。** 记住这一条能省掉 90% 的报错。
+
+## 3.8 把 .ipa 弄到手机上（选一个办法）
+
+**办法 A：直接在 iPhone 上下载（推荐，不用碰电脑）**
+
+1. iPhone 上打开 **Safari**，登录 GitHub，进你的仓库 → **Actions** → 点那次成功的构建
+2. 滚到最底下 → **Artifacts** → 点 **FretroCam-unsigned-ipa** 下载
+3. 打开手机上的「**文件**」App → 「**下载**」→ 长按那个 `.zip` → 「**解压缩**」
+4. 得到 `FretroCam-unsigned.ipa`，就放在「文件」里别动
+
+**办法 B：从电脑传过去**
+
+- 微信/QQ 的「文件传输助手」发给自己 → 手机上点开文件 → 右上角 → **用其他应用打开 / 存储到「文件」**
+- 或者用 iCloud 云盘、网盘、邮件附件，都行
+- **目标只有一个：让那个 `.ipa` 出现在手机「文件」App 里**
+
+## 3.9 用 SideStore 安装（📱）
+
+1. 确认 **Wi-Fi 连着** + **LocalDevVPN 已 Connect**
+2. 打开 **SideStore**
+3. 用刚才在 iloader 里用的那个 **Apple 账户**登录
+4. 第一次进去如果提示要刷新（右侧有个 **7 DAYS** 小数字），**点一下那个数字**让它完成初始化；如果弹「撤销或创建新签名证书」，点 **Yes** / **Refresh Now**
+5. 进 **My Apps** → 点右上角的「**+**」→ 选择刚才那个 `FretroCam-unsigned.ipa`
+6. 等它签名 + 安装完成
+7. 回到桌面，就能看到「**FretroCam**」的图标了 🎉
+
+> 桌面图标如果显示成白色方块，等几秒或者下拉刷新一下就好，那是 iOS 还在生成图标缓存。
+
+---
+
+# 以后怎么续签（📱 不用电脑！）
+
+签名 **7 天**过期。快过期时 App 图标点开会提示「无法验证 App」，或者直接闪退。
+
+**续签就三步，全在手机上：**
+
+1. 确认 **Wi-Fi 连着**
+2. 打开 **LocalDevVPN** → **Connect**
+3. 打开 **SideStore** → **My Apps** → 点那个 **7 DAYS** 数字（或者 **Refresh All**）→ 等它跑完
+
+> 💡 **别等到 0 天再刷。** 看到还剩 1～2 天就顺手点一下，几秒钟的事。
+>
+> 💡 **不要从桌面删掉 App 再重装** —— 续签是原地覆盖，桌面位置、App 里的设置全都保留。照片存在系统相册，任何情况下都不会丢。
+>
+> 💡 续签时如果一直转圈失败：先看 Wi-Fi，再看 LocalDevVPN 是不是掉线了，然后**反复点几次**那个数字（官方文档明确说反复点有时会有帮助）。
+
+---
+
+# 改了代码以后怎么办
+
+比如你以后想加新的相框、调滤镜参数：
+
+1. **GitHub Desktop** 里会自动列出来你改了哪些文件
+2. 左下角填一句说明（比如 `加了新相框`）→ 点 **Commit to main**
+3. 点顶部的 **Push origin**
+4. 推送后云端**自动重新构建**，去 Actions 页面等新的一次跑完
+5. 下载新的 `.ipa`（按 3.8 弄进手机）
+6. 打开 **SideStore** → **My Apps** → 点右上角 **+** → 选新的 `.ipa`
+   - 因为 `bundleIdentifier` 没变，它会**原地覆盖**，桌面图标位置不会变
+
+> ⚠️ 不要改 `app.json` 里的 `bundleIdentifier`（`com.canyerylee.fretrocam`）。改了会被 iPhone 当成另一个 App，桌面会多一个图标，而且**会多占用一个免费账号的名额**（一共只有 3 个）。
+
+---
+
+# 排错
+
+| 现象 | 原因和解法 |
+|---|---|
+| Actions 页面没有构建记录 | 仓库 **Settings → Actions → General**，选 "Allow all actions and reusable workflows"，然后 Save |
+| **构建一直排队、最后被取消（步骤数是 0，一步都没跑）** | 那就是**没抢到机器**，不是代码问题。排队没排上机器**不扣额度**。把 `runs-on` 换成 `macos-26-intel`（Intel 池实测秒分配），重新提交一次即可。 |
+| 构建报 `runner not found` / `标签不支持` | 打开 `.github/workflows/build-ios-ipa.yml`，把 `runs-on:` 改成 **`macos-26-intel`**；若还是不行改 `macos-26`（arm64，可能要等池子放量）。 |
+| **构建在第 8 步（编译）失败，退出码 65，日志里搜得到 `Could not resolve package dependencies`** | 是**这台镜像自带的 Xcode 太旧**（本工作流不 pin Xcode，换镜像就等于换工具链）。**macOS 大版本必须 ≥ 26**，否则 RN 0.86 / Expo SDK 57 的 `ExpoModulesJSI` 构建会以这种看不出真因的方式挂掉。原委见 [README.md](README.md) 第 29 节。 |
+| 构建在第 5 步（prebuild）失败 | 把鼠标放到失败那一步的日志上，搜 `Error:`。多半是某个 Expo 配置插件报错，把这行日志发给我就行 |
+| 构建超过 60 分钟被取消 | 重新点一次 Run workflow；或者按上面第一条换 `macos-26-intel` |
+| **iloader 里看不到设备** | ① iTunes 装了吗（微软商店版，发布者 Apple Inc.）② 数据线换一根能传数据的 ③ 手机上重新点一次「信任此电脑」 ④ 重启电脑再试 |
+| **iloader 登录 Apple ID 报密码错误** | 大小写敏感；开了双重认证要输手机上弹的 6 位码。反复失败就去 https://appleid.apple.com/ 生成一个「**App 专用密码**」用它代替 |
+| **SideStore 打不开 / 一进就退** | ① 3.6 的「信任开发者」做了吗 ② 开发者模式开了吗（这一步漏了必闪退） ③ 用 iloader 重新装一次 SideStore |
+| **SideStore 报 "AFC 连接失败" / 无 Wi-Fi 或 VPN 连接** | 官方给的顺序：① LocalDevVPN 和 Wi-Fi 都要连着 ② 关掉任何 DNS 拦截/去广告类 App ③ **反复点几次重试按钮** ④ 重启 SideStore ⑤ 重启 LocalDevVPN ⑥ 用 iloader 换一个新的配对文件 |
+| **SideStore 安装到一半卡住** | ① 重启 SideStore ② 清缓存 ③ 换一个 Anisette Server ④ 重启设备 ⑤ 用 iloader 重装 SideStore |
+| **装完点图标闪退** | 99% 是**开发者模式**没开：设置 → 隐私与安全性 → 开发者模式 → 打开并重启 |
+| 提示「无法验证 App」 | 签名过期了，按上面「怎么续签」在手机上点一下 |
+| 提示 "Unable to install … maximum number of apps" | 免费账号最多**同时**装 **3 个**自签 App（SideStore 自己占 1 个），删掉一个不用的再试 |
+| 手机上让登录 / Expo Go 提示要登录 | 那是走 Expo Go 老方案时的事，见 [新手操作指南.md](新手操作指南.md) |
+
+---
+
+# 分享给朋友用
+
+**别把这篇文档发给朋友，太长而且一半是打包的事。** 专门写了一份朋友版：
+
+> 📄 **[给朋友：怎么装 FretroCam.md](给朋友：怎么装%20FretroCam.md)**
+
+朋友需要知道的全部内容都在里面（装 SideStore → 装 App → 续签 → 排错 → 常见问题），
+**不需要 GitHub 账号，也不需要打包**。
+
+## 三件要提前跟朋友讲清楚的事
+
+1. **各签各的，互不影响。** 朋友用**他自己的 Apple ID** 签名，和你的账号没有任何关系；同一个 `.ipa` 装出来是两台独立的 App。
+2. **免费 Apple ID 同时最多 3 个自签 App**（SideStore 自己占 1 个）。他如果已经装了别的自签 App，得先删一个。
+3. **7 天要续签一次**，但续签全在手机上点一下，**不需要电脑**。
+
+## 最省事的给法：一个链接直接装
+
+SideStore 支持一个 URL 协议，可以从远程地址直接安装 App（[官方文档 URL Schema](https://docs.sidestore.io/docs/advanced/url-schema)）：
+
+```
+sidestore://install?url=[.ipa 的公开直链]
+```
+
+> ❗ **这条链接从 2026-10-10 起失效了。**
+> 仓库已经转成 **私有**，而私有仓库的 Release 不登录就下载不了 ——
+> 所以 `sidestore://install?url=...` 这种「一个链接直接装」对朋友不再可用。
+>
+> **现在给朋友的最省事方式：直接把 `.ipa` 文件发给他**（微信 / 网盘），
+> 他在手机上「存储到『文件』」→ 打开 SideStore → My Apps → `+` → 选那个文件。
+>
+> **想要链接回来也有办法**：另建一个**只放 ipa 的公开仓库**（本仓库保持私有），
+> 把文件传上去，直链就有了。这一步是一条命令的事，需要的话说一声。
+
+**原来的做法（留档，公开仓库时仍然可用）**：把 ipa 放进某个公开 Release，
+拿到直链后塞进 `sidestore://install?url=`，格式就是：
+
+```
+sidestore://install?url=[.ipa 的公开直链]
+```
+
+**朋友那边怎么用：** 复制上面那行 → **粘贴进 Safari 地址栏**（不是在微信里点）→ 回车 → 弹「在 SideStore 中打开？」→ 点打开 → 自动下载安装。
+
+> ⚠️ **两个前提**：① 朋友**已经装好 SideStore**（朋友版文档第 2 节）；② 一定要走 **Safari 地址栏**，微信/QQ 会屏蔽 `sidestore://` 自定义链接。
+>
+> 💡 嫌麻烦就直接把 `.ipa` 用微信/网盘发过去，朋友版文档里写了「方式 B」。
+
+**以后 App 更新了怎么发新版？** 重新建一个 Release（tag 用 `v1.1`、`v1.2`…），把新 ipa 传上去，然后把链接里的 `v1.0` 换成新 tag 发给朋友即可。旧的朋友不用管，装新的会**原地覆盖**（bundleIdentifier 没变）。
+
+## 什么时候才需要花那 99 美元
+
+| 路线 | 成本 | 适合谁 |
+|---|---|---|
+| **自签（本文这套）** | 0 元 | 你自己 + 一两个朋友。每 7 天点一下 |
+| **Apple 开发者计划 + TestFlight** | $99/年 | 想给**很多人**用、不想让他们续签、90 天不用管 |
+| 上架 App Store | $99/年 + 审核 | 想公开给所有人 |
+
+TestFlight 需要 $99/年的开发者账号，而且 App 要能通过苹果的 Beta 审核（具体规则以苹果官网为准）。
+**只是给朋友用的话，完全没必要花这个钱。**
+
+---
+
+# 附录一：更简单的替代方案（但续签得靠电脑）
+
+如果你觉得上面 SideStore 那套太绕，只想「先装上再说，以后每周插一次线」，可以用下面这两个。**它们第一次安装更简单，缺点是续签时电脑得开机、得插数据线（或同 Wi-Fi）。**
+
+## 方案 A：Sideloadly（最快）
+
+1. 装**苹果官网版** iTunes + iCloud（注意：这两个工具要求的是**官网版**，不是微软商店版，和 iloader 的要求相反）
+   - iTunes https://www.apple.com/itunes/download/win64
+   - iCloud https://updates.cdn-apple.com/2020/windows/001-39935-20200911-1A70AA56-F448-11EA-8CC0-99D41950005E/iCloudSetup.exe
+   - 装之前先去「设置 → 应用」卸载微软商店版的 iTunes/iCloud
+2. 装 Sideloadly：https://sideloadly.io/
+3. 插线 → 信任电脑
+4. 把 `.ipa` 拖进 Sideloadly 窗口 → 填 Apple ID → 点 **Start**
+5. 手机上按 3.6 做「信任开发者」+ 开开发者模式
+6. 续签：插上线，重新点一次 **Start**
+
+## 方案 B：AltStore（可无线续签）
+
+1. 同样装**官网版** iTunes + iCloud
+2. 下载 AltServer：https://cdn.altstore.io/file/altstore/altinstaller.zip
+3. 解压运行 `Setup.exe`
+4. 开始菜单搜 **AltServer** → 右键「**以管理员身份运行**」→ 允许**专用网络**
+   （它运行后缩在右下角托盘里，不显示窗口）
+5. 插上 iPhone，解锁并信任电脑
+6. 打开 **iTunes** 登录 Apple ID，在设备页面勾上「**通过 Wi-Fi 同步**」
+7. 点托盘里的 **AltServer 图标** → **Install AltStore** → 选你的 iPhone
+8. 输入 Apple ID（只发给苹果，不经过第三方）
+9. 手机上按 3.6 做「信任开发者」+ 开开发者模式
+10. 打开手机上的 **AltStore** → 用同一个 Apple ID 登录 → 按 3.8/3.9 把 ipa 弄进手机后用它安装
+11. 之后电脑开着 AltServer 且手机同一 Wi-Fi 时，会自动续签
+
+---
+
+# 附录二：为什么不用「永久签名」的路子
+
+网上能找到号称「永久签名、不用续签」的方案，比如 **TrollStore（巨魔）**。它确实很好用，但**只支持 iOS 14.0 ~ 17.0 这一段**。
+
+本机开发机对应的手机是 **iOS 27**，远在这个范围之外，所以这条路走不通，7 天续签是目前唯一的免费选择。
+
+另外还有 **AltStore PAL**（苹果官方的第三方商店机制，不用续签），但它要求手机**实际位于欧盟 / 日本 / 巴西**并登录对应地区的 Apple 账号，国内用不了。
+
+---
+
+# 附录三：iOS 27 专用的「完全不用电脑」方案
+
+**只在 3.1～3.5 那条路走不通时才用这个。**
+
+有一个开源项目叫 **SideInstaller**，专门解决「没有电脑怎么装 SideStore」这个问题。iOS 27 上它不需要配对文件、不需要数据线、不需要任何电脑。
+
+## 怎么用
+
+1. 用 **iPhone 的 Safari** 打开唯一的官方网站：**https://sideinstaller.net/**
+   （项目源码：https://github.com/FrizzleM/SideInstaller ）
+2. 在安装页面上选一个证书点安装（它会用一个「企业证书」把 App 装到你手机上）
+3. 装好后打开 App
+4. 先连上 **LocalDevVPN**
+5. 登录你的 **Apple 账户**
+6. 点 **Install SideStore**（或 Install SideStore + LiveContainer）
+7. 等它装完
+8. 之后回到本文的 **3.6 / 3.7 / 3.8 / 3.9** 继续做
+
+## ⚠️ 用这个方案前必须知道的四件事
+
+1. **它的分发方式就是我前面警告过的那种「企业证书」。**
+   作者是开源、可审计的，但**你下载到的那个已经编译好的包，不等于那份源码**。这类 App 会经手你的 Apple ID 密码 —— 这是拿隐私换便利，你要自己权衡。
+2. **有一个仿冒站 `sideinstaller.com`（`.com`）是恶意的**，专门用来偷 Apple ID。
+   官方只认 **`sideinstaller.net`（`.net`）** 和它的 GitHub 仓库。**输错一个字母就可能是钓鱼站。**
+3. **企业证书会被苹果吊销。** 吊销之后 SideInstaller 本身会打不开（SideStore 不受影响，已经装好的东西照常用）。
+4. 如果官方页面上的证书全都失效了，别去别的地方找证书 —— 那就老老实实回到电脑那条路。
+
+## 作者自己声明的兼容性
+
+| iOS 版本 | 能不能用 |
+|---|---|
+| **iOS 27 beta 1 ~ 27.0.1+** | ✅ 可以，**不需要电脑** |
+| iOS 18.0 ~ 26.7 | ⚠️ 可以，但需要配对文件，而配对文件**需要电脑** |
+| ≤ iOS 17.7.11 | ❌ 不行 |
+
+---
+
+# 一句话总结
+
+> 代码推到 GitHub → 免费 Mac 机器打包 → 下载 ipa → 电脑上装 iTunes + iloader，插线把 SideStore 装进手机 → 手机上信任并开启开发者模式 → 把 ipa 传进手机，用 SideStore 装。
+> 完事之后，**每 7 天在手机上点一下 SideStore 里的天数**就够了，电脑从此可以一直关着。
