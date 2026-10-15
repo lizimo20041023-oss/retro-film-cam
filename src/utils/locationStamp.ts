@@ -20,7 +20,13 @@ import type {
   PlaceDetail,
   ResolvedPlace,
 } from '../types';
-import { formatCoords, formatResolvedPlace, resolveGeoLocale, resolvePlaceFromGeocode } from './placeNames';
+import {
+  coordsOnlyPlace,
+  formatCoords,
+  formatResolvedPlace,
+  resolveGeoLocale,
+  resolvePlaceFromGeocode,
+} from './placeNames';
 
 /**
  * 单次定位最长等多久。
@@ -153,13 +159,11 @@ export async function fetchLocationStamp(
     }
 
     if (mode === 'coords') {
-      const place: ResolvedPlace = {
-        city: '',
-        region: '',
-        country: '',
-        countryCode: '',
-        coords: formatCoords(coords.latitude, coords.longitude),
-      };
+      // 这个形状的**唯一构造点**是 `placeNames.coordsOnlyPlace`，别处不许再手写一份：
+      // 相册导入那条路（`importPhoto.ts` 的反查失败兜底）用的是同一个函数，
+      // 两边的"只有坐标"必须逐字段一致，否则同一张照片从相机出来和从相册导入出来
+      // 会印出不一样的字。
+      const place: ResolvedPlace = coordsOnlyPlace(coords.latitude, coords.longitude);
       // 坐标模式下"要显示的那一行"就是坐标本身：文件名 / 相册条目里没有城市可写。
       return { ok: true, text: formatResolvedPlace(place, placeLocale, detail), place };
     }

@@ -7,12 +7,17 @@
  *
  * 为什么曝光胶囊的调节长在胶囊自己身上、而不是"拖进 §二 的滑块"：那个滑块只在点按对焦
  * 之后的 3 秒里存在。胶囊若依赖它，绝大部分时间按上去是没有反应的死键。
+ *
+ * 液态玻璃改版：三颗胶囊的底色从 `theme.glass` + `theme.glassBorder` 换成了
+ * `LiquidGlassView`（真模糊 + 折射环），胶囊里的字与图标**强制纯白**。
+ * 手势逻辑（`DRAG_SPAN` / `DRAG_THRESHOLD` / 轻点归零）一个字节都没动。
  */
 import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useI18n } from '../i18n';
-import { UI_MONO, useTheme } from '../constants/theme';
+import { UI_MONO } from '../constants/theme';
+import { GLASS_TEXT_COLOR, glassTextShadow, LiquidGlassView } from './LiquidGlassView';
 import { EXPOSURE_MAX, EXPOSURE_MIN, EXPOSURE_STEP, formatExposure } from './FocusExposure';
 
 /** 在胶囊上拖满整个 -2 ~ +2 需要的手指行程（pt）。太短会一碰就到底，太长则一次调不完。 */
@@ -20,6 +25,12 @@ const DRAG_SPAN = 150;
 /** 超过这个位移才算"在拖"：否则手指的天然抖动会把轻点（归零）吃掉。 */
 const DRAG_THRESHOLD = 4;
 const STEP_LIMIT = Math.round(EXPOSURE_MAX / EXPOSURE_STEP);
+
+/**
+ * 胶囊高度。原来写死在 `styles.capsule` 里，现在必须提到模块级：
+ * 玻璃的圆角要传 `radius`，而 `radius` 得等于高度的一半才是胶囊形。
+ */
+const CAPSULE_HEIGHT = 30;
 
 /**
  * 色温倾向：带符号的两位小数。
@@ -57,7 +68,6 @@ function ViewfinderBarInner({
   onCycleFocal,
   onExposure,
 }: ViewfinderBarProps) {
-  const { glass, glassBorder, ink } = useTheme();
   const { t } = useI18n();
   const startExposure = useRef(0);
   const lastStep = useRef(0);
@@ -118,66 +128,83 @@ function ViewfinderBarInner({
   const temperatureText = formatTemperature(temperature);
   const focalText = `${Math.round(focalMm)}mm`;
   const exposureText = formatExposure(exposure);
-  const capsule = [styles.capsule, { backgroundColor: glass, borderColor: glassBorder }];
+  /*
+   * 三颗胶囊共用同一个玻璃外壳：
+   *   · `capsule` 现在传给 `LiquidGlassView`，**不再是传给 `Pressable` 的背景色** ——
+   *     圆角与那圈折射边归玻璃自己画，里面再画一层 1pt 边框就是在玻璃边缘叠一条硬线；
+   *   · 按下态（`styles.pressed`）压的是玻璃层的不透明度，不是背景色。
+   */
+  const capsule = [styles.capsule, { height: CAPSULE_HEIGHT }];
 
   return (
     <View style={styles.row}>
-      <Pressable
-        onPress={onPickFilm}
-        accessibilityRole="button"
-        accessibilityLabel={t('camera.bar.temp.a11y', { label: temperatureText })}
-        style={({ pressed }) => [capsule, pressed && styles.pressed]}
-      >
-        <ThermoGlyph color={ink.paperDim} />
-        <Text style={[styles.value, { color: ink.paper }]} allowFontScaling={false}>
-          {temperatureText}
-        </Text>
-        <Text style={[styles.word, { color: ink.paperDim }]} allowFontScaling={false}>
-          {t('camera.bar.temp')}
-        </Text>
-      </Pressable>
-
-      <Pressable
-        onPress={onCycleFocal}
-        accessibilityRole="button"
-        accessibilityLabel={t('camera.bar.focal.a11y', { label: focalText })}
-        style={({ pressed }) => [capsule, pressed && styles.pressed]}
-      >
-        <LensGlyph color={ink.paperDim} />
-        <Text style={[styles.value, { color: ink.paper }]} allowFontScaling={false}>
-          {focalText}
-        </Text>
-        <Text style={[styles.word, { color: ink.paperDim }]} allowFontScaling={false}>
-          {t('camera.bar.focal')}
-        </Text>
-      </Pressable>
-
-      <View {...drag.panHandlers}>
+      <LiquidGlassView radius={CAPSULE_HEIGHT / 2} style={capsule}>
         <Pressable
-          onPress={handleReset}
-          accessibilityRole="adjustable"
-          accessibilityLabel={t('camera.bar.ev.a11y', { value: exposureText })}
-          accessibilityHint={t('camera.bar.ev.hint')}
-          accessibilityValue={{ text: exposureText }}
-          accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
-          onAccessibilityAction={(event) => {
-            const action = event.nativeEvent.actionName;
-            if (action === 'increment') {
-              adjust(1);
-            } else if (action === 'decrement') {
-              adjust(-1);
-            }
-          }}
-          style={({ pressed }) => [capsule, pressed && styles.pressed]}
+          onPress={onPickFilm}
+          accessibilityRole="button"
+          accessibilityLabel={t('camera.bar.temp.a11y', { label: temperatureText })}
+          style={({ pressed }) => [styles.press, pressed && styles.pressed]}
         >
-          <SunGlyph color={ink.paperDim} />
-          <Text style={[styles.value, { color: ink.paper }]} allowFontScaling={false}>
-            {exposureText}
+          <ThermoGlyph color={GLASS_TEXT_COLOR} />
+          <Text style={[styles.value, { color: GLASS_TEXT_COLOR }]} allowFontScaling={false}>
+            {temperatureText}
           </Text>
-          <Text style={[styles.word, { color: ink.paperDim }]} allowFontScaling={false}>
-            {t('camera.bar.ev')}
+          <Text style={[styles.word, { color: GLASS_TEXT_COLOR }]} allowFontScaling={false}>
+            {t('camera.bar.temp')}
           </Text>
         </Pressable>
+      </LiquidGlassView>
+
+      <LiquidGlassView radius={CAPSULE_HEIGHT / 2} style={capsule}>
+        <Pressable
+          onPress={onCycleFocal}
+          accessibilityRole="button"
+          accessibilityLabel={t('camera.bar.focal.a11y', { label: focalText })}
+          style={({ pressed }) => [styles.press, pressed && styles.pressed]}
+        >
+          <LensGlyph color={GLASS_TEXT_COLOR} />
+          <Text style={[styles.value, { color: GLASS_TEXT_COLOR }]} allowFontScaling={false}>
+            {focalText}
+          </Text>
+          <Text style={[styles.word, { color: GLASS_TEXT_COLOR }]} allowFontScaling={false}>
+            {t('camera.bar.focal')}
+          </Text>
+        </Pressable>
+      </LiquidGlassView>
+
+      {/*
+        曝光这枚外面多一层拖拽层：`PanResponder` 仍然挂在最外层（位置和上一版一致），
+        这样它才能在**捕获**阶段抢在 `Pressable` 前面拿到这次触摸 ——
+        一旦让 `Pressable` 先把上滑认领成"点击"，一次拖动就会变成一次误触的归零。
+      */}
+      <View {...drag.panHandlers}>
+        <LiquidGlassView radius={CAPSULE_HEIGHT / 2} style={capsule}>
+          <Pressable
+            onPress={handleReset}
+            accessibilityRole="adjustable"
+            accessibilityLabel={t('camera.bar.ev.a11y', { value: exposureText })}
+            accessibilityHint={t('camera.bar.ev.hint')}
+            accessibilityValue={{ text: exposureText }}
+            accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+            onAccessibilityAction={(event) => {
+              const action = event.nativeEvent.actionName;
+              if (action === 'increment') {
+                adjust(1);
+              } else if (action === 'decrement') {
+                adjust(-1);
+              }
+            }}
+            style={({ pressed }) => [styles.press, pressed && styles.pressed]}
+          >
+            <SunGlyph color={GLASS_TEXT_COLOR} />
+            <Text style={[styles.value, { color: GLASS_TEXT_COLOR }]} allowFontScaling={false}>
+              {exposureText}
+            </Text>
+            <Text style={[styles.word, { color: GLASS_TEXT_COLOR }]} allowFontScaling={false}>
+              {t('camera.bar.ev')}
+            </Text>
+          </Pressable>
+        </LiquidGlassView>
       </View>
     </View>
   );
@@ -233,24 +260,41 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
   },
+  /*
+   * 几何：高度由 `CAPSULE_HEIGHT` 从外面注入（玻璃的 `radius` 要读它）。
+   * 这里**不再有** `borderRadius` 与 `borderWidth` —— 圆角和那圈 1px 折射环现在
+   * 归 `LiquidGlassView`，再画一层 1pt 边框就是在玻璃边缘上又叠一条硬线。
+   */
   capsule: {
+    height: CAPSULE_HEIGHT,
+    paddingHorizontal: 11,
+  },
+  /*
+   * `Pressable` 铺满整块玻璃：命中区必须和看得见的盘子一样大，
+   * 否则玻璃边上那一圈（圆角外沿）点下去会没反应。
+   */
+  press: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    height: 30,
-    borderRadius: 999,
-    borderWidth: 1,
-    paddingHorizontal: 11,
+    justifyContent: 'center',
   },
   value: {
     fontFamily: UI_MONO,
     fontSize: 11,
+    // 规格要求字重 600 + 纯白 + 暗影。字重也是"玻璃上可读性"的一部分：
+    // 11pt 的常规等宽白字压在实时取景上，笔画会被背后的细节吃穿
+    fontWeight: '600',
     letterSpacing: 0.4,
     marginLeft: 5,
+    ...glassTextShadow,
   },
   word: {
     fontSize: 9,
+    fontWeight: '600',
     letterSpacing: 1,
     marginLeft: 5,
+    ...glassTextShadow,
   },
   pressed: {
     opacity: 0.6,
@@ -258,6 +302,12 @@ const styles = StyleSheet.create({
   glyph: {
     width: 13,
     height: 13,
+    // 三枚图标是 View 画的线框，`glassTextShadow` 那三根 `textShadow*` 只认 `<Text>`，
+    // 所以这里用 View 自己的阴影属性补上同一层暗晕：颜色与 2pt 半径都和它对齐
+    shadowColor: 'rgba(0, 0, 0, 0.65)',
+    shadowOffset: { width: 0, height: 0 },
+    shadowRadius: 2,
+    shadowOpacity: 1,
   },
   thermoStem: {
     position: 'absolute',

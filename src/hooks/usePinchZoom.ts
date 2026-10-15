@@ -19,8 +19,13 @@
  * 翻倍 = `zoom` 加一个固定量，直接线性叠加就对了。
  * 注意不能写成 `start.zoom * k`：起始值是 0 时乘任何数还是 0，永远捏不动。
  *
- * 视觉反馈由 `ZoomStops` 的档位灯和右下角倍率读数负责 —— 捏合走的是同一个
- * `onChange`，读数会跟着动（捏合不算落在任何一档上，所以档位灯会灭掉）。
+ * 视觉反馈由焦段胶囊上的等效焦距读数负责 —— 捏合走的是同一个 `onChange`，
+ * 读数会跟着连续变。捏合不落在任何一档上，所以胶囊上的倍率文字是"连续变焦"的读数，
+ * 而不是档位标签。
+ *
+ * ⚠️ 捏合是**唯一**会临时造出 `zoom > 0` 的入口，而这条行程只对主摄成立
+ * （`src/constants/zoom.ts` 文件头「这条行程只属于主摄」）。所以捏合的接收方
+ * 有义务先把镜头钉回主摄 —— 见 `CameraScreen.handleZoomChange`。
  */
 import { useMemo, useRef } from 'react';
 import { PanResponder, type NativeTouchEvent } from 'react-native';

@@ -6,6 +6,12 @@
  * ├──────────────────────────────────────────────────────────────────────────┤
  * │ 0. 归一化    expo-image-manipulator 新 API：把原图最长边压到 2048 px      │
  * │              （只是为了省内存；失败自动退回原图，不阻塞出片）             │
+ * │ 0.5 居中裁切  **按相框窗口的宽高比**从归一化后的图里裁出最大内接矩形      │
+ * │              （中心对齐）。裁完这张图的宽高比 == 窗口宽高比，于是合成层   │
+ * │              的 `resizeMode="cover"` 退化成恒等变换 ——"取景框所见 =      │
+ * │              成片内容"从"凑巧成立"变成结构上必然成立。顺序必须在归一化    │
+ * │              **之后**（见 `centerCropPhoto`）；多开槽相框 / `contain`     │
+ * │              相框 / 宽高比已经相同 → 整步跳过，图原样往下走。             │
  * │ 1. 调色      声明式图层 + mixBlendMode（Expo Go 新架构原生支持）：        │
  * │              · temperature / tint  → 纯色层 + 'soft-light'               │
  * │              · saturation          → 中灰或高饱和色层 + 'saturation'     │
@@ -33,9 +39,14 @@
  * 挡住底下的实时相机预览，把合成视图正常渲染出来，截完图立刻卸载。
  * 整个过程约 0.4~1.2 秒，观感上就是"显影中"。见 `src/components/CameraScreen.tsx`。
  *
- * 可单测性：本文件不直接调用任何原生模块 —— 截图通过 `FilmStageHost` 注入，
- * 单测时传一个假 host（`capture()` 返回固定 uri）即可跑完整条管线。
+ * 可单测性：本文件只在"改像素"的两次（`normalizePhoto` / `centerCropPhoto`，都用
+ * expo-image-manipulator）碰原生模块，且两处失败都只记 warning、不抛；
+ * 截图则通过 `FilmStageHost` 注入 —— 单测时传一个假 host
+ * （`capture()` 返回固定 uri）即可跑完整条管线。
+ * ⚠️ 反过来说：**单测跑不了 0 / 0.5 这两步**（它们要真的有一张图在磁盘上）。
+ * 要覆盖它们，得在带原生模块的环境里跑，或者把这两步换成可注入的假实现。
  */
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { resolvePreset } from '../constants/presets';
 import type {
   CapturedPhoto,
@@ -43,7 +54,9 @@ import type {
   FilmPreset,
   FilmStageHost,
   FilmStageInput,
+  FrameLayout,
   FrameSpec,
+  NormalizedPhoto,
   PlaceDetail,
   ProcessedPhoto,
   ResolvedPlace,
@@ -53,6 +66,7 @@ import type {
 } from '../types';
 import type { LocaleId } from '../i18n/types';
 import { planCapture } from './captureOptions';
+import { describeError } from './describeError';
 import { computeFrameLayout, resolveFrameOrientation } from './geometry';
 import { buildGradeLayers } from './gradeLayers';
 import { normalizePhoto } from './normalizePhoto';
@@ -155,6 +169,153 @@ export interface ProcessAndSaveResult {
 }
 
 /**
+ * 显式居中裁切的结果。
+ *
+ * 为什么不用 `NormalizedPhoto`：那是"归一化这一步的产物"（带 `resized` / `note`），
+ * 而裁切是**独立的一步**，它要回答的是另外两个问题（"裁了没有""为什么没裁"）。
+ * 把两件事塞进同一个类型里，将来只看 `resized` 会分不清"没缩"和"没裁"。
+ */
+interface CroppedPhoto extends CapturedPhoto {
+  /** 真的裁了（像素变少了）。`false` = 这一步是恒等变换，下游拿到的还是归一化那张图。 */
+  cropped: boolean;
+  /** 给用户看的降级说明；`undefined` = 没出岔子。 */
+  note?: string;
+}
+
+/**
+ * 这张照片该按什么宽高比裁 —— **就是合成层窗口的宽高比**。
+ *
+ * 返回 `null` = 这一步不做（调用方原样把归一化那张图交给合成层）。
+ * 目前只有两种情况下会返回 `null`：
+ *
+ * ① **有开槽的相框**（`frame.slots` 非空；目前只有半格双联这一款，它有两个槽）。
+ *    有槽走槽：`FilmCompositor` 里 `const mixing: Rect = slotRects.length > 0 ?
+ *    slotBounds(slotRects) : layout.window;`（`FilmCompositor.tsx:301`）——
+ *    也就是**照片被摆进的是槽位矩形，不是 `layout.window`**。而半格的 `window`
+ *    是**两个槽的并集**（含中间那根立筋，比例 1.603），槽自己的比例是 3:4（0.75）：
+ *    按并集裁出来的图送进 3:4 的槽还要再 `cover` 一次，那一次**不是恒等变换**，
+ *    于是"裁了等于没裁"，却多付一次全图解码 + 重编码的内存峰值（老机器上是闪退风险）。
+ *    ⚠️ 判定条件是 `length > 0` 而不是 `length > 1`：只有**一个**槽时槽位矩形与
+ *    `window` 也未必重合（`window` 的文档写的就是"并集 / 单图兜底"），
+ *    那时按 `window` 比例裁同样可能被槽里的 `cover` 再裁一次。多一个槽就多一个
+ *    可能对不上的矩形，所以干脆"有槽就不裁"。
+ * ② **`photoFit: 'contain'` 的相框**。`contain` 的语义是"整张完整放入、可以留黑边"，
+ *    按窗口比例裁掉两边正好是它承诺**不做**的事。（当前 7 款全是 `'cover'`，
+ *    这条分支是为将来新增相框留的；渲染侧用的是同一个判断
+ *    ——`FilmCompositor.tsx:425,439,451` 三处都是
+ *    `frame.photoFit === 'contain' ? 'contain' : 'cover'`，所以不会出现
+ *    "这里按 cover 裁、那里按 contain 画"的错配。）
+ *
+ * 为什么读的是 `layout.window`（`Rect`，逻辑点）而不是 `frame.window`（归一化）：
+ * 两者比例只差一次取整，但 `layout.window` 才是**合成层真正拿去摆照片的那个矩形**
+ * （`FilmCompositor` 的 `styles.window` 用的就是它）。裁切比对的基准必须是同一份数据，
+ * 否则"结构性一致"就退化成"数值上很接近"。
+ */
+function resolveCropAspect(frame: FrameSpec, layout: FrameLayout): number | null {
+  const slots = frame.slots;
+  if (slots !== undefined && slots.length > 0) {
+    return null;
+  }
+  if (frame.photoFit === 'contain') {
+    return null;
+  }
+  const { width, height } = layout.window;
+  if (!(width > 0) || !(height > 0)) {
+    return null;
+  }
+  const aspect = width / height;
+  return Number.isFinite(aspect) && aspect > 0 ? aspect : null;
+}
+
+/**
+ * 归一化后的图 → 按 `aspect` **居中裁出最大内接矩形**（显式 WYSIWYG，§六）。
+ *
+ * ─── 为什么必须在这一步做 ───────────────────────────────────────────────────
+ * 合成层给照片的是 `resizeMode="cover"`，也就是**它本来就会居中裁切**。
+ * 于是"取景框所见 = 成片内容"过去只是**凑巧**成立（只要没人改 `photoFit`、
+ * 没人动窗口坐标、没人换 `resizeMode`，它就一直成立，也一直没人能断言它）。
+ * 在这里先把图裁成窗口比例之后，`cover` 面对的是一张**比例已经相同**的图：
+ * 缩放是唯一剩下的动作，裁切量为零 —— `cover` 成了恒等变换。
+ * 换句话说，"所见即所得"从"依赖渲染器的行为"变成"图本身的属性"，可以被断言了。
+ *
+ * ⚠️ **不会改变现有成片的构图**：`cover` 本来就居中，这里的裁切也是居中的，
+ * 两者裁掉的是同一块区域（差别只在取整和 JPEG 多解码了一次）。所以这一步
+ * **不是为了"修好构图"，是为了让构图变成结构上必然的**。要断言这一点，
+ * 拿同一张照片改动前后各出一张片，逐像素对比即可（本轮没在真机上做，见报告）。
+ *
+ * ─── 为什么在归一化**之后**裁（顺序不能换）─────────────────────────────────
+ * 归一化会改像素数量（`resize`），裁切比例是按像素算的。先裁再缩的话，
+ * 缩放的取整误差会落在**裁切之后**的那张图上，而裁切本身已经按"老尺寸"算过了 ——
+ * 两处独立的取整叠在一起，裁出来的区域就不是"居中最大内接矩形"了
+ * （宽高各差 1px，比例误差在高分辨率图上还能被 `cover` 吃掉，在缩略图上就会露出来）。
+ * 反过来先缩后裁只有**一次**取整，而且那次取整是 `normalizePhoto` 里
+ * 已经验证过的那一次。而且裁完的图直接进合成层，中间不再有任何改像素的步骤 ——
+ * "裁出来的比例"和"渲染时看到的比例"之间没有第三个环节可以插进来。
+ *
+ * ─── 失败与降级 ────────────────────────────────────────────────────────────
+ * 这一步是**优化**（把隐式行为变显式），不是"不出片"的理由，所以：
+ *   · 比例已经相同（差 < 1px）→ 不裁，也不重编码；
+ *   · 比例不可用（窗口宽高为 0 / 非有限数）→ 这一步根本不会被调到，
+ *     `resolveCropAspect` 已经先返回 `null` 了；
+ *   · 裁切矩形算出来是空的（宽或高取整成 0）→ 不裁；
+ *   · 裁切抛异常 → 退回归一化那张图，记一条 `note`；
+ *   · 任何一条降级路径都不会让 `processFilmPhoto` 抛错（整体 try/catch）。
+ *
+ * 单位：`CroppedPhoto` 的 `width` / `height` 是**像素**。
+ */
+async function centerCropPhoto(photo: NormalizedPhoto, aspect: number): Promise<CroppedPhoto> {
+  const { width, height } = photo;
+  if (!(width > 0) || !(height > 0)) {
+    return { ...photo, cropped: false, note: '裁切跳过：原图宽高不可用（宽或高为 0）' };
+  }
+
+  const current = width / height;
+  // 差不到一个像素就是同一个比例：这时候裁出来的矩形等于原图，
+  // 却要付一次全图解码 + 重编码（12MP 图约 48MB 峰值），所以直接跳过。
+  if (Math.abs(current - aspect) * Math.min(width, height) < 1) {
+    return { ...photo, cropped: false };
+  }
+
+  try {
+    /*
+     * 最大内接矩形：以中心为基准往两边撑。
+     * 图比窗口**宽**（current > aspect）→ 高度留满、裁掉左右；
+     * 图比窗口**高** → 宽度留满、裁掉上下。两者不可能同时发生。
+     */
+    const cropWidth = current > aspect ? Math.round(height * aspect) : width;
+    const cropHeight = current > aspect ? height : Math.round(width / aspect);
+    /*
+     * 空矩形保护：`aspect` 极端小（窗口只有一两像素宽）时 `Math.round` 会把它压成 0，
+     * 而 `crop()` 的宽高必须是 ≥ 1 的整数。调原生之前先判一次，
+     * 免得把"参数非法"变成一个需要用户重拍的错误。
+     */
+    if (cropWidth < 1 || cropHeight < 1) {
+      return { ...photo, cropped: false, note: '裁切跳过：算出来的裁切矩形宽或高为 0' };
+    }
+    const originX = Math.floor((width - cropWidth) / 2);
+    const originY = Math.floor((height - cropHeight) / 2);
+
+    const context = ImageManipulator.manipulate(photo.uri);
+    context.crop({ originX, originY, width: cropWidth, height: cropHeight });
+    const image = await context.renderAsync();
+    /*
+     * 用 JPEG 而不是 PNG：源图在归一化那一步已经是 JPEG（`normalizePhoto` 的
+     * `saveAsync({ format: JPEG, compress: 0.95 })`），这里再存一次不会引入新的
+     * 格式损失等级；PNG 会把 12MP 的中间文件写到几十 MB，而它下一秒就被截图替代掉了。
+     * 质量同样取 0.95：和归一化那一步同一个数，两处不对齐就等于悄悄降了一次质。
+     */
+    const saved = await image.saveAsync({ format: SaveFormat.JPEG, compress: 0.95 });
+    return { uri: saved.uri, width: saved.width, height: saved.height, cropped: true };
+  } catch (error) {
+    return {
+      ...photo,
+      cropped: false,
+      note: `裁切失败，已退回归一化后的整图：${describeError(error)}`,
+    };
+  }
+}
+
+/**
  * 显影：调色 → 颗粒/暗角 → 烧日期 → 套相框 → 截图，返回成片信息。
  * 不写相册（写相册是 `saveToLibrary` 的事，方便单独重试一次保存）。
  */
@@ -191,12 +352,32 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     warnings.push(normalized.note);
   }
 
-  // 4) 调色图层：这里就决定了成片长什么样（纯数据，可断言）
+  // 4) 显式居中裁切：把"合成层自己会居中裁"变成"图本来就是窗口比例"（§六.2）
+  /*
+   * 这一步放在归一化**之后**、挂载**之前**，理由见 `centerCropPhoto` 的注释。
+   * 这里只说一件事：**为什么 `rawUri` 给的是裁完这张，而不是归一化那张**。
+   *
+   * `rawUri` 是"这次成片用的那张底片"（`FilmCompositor` 拿它画照片、拿它喂调色图层，
+   * 还有"同一张图只算一个就绪信号"`countStageImages`）。为了让"重放"两个字成立 ——
+   * 同一个 `stageInput` 重新挂一次必须得到同一张成片 —— 它必须指向**真正被合成的那张图**。
+   * 指向归一化那张的话，重放等于让 `cover` 再做一次隐式裁切：
+   * 结果是"看着差不多"，而不是"逐像素一样"（多一次取整、多一次重采样）。
+   * 所以：`rawUri` = 裁切后的图；`capture` 那张（成片）永远是它的超集渲染结果。
+   * 用户要的"原图"不在这里 —— 那是相册里的 `asset.uri`，本函数从头到尾没碰过它。
+   */
+  const cropAspect = resolveCropAspect(frame, layout);
+  const cropped =
+    cropAspect === null ? { ...normalized, cropped: false } : await centerCropPhoto(normalized, cropAspect);
+  if (cropped.note) {
+    warnings.push(cropped.note);
+  }
+
+  // 5) 调色图层：这里就决定了成片长什么样（纯数据，可断言）
   const layers = buildGradeLayers(preset).map((layer) => layer.label);
 
-  // 5) 挂载合成视图 → 等布局和图片就绪 → 截图 → 立刻卸载
+  // 6) 挂载合成视图 → 等布局和图片就绪 → 截图 → 立刻卸载
   const stageInput: FilmStageInput = {
-    rawUri: normalized.uri,
+    rawUri: cropped.uri,
     layout,
     preset,
     frame,
@@ -254,7 +435,7 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     frameId: frame.id,
     presetId: preset.id,
     capturedAtIso: capturedAt.toISOString(),
-    rawUri: normalized.uri,
+    rawUri: cropped.uri,
     durationMs: Date.now() - startedAt,
     layers,
     warnings,

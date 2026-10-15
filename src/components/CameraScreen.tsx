@@ -1,15 +1,28 @@
 /**
  * 取景器主屏。
  *
- * 这一版把"实时取景"和"相框"彻底拆开了：取景阶段画面上只有一条极细的画幅参考线，
+ * 这一版把"实时取景"和"相框"彻底拆开了：取景阶段画面上只有一层镂空取景窗，
  * 相框贴图只在按下快门后的合成阶段（`FilmCompositor`）出现。实时就贴一张拍立得白边，
  * 用户会以为拍出来就是那样 —— 而负片的画幅里根本不可能有白边。
  *
- * 屏幕从上到下四层（全部按安全区避让）：
- *   ① 顶栏      画幅徽标 / 底片计数 / 设置
- *   ② 取景器    相机预览 + 画幅参考线 + 对焦曝光层 + 悬浮胶囊行
+ * 屏幕从上到下（全部按安全区避让）：
+ *   ① 顶栏      画幅徽标 / 底片计数 / 设置      —— 玻璃，贴屏幕顶边
+ *   ② 取景器    相机预览 + 镂空取景窗 + 对焦曝光层 + 悬浮胶囊行
  *   ③ 工具行    导入 / 重曝 / 定时 / 闪光灯 / 翻转
- *   ④ 核心区    相册缩略图 / 快门 / 胶卷抽屉入口
+ *   ④ 核心区    相册缩略图 / 快门 / 胶卷抽屉入口  —— 玻璃，贴屏幕底边
+ *
+ * ⚠️ 取景器（②）是**绝对铺满整屏**的，不再夹在顶栏和控制台中间：相机的画面要一直
+ * 延伸到灵动岛和 home indicator 底下，顶栏与控制台只是浮在它上面的两层玻璃。
+ * 由此带来两条必须守住的规则，改动这一块之前先读：
+ *   · `styles.preview` 在 JSX 里排在顶栏**之后**，而 RN 里后声明的兄弟节点画在上面 ——
+ *     顶栏和控制台必须各自带 `zIndex`（`styles.overlayChrome`），否则会被画面整个盖掉；
+ *   · 取景器自己不参与竖向布局（`position: 'absolute'`），所以 `styles.root` 要靠
+ *     `justifyContent: 'space-between'` 才能把顶栏和控制台分别推到两端。
+ * 另外两条是这一版新写进规格、必须遵守的：
+ *   · 顶栏与控制台**都不许再画自己的分隔线**（原来是 `borderBottomWidth` /
+ *     `borderTopWidth`），玻璃的边界由亮度差和折射环给，不该由画线给；
+ *   · 两栏里原来垫的那层不透明材料（皮革底纹 `UI_ASSETS.leatherTile` 与
+ *     `styles.panelPlate`）必须删干净，理由见渲染树里那段注释。
  *
  * 触感只有两档：`selectionAsync`（"切换/选中"类）与 `impactAsync(Light)`（机械动作类）。
  * 唯一的例外是物理侧键的 `Heavy` —— 那一下要隔着手机壳也能确认"按下去了"。
@@ -24,7 +37,6 @@ import type { ComponentRef, ReactNode } from 'react';
 import {
   ActivityIndicator,
   Animated,
-  Image,
   Linking,
   Pressable,
   StyleSheet,
@@ -32,7 +44,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import type { GestureResponderEvent, LayoutChangeEvent } from 'react-native';
+import type { ColorValue, GestureResponderEvent, LayoutChangeEvent } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import type { CameraType, CameraViewProps } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
@@ -50,7 +62,6 @@ import { applyGrainLevel, findGrainLevelIndex, grainLevelAt } from '../constants
 import { ASSUMED_LENS_NATIVE_MM, ZOOM_STOPS, resolveStop, zoomToFactor } from '../constants/lenses';
 import { DEFAULT_PRESET_ID, PRESETS, findPresetIndex, resolvePreset } from '../constants/presets';
 import { UI_MONO, useTheme } from '../constants/theme';
-import { UI_ASSETS } from '../constants/uiAssets';
 import { DEFAULT_ZOOM, ZOOM_MAX, toCameraZoom } from '../constants/zoom';
 import { describeError } from '../utils/describeError';
 import { addShot } from '../utils/galleryStore';
@@ -58,7 +69,6 @@ import { computeFrameLayout } from '../utils/geometry';
 import { importAndDevelop } from '../utils/importPhoto';
 import { processAndSaveFilmPhoto } from '../utils/processFilmPhoto';
 import { AlbumThumb } from './AlbumThumb';
-import { AspectGuide } from './AspectGuide';
 import { DevelopOverlay, computeDevelopStageBox } from './DevelopOverlay';
 import { DialButton } from './DialButton';
 import { FilmCompositor } from './FilmCompositor';
@@ -67,11 +77,13 @@ import { FocusExposure } from './FocusExposure';
 import { FrameBadge } from './FrameBadge';
 import { FrameSwitcher } from './FrameSwitcher';
 import { GalleryScreen } from './GalleryScreen';
+import { GLASS_TEXT_COLOR, LiquidGlassView } from './LiquidGlassView';
 import { PermissionNotice } from './PermissionNotice';
 import { SettingsScreen } from './SettingsScreen';
 import { ShutterButton } from './ShutterButton';
 import { ToolRow } from './ToolRow';
 import { ViewfinderBar } from './ViewfinderBar';
+import { ViewfinderWindow } from './ViewfinderWindow';
 import type { FocusTarget } from './FocusReticle';
 import type { TimerSeconds } from './ToolRow';
 import type { ThemeInk } from '../constants/theme';
@@ -84,7 +96,10 @@ const PREVIEW_PADDING = 10;
 /** 取景器中央那枚 24pt 十字（手动对焦唯一的"画面中心"参照） */
 const RETICLE = 24;
 
-/** 参考线顶部的格式标签。写的是参照画幅，不是当前焦段 —— 当前焦段在胶囊上 */
+/**
+ * 镂空取景窗顶部那行标签。写的是**参照画幅**（这块机器按 35mm 的视场标定），
+ * 不是当前焦段 —— 当前焦段是变焦档位，读数在胶囊上，而且它每一档都在变。
+ */
 const GUIDE_LABEL = '35mm';
 
 /**
@@ -99,10 +114,17 @@ const LENS_PUSH_BOUNCINESS = 7;
 const DOUBLE_OVERLAY_OPACITY = 0.5;
 
 /**
- * 开屏默认停在 1×那一档。`ZOOM_STOPS` 的顺序是 0.5× / 1× / 2×，
- * 下标写死是因为它是相机硬件的档位顺序，不是可变列表。
+ * 开屏默认停在 1×那一档，也是捏合变焦的落脚档。
+ *
+ * 用 `id` 反查下标而不是写死数字：档位表现在有五档
+ * （0.5× / 1× / 1.4× / 2× / 长焦），它是**语义顺序**而不是什么硬件寄存器顺序，
+ * 往表里插一档，写死的 1 就会静默指到别的档上去。
+ * `Math.max(0, …)` 兜住"找不到"（表被改空）的情况，退回第一档而不是 -1。
  */
-const DEFAULT_STOP_INDEX = 1;
+const DEFAULT_STOP_INDEX = Math.max(
+  0,
+  ZOOM_STOPS.findIndex((stop) => stop.id === 'wide10'),
+);
 
 /** 定时档位顺序：关 → 3s → 10s */
 const TIMER_STEPS: readonly TimerSeconds[] = [0, 3, 10];
@@ -110,6 +132,17 @@ const TIMER_STEPS: readonly TimerSeconds[] = [0, 3, 10];
 /** 底部核心区左右两侧的拟物尺寸：比快门小一圈，视觉重心才在中间 */
 const CORE_THUMB_SIZE = 46;
 const CORE_ENTRY_SIZE = 46;
+
+/**
+ * 两枚玻璃按钮里那两幅纯 `View` 图形的边长。
+ *
+ * 写成常量而不是让图形自己撑满：`DialButton` 的盘子是 `size × size`，图形太满会贴着
+ * 玻璃边缘，太小又会被盘子吃掉。38pt 的顶栏按钮配 18pt 图形、46pt 的核心区按钮配 22pt，
+ * 都和它们各自盘子里的留白成同一个比例（约 0.47，与旧版 `size * 0.48` 的位图一致），
+ * 这样将来改按钮尺寸时，两个数字摆在一起就能看出该一起动。
+ */
+const SETTINGS_GLYPH = 18;
+const FILM_GLYPH = 22;
 
 /**
  * `CameraView` 的原生扩展属性。对焦点与曝光补偿都打在原生补丁上，
@@ -135,8 +168,6 @@ function filmCounterLetter(facing: CameraType): string {
 
 /** 取景器里的静态几何：只有尺寸没有颜色，所以放在模块级也不会被深浅色冻结 */
 const chrome = StyleSheet.create({
-  guide: { position: 'absolute' as const, overflow: 'hidden' as const },
-  guideLine: { position: 'absolute' as const },
   layer: { position: 'absolute' as const },
   reticle: { position: 'absolute' as const, width: RETICLE, height: RETICLE },
   reticleH: { position: 'absolute' as const, left: 0, right: 0, top: RETICLE / 2, height: StyleSheet.hairlineWidth },
@@ -152,28 +183,15 @@ const chrome = StyleSheet.create({
   },
 });
 
-/** 三分构图线：只帮构图，压得越淡越好 */
-function GuideGrid({ rect }: { rect: Rect }) {
-  const { ink } = useTheme();
-  // 浅色主题下虚线反而要比深色更暗才压得住画面，所以颜色交给主题，
-  // 整体再乘一个透明度把三分线拉回"几乎看不见"的强度
-  const lineColor = ink.paperFaint;
-  const hairline = StyleSheet.hairlineWidth;
-  return (
-    <View
-      pointerEvents="none"
-      style={[
-        chrome.guide,
-        { left: rect.left, top: rect.top, width: rect.width, height: rect.height, opacity: 0.6 },
-      ]}
-    >
-      <View style={[chrome.guideLine, { left: rect.width / 3, top: 0, bottom: 0, width: hairline, backgroundColor: lineColor }]} />
-      <View style={[chrome.guideLine, { left: (rect.width / 3) * 2, top: 0, bottom: 0, width: hairline, backgroundColor: lineColor }]} />
-      <View style={[chrome.guideLine, { top: rect.height / 3, left: 0, right: 0, height: hairline, backgroundColor: lineColor }]} />
-      <View style={[chrome.guideLine, { top: (rect.height / 3) * 2, left: 0, right: 0, height: hairline, backgroundColor: lineColor }]} />
-    </View>
-  );
-}
+/*
+ * 三分构图线（旧 `GuideGrid`）已删除。
+ *
+ * 它和 `ViewfinderWindow` 的九宫格是**同一件事的两种画法**：都在画幅窗口里切四刀。
+ * 两者叠着渲染的话，线宽（hairline vs 1pt）和强度（主题色 ×0.6 vs 白色 0.28）
+ * 都对不齐，同一个位置会出现两条虚影 —— 看起来就是"糊了"。
+ * 所以保留镂空窗那一套（它和窗口边框、四角角标出自同一次绘制，强度天然一致），
+ * 把设置页的"构图辅助线"开关直接接到 `ViewfinderWindow` 的 `grid` prop 上。
+ */
 
 /** 四角括号 + 中央十字：提示"画幅里真正会被拍到的区域" */
 function FocusBrackets({ rect }: { rect: Rect }) {
@@ -198,6 +216,93 @@ function FocusBrackets({ rect }: { rect: Rect }) {
         <View style={[chrome.reticleV, { backgroundColor: color }]} />
         <View style={[chrome.reticleDot, { borderColor: color }]} />
       </View>
+    </View>
+  );
+}
+
+/*
+ * 顶栏与核心区那两枚按钮的图形。
+ *
+ * 都用纯 `View` 画，**不引入任何图片资源**：`DialButton` 的图标尺寸是 `size * 0.48`
+ * （38pt 的按钮上只有 18pt 见方），这个尺寸下位图会被缩放糊掉一圈，而线框图形
+ * 在任意尺寸都是 1pt 实线。这也和 `ToolRow` 里那五枚图标的画法统一。
+ *
+ * 坐标全部写成"画布比例"而不是绝对值：图标要在 38pt（顶栏）与 46pt（核心区）
+ * 两种按钮上共用同一个函数，写死 18pt 的笔画在其中一边一定错位。
+ * 颜色由外面传进来（`DialButton` 已经在禁用态上算好了），画法本身不管配色。
+ */
+
+/** 设置：三条长短不一的横线 + 三颗旋钮 —— "可调节"这件事最通用的图形语言 */
+function SettingsGlyph({ size, color }: { size: number; color: ColorValue }) {
+  const w = size;
+  const h = size;
+  const bar = Math.max(1, Math.round(h * 0.09));
+  const knob = Math.max(2, Math.round(h * 0.19));
+  // 轨道长度比例（0~1）：长短交错，一眼就知道是"几个各自可调的档位"而不是列表
+  const tracks = [0.34, 0, 0.16];
+  const knobs = [0.62, 0.26, 0.74];
+  return (
+    <View style={{ width: w, height: h, justifyContent: 'space-between', paddingVertical: h * 0.06 }}>
+      {tracks.map((start, index) => (
+        <View key={index} style={{ height: knob, justifyContent: 'center' }}>
+          <View
+            style={{
+              position: 'absolute',
+              left: w * start,
+              right: 0,
+              height: bar,
+              borderRadius: bar / 2,
+              backgroundColor: color,
+            }}
+          />
+          <View
+            style={{
+              position: 'absolute',
+              left: Math.min(Math.max(w * knobs[index]! - knob / 2, 0), w - knob),
+              width: knob,
+              height: knob,
+              borderRadius: knob / 2,
+              backgroundColor: color,
+            }}
+          />
+        </View>
+      ))}
+    </View>
+  );
+}
+
+/**
+ * 胶卷抽屉：一个带齿孔的圆角矩形（35mm 暗盒的正面）。
+ *
+ * 为什么是"矩形 + 两侧齿孔"而不是别的：这枚按钮挨着底部的胶卷名（`preset.name`），
+ * 用户要一眼看出"这里是换胶卷的地方"。齿孔是胶片区别于其他任何矩形（卡片、电池、票）
+ * 的唯一特征；用半圆凹口画法反而会在 18pt 下缩成一排看不见的锯齿。
+ * 齿孔用比边框更细的短横线，是"暗盒"而不是"打孔纸"。
+ */
+function FilmGlyph({ size, color }: { size: number; color: ColorValue }) {
+  const w = size;
+  const h = size * 0.78;
+  const hairline = Math.max(1, Math.round(w * 0.07));
+  const holeHeight = h * 0.14;
+  return (
+    <View
+      style={{
+        width: w,
+        height: h,
+        borderRadius: Math.max(2, w * 0.16),
+        borderWidth: hairline,
+        borderColor: color,
+        justifyContent: 'space-around',
+        paddingHorizontal: w * 0.16,
+        paddingVertical: h * 0.16,
+      }}
+    >
+      {[0, 1, 2].map((index) => (
+        <View key={index} style={{ flexDirection: 'row', justifyContent: 'space-between', height: holeHeight }}>
+          <View style={{ width: w * 0.16, backgroundColor: color }} />
+          <View style={{ width: w * 0.16, backgroundColor: color }} />
+        </View>
+      ))}
     </View>
   );
 }
@@ -320,6 +425,34 @@ export function CameraScreen() {
     [previewBox.width, previewBox.height, previewLayout.width, previewLayout.height],
   );
 
+  /**
+   * 镂空取景窗要的坐标是**取景器容器**（`previewBox`）坐标系里的，这里把画布坐标搬过去。
+   *
+   * 三个量的关系（实测，别凭直觉改）：
+   *   · `previewBox`（第 267 行那个 state）：取景器容器自己的实测尺寸，`handlePreviewLayout`
+   *     从 `event.nativeEvent.layout` 写入 —— 它是**容器坐标系的原点与量程**；
+   *   · `previewLayout`（第 323 行）：`computeFrameLayout(frame, previewBox - 2*PREVIEW_PADDING)`
+   *     的结果，`previewLayout.width/height` 是**画布**尺寸，`previewLayout.window` 是画幅窗口
+   *     相对**画布左上角**的位置（`geometry.ts` 里那个 `window` 就是这么算出来的）；
+   *   · `frameOffset`（第 333 行）：`(previewBox - previewLayout) / 2` 取正 —— 画布在容器里
+   *     居中摆放时左上角的落点，也就是**画布坐标系 → 容器坐标系**的平移量。
+   *
+   * 所以 `frameOffset + previewLayout.window` 才是"相对取景器容器"的窗口位置，
+   * 正是 `ViewfinderWindow` 的 `window` prop 的契约（它按 `container.width - (left + width)`
+   * 算右边界，交错了右边两块玻璃就直接飘到屏幕外）。
+   * `<View style={styles.canvas}>` 那一层用的是 `frameOffset + previewLayout.width/height`
+   * —— 同一套平移量，只是搬的是画布本身而不是窗口。
+   */
+  const viewfinderWindow = useMemo(
+    () => ({
+      left: frameOffset.left + previewLayout.window.left,
+      top: frameOffset.top + previewLayout.window.top,
+      width: previewLayout.window.width,
+      height: previewLayout.window.height,
+    }),
+    [frameOffset.left, frameOffset.top, previewLayout.window],
+  );
+
   const stageBox = useMemo(
     () => computeDevelopStageBox({ width: window.width, height: window.height }),
     [window.width, window.height],
@@ -422,10 +555,34 @@ export function CameraScreen() {
     setStopIndex(DEFAULT_STOP_INDEX);
   }, []);
 
-  const handleZoomChange = useCallback((next: number) => {
-    // 捏合是连续变焦，档位高亮没有意义，焦段读数直接跟着 zoom 走
-    setZoom(toCameraZoom(next));
-  }, []);
+  const handleZoomChange = useCallback(
+    (next: number) => {
+      const quantized = toCameraZoom(next);
+      /*
+       * 捏合只在**主摄**上成立。
+       *
+       * `zoom` 的换算底数（`ASSUMED_MAX_ZOOM_FACTOR = 16`）是主摄的
+       * `videoMaxZoomFactor`：超广角那支通常只有 2 上下，长焦又是另一个数，
+       * 而且三支镜头的 native 焦距本来就不同。所以**同一个 `zoom` 值落在不同镜头上，
+       * 是三种完全不同的放大倍率** —— 不把镜头先钉回主摄，捏合出来的画面就是随机的。
+       *
+       * 停在 0.5× / 长焦档上捏合时，先把档位落回主摄那一档，只改 `stopIndex` 与 `lens`，
+       * **刻意不动 `zoom`** —— 下一行马上就会把这一帧的捏合值写进去。
+       * - 不直接无视这次捏合：那会让五档里有两档的手势像坏了一样；
+       * - 不调 `applyStop()`：它会把 `zoom` 归零，而 `usePinchZoom` 的基准是
+       *   捏合开始那一刻的 `zoom`，中途归零会让接下来的每一帧都跳一下。
+       */
+      if (stop.lens !== 'wide') {
+        const wideStop = ZOOM_STOPS[DEFAULT_STOP_INDEX];
+        if (wideStop !== undefined) {
+          setStopIndex(DEFAULT_STOP_INDEX);
+          setLens(resolveStop(wideStop, { lenses, facing }).lens);
+        }
+      }
+      setZoom(quantized);
+    },
+    [facing, lenses, stop.lens],
+  );
 
   // 捏合与档位共用同一个 `zoom`：两条路都只改这一个值，切档时不会把捏合的结果丢掉
   const pinchHandlers = usePinchZoom({
@@ -873,6 +1030,7 @@ export function CameraScreen() {
       watermarkLayout: settings.watermarkLayout,
       placeDetail: settings.placeDetail,
       grainLevel: settings.grainLevel,
+      locationMode: settings.locationMode,
     });
     if (!result.ok) {
       setStatus({ kind: 'idle' });
@@ -955,16 +1113,21 @@ export function CameraScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: theme.body }]}>
-      {/* 深色主题下才铺皮革底纹：浅色主题要的是一块浅底板，铺深色皮革等于把主题又变回深色 */}
-      {theme.scheme === 'dark' ? (
-        <View style={styles.fill} pointerEvents="none">
-          <Image source={UI_ASSETS.leatherTile} style={styles.backdrop} resizeMode="repeat" fadeDuration={0} />
-        </View>
-      ) : null}
+      {/*
+        ① 顶栏：画幅徽标 + 底片计数 + 设置。闪光灯/翻转/相册都搬去了工具行与核心区。
 
-      {/* ① 顶栏：画幅徽标 + 底片计数 + 设置。闪光灯/翻转/相册都搬去了工具行与核心区 */}
-      <View style={[styles.topPanel, { paddingTop: insets.top + 4 }]}>
-        <View style={[styles.panelPlate, { backgroundColor: theme.panel }]} pointerEvents="none" />
+        皮革底纹那一整块（`UI_ASSETS.leatherTile` 的 `resizeMode="repeat"`）已经删掉。
+        理由：这块玻璃材质要能**采到它背后的画面**（`LiquidGlassView` 默认叠 75 强度的
+        `BlurView`），底纹是一张完全不透明的平铺位图，铺在下面等于让模糊去采一块死平的布 ——
+        那不是液态玻璃，那是一块塑料贴纸。屏幕的底色由 `styles.root` 的 `theme.body` 兜底。
+
+        `styles.overlayChrome` 里的 `zIndex` 见文件头注释：取景器在 JSX 里排在后面。
+      */}
+      <LiquidGlassView
+        radius={0}
+        rim={false}
+        style={[styles.topPanel, styles.overlayChrome, { paddingTop: insets.top + 4 }]}
+      >
         <FrameBadge
           code={frame.code}
           name={frameName}
@@ -978,14 +1141,14 @@ export function CameraScreen() {
             {filmCounterText}
           </Text>
           <DialButton
-            icon={UI_ASSETS.iconSettings}
+            glyph={(color) => <SettingsGlyph size={SETTINGS_GLYPH} color={color} />}
             active={settingsVisible}
             onPress={handleOpenSettingsScreen}
             accessibilityLabel={t('camera.settings.a11y')}
             size={38}
           />
         </View>
-      </View>
+      </LiquidGlassView>
 
       {/* ② 取景器 */}
       <View
@@ -1016,6 +1179,24 @@ export function CameraScreen() {
           </Animated.View>
         ) : null}
 
+        {/*
+          镂空取景窗是**取景器的直接子层**，故意不放进下面 `FrameSwitcher` 里。
+          理由：`FrameSwitcher` 是个左右滑动的容器，镂空窗跟着它跑的话，滑到一半时
+          四块玻璃的边界只盖住画幅宽度的一半，屏幕两侧会露出没被玻璃压住的实时画面 ——
+          那就不再是"取景窗"而是一张会滑动的贴纸。它要始终铺满整个取景器。
+
+          九宫格交给它的 `grid` prop（设置页那个"构图辅助线"开关直接接过来），
+          本地那套 `GuideGrid` 已经删掉，理由见它原来所在的模块级注释。
+        */}
+        {previewBox.width > 1 && previewBox.height > 1 ? (
+          <ViewfinderWindow
+            window={viewfinderWindow}
+            container={previewBox}
+            label={GUIDE_LABEL}
+            grid={resolved.showGuide}
+          />
+        ) : null}
+
         {previewBox.width > 1 && previewBox.height > 1 ? (
           <FrameSwitcher
             index={frameIndex}
@@ -1034,9 +1215,7 @@ export function CameraScreen() {
                 },
               ]}
             >
-              {resolved.showGuide ? <GuideGrid rect={previewLayout.window} /> : null}
-              {/* 画幅参考线：只有这一条 1px 白线，相框贴图留到合成阶段 */}
-              <AspectGuide window={previewLayout.window} label={GUIDE_LABEL} />
+              {/* 画幅参考线现在由上面那层镂空窗画：窗口边框 + 四角角标，都在同一次绘制里 */}
               <FocusBrackets rect={previewLayout.window} />
             </View>
             {interactive ? (
@@ -1155,9 +1334,18 @@ export function CameraScreen() {
         </View>
       </View>
 
-      {/* ③ + ④ 控制台：工具行 + 核心区。齿轮/开关类的改动只脏这一块 */}
-      <View style={[styles.console, { paddingBottom: Math.max(insets.bottom, 10) }]}>
-        <View style={[styles.panelPlate, { backgroundColor: theme.panel }]} pointerEvents="none" />
+      {/*
+        ③ + ④ 控制台：工具行 + 核心区。齿轮/开关类的改动只脏这一块。
+
+        和顶栏同一套处理：换玻璃、删皮革底纹与 `styles.panelPlate`。
+        `paddingBottom` 依旧按 home indicator 让位 —— 玻璃要一直铺到屏幕最下沿，
+        那圈安全区是玻璃自己的内边距，不是外面垫的一块留白。
+      */}
+      <LiquidGlassView
+        radius={0}
+        rim={false}
+        style={[styles.console, styles.overlayChrome, { paddingBottom: Math.max(insets.bottom, 10) }]}
+      >
         <ToolRow
           doubleExposure={doubleExposure}
           timerSeconds={timerSeconds}
@@ -1183,7 +1371,7 @@ export function CameraScreen() {
           />
           <View style={[styles.coreSide, styles.coreSideRight]}>
             <DialButton
-              icon={UI_ASSETS.iconFilm}
+              glyph={(color) => <FilmGlyph size={FILM_GLYPH} color={color} />}
               onPress={handleOpenFilmDrawer}
               disabled={!interactive}
               accessibilityLabel={t('camera.preset.a11y', { name: preset.name })}
@@ -1200,7 +1388,7 @@ export function CameraScreen() {
             </Text>
           </View>
         </View>
-      </View>
+      </LiquidGlassView>
 
       <DevelopOverlay status={status} onDismiss={handleDismiss}>
         {filmStage.stage !== null ? (
@@ -1241,21 +1429,21 @@ function createStyles(ink: ThemeInk, scheme: 'dark' | 'light') {
   const fill = { position: 'absolute' as const, top: 0, right: 0, bottom: 0, left: 0 };
   const hairline = StyleSheet.hairlineWidth;
   return StyleSheet.create({
-    root: { flex: 1 },
+    /*
+     * 取景器绝对铺满之后，竖排里只剩顶栏与控制台两层，靠这个把它们顶到两端。
+     * 少了它，两层会贴着排在上面、底下留一大片空白（`position: 'absolute'` 的那层
+     * 不参与 flex 分配，中间那条"撑开"的余量得由 `space-between` 自己造）。
+     */
+    root: { flex: 1, justifyContent: 'space-between' },
     fill,
-    backdrop: { ...fill, opacity: 0.95 },
     topPanel: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
       paddingHorizontal: 14,
       paddingBottom: 9,
-      borderBottomWidth: hairline,
-      borderBottomColor: ink.hairline,
       overflow: 'hidden',
     },
-    // 半透明衬板：让下面的皮革底纹还能透出一点，纯色面板会把机身质感整片盖掉
-    panelPlate: { ...fill, opacity: 0.88 },
     topActions: { flexDirection: 'row', alignItems: 'center', flexShrink: 0 },
     filmCounter: {
       minWidth: 42,
@@ -1265,8 +1453,26 @@ function createStyles(ink: ThemeInk, scheme: 'dark' | 'light') {
       fontSize: 10,
       letterSpacing: 0.8,
     },
-    preview: { flex: 1, overflow: 'hidden', backgroundColor: '#0A0A0B' },
+    preview: {
+      position: 'absolute',
+      top: 0,
+      right: 0,
+      bottom: 0,
+      left: 0,
+      overflow: 'hidden',
+      // 权限未给或相机还没上屏时兜一块近黑：玻璃压在半透明底色上比压在纯黑上更像玻璃
+      backgroundColor: '#0A0A0B',
+    },
     previewCovered: { opacity: 0 },
+    /*
+     * 浮在画面之上的两层玻璃（顶栏 / 控制台）必须抬到取景器上面。
+     *
+     * RN 里同级兄弟是**按声明顺序**画的，`styles.preview` 在 JSX 里排在顶栏之后，
+     * 不加这个 `zIndex` 的话相机会把两栏整个盖住 —— 而它俩还得能点（快门、设置、胶卷）。
+     * 取景器自己是 `position: 'absolute'`，两者都不带 `elevation`（那是 Android 的事），
+     * 所以这一个 `zIndex` 就是全部的层级依据。
+     */
+    overlayChrome: { zIndex: 2 },
     canvas: { position: 'absolute' },
     focusCatcher: { ...fill },
     focusHint: { position: 'absolute', left: 0, right: 0, bottom: 68, alignItems: 'center' },
@@ -1319,8 +1525,14 @@ function createStyles(ink: ThemeInk, scheme: 'dark' | 'light') {
     barLayer: { position: 'absolute', left: 0, right: 0, bottom: 12, alignItems: 'center' },
     console: {
       paddingTop: 8,
-      borderTopWidth: hairline,
-      borderTopColor: ink.hairline,
+      /*
+       * 这里原本有一条贴着屏幕上边缘方向的 1pt 分隔线，已删。
+       *
+       * 它的作用只是"把控制台和上面的画面分开"，而现在这层玻璃自己就有边界：
+       * 上下两条 1px 硬边线会把玻璃框成一个矩形面板，恰好把"材质浮在画面之上"这件事
+       * 破坏掉 —— 玻璃的边界应该由亮度差和折射环给，不该由画线给。
+       * （顶栏同理：靠屏幕边缘那条线更是没意义。）
+       */
       overflow: 'hidden',
     },
     coreRow: {

@@ -255,11 +255,15 @@ function firstNonEmpty(...values: Array<string | null | undefined>): string {
  * 这个函数只做"反查结果 → 结构"，一行字都不拼，所以它对语言**真的没有可判之处**；
  * 给它加一个 `geoLocale` 只会得到一个装饰性参数（而且 `ResolvedPlace` 也没有地方存语言 ——
  * 存了就违背本文件开头"存结构、渲染时才拼"那条原则）。所以地名语言在这里的落点是
- * **调用点上一行**：`locationStamp.ts` / `importPhoto.ts` 都是先
- * `const locale = resolveGeoLocale(geoSettings, uiLocale)` 再调本函数，
- * 然后把同一个 `locale` 交给 `formatResolvedPlace`。判断仍然只有 `resolveGeoLocale` 一处。
+ * **调用点上一行**：`locationStamp.ts` 是先 `const locale = resolveGeoLocale(geoSettings, uiLocale)`
+ * 再调本函数、然后把同一个 `locale` 交给 `formatResolvedPlace`。
+ * 判断只有 `resolveGeoLocale` 一处。
  *
- * 单位：`latitude` / `longitude` 是**度**（WGS-84）。
+ * ⚠️ **相册导入那条路（`importPhoto.ts`）不调 `resolveGeoLocale`**，这是有意的：
+ * 反查出来的 `ResolvedPlace` 要一路带到渲染层，中间隔着一次串行导入（用户可能改设置、
+ * 也可能切界面语言）—— 在这里把语言**定死**就等于"按导入那一刻的语言印"，
+ * 而项目里其他地方都是"按看到那一刻的语言印"。所以它只把界面语言原样交下去，
+ * 由渲染层（`FilmCompositor` → `formatResolvedPlace`）调用 `resolveGeoLocale` 定语言。
  */
 export function resolvePlaceFromGeocode(
   address: PlaceGeocodeAddress | null | undefined,
@@ -278,6 +282,52 @@ export function resolvePlaceFromGeocode(
     countryCode: clean(source.isoCountryCode).toUpperCase(),
     coords: formatCoords(latitude, longitude),
   };
+}
+
+/**
+ * 只有坐标、没有任何地名的结构（`city` / `region` / `country` / `countryCode` 全是空串）。
+ *
+ * **两个调用点共用它，一个字都不许各写一份**：
+ * - `locationStamp.ts` 的"坐标档"（用户明确选了"只印坐标"）；
+ * - `importPhoto.ts` 的反查失败兜底（老照片拿不到地名，退成坐标）。
+ *
+ * ⚠️ **不许**用 `resolvePlaceFromGeocode(null, lat, lng)` 来省这一行 —— 那个函数
+ * 走的是"逐级降级"（`city → district → subregion → region → fallbackCity`），
+ * 传 `null` 进去照样会从兜底里取出非空值，形状和"只有坐标"**不一样**。
+ * 这个形状只有一个来源，所以"坐标档"在成片、
+ * 在相机页 LCD、在导入的老照片上永远是同一个样子。
+ *
+ * 渲染出来是什么：`formatResolvedPlace` 逐级降级到最后一档，返回的就是 `coords`
+ * 本身（`LAT 23°02'N LON 114°24'E`）。
+ */
+export function coordsOnlyPlace(latitude: number, longitude: number): ResolvedPlace {
+  return {
+    city: '',
+    region: '',
+    country: '',
+    countryCode: '',
+    coords: formatCoords(latitude, longitude),
+  };
+}
+
+/**
+ * 这个结构里**有没有任何一个地名**（只看四个名字字段，不看 `coords`）。
+ *
+ * 为什么不能拿 `formatResolvedPlace(...).trim().length > 0` 来代替：那个渲染器在
+ * 一个字段都没有时会**退回坐标串**，于是"什么都没解析出来"和"解析出了一个城市"
+ * 一样都是非空 —— 也就是永远判成"有地名"。
+ *
+ * 调用点：反查"成功"但一个字段都没给（海上、极地、系统只回了街道名），
+ * 这一行没有任何信息量，调用方据此退回"只有坐标"（和 `locationStamp.ts` 里
+ * `text.trim().length > 0 ? ok : failed` 对同一种情形的判断是同一个意思）。
+ */
+export function hasPlaceName(place: ResolvedPlace): boolean {
+  return (
+    place.city.trim().length > 0 ||
+    place.region.trim().length > 0 ||
+    place.country.trim().length > 0 ||
+    place.countryCode.trim().length > 0
+  );
 }
 
 /** 港澳台判定。集中在这一处，别处不要自己比较国家码。 */

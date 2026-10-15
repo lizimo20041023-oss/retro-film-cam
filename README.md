@@ -48,6 +48,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [24. v1.3.0：按十一节规格重构](#24-v130按十一节规格重构)
 - [25. v1.4.0：Dazz 级极简重构 + 六节增量 + 商标清理](#25-v140dazz-级极简重构--六节增量--商标清理)
 - [26. v1.4.1：日期"乱码"与半格双联](#26-v141日期乱码与半格双联)
+- [27. v1.5.0：液态玻璃取景器 + 真光学变焦 + 导入反查地名](#27-v150液态玻璃取景器--真光学变焦--导入反查地名)
 
 ---
 
@@ -2308,6 +2309,196 @@ const needsTwoShots = frame.slots !== undefined && frame.slots.length >= 2;
 | 半格提示 `top: 54` 会不会压到别的控件 | 没有 375pt 真机 |
 | 缓存的生命周期 | 第一张的临时文件在 `FileSystem` cache 目录，**没有超时清理**：切后台几小时回来再拍第二格，可能拿一张很旧的画面凑格 |
 | 物理侧键 / 定时器是否也走半格分支 | 两条路径都汇入同一个 `handleShutter`，结构上继承，但没实机触发过 |
+| 仓库里没有测试 | `__tests__` 不存在，`expo export` 也不做类型检查 —— 唯一的自动防线是 `npm run typecheck` |
+
+---
+
+## 27. v1.5.0：液态玻璃取景器 + 真光学变焦 + 导入反查地名
+
+用户给的三段规格**一次做完、一次提交、一次 CI**。三段里有三处"规格点名要的 API 在本项目的
+`expo-camera@57.0.6` 上并不存在"，走的是等价但不同的路线 —— 下面每条都按
+「规格说什么 / 实际怎么做 / 为什么」写清。
+
+### 27.1 §一 Liquid Glass：材质收成两个组件
+
+规格要的是：`BlurView tint="systemUltraThinMaterialDark" intensity={75}` + `rgba(18,18,22,0.42)`
+底色、45° 斜向 1px 折射环（左上亮 / 中段几乎透明 / 右下微亮）、顶部 0.5px 内高光；相机预览
+铺满整屏；中央镂空取景窗；色温/焦段/曝光胶囊与次级按钮全部套玻璃；**彻底删掉拟物齿轮贴图**。
+
+落地成**两个组件**，其它地方只 import、不各写一份：
+
+| 文件 | 职责 |
+| --- | --- |
+| `src/components/LiquidGlassView.tsx` | 材质本体。`BlurView` + 底色 + `LinearGradient` 画折射环（`RIM_COLORS` = 左上 `rgba(255,255,255,0.6)` / 中段 `rgba(255,255,255,0.1)` / 右下 `rgba(255,255,255,0.32)`，`start {0,0}` → `end {1,1}` 就是那条 45°）+ 顶部 0.5pt `rgba(255,255,255,0.4)` 内高光。导出 `GLASS_TEXT_COLOR = '#FFFFFF'` 与 `glassTextShadow`（`rgba(0,0,0,0.65)`、radius 2、offset 0）。 |
+| `src/components/ViewfinderWindow.tsx` | 镂空取景窗。**四块**玻璃围出窗口（不用 `MaskedView`，理由见 §27.5），窗口内 1px `rgba(255,255,255,0.75)` 亮框 + 四个 L 型角标（`CORNER_ARM 16` / `CORNER_THICK 2`）+ 九宫格 `rgba(255,255,255,0.28)`；整层 `pointerEvents="none"`。切画幅时四个 `Animated.Value` + `Animated.spring`（`speed 22` / `bounciness 5`）补间 `left/top/width/height`，**起点取动画中途的当前值**，所以连点画幅不会跳回原位。 |
+
+⚠️ **RN 0.86 已经把 `StyleSheet.absoluteFillObject` 删掉了**（只剩 `absoluteFill`，那是个注册过的
+数字 ID，展开不了）。所以这两个文件都手写了 `position/top/right/bottom/left` 四行；全仓
+`DialButton` / `ShutterButton` / `FilmDrawer` / `SettingsScreen` / `GalleryScreen` 都留了同样的注释提醒。
+
+**"删掉拟物齿轮贴图"落到了哪里。** 规格点名的"锯齿拟物齿轮贴图"指的是 `DialButton` 底下那张
+48 齿滚花位图（`assets/ui/dial.png`）与设置入口的 `icon-settings.png`（它本身就是"三档推子"，
+见 `generate_ui_assets.py` 里"为什么不用齿轮：图标在界面上只占 21pt，齿轮的齿在 21pt 上会糊成
+一团"那段注释）。这一版把**五个已经零引用的条目**一并删干净了，合计 **29.0 KB**：
+
+| 删掉的 | 原用途 | 大小 |
+| --- | --- | --- |
+| `dial.png` / `dial-on.png` | 44pt 滚花拨轮底（未点亮 / 点亮） | 23.0 KB |
+| `icon-settings.png` | 设置入口图标（三档推子） | 1.4 KB |
+| `icon-film.png` | 胶卷抽屉入口图标（细线胶片条） | 2.2 KB |
+| `icon-album.png` | 相册入口图标（**早就是零引用**） | 2.4 KB |
+
+三处一起改：`src/constants/uiAssets.ts` 删条目、`assets/ui/` 删 PNG、`generate_ui_assets.py`
+的 `main()` 删调用（`make_*` 函数留着当参考实现，所以重跑脚本不会把它们变回来）。
+替代品是纯 `View` 画的矢量图形：`SettingsGlyph`（18pt，三条长短不一的横轨 + 三颗旋钮 ——
+**换画法不换语义**，被删的那张 PNG 本来就是三档推子）与 `FilmGlyph`（22pt，带齿孔的圆角矩形）。
+`DialButton` 的 props 因此从 `icon: ImageSourcePropType` 变成 `glyph: (color) => ReactElement`，
+点亮态改由玻璃自己的 overlay（`rgba(229,169,60,0.22)`）表达，图标保持纯白。
+
+⚠️ `leather-tile.png` **没有删**：`src/components/FilmDrawer.tsx` 的暗房面板还在用它。
+取景器里那块皮革底纹删了 —— 玻璃要能采到画面，铺一张不透明底纹等于让模糊去采一块死平的布。
+
+### 27.2 §二 真光学变焦：五档，每档都切物理镜头
+
+规格点名要用 `device.neutralZoom`、`virtualDeviceSwitchOverVideoZoomFactors`、`physicalDevices`
+把 13 / 24-26 / 35 / 48-52mm 与长焦档一一映射。
+
+**这三个 API 在 `expo-camera@57.0.6` 里都不存在** —— JS 侧能拿到的只有
+`selectedLens: string`、`onAvailableLensesChanged`、`ref.getAvailableLensesAsync()` 三样。
+所以走的是"**切物理镜头 + 每档 `zoom: 0`**"，它在数学上等价：
+
+```
+expo-camera 原生实现（CameraSessionManager.swift）
+    device.videoZoomFactor = videoMaxZoomFactor ^ zoom
+```
+
+`zoom` 是**指数行程**、底数是**当前设备 activeFormat 的 `videoMaxZoomFactor`**，而那个底数
+JS 侧从来读不到。三摄虚拟设备的 `videoMaxZoomFactor` 在 100 以上 —— 按本项目的
+`ASSUMED_MAX_ZOOM_FACTOR = 16` 写出来的 `zoom` 落到虚拟设备上会放大 6 倍以上，
+捏合到底就是 37× 数码变焦。**这就是"切焦段变马赛克"的真因**（`transform: [{ scale }]`
+那 3.5% 只是换档推拉动效，从来不是变焦机制）。
+
+而 `zoom = 0` 时 `videoZoomFactor = videoMaxZoomFactor ^ 0 = 1.0`，**正好是该镜头的 100% 原生视场，
+与底数无关**。所以：每档切对物理镜头 + `zoom: 0`，光学视场就精确，完全绕开未知的底数。
+
+| 档 | `lens` | `factor` | `zoom` | 说明 |
+| --- | --- | --- | --- | --- |
+| `0.5×` | `ultraWide` | 1 | 0 | 超广角原生视场 |
+| `1×` | `wide` | 1 | 0 | 主摄原生视场 |
+| `1.4×` | `wide` | 1.4 | `0.12136` | 主摄传感器内裁切 |
+| `2×` | `wide` | 2 | `0.25` | 同上 |
+| `3×` | `telephoto` | 1 | 0 | 长焦原生视场（没有长焦的机型变灰） |
+
+- **`1.4×` 为什么不是精确的 `35/26 = 1.3462`**：那样按钮上的"1.4×"和实际裁切就对不上，
+  而"标签和画面严格一致"是这张表的第一原则。26mm 假定下 1.4 = 36.4mm，长约 4%，肉眼无感。
+- **`3×` 的标签是算出来的**：`TELEPHOTO_MULTIPLIER = round(ASSUMED_LENS_NATIVE_MM.telephoto / ASSUMED_LENS_NATIVE_MM.wide)`
+  = `round(77/26)` = 3。它不参与任何换算，只是按钮上的字 —— 写成算式是为了改假定焦距时它跟着变。
+- **超广角与长焦没有"回落到默认镜头"的兜底**：默认镜头是主摄，落到主摄上等于给用户一个假档位。
+  取不到就 `available: false`（变灰）。单摄机型 0.5× 与长焦变灰，**1.4× / 2× 仍然可用**。
+- **捏合是唯一会临时造出 `zoom > 0` 的入口**，而"16"这条行程只对主摄成立。所以
+  `handleZoomChange` 会**先把镜头钉回主摄**再写 `zoom`。它刻意不调用 `applyStop()` ——
+  那会把 `zoom` 归零，而 `usePinchZoom` 的基准是捏合开始那一刻的 `zoom`，中途归零每一帧都会跳。
+- `DEFAULT_STOP_INDEX` 从写死的 `1` 改成 `ZOOM_STOPS.findIndex((s) => s.id === 'wide10')`：
+  档位表是**语义顺序**不是硬件寄存器顺序，往表里插一档，写死的 `1` 就会静默指错档。
+
+### 27.3 §三 导入：EXIF 坐标先反查地名，失败退回坐标
+
+老照片导入以前**只印坐标**（`toResolvedPlace` 把 `city/region/country/countryCode` 一律填空串）。
+现在 `importPhoto.ts` 读到的 EXIF GPS 会走一次 `Location.reverseGeocodeAsync`：
+
+- 成功 → `resolvePlaceFromGeocode()` 的逐级降级结果（城市 / 省 / 国家），跟 `options.locale` 与
+  设置页的"地名语言"档位走，港澳台前缀规则**只许保持不许回退**；
+- 失败 → `null`，调用方退回 `toResolvedPlace`（**只有坐标**）。
+
+⚠️ **反查失败绝不退化成"当前设备位置"** —— 那会把一张上海拍的旧照片印上"深圳"。这条不是靠自觉：
+`resolvePlaceFromExifGps` 的入参**只有坐标**，整个函数里没有任何"取当前位置"的调用。
+
+- 反查是**联网**调用，自己带 5 秒超时（`IMPORT_GEOCODE_TIMEOUT_MS`，与相机页的
+  `GEOCODE_TIMEOUT_MS` 取同一个数）。用不了 `AbortController` —— `reverseGeocodeAsync` 的签名里
+  没有 `signal` 参数，所以是 `Promise.race` 一个哨兵值。
+- 反查"成功"但一个字段都没解析出来（海上、极地、系统只回了街道名）→ 也退成坐标。
+  判据是 `placeNames.hasPlaceName()`，**不能**用 `formatResolvedPlace(...).trim().length > 0`
+  —— 渲染器在一个字段都没有时会退回坐标串，那个判据永远为真，等于没判。
+- "只有坐标"这个形状现在**只有一个构造点** `placeNames.coordsOnlyPlace()`，相机页的"坐标档"
+  与导入的兜底共用它。两处各写一份字面量的话，将来给 `ResolvedPlace` 加字段只会改到一处，
+  于是"同一张照片、同一个档位、两种输出"。
+- ⚠️ **这一步绝不抛**：它是锦上添花，抛出去会被 `importAndDevelop` 的 per-photo catch 记成
+  `failed += 1` —— 一张本来能出片的照片会因为"没网"被算成失败。
+- **只有"地名"档才联网**：`ImportAndDevelopOptions` 新增 `locationMode`，两个调用方
+  （`CameraScreen` / `GalleryScreen`）把设置里的档位原样传下来，`'place'` 之外一律不发反查。
+  这是为了和相机页对齐 —— `locationStamp.ts` 的 `mode === 'coords'` 分支**根本不发反查**，
+  导入这条路要是照发，同一对坐标在两条路上会得到两种结果（一个真地名、一个坐标串）；
+  而 `'off'` 档那一行字压根不会印（`planWatermark` 挡住），为一个注定被丢掉的结果把 EXIF
+  坐标发给 Apple 的地理编码服务，既是白等 5 秒也是隐私问题。
+
+### 27.4 §三 导入：把居中裁切从"凑巧成立"变成显式的一步
+
+`processFilmPhoto.ts` 新增 `centerCropPhoto()`：归一化**之后**，按 `layout.window` 的宽高比
+居中裁出最大内接矩形，再交给合成层。
+
+- **为什么现在才加**：合成层给照片的一直是 `resizeMode="cover"`，它**本来就会居中裁切**。
+  于是"取景框所见 = 成片内容"过去只是凑巧成立（只要没人改 `photoFit`、没人动窗口坐标、
+  没人换 `resizeMode`，它就一直成立，也一直没人能断言它）。裁成窗口比例之后 `cover` 面对的
+  是一张比例已经相同的图，缩放是唯一剩下的动作、裁切量为零 —— **`cover` 成了恒等变换**，
+  "所见即所得"从"依赖渲染器的行为"变成"图本身的属性"。
+- ⚠️ **这一步不会改变现有成片的构图**（`cover` 本来就居中，这里也居中，裁掉的是同一块区域，
+  差别只在取整和多解码了一次 JPEG）。它**不是为了修构图，是为了让构图变成结构上必然的**。
+- **为什么在归一化之后裁**：归一化会改像素数量，裁切比例是按像素算的。先裁再缩会让两处独立的
+  取整叠在一起（宽高各差 1px），裁出来的就不是"居中最大内接矩形"了。反过来先缩后裁只有**一次**
+  取整，而且那次取整是 `normalizePhoto` 里已经验证过的那一次。
+- **两种情况下不裁**：① 多开槽相框（半格双联）—— 它的 `layout.window` 是**两个槽的并集**（含中间
+  的立筋），而渲染器是逐槽 `cover` 的，按并集裁出来送进 3:4 的槽里还要再 cover 一次，那一次
+  **不是恒等变换**，等于"裁了等于没裁"却多付一次全图解码 + 重编码的内存峰值；
+  ② `photoFit: 'contain'` 的相框 —— `contain` 的语义就是"整张完整放入、可以留黑边"，
+  按窗口比例裁掉两边正好是它承诺不做的事。
+- **失败一律降级**：裁切抛异常 / 原图宽高为 0 / 比例非有限数 → 退回归一化那张图，记一条 `note`，
+  **绝不出片失败**。
+
+### 27.5 这一版没有照字面执行规格的四处
+
+| 规格写的 | 实际做的 | 为什么 |
+| --- | --- | --- |
+| `react-native-reanimated` 的 `SharedValue` + `withSpring` / Layout Animation | RN 自带的 `Animated`（`Animated.spring`） | 仓库没装 reanimated。为一个 150ms 补间引入原生重依赖 + 改 babel 配置，收益不成比例；`Animated.spring` 的观感一致 |
+| `device.neutralZoom` / `virtualDeviceSwitchOverVideoZoomFactors` / `physicalDevices` | `selectedLens` + 每档 `zoom: 0` | 这三个 API 在 `expo-camera@57.0.6` 里**不存在**（详见 §27.2），等价且更稳 |
+| `@react-native-masked-view/masked-view` 做镂空 | 四块 `LiquidGlassView` 围出窗口 | 同样没装。四块拼接不引入依赖，而且镂空边界就是四块玻璃的内边缘，天然对齐 |
+| 胶囊文字"强制纯白" | 照做（`GLASS_TEXT_COLOR` + 字重 600 + 暗晕） | 用户明确要求。**代价**见 §27.6 |
+
+### 27.6 已知限制
+
+- **浅色主题下玻璃上的纯白文字对比度不足**：底色是 `rgba(255,255,255,0.52)`，白字白底。
+  规格要求"强制纯白"，所以照做，但这是这一版最明显的观感风险。
+- **模糊能不能真的采到相机预览画面，没有验证过**：iOS 上 `BlurView` 采的是它后面那一层，
+  而相机预览走的是 `AVCaptureVideoPreviewLayer`。所以 `LiquidGlassView` 的底色
+  （深色 `rgba(18,18,22,0.42)`）是**按"模糊完全不生效也要好看"定的**，不是按"模糊一定生效"。
+- **`half-frame` 横拍时取景与成片仍然不一致**（v1.4.0 起就有的缺陷）：取景器参考线画的是
+  两个槽的**并集**（1.603），而成片是逐槽 `cover`。本轮没有给
+  `FrameOrientationVariant` 加 `slots`，因为那要再生成一张横版 PNG。
+- **临时文件没有清理**：`normalizePhoto` 与新增的 `centerCropPhoto` 各留一张 JPEG 在 cache 目录，
+  全仓没有任何 `deleteAsync`。这一版把每次导入的临时文件数从 1 张变成 2 张。
+  系统会自己回收 cache，但频繁导入会让 cache 涨得快。
+- **`src/components/ZoomStops.tsx` 是死代码**：从 v1.4.0 起 `CameraScreen` 就没再 import 它
+  （取景器里已经没有档位条，只有焦段胶囊点按循环）。它描述的还是旧的"三档 + `flex: 1`"模型，
+  已经过期。本轮没删（README §22 / §24 是历史章节，引用了它），**但别再照它推理**。
+- **取景器那一侧仍然没传 `orientation`**：`CameraScreen.tsx` 里 `previewLayout` 的 `useMemo`
+  只传了 `frame` 与盒子的宽高，第 4 个参数（`orientation`）是空的，而
+  `processFilmPhoto.ts` 会按原图横竖选朝向。**目前踩不到**：`app.json` 锁了
+  `"orientation": "portrait"`，拍照永远出竖图，两边都落竖版，实测取景窗与成片的窗口比例
+  差 0.04%~0.3%（来自"取景盒 ≠ 显影盒"，每轴差 20pt，肉眼不可见）。
+  会踩到的是**以后解锁横屏拍照**（或给取景器加横版预览）：`instax-mini` / `neg-135` /
+  `slide-mount` 的横版窗口是竖版的**转置**，那时取景与成片会变成**互为倒数的两次裁切** ——
+  各裁掉对方保留的那条边，就是典型的"边缘被误裁"。修法**不是**把照片传进去（取景那一刻还
+  没有照片），而是拿取景盒自身去掉 padding 后的宽高比调一次 `resolveFrameOrientation`。
+
+### 27.7 这一版**没有**在真机验证过的东西
+
+| 项 | 为什么没法在这台机器上验证 |
+| --- | --- |
+| `BlurView` 能否采到相机预览层 | 只有真机能看出来。Windows 上跑不了 `AVCaptureVideoPreviewLayer` |
+| 五档焦段在真机上是不是都对 | 每台机型的 `getAvailableLensesAsync()` 返回值不同，本机连相机都没有 |
+| 反查地名的实际结果 | `reverseGeocodeAsync` 是 Apple 的服务，本机没有 EXIF 带 GPS 的照片可测 |
+| 居中裁切改动前后是否逐像素一致 | 需要同一张照片改动前后各出一张片对比，没有真机跑不了合成 |
+| 浅色主题下玻璃的观感 | 没有真机、也没有浅色主题下的截图 |
+| 长焦档在 iPhone 11/12/13/14/15/16 基础款上是否如预期变灰 | 只是静态推断（那些机型没有长焦物理镜头） |
 | 仓库里没有测试 | `__tests__` 不存在，`expo export` 也不做类型检查 —— 唯一的自动防线是 `npm run typecheck` |
 
 ---

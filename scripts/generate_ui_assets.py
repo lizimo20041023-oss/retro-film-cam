@@ -412,17 +412,32 @@ def make_icon_album(size: int = 168) -> None:
 
 # --------------------------------------------------------------------------- #
 def main() -> None:
+    """生成 `assets/ui/` 下**仍在用**的五张图。
+
+    ⚠️ v1.5.0 起这里刻意不再产出下面这五张，它们连同
+    `src/constants/uiAssets.ts` 里的条目一起被删掉了：
+
+        make_dial(lit=False)    ->  dial.png        （48 齿滚花拨轮）
+        make_dial(lit=True)     ->  dial-on.png
+        make_icon_film()        ->  icon-film.png
+        make_icon_settings()    ->  icon-settings.png
+        make_icon_album()       ->  icon-album.png
+
+    原因：取景器主屏换成了液态玻璃，玻璃上的图标必须跟着**算出来的颜色**
+    走（禁用态 / 点亮态），位图做不到，而且在 18pt 上会被缩放糊掉；
+    「金属滚花」这个拟物方向也被否掉了。替代品是纯 `View` 画的矢量图形
+    （`DialButton` 的 `glyph` prop + `CameraScreen.tsx` 的
+    `SettingsGlyph` / `FilmGlyph`），改色改尺寸都不用重跑这个脚本。
+
+    那五个 `make_*` 函数**保留在下面**当参考实现（它们的几何算法仍然是对的，
+    想拿回滚花拨轮直接照抄），只是不再被 `main()` 调用。
+    """
     os.makedirs(UI_DIR, exist_ok=True)
     print("ui:")
     make_leather_tile()
-    make_dial(lit=False)
-    make_dial(lit=True)
     make_shutter_disc()
     make_icon_flash()
     make_icon_flip()
-    make_icon_film()
-    make_icon_settings()
-    make_icon_album()
     print("done.")
 
 
