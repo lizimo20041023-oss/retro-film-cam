@@ -50,9 +50,19 @@ permissions:
 
 jobs:
   build-ipa:
-    # 用 GitHub 免费提供的 macOS 机器。如果这行报「runner not found」，
-    # 改成 macos-15 或 macos-14 即可（见 如何装到手机上.md 的排错一节）。
-    runs-on: macos-latest
+    # 用 GitHub 免费提供的 macOS 机器。
+    # 这里刻意钉 **Intel（x64）** 那一档，而不是 `macos-latest`：
+    #   `macos-latest` 现在指向 arm64 镜像。2026-10-15 这次构建连续三次排队满 15 分钟后
+    #   被 GitHub 直接取消，`steps=0`（一步都没跑），两条标注是
+    #     "The job was not acquired by Runner of type hosted even after multiple attempts"
+    #     "Due to capacity constraints, jobs targeting macOS arm64 runners may experience longer queue times."
+    #   —— 纯属 arm64 池排不上机器，与代码无关。宿主机是 Intel 还是 arm64 不影响
+    #   产出的未签名 ipa（我们只做 prebuild + xcodebuild，不做 arm64 专属的产物）。
+    #   `macos-15-intel` 是**标准** runner 标签，同样免费；
+    #   `macos-15-large` / `macos-15-xlarge` 才是计费的 larger runner，别改过去。
+    # 如果哪天这行报「runner not found」，改成 `macos-15`（arm64）或 `macos-26-intel` 即可
+    # （见 如何装到手机上.md 的排错一节）。
+    runs-on: macos-15-intel
     timeout-minutes: 60
 
     steps:
