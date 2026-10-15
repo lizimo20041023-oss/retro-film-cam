@@ -93,9 +93,6 @@ import type { CapturedPhoto, DevelopStatus, Rect, Size } from '../types';
 /** 画幅参考线四周留白：贴着屏幕边看不出画幅比，留一点才像取景框 */
 const PREVIEW_PADDING = 10;
 
-/** 取景器中央那枚 24pt 十字（手动对焦唯一的"画面中心"参照） */
-const RETICLE = 24;
-
 /**
  * 镂空取景窗顶部那行标签。写的是**参照画幅**（这块机器按 35mm 的视场标定），
  * 不是当前焦段 —— 当前焦段是变焦档位，读数在胶囊上，而且它每一档都在变。
@@ -145,6 +142,14 @@ const SETTINGS_GLYPH = 18;
 const FILM_GLYPH = 22;
 
 /**
+ * 悬浮胶囊行与控制台上沿之间的间距。
+ *
+ * 10pt 是"看得出是两层、又不像断开"的距离：再小两颗胶囊会和工具行图标粘成一块，
+ * 再大就飘到取景画面中央去了。真正的 `bottom` 是 `consoleHeight + 这个值`。
+ */
+const BAR_LAYER_GAP = 10;
+
+/**
  * `CameraView` 的原生扩展属性。对焦点与曝光补偿都打在原生补丁上，
  * 集中放同一个类型别名里，`cameraFocusProps` 才有稳定、可复用的形状。
  * `exposureBias` 为 `nil` 时原生完全不动测光，所以 EV 归零就不下发这个键。
@@ -166,22 +171,17 @@ function filmCounterLetter(facing: CameraType): string {
   return facing === 'back' ? 'A' : 'B';
 }
 
-/** 取景器里的静态几何：只有尺寸没有颜色，所以放在模块级也不会被深浅色冻结 */
-const chrome = StyleSheet.create({
-  layer: { position: 'absolute' as const },
-  reticle: { position: 'absolute' as const, width: RETICLE, height: RETICLE },
-  reticleH: { position: 'absolute' as const, left: 0, right: 0, top: RETICLE / 2, height: StyleSheet.hairlineWidth },
-  reticleV: { position: 'absolute' as const, top: 0, bottom: 0, left: RETICLE / 2, width: StyleSheet.hairlineWidth },
-  reticleDot: {
-    position: 'absolute' as const,
-    left: (RETICLE - 5) / 2,
-    top: (RETICLE - 5) / 2,
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-});
+/*
+ * 取景器里的 `chrome` 静态几何表（四角括号 + 中央十字）已删除。
+ *
+ * 它画的是"画幅窗口的四角 + 中心"，而这两样现在都由 `ViewfinderWindow` 负责：
+ *   · 四角的 L 型角标：窗口自己那套是 2pt 纯白 + 92% 不透明，比这里的
+ *     `hairline` + `ink.paperFaint` 在实时画面上清楚得多，两套叠着画还会在
+ *     切画幅的弹簧动画期间错开（这里硬跳、那里在弹），看起来像角标在滑；
+ *   · 中心十字：搬进了窗口那一层的**内部**，于是天然跟着窗口一起弹，
+ *     不再需要在这里单独定位。
+ * 跟着它一起消失的还有 `chrome.layer` / `chrome.reticle*` / `RETICLE`。
+ */
 
 /*
  * 三分构图线（旧 `GuideGrid`）已删除。
@@ -192,33 +192,6 @@ const chrome = StyleSheet.create({
  * 所以保留镂空窗那一套（它和窗口边框、四角角标出自同一次绘制，强度天然一致），
  * 把设置页的"构图辅助线"开关直接接到 `ViewfinderWindow` 的 `grid` prop 上。
  */
-
-/** 四角括号 + 中央十字：提示"画幅里真正会被拍到的区域" */
-function FocusBrackets({ rect }: { rect: Rect }) {
-  const { ink } = useTheme();
-  const color = ink.paperFaint;
-  const hairline = StyleSheet.hairlineWidth;
-  // 角标随画幅缩放：小画幅上固定 14pt 会显得像四块补丁
-  const inset = Math.max(4, Math.round(rect.width * 0.014));
-  const size = Math.max(14, Math.round(Math.min(rect.width, rect.height) * 0.07));
-  const box = { position: 'absolute' as const, width: size, height: size };
-  return (
-    <View
-      pointerEvents="none"
-      style={[chrome.layer, { left: rect.left, top: rect.top, width: rect.width, height: rect.height }]}
-    >
-      <View style={[box, { left: inset, top: inset, borderLeftWidth: hairline, borderTopWidth: hairline, borderColor: color }]} />
-      <View style={[box, { right: inset, top: inset, borderRightWidth: hairline, borderTopWidth: hairline, borderColor: color }]} />
-      <View style={[box, { left: inset, bottom: inset, borderLeftWidth: hairline, borderBottomWidth: hairline, borderColor: color }]} />
-      <View style={[box, { right: inset, bottom: inset, borderRightWidth: hairline, borderBottomWidth: hairline, borderColor: color }]} />
-      <View style={[chrome.reticle, { left: (rect.width - RETICLE) / 2, top: (rect.height - RETICLE) / 2 }]}>
-        <View style={[chrome.reticleH, { backgroundColor: color }]} />
-        <View style={[chrome.reticleV, { backgroundColor: color }]} />
-        <View style={[chrome.reticleDot, { borderColor: color }]} />
-      </View>
-    </View>
-  );
-}
 
 /*
  * 顶栏与核心区那两枚按钮的图形。
@@ -352,6 +325,16 @@ export function CameraScreen() {
   const [saveIssue, setSaveIssue] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [previewBox, setPreviewBox] = useState<Size>({ width: 0, height: 0 });
+  /**
+   * 底部控制台实测高度。
+   *
+   * 为什么非量不可：控制台在 `root` 的 flex 流里（占屏幕底部），而取景器
+   * `styles.preview` 是**铺满全屏的绝对定位层**。悬浮胶囊行是取景器的子层，
+   * 它的 `bottom` 因此在"屏幕底"和"控制台上沿"之间失去参照 —— 写死任何数字
+   * 都只对一种机型成立（灵动岛机型、SE、横屏各差几十点）。量出来再加间距，
+   * 胶囊才会永远恰好浮在控制台上方。
+   */
+  const [consoleHeight, setConsoleHeight] = useState(0);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [galleryVisible, setGalleryVisible] = useState(false);
   const [filmDrawerVisible, setFilmDrawerVisible] = useState(false);
@@ -438,10 +421,11 @@ export function CameraScreen() {
    *     居中摆放时左上角的落点，也就是**画布坐标系 → 容器坐标系**的平移量。
    *
    * 所以 `frameOffset + previewLayout.window` 才是"相对取景器容器"的窗口位置，
-   * 正是 `ViewfinderWindow` 的 `window` prop 的契约（它按 `container.width - (left + width)`
-   * 算右边界，交错了右边两块玻璃就直接飘到屏幕外）。
-   * `<View style={styles.canvas}>` 那一层用的是 `frameOffset + previewLayout.width/height`
-   * —— 同一套平移量，只是搬的是画布本身而不是窗口。
+   * 正是 `ViewfinderWindow` 的 `window` prop 的契约（它自己的四块遮罩只认这个矩形的
+   * 四条边，右/下两条用 `right: 0` / `bottom: 0` 补，所以传进来的矩形必须是
+   * **容器坐标系**的 —— 传画布坐标会让取景框整体偏出去）。
+   * `<View style={styles.canvas}>` 那一层（v1.5.1 已随 `FocusBrackets` 一起删除）用的是
+   * `frameOffset + previewLayout.width/height` —— 同一套平移量，只是搬的是画布本身而不是窗口。
    */
   const viewfinderWindow = useMemo(
     () => ({
@@ -532,13 +516,21 @@ export function CameraScreen() {
      * 会出现"切回半格框，第一次快门直接出片"这种没人能预期的行为。
      */
     setHalfFrameBuffer(null);
+    /*
+     * 对焦框也必须一起清掉。它显示的是"上一次点击的落点"，而这个落点是按**上一个相框**
+     * 的归一化坐标算的 —— 换了相框，镂空窗的位置和大小都变了，同一个归一化坐标会落到
+     * 完全不同的地方。真机实测：不清的话黄框会僵在旧位置上，直到用户再点一下画面。
+     * 这和"切镜头都要归位"是同一条规矩（见 `handleFlipCamera`）。
+     */
+    setFocusTarget(null);
   }, []);
 
   const handleBadgeFramePress = useCallback(() => {
     void Haptics.selectionAsync();
     setFrameIndex((current) => wrapIndex(current + 1));
-    // 顶栏徽标点一下也是换相框，和左右滑动同一条规则：静默丢掉半格缓存
+    // 顶栏徽标点一下也是换相框，和左右滑动同一条规则：静默丢掉半格缓存 + 清掉对焦框
     setHalfFrameBuffer(null);
+    setFocusTarget(null);
   }, []);
 
   const handleFlipCamera = useCallback(() => {
@@ -1191,7 +1183,6 @@ export function CameraScreen() {
         {previewBox.width > 1 && previewBox.height > 1 ? (
           <ViewfinderWindow
             window={viewfinderWindow}
-            container={previewBox}
             label={GUIDE_LABEL}
             grid={resolved.showGuide}
           />
@@ -1204,20 +1195,11 @@ export function CameraScreen() {
             onChange={handleFrameChange}
             enabled={interactive}
           >
-            <View
-              style={[
-                styles.canvas,
-                {
-                  left: frameOffset.left,
-                  top: frameOffset.top,
-                  width: previewLayout.width,
-                  height: previewLayout.height,
-                },
-              ]}
-            >
-              {/* 画幅参考线现在由上面那层镂空窗画：窗口边框 + 四角角标，都在同一次绘制里 */}
-              <FocusBrackets rect={previewLayout.window} />
-            </View>
+            {/*
+              这里原本还有一个 `styles.canvas` 的绝对定位空层，装的是 `FocusBrackets`。
+              它已经删掉（四角 + 中心十字都归了 `ViewfinderWindow`），所以这一层也一起撤了 ——
+              留一个没有任何子节点、只为"占个位置"的 View，只会让后来的人以为它还有用。
+            */}
             {interactive ? (
               <Pressable
                 style={styles.focusCatcher}
@@ -1229,11 +1211,12 @@ export function CameraScreen() {
           </FrameSwitcher>
         ) : null}
 
-        {/* 坐标按整个取景器归一化，跟 Tap 手势层对齐 */}
+        {/* 坐标按整个取景器归一化，跟 Tap 手势层对齐；`bounds` 再把框和滑条关进镂空窗 */}
         <FocusExposure
           target={focusTarget}
           width={Math.max(previewBox.width, 1)}
           height={Math.max(previewBox.height, 1)}
+          bounds={viewfinderWindow}
           exposure={exposure}
           onExposure={handleExposureChange}
           onIdle={handleFocusIdle}
@@ -1321,8 +1304,15 @@ export function CameraScreen() {
           </View>
         ) : null}
 
-        {/* 悬浮胶囊行贴着取景器底边；容器不吃触摸，只有胶囊本身吃 */}
-        <View style={styles.barLayer} pointerEvents="box-none">
+        {/*
+          悬浮胶囊行。它的 `bottom` **必须**跟着控制台的高度走 —— 见 `barLayer` 的注释。
+          `consoleHeight` 为 0（首帧还没量到）时退回 0，胶囊会被控制台挡住一帧，
+          比"先停在屏幕底再跳上来"更不容易被看见。
+        */}
+        <View
+          style={[styles.barLayer, { bottom: consoleHeight + BAR_LAYER_GAP }]}
+          pointerEvents="box-none"
+        >
           <ViewfinderBar
             temperature={resolved.color.temperature}
             focalMm={focalMm}
@@ -1344,6 +1334,7 @@ export function CameraScreen() {
       <LiquidGlassView
         radius={0}
         rim={false}
+        onLayout={(event) => setConsoleHeight(event.nativeEvent.layout.height)}
         style={[styles.console, styles.overlayChrome, { paddingBottom: Math.max(insets.bottom, 10) }]}
       >
         <ToolRow
@@ -1471,6 +1462,16 @@ function createStyles(ink: ThemeInk, scheme: 'dark' | 'light') {
      * 不加这个 `zIndex` 的话相机会把两栏整个盖住 —— 而它俩还得能点（快门、设置、胶卷）。
      * 取景器自己是 `position: 'absolute'`，两者都不带 `elevation`（那是 Android 的事），
      * 所以这一个 `zIndex` 就是全部的层级依据。
+     *
+     * ⚠️ 这个 2 是**全局层级阶梯**里的一格，加新的浮层时请接着往下排，别就地拍一个数：
+     *   2  = 顶栏 / 控制台（本文件 `overlayChrome`）
+     *   10 = 底片抽屉（`FilmDrawer`，见那边的注释）
+     *   20 = 冲印进度遮罩（`DevelopOverlay`）
+     *   30 = 相册页 / 设置页
+     *   40 = 相册页里的"冲印中"遮罩
+     *   50 = 全屏提示遮罩（本文件 `noticeLayer`）
+     * 漏掉 `zIndex` 的浮层会被**任何一个**带 `zIndex` 的兄弟压住，哪怕它声明得更晚 ——
+     * 真机实测报的"抽屉被快门栏挡住"就是 `FilmDrawer` 漏了这一格。
      */
     overlayChrome: { zIndex: 2 },
     canvas: { position: 'absolute' },
@@ -1522,7 +1523,16 @@ function createStyles(ink: ThemeInk, scheme: 'dark' | 'light') {
     bannerText: { fontSize: 13, lineHeight: 19 },
     bannerActions: { flexDirection: 'row', marginTop: 10 },
     bannerAction: { fontSize: 14, fontWeight: '700', marginRight: 18 },
-    barLayer: { position: 'absolute', left: 0, right: 0, bottom: 12, alignItems: 'center' },
+    /*
+     * 胶囊行贴控制台上沿悬浮。
+     *
+     * ⚠️ 这里**故意不写 `bottom`** —— 它在 JSX 里由 `consoleHeight + BAR_LAYER_GAP` 现算。
+     * 本层是 `styles.preview` 的子层，而 `preview` 在上一版被改成"铺满全屏的绝对定位层"，
+     * 于是任何写死的 `bottom` 都从"距控制台上沿"变成了"距屏幕底"：写 12 会让整排胶囊
+     * 藏进控制台的玻璃面板**背后**（真机实测报的"胶囊栏完全消失"就是这一条）。
+     * 改全屏之前 preview 的底边正好压在控制台上沿，所以那个 12 当时是对的。
+     */
+    barLayer: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
     console: {
       paddingTop: 8,
       /*
@@ -1545,8 +1555,15 @@ function createStyles(ink: ThemeInk, scheme: 'dark' | 'light') {
     coreSide: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center' },
     coreSideRight: { justifyContent: 'flex-end' },
     filmName: { marginLeft: 8, maxWidth: 74, fontFamily: UI_MONO, fontSize: 9, letterSpacing: 0.6 },
+    /*
+     * 全屏提示遮罩。`zIndex: 50` 是**层级阶梯的最高一格**，理由有两条：
+     *   1. 它是一层压暗整屏的蒙版，被任何东西盖住都会显得"屏幕脏了一块"；
+     *   2. 它声明在相册页（30）**之前**，而 RN 里 `zIndex` 压过声明顺序 ——
+     *      不给数字的话，顶栏和控制台（2）都会浮在这层蒙版上面。
+     */
     noticeLayer: {
       ...fill,
+      zIndex: 50,
       alignItems: 'center',
       justifyContent: 'center',
       backgroundColor: scheme === 'dark' ? 'rgba(0,0,0,0.72)' : 'rgba(236,236,232,0.86)',

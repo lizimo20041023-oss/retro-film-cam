@@ -49,6 +49,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [25. v1.4.0：Dazz 级极简重构 + 六节增量 + 商标清理](#25-v140dazz-级极简重构--六节增量--商标清理)
 - [26. v1.4.1：日期"乱码"与半格双联](#26-v141日期乱码与半格双联)
 - [27. v1.5.0：液态玻璃取景器 + 真光学变焦 + 导入反查地名](#27-v150液态玻璃取景器--真光学变焦--导入反查地名)
+- [28. v1.5.1：真机实测反馈的七条](#28-v151真机实测反馈的七条)
 
 ---
 
@@ -2500,6 +2501,161 @@ JS 侧从来读不到。三摄虚拟设备的 `videoMaxZoomFactor` 在 100 以�
 | 浅色主题下玻璃的观感 | 没有真机、也没有浅色主题下的截图 |
 | 长焦档在 iPhone 11/12/13/14/15/16 基础款上是否如预期变灰 | 只是静态推断（那些机型没有长焦物理镜头） |
 | 仓库里没有测试 | `__tests__` 不存在，`expo export` 也不做类型检查 —— 唯一的自动防线是 `npm run typecheck` |
+
+---
+
+## 28. v1.5.1：真机实测反馈的七条
+
+来源：用户拿 v1.5.0 的真机录屏逐条反馈了 7 个问题，另外附了一份**由别的 AI 从视频里推断出的"病因"**。
+处理原则写在这里，以后遇到同类反馈照办：**用户看到的症状一律采信；随症状附上的病因推断必须逐条用代码核实，不许照抄。**
+下面每一条都标了"那份推断"与"代码里的事实"，其中 28.3 的推断是错的。
+
+### 28.1 底部胶囊栏消失
+
+**症状**：底部 `[色温][焦段][曝光]` 那排悬浮胶囊整个看不见了。
+
+**那份推断**：遮罩 `zIndex` 盖住了；或者 `getAvailableLensesAsync()` 返回本地化名，过滤后是空数组，于是变焦按钮被藏了。
+
+**事实**：胶囊从来就没有被门控过 —— `CameraScreen` 里的 `<ViewfinderBar>` 是无条件渲染的，`focalMm` / `onCycleFocal` 也一直接着。
+
+真因是**定位基准变了**：`ViewfinderBar` 挂在 `styles.barLayer` 上，而 `barLayer` 是 `styles.preview` 的子层，用的是 `position: 'absolute', bottom: 12`。
+v1.5.0 把 `styles.preview` 从"占屏幕中间一块"改成了 `position: 'absolute'` **铺满全屏**，于是 `bottom: 12` 的含义从"距控制台上沿 12pt"变成了"距**屏幕**底 12pt"——
+整排胶囊正好落进控制台那块全宽玻璃面板背后（控制台有 `overlayChrome: { zIndex: 2 }`，而且它声明在 `preview` 之后）。
+
+**改法**：不再写死 `bottom`。控制台 `LiquidGlassView` 加 `onLayout` 把实测高度存进 `consoleHeight`，`barLayer` 的 `bottom` 现算成 `consoleHeight + BAR_LAYER_GAP`。
+任何机型、任何刘海高度、控制台以后长高变矮，胶囊都自动跟着走。
+
+### 28.2 画面掉帧
+
+**症状**：取景时画面发僵，不如系统相机跟手。
+
+**那份推断**：同屏十几个 `BlurView` 实时高斯模糊榨干 GPU。
+
+**事实**：成立，而且比"十几个"更集中 —— 镂空取景窗四周那**四块**紧贴屏幕边的 `LiquidGlassView` 是占整屏约 60% 面积的 `UIVisualEffectView`，
+它们背后正好是每帧都在出图的 `AVCaptureVideoPreviewLayer`。面积 × 帧率，这是全屏里最贵的一处。
+
+**改法**：四周换成哑光 `rgba(10,10,14,0.84)` 的 `Animated.View`（`ViewfinderWindow.tsx` 的 `MATTE_COLOR`），玻璃只留给顶栏、控制台、三颗胶囊和底片抽屉这些**小块**。
+一句话概括这条取舍：**遮罩要的是"看不见"，玻璃要的是"厚度"** —— 遮罩不需要模糊。
+
+顺带修掉一个一直在的小错位：四块哑光板的内边界改成和窗口弹簧共用同一组动画值（`Animated.add(left, width)` / `Animated.add(top, height)`），
+以前窗口在弹、遮罩硬跳。同时把 `CameraScreen` 里那套静态的 `FocusBrackets`（四角括号 + 中央十字）整块删掉，四角归 `ViewfinderWindow` 的 2pt 纯白角标，
+中央十字搬进同一层动画窗口 —— 于是"切画幅"只剩一套动画在跑。
+
+### 28.3 导入带 GPS 的照片，水印仍然只印坐标
+
+**症状**：设置里明明选的是「地名」，导入一张日本熊本机场的照片，成片下巴上还是 `LAT 32°50'N LON 130°51'E`。
+
+**那份推断**：导入分支漏调 `reverseGeocodeAsync`；海外地址的字段兜底链缺失，应该 `place.city || place.subregion || place.district || place.region || place.name`。
+
+**事实：这条推断是错的，而且是两处都错。**
+
+- `src/utils/importPhoto.ts` 的 `resolvePlaceFromExifGps()` **确实**调了 `Location.reverseGeocodeAsync`，导入这条路一直有反查。
+- 那条"字段兜底链"**本来就在** `src/utils/placeNames.ts` 里（`city: firstNonEmpty(source.city, source.district, source.subregion, source.region, fallbackCity)`）。
+
+真正可能让用户看到坐标的只有三种情况，而且**三种都是静默退回**：反查超时（`IMPORT_GEOCODE_TIMEOUT_MS`）、`reverseGeocodeAsync` 抛异常、返回空数组。
+所以这一条的修法不是"补上没写的那一步"，而是**把静默失败变得更能扛、也更可诊断**：
+
+- 字段兜底链**补上 `name` / `street`**：机场、车站、景点这类 POI，iOS 经常只给 `name`（"熊本空港"压根不在 city/subregion 这些字段里），
+  而原来的链子在拿到一个"字段全空但有 name"的结果时会判成"没拿到地名"，于是退回坐标。这是本轮**最可能真正命中用户那台机器**的一处。
+- 超时后**重试一次**，两条路（拍照取景与导入）共用同一条耐心值与同一个 helper，不允许一边 5 秒一边 8 秒。
+- 失败**留痕**（`console.warn`）但**绝不抛** —— 地名是这个 App 的装饰，不能因为它把一张照片的保存流程带崩。
+
+另外要如实说一句：`settingsStore.ts` 里 `locationMode` 的**默认值是 `'off'`**。用户"以为自己选了地名、其实没选上"也是一条完全合理的解释 ——
+这一条没法从录屏里区分，所以没有当成 bug 改，只在报告里提出来。
+
+### 28.4 底片库抽屉被快门栏压住
+
+**症状**：打开 `SELECT FILM STOCK · 底片庫`，底部那 5 个工具图标、白色大快门、相册缩略图浮在抽屉上面挡住半截列表。
+
+**事实**：**RN 里 `zIndex` 压过声明顺序**。抽屉声明得比控制台晚，本该盖住它，但控制台有 `zIndex: 2`、抽屉**没有任何 `zIndex`**。
+
+**改法**：还在 `styles.root` 上补 `zIndex: 10`。顺手把全屏提示层（`noticeLayer`）补成 `50` —— 它有同样的毛病，只是还没被用户撞到。
+`overlayChrome` 那条注释扩写成了一张全局层级阶梯表，以后加层先看表：
+
+| zIndex | 谁 |
+| --- | --- |
+| 2 | 顶栏 / 控制台 |
+| 10 | 底片抽屉 `FilmDrawer` |
+| 20 | 冲印进度遮罩 `DevelopOverlay` |
+| 30 | 相册页 / 设置页 |
+| 40 | 相册页里的"冲印中"遮罩 |
+| 50 | 全屏提示 `noticeLayer` |
+
+**不要**把 `FilmDrawer` 改成 RN `Modal` —— 理由写在它文件头（`Modal` 在 New Architecture 下会新开一个原生窗口层，而这台相机是设备级独占；`pageSheet` / `formSheet` 还自带圆角半透明背景）。
+
+### 28.5 对焦框越界，切画幅不归位
+
+**症状**：黄色对焦框卡在取景框最下边缘，一半在框内一半漏到框外的遮罩区；切换相框时它不会自己消失归位。
+
+**事实**：`reticleOrigin()` 夹的是 `[0, width - RETICLE_SIZE]`，也就是**整块取景器**（= 全屏），而不是那个镂空窗。竖条同理。
+另外 `handleFrameChange` / `handleBadgeFramePress` 只清了 `halfFrameBuffer`，**没有清 `focusTarget`**（`handleFlipCamera` 是清的）。
+
+**改法**：`FocusReticle` / `FocusExposure` 都新增可选 `bounds`，`CameraScreen` 把 `viewfinderWindow`（`frameOffset + previewLayout.window`，正是镂空窗在这个坐标系里的矩形）传下去。
+夹紧留 6pt 内缩（`BOUNDS_INSET`）：不是为了"框在窗内"（那只需 0），而是让框和那 1pt 窗口白线之间始终有缝，也刚好让开两根 2pt 角标。
+竖条改成三处夹紧，右侧放不下就**翻到左侧**去。
+两个切画幅的回调各补 `setFocusTarget(null)` —— 落点是按归一化坐标算的，换了画幅窗口的位置和大小都变了，与"切镜头要归位"是同一条规矩。
+
+### 28.6 点开相册先黑屏约一秒
+
+**症状**：点左下角相册缩略图，先黑屏约 1 秒才蹦出成片。
+
+**事实**：不是人为延时，是**"打开"这个动作每次都把已经拿到的列表擦掉重画一遍**。
+`GalleryScreen` 每次翻成可见都调 `refresh()`，而 `refresh()` 会置 `loading = true`；
+`loading` 为真时整块列表被换成一颗 `ActivityIndicator`（`{loading ? <ActivityIndicator/> : ...}`），暗房底色又是接近纯黑，那颗小 spinner 在录屏里基本看不见。
+这台机器上 `readGallery()` 还不只是读一次 `AsyncStorage` —— 它要对每条记录做 1~2 次 `new File(uri).exists` 的 native 往返，那一秒并不短。
+
+（顺带纠正另一件事：`GalleryScreen` 其实**一直挂着**，它的 `useGallery()` 在 App 启动时就跑过一次，所以"列表是空的"只发生在启动后头一秒，不是每次打开都空。）
+
+**改法**：
+
+- `useGallery` 新增 `refreshSilently()`（= `load(true)`，不碰 `loading`）。隐藏→可见那一次对账改走它：**旧列表一直挂着，新结果回来一次性替换**。该更新还是更新，只是不再闪黑。
+- 大图下面**永远垫一层缩略图**（`Lightbox` 新增可选 `thumbUri`，`GalleryScreen` 把已知的 `thumbUri` 递下去）。
+  不做 `onLoad` 切换、不做透明度过渡 —— 大图不透明，画出来就盖住了；而 iOS 上缓存命中时 `onLoad` 可能根本不触发，拿它当开关等于把"能不能看到图"押在一个会漏的事件上。
+- 新增 `src/utils/imageWarmup.ts`：`warmImageCache` / `scheduleWarmImageCache`（`setTimeout(..., 0)` 起跑 + 可取消）。
+  `AlbumThumb` 预取最新的那一张成片 —— 它是唯一一张没在屏幕上渲染过、又最可能被点开的图。**刻意不 await**：预热是白赚就赚，不该挡任何一帧。
+
+### 28.7 下巴水印过小
+
+**症状**：成片下巴上的字太小。
+
+**事实**：真的小，而且原因很具体。`dateFontOf()` 取的是
+`round(clamp(min(window.width × config.fontSizeRatio, shortEdge × 0.02) × fontScale, MIN_DATE_FONT, 96))`。
+手机短边约 358pt，`358 × 0.02 = 7.16pt`，**永远低于下限** —— 也就是说 `DATE_FONT_SHORT_EDGE_RATIO` 那条上限从来没生效过，真正在用的字号就是 `MIN_DATE_FONT`。
+而 `MIN_DATE_FONT = 8` 是 v1.4.0"缩 35~40%"那一版配**自绘七段数码管**定的；v1.4.1 把数码管换成真字形（等宽粗体）之后，8pt 已经太小。
+
+**改法**（三处常量，`src/utils/geometry.ts`）：
+
+| 常量 | 旧 | 新 | 为什么 |
+| --- | --- | --- | --- |
+| `MIN_DATE_FONT` | 8 | **11** | 成片里约 63px 字高；这才是真正在用的那个数 |
+| `DATE_FONT_SHORT_EDGE_RATIO` | 0.02 | **0.032** | 358 × 3.2% = 11.46pt，刚好压在下限之上 → 这条上限**开始真正生效**：大屏随短边变大，小屏由下限兜住 |
+| `PLACE_FONT_SCALE` | 0.62 | **0.72** | 11 × 0.62 = 6.8pt 太小；0.72 让两行的落差与上一版一致，地名落到 8pt 的可读线 |
+
+**"挤在偏右"这一半不成立**：`watermarkLayout` 的默认值本来就是 `'split'`，`computeWatermarkPlan` 里 `placeLine.align.left = region.left`、`dateLine.align.right = regionRight` —— 左地名右日期一直是对的。
+用户看到的"偏右"应该是字太小 + 地名那一行短，视觉重心被右边的日期拉过去了；字号上来之后这一条应该自然消失，**没有为它改版式逻辑**。
+
+### 28.8 这一版**没有照做**的三件事
+
+1. **焦段按钮常驻显示 `[13mm | 26mm | 35mm | 52mm]` 四个档位** —— 没做。
+   v1.5.0 的规格（用户自己定的 §一）明确要求删掉底部那条 `ZoomStops` 循环条，理由是"底部不该有两排控件"。
+   这一版要修的是"胶囊被遮住"，不是"档位不够多"：焦段胶囊本来就显示当前毫米数、点它就能换档，再插一排四个按钮等于把用户自己删掉的东西加回来。
+2. **切画幅用 `LayoutAnimation.configureNext`** —— 没做，因为不需要了。
+   `useSpringRect` 本来就在补间窗口四边；这一版又把哑光遮罩和中央十字接进了同一组动画值，那个"硬跳的第二套"已经消失。再叠一层 `LayoutAnimation` 只会和弹簧打架。
+3. **给 `Lightbox` 加左右翻页手势** —— 没做。
+   录屏里没有提这个需求。但它连带影响一处：`GalleryScreen` 里原本有一段"打开大图时预热相邻两张"的代码，前提是"用户能滑到相邻那张"—— 而 `Lightbox` 里**没有翻页手势**（`PanResponder` 只做双击/平移缩放和单击关闭）。既然翻不过去，预热它们就是白解两张 12MB 位图，已删除。哪天加了翻页再按"只预热下一张"加回来。
+
+### 28.9 这一版没有在真机验证过的东西
+
+| 没能验证的 | 为什么 |
+| --- | --- |
+| 胶囊栏现在的位置对不对 | `consoleHeight` 来自 `onLayout`，算术上对；但"10pt 这个间距好不好看"要真机看 |
+| 哑光遮罩的观感 | 少了模糊之后四周是不是"太平"，只有真机能判断 |
+| 掉帧到底改善了多少 | 没有 Instruments，`BlurView` 从 4 大块降到 0 大块是事实，帧率数字拿不到 |
+| 「地名」那条路在真机上是否真的通了 | 补了 `name` / `street` 兜底与重试，但 `reverseGeocodeAsync` 是 Apple 的服务，本机没有带 GPS 的 EXIF 照片可测 |
+| 静默对账之后"黑屏"还剩多少 | 没有 `os_signpost`；`readGallery()` 里那些 `File.exists` 往返一次都没实测过耗时 |
+| 预热有没有真的命中同一条缓存 | `Image.prefetch` 的 `RCTImageCache` 与 `<Image>` 是否同一个 key、写内存还是只写盘，都无法在本机确认 |
+| 垫底缩略图会不会让"成片盖上来"闪一下清晰 | 400px 的 JPEG 放大版与 2048px 成片的锐度差，在纯黑底上可能被放大成一次跳变 |
+| 水印 11pt 在大画幅上会不会顶到边界 | 探针只验证了"七款相框 × 三种版式都算得出 86pt 宽"，没有跑真实合成 |
 
 ---
 

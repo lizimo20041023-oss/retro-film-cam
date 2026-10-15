@@ -305,6 +305,17 @@ function createStyles(theme: Theme) {
     root: {
       // 注意：RN 0.86 已移除 StyleSheet.absoluteFillObject，只能用 absoluteFill
       ...StyleSheet.absoluteFill,
+      /*
+       * `zIndex: 10` —— 全局层级阶梯里"底片抽屉"那一格（见 `CameraScreen.tsx`
+       * 的 `overlayChrome` 注释）。
+       *
+       * 为什么必须有：顶栏和控制台都带 `zIndex: 2`，而 RN 里 **`zIndex` 压过声明顺序**。
+       * 抽屉虽然声明在它们之后、又是全屏覆盖层，少了这个数字照样会被那 2 压住 ——
+       * 真机实测报的"打开底片库时底部工具图标 + 快门 + 相册缩略图浮在抽屉上面挡住
+       * 半截列表"就是这一条。取 10（而不是随手 3）：它是阶梯里抽屉自己那一格，
+       * 上面还要给冲印遮罩（20）、相册/设置页（30）、全屏提示（50）留出位置。
+       */
+      zIndex: 10,
       // 抽屉只占下半屏，所以遮罩是**半透明**的：上面那 40% 要能看见取景器。
       // 这里刻意不跟 `theme.scrim`（它接近全不透明，是给整屏弹层用的）。
       justifyContent: 'flex-end',

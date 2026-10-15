@@ -129,7 +129,7 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const { t, localeId } = useI18n();
-  const { shots, loading, error, refresh, remove } = useGallery();
+  const { shots, loading, error, refresh, refreshSilently, remove } = useGallery();
   const { settings } = useSettings();
 
   /**
@@ -217,6 +217,13 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
    * "翻成 true 的那一次"，不是"每次 render 都刷一遍盘"。
    * 顺手把上次看的大图关掉（**视图模式不动**：用户上次选了网格就还是网格，
    * 只有大图这种"看某一张"的临时状态该清零）。
+   *
+   * **走 `refreshSilently` 而不是 `refresh`**：`refresh()` 会置 `loading`，而 `loading`
+   * 为真时整块列表被换成一颗 spinner（`{loading ? <ActivityIndicator/> : ...}`），
+   * 于是"打开相册"这个动作每次都先把自己擦成黑底再重画一遍 —— 用户实测反馈的
+   * "点缩略图先黑屏约一秒"就是这一下。这台机器上 `readGallery()` 还要逐条做
+   * `new File(uri).exists` 的 native 往返，那一秒并不短。改成静默对账后，
+   * 旧列表一直挂着，新结果回来一次性替换：内容该更新还是更新，只是不再闪黑。
    */
   const wasVisible = useRef(false);
   useEffect(() => {
@@ -230,14 +237,26 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
     wasVisible.current = true;
     setOpenedId(null);
     setToast(null);
-    void refresh();
-  }, [visible, refresh]);
+    void refreshSilently();
+  }, [visible, refreshSilently]);
 
   /** 当前大图对应的记录；记录被删掉后自动变回 `null`，lightbox 随之关闭。 */
   const opened = useMemo(
     () => (openedId === null ? null : (shots.find((shot) => shot.id === openedId) ?? null)),
     [shots, openedId],
   );
+
+  /*
+   * 这里原本还有一段"打开大图时顺手预热相邻两张成片"。
+   *
+   * 已删除，因为它的前提是假的：注释里写"用户在大图里能做的推进只有左右滑动"，
+   * 但 `Lightbox` 里的 `PanResponder` 只做双击/平移缩放和单击关闭，**没有翻页手势**
+   * （`Lightbox.tsx` 全局搜不到 `pagingEnabled` / `horizontal` / 翻页 index）。
+   * 既然翻不到相邻那张，预热它们就是白解两张 12 MB 的位图 ——
+   * 在一台正在跑 `CameraView` 的机器上，这个代价不该付。
+   *
+   * 哪天给 `Lightbox` 加了左右翻页，再把这段按"只预热下一张"重新加回来。
+   */
 
   /**
    * 离开相册时把显影宿主收掉。
@@ -720,6 +739,13 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
         <Lightbox
           key={opened.id}
           uri={opened.uri}
+          /*
+            把缩略图一起递下去垫底（见 `Lightbox.tsx` 文件头）。
+            `thumbUri === uri` 是**真实存在**的情况：缩略图生成失败时
+            `galleryStore.addShot` 会把它退化成成片自己（长边 2048）。那种情况下
+            传空串 —— 垫一张和成片一模一样的图不但没用，还白占一份解码内存。
+          */
+          thumbUri={opened.thumbUri === opened.uri ? '' : opened.thumbUri}
           position={shots.findIndex((shot) => shot.id === opened.id) + 1}
           aspectRatio={opened.height > 0 ? opened.width / opened.height : 1}
           availableHeight={stageHeight}

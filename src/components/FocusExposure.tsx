@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Animated, PanResponder, StyleSheet, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useI18n } from '../i18n';
+import type { Rect } from '../types';
 import { useTheme } from '../constants/theme';
 import { FocusReticle, RETICLE_SIZE, reticleOrigin } from './FocusReticle';
 import type { FocusTarget } from './FocusReticle';
@@ -68,6 +69,13 @@ export interface FocusExposureProps {
   target: FocusTarget;
   width: number;
   height: number;
+  /**
+   * 镂空取景窗矩形（与 `width` / `height` 同一个坐标系）。
+   *
+   * 对焦框和曝光竖条都只许出现在这一块里 —— 真机实测报的"黄色对焦框卡在取景框最下边缘，
+   * 一半在框内一半漏到框外的遮罩区"就是没有它导致的。不传 = 退回整块画布。
+   */
+  bounds?: Rect;
   /** 当前曝光补偿（EV）。 */
   exposure: number;
   onExposure: (exposure: number) => void;
@@ -75,7 +83,15 @@ export interface FocusExposureProps {
   onIdle: () => void;
 }
 
-export function FocusExposure({ target, width, height, exposure, onExposure, onIdle }: FocusExposureProps) {
+export function FocusExposure({
+  target,
+  width,
+  height,
+  bounds,
+  exposure,
+  onExposure,
+  onIdle,
+}: FocusExposureProps) {
   const { focus, panel, sliderTrack } = useTheme();
   const { t } = useI18n();
   const fade = useRef(new Animated.Value(0)).current;
@@ -171,12 +187,28 @@ export function FocusExposure({ target, width, height, exposure, onExposure, onI
     return null;
   }
 
-  const origin = reticleOrigin(target, width, height);
+  /*
+   * 竖条的位置。三处夹紧，都只为了解决"越界穿模"：
+   *   1. 竖直方向按**窗口**夹，不再按整块画布 —— 否则滑条会伸到遮罩区里去；
+   *   2. 横向优先放在框右侧；右侧放不下（框已经贴着窗口右沿）时**翻到左侧**，
+   *      而不是硬挤在窗口外；
+   *   3. 翻转之后仍以窗口为界夹一次。
+   * 宽度用 `HIT_WIDTH`（44pt 手指宽度）而不是细线本身的宽度：夹的是**触摸区**，
+   * 只夹那 1pt 的线，等于留了一个伸到窗口外、看不见却点得着的热区。
+   */
+  const area = bounds ?? { left: 0, top: 0, width, height };
+  const origin = reticleOrigin(target, width, height, bounds);
   const centreY = origin.top + RETICLE_SIZE / 2;
-  const stripTop = Math.min(Math.max(centreY - SLIDER_LENGTH / 2, 0), Math.max(height - SLIDER_LENGTH, 0));
+  const stripTop = Math.min(
+    Math.max(centreY - SLIDER_LENGTH / 2, area.top),
+    Math.max(area.top, area.top + area.height - SLIDER_LENGTH),
+  );
+  const rightSide = origin.left + RETICLE_SIZE + SLIDER_GAP;
+  const leftSide = origin.left - SLIDER_GAP - HIT_WIDTH;
+  const preferred = rightSide + HIT_WIDTH <= area.left + area.width ? rightSide : leftSide;
   const stripLeft = Math.min(
-    Math.max(origin.left + RETICLE_SIZE + SLIDER_GAP, 0),
-    Math.max(width - HIT_WIDTH, 0),
+    Math.max(preferred, area.left),
+    Math.max(area.left, area.left + area.width - HIT_WIDTH),
   );
   const value = quantizeExposure(exposure);
   // 圆点跟着 EV 走：0 EV 停在正中。固定不动的圆点等于没有反馈
@@ -185,7 +217,7 @@ export function FocusExposure({ target, width, height, exposure, onExposure, onI
 
   return (
     <>
-      <FocusReticle target={target} width={width} height={height} opacity={fade} />
+      <FocusReticle target={target} width={width} height={height} bounds={bounds} opacity={fade} />
       <Animated.View
         {...responder.panHandlers}
         accessibilityRole="adjustable"

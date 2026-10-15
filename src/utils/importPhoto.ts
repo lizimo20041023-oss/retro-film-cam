@@ -14,26 +14,33 @@
  * ② **绝不把当前设备位置给老照片**。这是整个 §八 里最容易做错、后果也最难看的一条
  *    —— 一张 2014 年在巴黎拍的照片，被印上"上海"比什么都不印糟糕得多。
  *    `fetchLocationStamp`**，位置**只**来自原图 EXIF 的 GPS 标签，拿不到就是 `null`。
- *    **本轮修订（用户拍板）**：拿到 EXIF GPS 之后允许调一次
- *    `Location.reverseGeocodeAsync({ latitude, longitude })` 把坐标反查成城市 / 国家，
- *    这样老照片也能印出地名而不是一串坐标（`toResolvedPlace` → `resolvePlaceFromExifGps`）。
- *    ⚠️ 红线没有动，只是换了个更严格的写法：**反查的入参只可能是原图 EXIF 里那对坐标**，
- *    本文件从头到尾**没有任何一行**调用 `getCurrentPositionAsync` /
- *    `getLastKnownPositionAsync` —— 所以"退化成当前设备位置"在代码结构上不可能发生
+ *    **本轮修订（用户拍板）**：拿到 EXIF GPS 之后允许反查（`Location.reverseGeocodeAsync`）
+ *    把坐标变成城市 / 国家，这样老照片也能印出地名而不是一串坐标（`resolvePlaceFromExifGps`）。
+ *    ⚠️ 红线没有动，只是换了个更严格的写法：**反查的入参只可能是原图 EXIF 里那对坐标**。
+ *    反查这个动作现在住在 `locationStamp.ts` 的 `reverseGeocodeWithRetry` 里（两条路共用
+ *    同一份重试逻辑，见下面那段补充）：那个函数**只接一对坐标**，内部**只**调
+ *    `reverseGeocodeAsync`。本文件从头到尾没有任何一行能读到设备当前位置
+ *    （`getCurrentPositionAsync` / `getLastKnownPositionAsync` / `watchPositionAsync`
+ *    在这个文件里一次都不出现），所以"退化成当前设备位置"在代码结构上不可能发生
  *    （不是"记得别这么写"，是"这里没有被允许这么写的 API 调用"）。
- *    反查失败（离线 / 极地 / 权限被拒 / 超时 / 返回空数组）就**退回只有坐标**，
- *    也绝不因此让这张照片冲印失败（见 `resolvePlaceForImport`）。
+ *    反查失败（离线 / 极地 / 超时 / 返回空数组）就**退回只有坐标**，
+ *    也绝不因此让这张照片冲印失败（见 `resolvePlaceFromExifGps`）。
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * 为什么要给反查加超时（② 的补充，别把这一条删了）
+ * 为什么要给反查加超时和重试（② 的补充，别把这一条删了）
  * ─────────────────────────────────────────────────────────────────────────────
  * `reverseGeocodeAsync` 是**网络调用**（iOS 走 Apple 的地理编码服务），可能几百毫秒，
  * 也可能在没网的时候一直不 resolve。而本文件是**串行**导入的：一次选 12 张，
  * 每张都干等就是"进度条卡在第 3 张"的经典体验。
- * 所以这条路自己带一个 `withTimeout`（照抄 `locationStamp.ts` 里已经验证过的写法，
- * 不另发明一套）：超时、抛异常、返回空数组，**三种都只是"这次没地名"**，
- * 绝不向上抛 —— 抛出去会被 `importAndDevelop` 的 per-photo catch 记成
- * `failed += 1`，把一张本来能出片的照片算成失败，那是比没有地名严重得多的错。
+ *
+ * 所以这条路**不自己发明一套**：直接调 `locationStamp.ts` 的 `reverseGeocodeWithRetry`
+ * ——相机页那条路用的是同一个函数、同一组常量。一次尝试 5s，超时 / 抛异常就再试一次，
+ * 总预算 10s 封顶（**毫秒数只写在 `locationStamp.ts`**，这里一个数都不写，
+ * 免得两边的耐心值又漂开）。空数组不重试（系统明确答"这个点我查不到"）。
+ * 超时、抛异常、返回空数组、返回的对象里一个字段都没有，**四种都只是"这次没地名"**，
+ * 每一种都会 `console.warn` 记一笔（原因 + 坐标），**绝不向上抛** —— 抛出去会被
+ * `importAndDevelop` 的 per-photo catch 记成 `failed += 1`，把一张本来能出片的照片
+ * 算成失败，那是比没有地名严重得多的错。
  * ③ **不复用取景器**。相机页那个合成舞台（`useFilmStage`）在这里只当"截图工位"用：
  *    调用方把宿主传进来，本文件负责"挂 → 等就绪 → 截 → 卸"，做完一张再下一张。
  *    串行而不是并行，因为宿主只有一块屏幕位置，同时挂两张会截到彼此。
@@ -52,7 +59,8 @@
  * 而且 `exif` 在类型上是 `Record<string, any>`（不承诺形状）—— 所以下面每个取值
  * 都走"先拍平键、再嵌套键"两级尝试，两种形状都能吃。
  *
- * 需要网络：**只有反查地名那一步**（`Location.reverseGeocodeAsync`，见文件头的补充）。
+ * 需要网络：**只有反查地名那一步**（`reverseGeocodeWithRetry` → `Location.reverseGeocodeAsync`，
+ * 见上面那段补充）。
  * 没网不是错误 —— 那张照片退回"只有坐标"，照常出片（`resolvePlaceFromExifGps`）。
  *
  * 需要权限：选照片由 `launchImageLibraryAsync` 自己处理（iOS 14+ 是
@@ -62,10 +70,11 @@
  * 失败即退回坐标。**不去要一个这个功能本来不需要的权限**，这是刻意的。
  */
 import * as ImagePicker from 'expo-image-picker';
-// ⚠️ 这里**只**用 `reverseGeocodeAsync`（以及它的类型）。凡是"读设备当前位置"的 API
-// （`getCurrentPositionAsync` / `getLastKnownPositionAsync` / `watchPositionAsync`）
-// 在这个文件里**一次都不许出现** —— 规矩② 就靠这条 import 纪律守住，见文件头。
-import * as Location from 'expo-location';
+// ⚠️ 规矩② 的 import 纪律换了个写法（原文是"这里只用 `reverseGeocodeAsync`"）：
+// 反查这一步整个搬到了 `locationStamp.ts` 的 `reverseGeocodeWithRetry`（两条路共用），
+// 所以本文件现在**连 `expo-location` 都不 import** —— 连它的类型都不需要。
+// 于是"读设备当前位置"的 API（`getCurrentPositionAsync` / `getLastKnownPositionAsync` /
+// `watchPositionAsync`）在这个文件里不但**不许**出现，而且**根本拿不到**：规矩② 见文件头。
 import { grainLevelAt, findGrainLevelIndex, applyGrainLevel } from '../constants/grain';
 import type { LocaleId } from '../i18n/types';
 import type {
@@ -79,7 +88,15 @@ import type {
   WatermarkLayout,
 } from '../types';
 import { addShot } from './galleryStore';
-import { coordsOnlyPlace, hasPlaceName, resolvePlaceFromGeocode } from './placeNames';
+// 反查（含超时 / 重试 / 失败措辞）从 `locationStamp.ts` 引：相机页和相册导入必须是
+// 同一份逻辑、同一组毫秒数，这个文件里**不许**再出现任何"反查超时"的常量或实现。
+import { describeGeocodeFailure, reverseGeocodeWithRetry } from './locationStamp';
+import {
+  coordsOnlyPlace,
+  formatCoords,
+  hasPlaceName,
+  resolvePlaceFromGeocode,
+} from './placeNames';
 import { processFilmPhoto } from './processFilmPhoto';
 
 /* ==========================================================================
@@ -330,59 +347,32 @@ function toResolvedPlace(coords: { latitude: number; longitude: number }): Resol
 }
 
 /**
- * 反查地名最长等多久（**每张照片**，不是每一批）。
- *
- * 5000ms 和相机页那条路（`locationStamp.ts` 的 `GEOCODE_TIMEOUT_MS`）取同一个数 ——
- * 同一次网络反查在两条路上不该有两个耐心值。这个数**只**决定"这张照片要不要地名"，
- * 超时之后立刻退回坐标继续冲印，不会让进度条停住。
- */
-const IMPORT_GEOCODE_TIMEOUT_MS = 5000;
-
-/** 超时哨兵：把"没等到"和"等到了但结果是空数组"分开，两者都退回坐标，但日志不一样。 */
-const GEOCODE_TIMEOUT = Symbol('geocode-timeout');
-
-/**
- * 给 Promise 加一道超时闸门（形状照抄 `locationStamp.ts` 里的 `withTimeout`，
- * 那是本项目已经验证过的写法；**刻意不引用行号** —— 行号会被下一次编辑改掉，
- * 而"哪个文件里的哪个函数"不会）。
- *
- * 为什么不用 `AbortController`：`reverseGeocodeAsync` 的签名里**没有 signal 参数**，
- * 原生侧也没有取消接口 —— 能做的只有"不再等它"，超时后它自己 resolve 也不会有人听。
- * 所以这里既**不** clear 掉那个 Promise（做不到），也**不**把它当作失败上报。
- */
-function withGeocodeTimeout<T>(promise: Promise<T>, ms: number): Promise<T | typeof GEOCODE_TIMEOUT> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(GEOCODE_TIMEOUT), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      () => {
-        clearTimeout(timer);
-        // 异常也走"没等到"这一支：调用方对两者的处理完全相同（退回坐标）。
-        resolve(GEOCODE_TIMEOUT);
-      },
-    );
-  });
-}
-
-/**
  * EXIF 坐标 → 结构化地名（**可能联网**）。这是规矩② 在代码里的落点，改动前先读文件头。
  *
- * 三种结局，**只有第一种会带地名**：
- *   1. 反查成功 → `resolvePlaceFromGeocode()` 的逐级降级结果（城市/省/国家全都有）；
- *   2. 反查失败 → `null`（调用方退回 `toResolvedPlace`，也就是"只有坐标"）；
- *   3. 反查"成功"但一个字段都没解析出来（海上、极地、系统只给了街道名）→ 也退成 `null`。
- * 第 3 种为什么判 `hasPlaceName` 而不是 `formatResolvedPlace(...).trim().length > 0`：
+ * 四种结局，**只有第一种会带地名**：
+ *   1. 反查成功、且解析出至少一个名字字段 → `resolvePlaceFromGeocode()` 的逐级降级结果；
+ *   2. 反查失败（超时 / 抛异常，两次都没成）→ `null`（调用方退回 `toResolvedPlace`）；
+ *   3. 反查"成功"但系统回的是空数组（海上、极地）：`address === undefined` → `null`；
+ *   4. 反查"成功"、也有地址对象，但里面一个可用字段都没有 → `null`。
+ * 后三种都退成 `null` 而不是"只有坐标"的结构，因为调用方 `geocoded ?? toResolvedPlace(gps)`
+ * 对 `null` 的处理就是"只有坐标"，没必要在这里先合成一条。
+ * 第 4 种为什么判 `hasPlaceName` 而不是 `formatResolvedPlace(...).trim().length > 0`：
  * 渲染器在一个字段都没有时会**退回坐标串**，于是"什么都没解析出来"也会非空 ——
  * 那个判据永远为真，等于没判。详见 `placeNames.hasPlaceName`。
  *
- * ⚠️ **绝不抛**。这是整条路上最重要的一条契约：它是"锦上添花"的一步，
+ * 超时 / 重试 / 耐心值：全部委托给 `locationStamp.reverseGeocodeWithRetry`（两条路共用），
+ * 本文件**不写任何毫秒数** —— 历史上这里自己抄过一份 `withTimeout` 加 5000，
+ * 于是"同一张照片从相机出来和从相册导入出来耐心不一样"在结构上成为可能，
+ * 别再走回头路（文件头的补充里写了理由）。
+ *
+ * 留痕：四种结局里有三种是"没地名"，每一种都会 `console.warn` 一句（**原因 + 坐标**）。
+ * 以前这里是静默的，真机上"为什么这张老照片只印了坐标"根本查不出来 ——
+ * 用户看到的是一串坐标，我们看到的是一片安静。
+ *
+ * ⚠️ **绝不抛**。这是整条路上最重要的契约：它是"锦上添花"的一步，
  * 抛出去会被 `importAndDevelop` 的 per-photo catch 记成 `failed += 1`，
- * 于是一张本来能出片的照片因为"没网"被算成失败。所以这里自己吞掉全部异常
- * （`withGeocodeTimeout` 已经把 reject 变成哨兵，外面这层 `try` 是防
- * "连 `reverseGeocodeAsync` 本身都没拿到（原生模块缺失）"这种同步错）。
+ * 于是一张本来能出片的照片因为"没网"被算成失败。共享 helper 的契约同样是"绝不抛"
+ * （连"原生模块缺失"那种同步抛错都被它收进返回值），所以这里连 `try` 都不需要。
  *
  * ⚠️ **入参只有坐标**：唯一的调用点是 `readExifGps(exif)` 的结果。这个函数里没有
  * 任何"取当前位置"的调用，也不可能拿到 —— 规矩② 不是靠自觉，是靠这一点。
@@ -391,22 +381,39 @@ async function resolvePlaceFromExifGps(gps: {
   latitude: number;
   longitude: number;
 }): Promise<ResolvedPlace | null> {
-  try {
-    const places = await withGeocodeTimeout(
-      Location.reverseGeocodeAsync({ latitude: gps.latitude, longitude: gps.longitude }),
-      IMPORT_GEOCODE_TIMEOUT_MS,
+  const outcome = await reverseGeocodeWithRetry(gps);
+
+  if (outcome.status !== 'ok') {
+    console.warn(
+      `[retro-film-cam] 导入照片没拿到地名（${describeGeocodeFailure(outcome)}），` +
+        `这张退回坐标：${formatCoords(gps.latitude, gps.longitude)}`,
     );
-    if (places === GEOCODE_TIMEOUT) {
-      return null;
-    }
-    // `places[0]` 可能是 `undefined`（空数组 = 系统也查不到这个点），
-    // `resolvePlaceFromGeocode` 的形参本来就接 `undefined`，所以不用先判长度。
-    const place = resolvePlaceFromGeocode(places[0], gps.latitude, gps.longitude);
-    return hasPlaceName(place) ? place : null;
-  } catch (error) {
-    console.warn('[retro-film-cam] 导入照片的反查地名失败，这张退回坐标：', describeError(error));
     return null;
   }
+
+  if (outcome.address === undefined) {
+    // 系统答了"这个点我查不到"（空数组：海上、极地、刚开盘的新楼盘）。
+    // 这不算失败，也不重试，只是没有名字 —— 但日志里要和上面两种分开说。
+    console.warn(
+      '[retro-film-cam] 导入照片的反查返回空数组（系统查不到这个点），' +
+        `这张退回坐标：${formatCoords(gps.latitude, gps.longitude)}`,
+    );
+    return null;
+  }
+
+  // `resolvePlaceFromGeocode` 内部走 `city → name → district → subregion → region →
+  // fallbackCity → street` 的逐级降级（含 POI 名和街道名，见那个函数的注释）。
+  const place = resolvePlaceFromGeocode(outcome.address, gps.latitude, gps.longitude);
+  if (!hasPlaceName(place)) {
+    console.warn(
+      '[retro-film-cam] 导入照片的反查结果里没有任何可用地名' +
+        '（city / name / district / subregion / region / country / isoCountryCode 全空），' +
+        `这张退回坐标：${formatCoords(gps.latitude, gps.longitude)}`,
+    );
+    return null;
+  }
+
+  return place;
 }
 
 /* ==========================================================================
@@ -508,9 +515,13 @@ export async function importAndDevelop(
        *   · 只有设置里选了"地名"档才真的联网（`wantsPlace`，理由见
        *     `ImportAndDevelopOptions.locationMode` 的注释：`'coords'` / `'off'`
        *     两条路要的结果都不需要反查，发出去纯属白等加隐私风险）；
-       *   · 它自带 5s 超时（`resolvePlaceFromExifGps`），超时后这张照片退回坐标继续冲印；
+       *   · 它自带超时**和一次重试**（`resolvePlaceFromExifGps` → `locationStamp` 的
+       *     `reverseGeocodeWithRetry`：单次最多 5s、最多两次、总预算 10s），
+       *     两次都没成这张照片就退回坐标继续冲印；失败原因会进 `console.warn`（带坐标），
+       *     不再像以前那样静默；
        *   · 它**不抛**（同上）—— 一张照片能不能出片，绝不由"有没有网"决定。
-       * 串行导入时这就是"每张最多多等 5s、但一定能等到下一张"的那道闸门。
+       * 串行导入时这就是"每张最多多等 10s、但一定能等到下一张"的那道闸门
+       * （只有这一步真的失败时才会等满，正常几百毫秒就回来了）。
        */
       const gps = readExifGps(exif);
       const wantsPlace = (options.locationMode ?? 'place') === 'place';

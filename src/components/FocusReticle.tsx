@@ -11,6 +11,7 @@
  */
 import { useEffect, useRef } from 'react';
 import { Animated, StyleSheet } from 'react-native';
+import type { Rect } from '../types';
 import { useTheme } from '../constants/theme';
 
 /** 点击落点：`x` / `y` 是以取景器为参照的 0~1 归一化坐标，`at` 是时间戳（毫秒）。 */
@@ -30,19 +31,43 @@ const PULSE_SPEED = 20;
 const PULSE_BOUNCINESS = 9;
 
 /**
- * 把归一化落点换算成框左上角的像素坐标，并把它按在取景器内。
+ * 框沿离镂空窗口边的最小距离。
+ *
+ * 夹紧到"整框落在窗口内"只需要收到 0，但真机上贴着 1pt 窗口白线的那一下看起来像
+ * 框被边框切了一道。留 6pt 是为了让框和白线之间始终有一条缝（也刚好让开
+ * `ViewfinderWindow` 那两根 2pt 的四角角标）。
+ */
+const BOUNDS_INSET = 6;
+
+/**
+ * 把归一化落点换算成框左上角的像素坐标，并把它按在**镂空取景窗**里。
  *
  * 为什么必须夹紧：手指点到画面最边缘时，框会有一半落在取景器外面 —— 看起来像被裁掉了；
  * 而且曝光滑块要贴着框右侧 8pt，框越界会把滑块一起推出画面。
+ *
+ * ⚠️ **夹到"整个取景器"是不够的**（那是本函数最初的写法）：取景器现在铺满全屏，
+ * 而"会被拍进去的"只有镂空窗那一块。只夹到全屏的话，用户点在窗口下沿附近时，
+ * 框的下半截会穿到窗口外的遮罩区去 —— 真机实测报的就是这一条。
+ * 所以调用方要把窗口矩形当 `bounds` 传进来；不传时退回"夹到整块画布"的老行为
+ * （保持这个函数对旧调用点仍然成立）。
+ *
+ * 窗口比框还窄时（理论上只在极小屏 + 极窄画幅同时发生）`hi` 会被 `lo` 顶住，
+ * 那种情况下框宁可溢出也不会被挤成一个负宽度的矩形。
  */
 export function reticleOrigin(
   target: { x: number; y: number },
   width: number,
   height: number,
+  bounds?: Rect,
 ): { left: number; top: number } {
+  const area = bounds ?? { left: 0, top: 0, width, height };
+  const loLeft = area.left + BOUNDS_INSET;
+  const loTop = area.top + BOUNDS_INSET;
+  const hiLeft = Math.max(loLeft, area.left + area.width - RETICLE_SIZE - BOUNDS_INSET);
+  const hiTop = Math.max(loTop, area.top + area.height - RETICLE_SIZE - BOUNDS_INSET);
   return {
-    left: Math.min(Math.max(target.x * width - RETICLE_SIZE / 2, 0), Math.max(width - RETICLE_SIZE, 0)),
-    top: Math.min(Math.max(target.y * height - RETICLE_SIZE / 2, 0), Math.max(height - RETICLE_SIZE, 0)),
+    left: Math.min(Math.max(target.x * width - RETICLE_SIZE / 2, loLeft), hiLeft),
+    top: Math.min(Math.max(target.y * height - RETICLE_SIZE / 2, loTop), hiTop),
   };
 }
 
@@ -50,11 +75,16 @@ export interface FocusReticleProps {
   target: FocusTarget;
   width: number;
   height: number;
+  /**
+   * 镂空取景窗在**同一个坐标系**里的矩形。传了它，框就只会在窗口内出现
+   * （真机实测：不传时框会穿到窗口外的遮罩区）。不传 = 夹到整块画布。
+   */
+  bounds?: Rect;
   /** 整层透明度由父级驱动：3 秒无操作时它要和曝光滑块一起淡出，所以不能各淡各的。 */
   opacity: Animated.Value;
 }
 
-export function FocusReticle({ target, width, height, opacity }: FocusReticleProps) {
+export function FocusReticle({ target, width, height, bounds, opacity }: FocusReticleProps) {
   const { focus } = useTheme();
   const scale = useRef(new Animated.Value(1)).current;
   /**
@@ -82,7 +112,7 @@ export function FocusReticle({ target, width, height, opacity }: FocusReticlePro
     return null;
   }
 
-  const origin = reticleOrigin(target, width, height);
+  const origin = reticleOrigin(target, width, height, bounds);
 
   return (
     <Animated.View

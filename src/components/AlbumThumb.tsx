@@ -13,6 +13,7 @@ import { Image, Pressable, StyleSheet, View } from 'react-native';
 import { useI18n } from '../i18n';
 import { useTheme } from '../constants/theme';
 import { useGallery } from '../hooks/useGallery';
+import { scheduleWarmImageCache } from '../utils/imageWarmup';
 
 export interface AlbumThumbProps {
   /** 每冲印完一张就 +1：显式告诉这份列表"该重新读盘了"。 */
@@ -37,6 +38,27 @@ export function AlbumThumb({ refreshKey, size, onPress }: AlbumThumbProps) {
   }, [refreshKey, refresh]);
 
   const latest = shots.length > 0 ? shots[0] : null;
+
+  /**
+   * 相机页空闲时，把最新那张的**成片**（不是缩略图）先喂进原生图片缓存。
+   *
+   * 为什么是这一张：缩略图点开进去，默认停在长卷的最左端，而最新那张就在最左端，
+   * 所以"用户下一眼会看的那张大图"几乎必然是这一张。它又是唯一一张没有在屏幕上
+   * 渲染过的图（缩略图那条路早就解码过了），于是它的 2048px 解码就成了点开大图时
+   * 那个"黑屏约 1 秒"里最贵的一段。
+   *
+   * 为什么用 `scheduleWarm...` 而不是直接预热：拍照后这个列表会变，预热不能挤在
+   * 那一帧里（原生缓存查找是同步的）。见 `utils/imageWarmup.ts` 里的说明。
+   */
+  useEffect(() => {
+    if (latest === null) {
+      return;
+    }
+    // 只预热一张：内存里多一张 12 MB 的位图就够呛了，这里不贪。
+    // 依赖写 `latest?.uri` 而不是整条记录：每次 `refresh()` 都会重建列表（对象是新引用、
+    // uri 没变），盯着对象会让"刚拍完、列表对账"这种刷新也白触发一次预热。
+    return scheduleWarmImageCache([latest.uri], 1);
+  }, [latest?.uri]);
 
   return (
     <Pressable

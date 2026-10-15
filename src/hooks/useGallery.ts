@@ -38,6 +38,16 @@ export interface GalleryController {
   error: string | null;
   /** 重新从存储读一次（用户下拉刷新时调）。 */
   refresh: () => Promise<void>;
+  /**
+   * 后台对账：同样重读一次，但**不动 `loading`**。
+   *
+   * 为什么需要：`refresh()` 会把 `loading` 置真，而相册页在 `loading` 时整块列表会被
+   * 换成一颗 spinner。相册页**每次打开**都要重新读一次盘（拍照那侧直接调
+   * `galleryStore.addShot()` 写盘，不走这个 hook，所以内存里的列表不知道刚拍了什么），
+   * 于是每打开一次就等于把已经拿到的列表擦掉重画 —— 用户看到的就是"先黑屏一秒"。
+   * 对账该是安静的：旧列表先挂着，新结果回来再一次性换掉。
+   */
+  refreshSilently: () => Promise<void>;
   /** 存一张成片。返回新记录；失败返回 `null`（**不抛异常**）。 */
   add: (input: AddShotInput) => Promise<GalleryShot | null>;
   /** 删掉一张。永远不抛。 */
@@ -92,6 +102,14 @@ export function useGallery(): GalleryController {
 
   const refresh = useCallback(async (): Promise<void> => {
     await load(false);
+  }, [load]);
+
+  /**
+   * 静默对账：`load(true)` 不碰 `loading`，所以调用方那一屏的内容不会先被清掉。
+   * "最后一次读说了算"那条规矩照旧生效（`load` 里的 `requestRef`）。
+   */
+  const refreshSilently = useCallback(async (): Promise<void> => {
+    await load(true);
   }, [load]);
 
   const add = useCallback(
@@ -150,5 +168,5 @@ export function useGallery(): GalleryController {
     }
   }, [load]);
 
-  return { shots, loading, error, refresh, add, remove, clear };
+  return { shots, loading, error, refresh, refreshSilently, add, remove, clear };
 }

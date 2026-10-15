@@ -18,6 +18,25 @@
  * `pinchingRef` 是否被这一轮手势置起过，以及累计移动距离是否还在 tap 容差内。
  * 两条都过才认成"点击关闭"。
  *
+ * ── 为什么大图下面永远垫着一层缩略图 ──────────────────────────────────────
+ * 这一屏以前是"纯黑底 + 一张异步解码的 `<Image>`"：点击到出图之间屏幕上什么都没有，
+ * 而那块空窗期里原生正在读盘 + 解码长边 2048 的 JPEG（约 12 MB 位图）——
+ * 用户看到的就是"先黑屏约 1 秒，然后大图突然蹦出来"。
+ *
+ * 垫底那张是同一张照片的缩略图（长边 400，约 0.9 MB）。它**几乎必然已经在缓存里**：
+ * 用户是刚从相册的缩略图上点进来的，那张小图刚刚才在屏幕上渲染过。
+ * 所以点开的瞬间就能有画面 —— 先是一张对焦不准似的软图，几十到几百毫秒后
+ * 上面那层成片解码完盖上来，观感和 iOS 相册"先模糊后清晰"是同一回事。
+ *
+ * 三个刻意的选择：
+ *   · **不做 `onLoad` 切换、不做透明度过渡**。大图是不透明的，它一画出来就盖住垫底那层，
+ *     根本不需要谁去"换"；而且 iOS 上 `onLoad` 在缓存命中时可能不触发（`StripView.tsx`
+ *     里已经记过这条），拿它当开关等于把"能不能看到图"押在一个会漏的事件上。
+ *   · **垫底那层一直挂着**，不在成片出来之后卸掉。它只有约 0.9 MB，而卸早了的代价是
+ *     "大图被系统回收 / 解码失败时重新露出黑底"——用一个可能黑屏的风险换 0.9 MB 不划算。
+ *   · **`contain` 而不是 `cover`**：垫底和成片必须落在同一个框里，否则成片盖上来时
+ *     会看出一次位移或形变。两者的宽高比本来就一样，`contain` 不会变形。
+ *
  * ── 诚实记录的未验证项 ───────────────────────────────────────────────────
  * 本文件没过真机/模拟器：双击复位是否和父层 `Pressable` 抢手势、iOS 上
  * `Share.share({ url })` 到底把文件递给哪个 App、下拖过程中 `spring` 回弹的手感、
@@ -122,6 +141,12 @@ export interface LightboxToast {
 export interface LightboxProps {
   /** 成片 uri（`shot.uri`，不是缩略图 —— 见 GalleryScreen 文件头 ①）。 */
   uri: string;
+  /**
+   * 同一张照片的缩略图 uri（`shot.thumbUri`），垫在成片下面顶住解码空窗期。
+   * 可选，但**只有传了才不会有"点开先黑一下"**；`thumbUri` 等于 `uri` 时
+   * （缩略图生成失败会退化成这样，见 `galleryStore.addShot`）传空串，别垫两层一样的图。
+   */
+  thumbUri?: string;
   /** 说给人听的序号，从 1 开始（不是数组下标）。 */
   position: number;
   /** 画幅比 = 宽 / 高，用来算 `contain` 之后图片的真实显示尺寸（平移边界要用）。 */
@@ -136,6 +161,7 @@ export interface LightboxProps {
 
 export function Lightbox({
   uri,
+  thumbUri,
   position,
   aspectRatio,
   availableHeight,
@@ -429,11 +455,31 @@ export function Lightbox({
         </Pressable>
       </View>
 
-      {/* 图片区：手势层只覆盖这块，底部按钮永远不被手势吃掉 */}
+      {/*
+        图片区：手势层只覆盖这块，底部按钮永远不被手势吃掉。
+
+        里面是**两层**：先画垫底的缩略图，再把成片盖上去（顺序就是 z 序）。
+        理由见文件头"为什么大图下面永远垫着一层缩略图"。
+      */}
       <Animated.View
         {...pan}
         style={[styles.stage, { height: availableHeight, transform: [{ translateY: dragY }] }]}
       >
+        {/*
+          垫底：缩略图铺满整个手势层、内部 `contain`。
+          不设 width / height 而是铺满 —— `stage` 有确定尺寸，铺满就等于
+          "和成片同一个框"，两者按同样的 contain 规则算出来的画面也必然重合。
+          它**不吃触摸**（`pointerEvents` 写在 style 里：`ImageProps` 上没有这个 prop），
+          手势得由底下那层 `pan` 接住。
+        */}
+        {thumbUri !== undefined && thumbUri.length > 0 ? (
+          <Image
+            source={{ uri: thumbUri }}
+            style={styles.thumb}
+            resizeMode="contain"
+            accessible={false}
+          />
+        ) : null}
         <Image
           source={{ uri }}
           style={[
@@ -595,6 +641,16 @@ function createStyles(theme: Theme) {
   },
   image: {
     backgroundColor: 'transparent',
+  },
+  /**
+   * 垫在成片下面的缩略图。铺满整个手势层：
+   * 它不参与 `stage` 的居中排版（铺满 = 脱离流），于是成片怎么居中都行，
+   * 两层仍然落在同一个框里 —— 这是"成片盖上来时看不出跳动"的前提。
+   * `pointerEvents: 'none'` 写在 style 里 —— `ImageProps` 上没有这个 prop。
+   */
+  thumb: {
+    ...StyleSheet.absoluteFill,
+    pointerEvents: 'none',
   },
   /**
    * 底栏。`space-between` 把状态推到最左、动作推到最右 ——

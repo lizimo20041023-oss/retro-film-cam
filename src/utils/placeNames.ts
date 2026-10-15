@@ -35,6 +35,17 @@ import { pad2 } from './formatTimestamp';
 export interface PlaceGeocodeAddress {
   /** 城市，例如 `'上海市'`。乡镇 / 海上 / 机场常常没有。 */
   city?: string | null;
+  /**
+   * **地点名（POI）**，例如 `'熊本空港'`、`'Tower Bridge'`。
+   *
+   * 为什么必须收它（而不是只看行政区字段）：iOS 的 `CLPlacemark.name` 对机场 / 车站 /
+   * 景点这类"不是一个行政区"的地方**常常是唯一填了的字段**，expo 的原话就是
+   * "The name of the placemark, for example, 'Tower Bridge'"。少了它，这种照片的
+   * 反查结果会一个可用字段都没有（`city` / `district` / `subregion` / `region` /
+   * `country` / `isoCountryCode` 全空），最后一路退成坐标 —— 这正是要修的那个症状
+   * （见 `resolvePlaceFromGeocode` 里它排在链上哪一格、以及为什么排在那里）。
+   */
+  name?: string | null;
   /** 区 / 县，例如 `'黄浦区'`。 */
   district?: string | null;
   /** 次一级行政区（美国是县，日本是支厅级别）。 */
@@ -45,6 +56,14 @@ export interface PlaceGeocodeAddress {
   country?: string | null;
   /** ISO 3166-1 alpha-2 代码（`'CN'` / `'TW'` / `'HK'` / `'MO'`），平台一般都会给。 */
   isoCountryCode?: string | null;
+  /**
+   * 街道名（`'1-1 Chome'`、`'Nanjing West Road'`）。排在降级链的**最后一格**。
+   *
+   * ⚠️ 它一旦被用上，这张照片就算"有地名"（`hasPlaceName` 为真），会印街道而不是坐标 ——
+   * 这是本轮**有意翻转**的旧判断（上一版把"系统只回了街道名"当成"没有地名"）。
+   * 取舍与退回办法写在 `resolvePlaceFromGeocode` 里 `source.street` 那一项旁边。
+   */
+  street?: string | null;
 }
 
 /** 水印里地名和日期之间的分隔符（split 版式之外也用得上）。 */
@@ -273,9 +292,44 @@ export function resolvePlaceFromGeocode(
 ): ResolvedPlace {
   const source = address ?? {};
   return {
-    // 行政层级逐级降级：城市 → 区 → 次行政区 → 省/州。
-    // 顺序是"离用户最近的那一级优先"，和地图 App 的显示习惯一致。
-    city: firstNonEmpty(source.city, source.district, source.subregion, source.region, fallbackCity),
+    /*
+      逐级降级（顺序 = 优先级，"离拍摄点最近的那一档"优先）：
+        city → name → district → subregion → region → fallbackCity → street
+
+      为什么 `name`（POI 名）排在 `city` **之后**、却排在 `district` 之前：
+      · 排 `city` 之后 —— 真行政市名更稳、更"像个地名"，而 POI 名可能是店名
+        （`'スターバックス'`）、也可能改名字；只要城市名在，就该用城市名。
+        iOS 对城市里的地址一般都给得出 `city`，所以 `name` 真正生效的场景是
+        "城里查不到名字"的地方：机场、车站、山顶、荒野 —— 恰好是这次出问题的那类照片。
+      · 排 `district` 之前 —— `name` 是"我站在哪个具体地方"，`district` 只是"我在哪个区"。
+        相机页那行字要的是"这是哪儿"，具体地点比更大的行政区更接近答案。
+      ⚠️ 已知代价（本轮**不动**它）：`full` 档位会把行政级别词直接粘在名字后面
+      （`resolvePlaceFromGeocode` 的结果进 `formatChinesePlace` 时走 `ensureAdminSuffix`），
+      于是 POI 在 `city` 槽里会渲染成 `熊本空港市` / `Kumamoto Airport市`。
+      这是 `ensureAdminSuffix` 的既有行为（对非中文名也照样粘"市"），
+      不是这一行引入的；修它要改渲染层，属于另一件事。
+
+      为什么 `street` 排在最末（连调用方给的 `fallbackCity` 都优先于它）：
+      一条孤零零的街道名（`'1-1 Chome'`）是这一行里上下文最少的东西，
+      而 `fallbackCity` 至少是"别处已知的城市名"，城市名永远比街道名更像地名。
+      ⚠️ 但 `street` 一旦被用上，这张照片就算"有地名"（`hasPlaceName` 判的是这个槽位非空），
+      会印街道而不是坐标 —— 这是本轮**有意翻转**的旧判断（上一版把"系统只回了街道名"
+      当成"没有地名"，直接退坐标）。翻转的理由：用户喷的是"只印了坐标"，
+      而街道名哪怕只有一条，也是"这张照片在哪儿"的真实信息，比坐标可读。
+      要退回旧行为：把下面这一项 `source.street` 删掉即可，别的都不用动。
+
+      ⚠️ 港澳台那条红线**不在这一行**：`region` / `country` / `isoCountryCode`
+      取哪一格、怎么拼、前缀怎么加，一个字都没动（见下面四行和 `GREATER_CHINA`）。
+    */
+    city: firstNonEmpty(
+      source.city,
+      source.name,
+      source.district,
+      source.subregion,
+      source.region,
+      fallbackCity,
+      source.street,
+    ),
     // `region` 单独留一份：`full` 档位在"没有城市"时要拿它顶上（见 `pickBaseName`）。
     region: firstNonEmpty(source.region, source.subregion),
     country: clean(source.country),
@@ -292,7 +346,7 @@ export function resolvePlaceFromGeocode(
  * - `importPhoto.ts` 的反查失败兜底（老照片拿不到地名，退成坐标）。
  *
  * ⚠️ **不许**用 `resolvePlaceFromGeocode(null, lat, lng)` 来省这一行 —— 那个函数
- * 走的是"逐级降级"（`city → district → subregion → region → fallbackCity`），
+ * 走的是"逐级降级"（`city → name → district → subregion → region → fallbackCity → street`），
  * 传 `null` 进去照样会从兜底里取出非空值，形状和"只有坐标"**不一样**。
  * 这个形状只有一个来源，所以"坐标档"在成片、
  * 在相机页 LCD、在导入的老照片上永远是同一个样子。
@@ -317,9 +371,13 @@ export function coordsOnlyPlace(latitude: number, longitude: number): ResolvedPl
  * 一个字段都没有时会**退回坐标串**，于是"什么都没解析出来"和"解析出了一个城市"
  * 一样都是非空 —— 也就是永远判成"有地名"。
  *
- * 调用点：反查"成功"但一个字段都没给（海上、极地、系统只回了街道名），
+ * 调用点：反查"成功"但一个字段都没给（海上、极地、iOS 回了个空对象 `{}`），
  * 这一行没有任何信息量，调用方据此退回"只有坐标"（和 `locationStamp.ts` 里
  * `text.trim().length > 0 ? ok : failed` 对同一种情形的判断是同一个意思）。
+ *
+ * ⚠️ 反过来说：**只有街道名**（`street`）的那种结果算"有地名" —— 它落在 `city` 槽里，
+ * 所以这里判真、成片会印那条街。这是本轮有意翻转的旧判断，
+ * 取舍写在 `resolvePlaceFromGeocode` 里 `source.street` 那一项旁边。
  */
 export function hasPlaceName(place: ResolvedPlace): boolean {
   return (
