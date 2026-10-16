@@ -3896,11 +3896,13 @@ export function grainLayerOpacity(strength: number): number   // clamp01 后线�
 
 | 项 | 值 |
 | --- | --- |
-| 提交 | 待发布后回填 |
-| CI | 待发布后回填 |
-| IPA | 待发布后回填 |
-| 体积 / SHA-256 | 待发布后回填 |
-| Release | 待发布后回填 |
+| 提交 | 本地 `f09240b`（`v1.8.1：日期水印背景 100% 透明（删 DateHaze 实心矩形 + 副本光）+ 颗粒层不透明度硬上限 [0.12,0.22]（不让 max 档变成不透明灰网）+ 00 NO FRAME 无相框纯净全屏模式`，父 `21ef42c`，27 files / +1422 −455，tree `151b9368`）；推送走 Git Data API（本机 github.com:443 不通）⇒ 远端 `373974d5`（父 `0c8e4ad`），远端 130 个 blob 与本地逐个 sha 相同（`TREE MATCH = True`） |
+| CI | run [`38957342905`](https://github.com/lizimo20041023-oss/retro-film-cam/actions/runs/38957342905) **success**（job `build-ipa` `117163413029`：prebuild → pod install → xcodebuild Release → 打 ipa → 上传 artifact，13 步全成功，另一条 skipped 的步骤是"只在上传失败时才执行"的兜底） |
+| IPA | workflow artifact `12071168466`（`FretroCam-unsigned-ipa`，10,348,480 B）⇒ 解出 `FretroCam-v1.8.1-unsigned.ipa` **10,462,954 B** |
+| 体积 / SHA-256 | **10,462,954 B**（9.98 MiB）· `sha256:4e2d38f88f5d360f481e9cf065047ab34d4c43a8173707915b413a4509c58715`（上传后回读 Release asset digest 逐字节一致，`SIZE MATCH` / `DIGEST MATCH` 均 True） |
+| Release | [`v1.8.1`](https://github.com/lizimo20041023-oss/retro-film-cam/releases/tag/v1.8.1)（release id `415332537`，asset id `648454723`，`target_commitish` = 远端 `373974d5`）· 下载：<https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.8.1/FretroCam-v1.8.1-unsigned.ipa> |
+| bundle `main.jsbundle` | 本地 `expo export --platform ios --no-bytecode` **EXIT=0** ⇒ `_expo/static/js/ios/index-a1be5160fade386027948f1629879ff1.js` **1,339,211 B**；产物 20 个文件 / 2,816,976 B（`grain.png` 211,111 B / `light-leak.png` 18,214 B / `no-frame.png` 68 B，与源文件逐字节同尺寸）；`_verify_ipa_v181.py --local` 在该产物上校准后 **RESULT: OK** |
+| 核验 | `python _verify_ipa_v181.py 12071168466` → **RESULT: OK**：IPA 内 **115** 个条目、`Payload/FretroCam.app/main.jsbundle` **2,040,168 B**、`Info.plist` 版本 `1.8.1` + `com.canyerylee.fretrocam`、相框 PNG 恰好 **10 张**（含 `no-frame.png` 68 B）、四张贴图（grain / light-leak / vignette / dust）都在包、撤掉的素材（`leather` / `half-frame` / `sheet8x10`）全 0 命中、`SHOULD_BE_ABSENT` 清单**全 x0**（含本版删掉的 `DateHaze` / `DateHazeProps`）、v1.8.1 的十七根新针（`NO_FRAME_ID` / `NO_FRAME_ASPECTS` / `DEFAULT_NO_FRAME_ASPECT` / `resolveFrame` / `noFrameAspect` / `fullBleed` / 7 个 `*.noFrame*` i18n 键 / `grainLayerOpacity` / `haloOuterRatio` / `haloInnerRatio` / `lampLayers` / `PunctuationLamp`）**全 x≥1**；内部名 canary `makeRandom` 不在包内 ⇒ 该段按设计跳过（内部名的证据交给源码级探针，不靠字节码） |
 
 ---
 
