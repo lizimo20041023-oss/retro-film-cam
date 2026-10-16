@@ -3705,13 +3705,13 @@ TINT_MAGENTA #E657E6   Y = 0.5009      |Y − 0.5| ≤ 0.002
 
 | 项 | 值 |
 | --- | --- |
-| 提交 | `PENDING_COMMIT` |
-| CI | `PENDING_CI` |
-| IPA | `PENDING_IPA` |
-| 体积 / SHA-256 | `PENDING_SIZE` |
-| Release | `PENDING_RELEASE` |
+| 提交 | 本地 `4cfab40`（`v1.8.0：去白雾的色彩引擎 + 三种暗房纸材 + 参数胶囊自动隐藏 + 日期引擎 + 像素级锁定`，父 `27d4ca6`，36 files / +6436 −1907）；推送走 Git Data API（本机 github.com:443 不通）⇒ 远端 `1c2eca96`（父 `6f76d2ad`），远端 129 个 blob 与本地逐个 sha 相同 |
+| CI | run [`38949347146`](https://github.com/lizimo20041023-oss/retro-film-cam/actions/runs/38949347146) **success**（job `build-ipa` 13 步全成功：prebuild → pod install → xcodebuild Release → 打 ipa → 上传 artifact） |
+| IPA | workflow artifact `12068516114`（`FretroCam-unsigned-ipa`，10,344,498 B）⇒ 解出 `FretroCam-v1.8.0-unsigned.ipa` **10,458,969 B** |
+| 体积 / SHA-256 | **10,458,969 B**（9.97 MiB）· `sha256:78b41325f8120bc0311252bd14111503f2f68c004418b373e920b88b837c3de2`（上传后回读 Release asset digest 逐字节一致） |
+| Release | [`v1.8.0`](https://github.com/lizimo20041023-oss/retro-film-cam/releases/tag/v1.8.0)（release id `415279702`，asset id `648273642`，`target_commitish` = 远端 `1c2eca96`；下载地址见 Release 页） |
 | bundle `main.jsbundle` | 本地 `expo export --platform ios --no-bytecode` **EXIT=0** ⇒ `_expo/static/js/ios/index-7631b44e6b5afcf4be18cc38f3a1110e.js` **1,331,062 B**；17 个资源（`grain.png` 211111 B / `light-leak.png` 18214 B，与源文件逐字节同尺寸）；`_verify_ipa_v180.py --local` 在该产物上校准后 **RESULT: OK**（`SHOULD_BE_ABSENT` 全 0 命中） |
-| 核验 | `PENDING_VERIFY` |
+| 核验 | `python _verify_ipa_v180.py 12068516114` → **RESULT: OK**：IPA 内 114 个条目、`Payload/FretroCam.app/main.jsbundle` **2,032,295 B**、`Info.plist` 版本 `1.8.0` + `com.canyerylee.fretrocam`、相框 PNG 恰好 **9 张**、v1.8.0 贴图 4 张（grain / light-leak / vignette / dust）都在包、撤掉的素材（`leather` / `half-frame` / `sheet8x10`）**全 0 命中**、`SHOULD_BE_ABSENT` 清单**全 x0** |
 
 ---
 
