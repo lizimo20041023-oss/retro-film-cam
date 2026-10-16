@@ -3012,6 +3012,29 @@ iOS CoreText 逐字形取整，11 个字形各差零点几 pt 累起来就超容
 相纸是否真的永远正向直立、宽下巴回到正底部 · 日期是否真的不再出省略号 ·
 长卷单格是否真的完整居中不叠合 · 地名档在真实无网/弱网下是否 14s 内必有结论。
 
+### 30.8 v1.6.0 产物指纹（发布后回填）
+
+| 项目 | 值 |
+| --- | --- |
+| 本地提交 | `7beb0f9bb6a39340e49111ab19f4c1dda7d1c9af`（父 `63eae680ef888e2458c273ce7567165fa96046f2`，14 个文件） |
+| 远端提交 | `36ccb5741db3482b9b7fbb6a5c152e4fd89dc820`（父 `9bd872365c0de369c7c90f8f9049da78c99f41a5`） |
+| 远端树 | `3d56fa86dba1a7820fb80066dbef81c4a0f24779`（与本地 HEAD 的树逐字节相同） |
+| CI | run `38767439059` **success**（head `36ccb5741db3`），job `116534209125` 全 step 通过 |
+| artifact | `11990665707` · `FretroCam-unsigned-ipa` · 10,875,740 B |
+| Release | `v1.6.0` · release id `414030371` |
+| asset | `644458011` · `FretroCam-v1.6.0-unsigned.ipa` · 10,989,875 B |
+| sha256 | `3c23ec31e7fbb5da5e3ac17494bb564aacb50826a18248b9eebdc25b60a6e08e` |
+| 下载地址 | `https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.6.0/FretroCam-v1.6.0-unsigned.ipa` |
+
+产物回读核对（`_verify_ipa_v160.py 11990665707` → **RESULT: OK**）：34 个「应存在」符号全部命中
+一次（本版新函数名 + `api.bigdatacloud.net/data/reverse-geocode-client`），18 个「应不存在」符号
+全部 0 次（含转述报告里那个 `isOverlapBleed`）；`Info.plist` 版本已是 `1.6.0`、旧 `1.5.1` 不在、
+bundle id `com.canyerylee.fretrocam`；相框 PNG 仍 11 张。
+
+⚠️ 那 4 张 `*-landscape.png` **还在包里但已是死资源**（`frameSourceOf` 的横版分支不可达）。留着是
+有意的 —— 将来真要给横构图设计横版纸时它们还在，删掉反而要多一次重新生成资源。代价是 IPA 里白白
+多背约 500KB。
+
 ---
 
 **改代码前请先读 `src/types/index.ts`** —— 所有数据结构都在那一个文件里，
