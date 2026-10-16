@@ -11,9 +11,12 @@ export const en: Messages = {
   'common.unknownError': 'Unknown error',
 
   /* ---------------- ① top bar ---------------- */
-  'camera.flash.on': 'Turn the flash off',
-  'camera.flash.off': 'Turn the flash on',
   'camera.flash.label': 'FLASH',
+  // State descriptions (not actions): the same string is both the button's a11y
+  // label and the transient hint over the viewfinder — the two must never drift.
+  'camera.flash.state.off': 'Flash · Off',
+  'camera.flash.state.on': 'Flash · On',
+  'camera.flash.state.auto': 'Flash · Auto',
   'camera.flip.a11y': 'Switch between front and back camera',
   'camera.flip.label': 'FLIP',
   'camera.settings.a11y': 'Open settings',
@@ -32,14 +35,14 @@ export const en: Messages = {
   'camera.shutter.a11y': 'Take a photo',
   'camera.shutter.busy': 'Developing',
 
-  /* ---------------- film library (long-press the film name under the viewfinder) ---------------- */
+  /* ---------------- film library (the reel button at the bottom right) ---------------- */
   // The panel heading = the printed English plate (never translated) + a word in
   // the current language, separated by ' · '. The plate is engraved on the body;
   // the word after it is what actually tells the photographer where they are.
   'film.drawer.title': 'SELECT FILM STOCK · FILM LIBRARY',
   'film.drawer.a11y': 'Film library, choose a film preset',
   'film.drawer.close': 'Done',
-  'film.drawer.hint': 'You can also long-press the film name under the viewfinder',
+  'film.drawer.hint': 'Tap a film to choose it · the reel button at the bottom right switches anytime',
   'film.card.a11y': '{name}, {description}',
   'film.card.selected': 'Selected',
 
@@ -213,9 +216,9 @@ export const en: Messages = {
   'camera.bar.temp': 'Temp',
   'camera.bar.focal': 'Focal',
   'camera.bar.ev': 'EV',
-  'camera.bar.temp.a11y': 'Color temperature, currently {label}',
-  'camera.bar.focal.a11y': 'Focal length {label}, tap to switch',
-  'camera.bar.ev.a11y': 'Exposure compensation {value}',
+  'camera.bar.temp.a11y': 'Color temperature, currently {label}. Hold and slide to adjust, tap to reset',
+  'camera.bar.focal.a11y': 'Focal length {label}. Hold and slide to adjust, tap to open the stops',
+  'camera.bar.ev.a11y': 'Exposure compensation {value}. Hold and slide to adjust, tap to reset',
   'camera.bar.ev.hint': 'Swipe up or down to adjust exposure',
   'camera.tool.import': 'Import',
   'camera.tool.double': 'Double',
@@ -231,10 +234,6 @@ export const en: Messages = {
   'camera.focus.hint': 'Tap to focus',
   'camera.exposure.a11y': 'Exposure slider, swipe up or down',
   'camera.frame.slot2': 'Shoot the second frame',
-  'camera.half.plate': '[ 1 / 2 ]',
-  'camera.half.hint': 'Press once more to finish',
   'frame.fp100c': 'Peel-apart',
-  'frame.halfFrame': 'Half frame',
-  'frame.sheet8x10': '8×10 sheet',
   'camera.thumb.a11y': 'Open the album',
 };

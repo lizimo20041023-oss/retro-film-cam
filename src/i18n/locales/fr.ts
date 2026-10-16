@@ -11,9 +11,12 @@ export const fr: Messages = {
   'common.unknownError': 'Erreur inconnue',
 
   /* ---------------- ① barre du haut ---------------- */
-  'camera.flash.on': 'Éteindre le flash',
-  'camera.flash.off': 'Allumer le flash',
   'camera.flash.label': 'FLASH',
+  // Descriptions d'état (pas d'action) : la même chaîne sert d'étiquette a11y au
+  // bouton et de bandeau transitoire sur le viseur — les deux ne doivent pas diverger.
+  'camera.flash.state.off': 'Flash · Éteint',
+  'camera.flash.state.on': 'Flash · Allumé',
+  'camera.flash.state.auto': 'Flash · Auto',
   'camera.flip.a11y': 'Basculer entre la caméra avant et arrière',
   'camera.flip.label': 'INVERSER',
   'camera.settings.a11y': 'Ouvrir les réglages',
@@ -32,7 +35,7 @@ export const fr: Messages = {
   'camera.shutter.a11y': 'Prendre une photo',
   'camera.shutter.busy': 'Développement',
 
-  /* ---------------- filmothèque (appui long sur le nom de la pellicule sous le viseur) ---------------- */
+  /* ---------------- filmothèque (bouton pellicule en bas à droite) ---------------- */
   // Le titre du panneau = la plaque anglaise imprimée (jamais traduite) + un mot
   // dans la langue courante, séparés par ' · '. La plaque est une gravure du
   // boîtier ; le mot qui suit s'adresse au photographe.
@@ -40,7 +43,7 @@ export const fr: Messages = {
   'film.drawer.a11y': 'Filmothèque, choisir un préréglage de pellicule',
   'film.drawer.close': 'Terminé',
   'film.drawer.hint':
-    'Un appui long sur le nom de la pellicule sous le viseur ouvre aussi ce panneau',
+    'Touchez une pellicule pour la choisir · le bouton en bas à droite change à tout moment',
   'film.card.a11y': '{name}, {description}',
   'film.card.selected': 'Sélectionné',
 
@@ -216,9 +219,12 @@ export const fr: Messages = {
   'camera.bar.temp': 'Tempé.',
   'camera.bar.focal': 'Focale',
   'camera.bar.ev': 'IL',
-  'camera.bar.temp.a11y': 'Température de couleur, actuellement {label}',
-  'camera.bar.focal.a11y': 'Focale {label}, touchez pour changer',
-  'camera.bar.ev.a11y': 'Correction d\'exposition {value}',
+  'camera.bar.temp.a11y':
+    'Température de couleur, actuellement {label}. Appui long et glissement pour régler, touchez pour réinitialiser',
+  'camera.bar.focal.a11y':
+    'Focale {label}. Appui long et glissement pour régler, touchez pour ouvrir les focales',
+  'camera.bar.ev.a11y':
+    'Correction d\'exposition {value}. Appui long et glissement pour régler, touchez pour réinitialiser',
   'camera.bar.ev.hint': 'Balayez vers le haut ou le bas pour régler l\'exposition',
   'camera.tool.import': 'Importer',
   'camera.tool.double': 'Double expo',
@@ -234,10 +240,6 @@ export const fr: Messages = {
   'camera.focus.hint': 'Touchez pour faire le point',
   'camera.exposure.a11y': 'Curseur d\'exposition, balayez vers le haut ou le bas',
   'camera.frame.slot2': 'Prenez la deuxième vue',
-  'camera.half.plate': '[ 1 / 2 ]',
-  'camera.half.hint': 'Appuyez encore pour terminer',
   'frame.fp100c': 'Pelable',
-  'frame.halfFrame': 'Demi-format',
-  'frame.sheet8x10': 'Feuille 8×10',
   'camera.thumb.a11y': 'Ouvrir l\'album',
 };

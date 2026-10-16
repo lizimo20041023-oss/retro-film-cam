@@ -42,7 +42,6 @@ import { CENTERED_SEPARATOR, pad2, timestampTracking } from './formatTimestamp';
 import type {
   FontWeight,
   FrameLayout,
-  FrameSlot,
   FrameSpec,
   LocationLayout,
   NormalizedRect,
@@ -227,58 +226,6 @@ export function computeFrameLayout(
     bottomStripHeight: Math.max(0, box.height - (top + height)),
     // 窗口右沿 → 相框右边
     rightMargin: Math.max(0, box.width - (left + width)),
-  };
-}
-
-/* ==========================================================================
- * 一框多图（半格双联）：开槽的绝对坐标
- * ========================================================================== */
-
-/**
- * 一框多图：把每个开槽的归一化窗口换算成绝对坐标（相对合成舞台）。
- *
- * 和 `computeFrameLayout` 用同一套 `clamp` 规则，所以某一格的右沿永远不会越出相框。
- * 返回顺序就是绘制顺序：`slots[0]` 是先拍的那一张（左格），`slots[1]` 是右格。
- */
-export function computeSlotRects(layout: FrameLayout, slots: readonly FrameSlot[]): Rect[] {
-  return slots.map((slot) => {
-    const left = clamp(Math.round(slot.window.x * layout.width), 0, layout.width - 1);
-    const top = clamp(Math.round(slot.window.y * layout.height), 0, layout.height - 1);
-    return {
-      left,
-      top,
-      width: clamp(Math.round(slot.window.width * layout.width), 1, layout.width - left),
-      height: clamp(Math.round(slot.window.height * layout.height), 1, layout.height - top),
-    };
-  });
-}
-
-/**
- * 多格画面的**混合区** = 所有开槽的并集矩形。
- *
- * 调色 / 颗粒 / 漏光要盖在这一块上，而不是分别盖在每一格上：它们是"整卷冲洗一遍"的效果，
- * 分格各洗一次会在两格的接缝处露出两遍颗粒和两道暗角，比"少一格对齐"难看得多。
- * 空数组返回 1×1：调用方拿到的是一个合法的矩形，不需要判空。
- */
-export function slotBounds(rects: readonly Rect[]): Rect {
-  if (rects.length === 0) {
-    return { left: 0, top: 0, width: 1, height: 1 };
-  }
-  let left = Number.POSITIVE_INFINITY;
-  let top = Number.POSITIVE_INFINITY;
-  let right = Number.NEGATIVE_INFINITY;
-  let bottom = Number.NEGATIVE_INFINITY;
-  for (const rect of rects) {
-    left = Math.min(left, rect.left);
-    top = Math.min(top, rect.top);
-    right = Math.max(right, rect.left + rect.width);
-    bottom = Math.max(bottom, rect.top + rect.height);
-  }
-  return {
-    left,
-    top,
-    width: Math.max(1, right - left),
-    height: Math.max(1, bottom - top),
   };
 }
 
@@ -662,7 +609,7 @@ const MAX_DATE_FONT = 96;
  * 为什么预设的 `fontSizeRatio` 没有被删：它仍然是"这一卷想印多大"的相对权重，
  * 只是绝对值被这条线收口。三层（预设权重 → 短边收口 → 墨色系数）**全部在
  * `dateFontOf` 这一行里合成** —— 这就是"比例必须在同一处收口"的全部意思：
- * 四种版式、四款相框、五个预设共用这一个数，不存在某一版跑偏的可能。
+ * 四种版式、五款相框、五个预设共用这一个数，不存在某一版跑偏的可能。
  *
  * ## v1.5.1：0.02 → 0.032
  *

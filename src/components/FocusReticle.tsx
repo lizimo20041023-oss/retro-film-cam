@@ -31,16 +31,50 @@ const PULSE_SPEED = 20;
 const PULSE_BOUNCINESS = 9;
 
 /**
- * 框沿离镂空窗口边的最小距离。
+ * 安全内边距：48pt。**用户给的数**（规格 §三-1「上下左右各留出至少 48px 安全内边距」）。
  *
- * 夹紧到"整框落在窗口内"只需要收到 0，但真机上贴着 1pt 窗口白线的那一下看起来像
- * 框被边框切了一道。留 6pt 是为了让框和白线之间始终有一条缝（也刚好让开
- * `ViewfinderWindow` 那两根 2pt 的四角角标）。
+ * 为什么不沿用旧值 6：6pt 只保证了"框不压在窗口那 1pt 白线上"，是一种**美观**余量；
+ * 用户要的 48pt 是**行为**要求 —— 框和滑条都只在窗口中间那块里出现，眼睛永远看不到
+ * 它们贴近白边，更不会看错成"漏到框外"。两者不冲突，取严的那个。
+ *
+ * 为什么不做成 props：这是产品决策而不是布局参数，露出一个可调旋钮只会让
+ * 取景器的行为随调用点漂移（`CameraScreen` 只传几何，不传设计值）。
  */
-const BOUNDS_INSET = 6;
+export const SAFE_INSET = 48;
 
 /**
- * 把归一化落点换算成框左上角的像素坐标，并把它按在**镂空取景窗**里。
+ * 把窗口矩形内缩成**安全内区**，对焦框与曝光滑条都只许落在这里面。
+ *
+ * 内缩量的上限：`max(0, (边长 - RETICLE_SIZE) / 2)`，即"再往里缩就要把 76×76 的框挤出
+ * 这条边"的那个临界值，再和用户给的 `SAFE_INSET` 取小。
+ *
+ * 为什么不用更朴素的 `min(SAFE_INSET, 边长/2)`：那只保证安全区不为负，**不保证框出得来**。
+ * 窗口 60pt 宽时内缩量是 30pt，安全区宽度算出来是 0，可 76pt 的框一放进去照样横跨
+ * 整扇窗 —— 越界（用户明令禁止的那件事）照旧发生。改成 `(边长 - RETICLE_SIZE)/2` 之后，
+ * 内缩量在"框正好还能塞进窗口"的那一刻收缩到 0，安全区与框的关系是连续的。
+ *
+ * 代价：边长 < 76 + 2×48 = 172pt 的窗口拿不到完整 48pt 内边距 —— 那是物理上留不出来的量。
+ * `Math.max(0, ...)` 同时兜住 `width/height` 为负数的脏输入，保证安全区宽高恒 ≥ 0。
+ *
+ * 纯函数、不依赖任何 state：这样几何可以被探针直接调用验证（见验收证据）。
+ */
+export function safeAreaRect(bounds: Rect): Rect {
+  const width = Math.max(0, bounds.width);
+  const height = Math.max(0, bounds.height);
+  // 上限 = "把框从这条边挤出去"的临界内缩量：窗宽 353 → 138.5（于是取满 48）；
+  // 窗宽 100 → 12（框已经放不下，内缩只剩这点空间可让）
+  const insetX = Math.min(SAFE_INSET, Math.max(0, (width - RETICLE_SIZE) / 2));
+  const insetY = Math.min(SAFE_INSET, Math.max(0, (height - RETICLE_SIZE) / 2));
+  return {
+    left: bounds.left + insetX,
+    top: bounds.top + insetY,
+    width: width - insetX * 2,
+    height: height - insetY * 2,
+  };
+}
+
+/**
+ * 把归一化落点换算成框左上角的像素坐标，并把它按在**镂空取景窗的安全内区**里。
  *
  * 为什么必须夹紧：手指点到画面最边缘时，框会有一半落在取景器外面 —— 看起来像被裁掉了；
  * 而且曝光滑块要贴着框右侧 8pt，框越界会把滑块一起推出画面。
@@ -51,8 +85,13 @@ const BOUNDS_INSET = 6;
  * 所以调用方要把窗口矩形当 `bounds` 传进来；不传时退回"夹到整块画布"的老行为
  * （保持这个函数对旧调用点仍然成立）。
  *
- * 窗口比框还窄时（理论上只在极小屏 + 极窄画幅同时发生）`hi` 会被 `lo` 顶住，
- * 那种情况下框宁可溢出也不会被挤成一个负宽度的矩形。
+ * 夹的是 `safeAreaRect(bounds)` 而不是 `bounds` 本身：48pt 安全内区是用户要的行为，
+ * 而"整框不越出窗口"只是它的必要条件。`FocusExposure` 要把**同一个**安全矩形
+ * 拿去夹曝光滑条，所以这里顺手把窗口也算一遍 —— 两条几何口径必须来自同一个函数。
+ *
+ * 安全区比框还窄时（理论上只在极小屏 + 极窄画幅同时发生）夹紧区间会反向，
+ * 这时让框**居中**而不是钉在左沿：两种做法都必然溢出（76pt 的框塞不进 60pt 的窗），
+ * 居中是唯一左右对称、看不出"框被推出取景器"的那种。
  */
 export function reticleOrigin(
   target: { x: number; y: number },
@@ -60,15 +99,32 @@ export function reticleOrigin(
   height: number,
   bounds?: Rect,
 ): { left: number; top: number } {
-  const area = bounds ?? { left: 0, top: 0, width, height };
-  const loLeft = area.left + BOUNDS_INSET;
-  const loTop = area.top + BOUNDS_INSET;
-  const hiLeft = Math.max(loLeft, area.left + area.width - RETICLE_SIZE - BOUNDS_INSET);
-  const hiTop = Math.max(loTop, area.top + area.height - RETICLE_SIZE - BOUNDS_INSET);
-  return {
-    left: Math.min(Math.max(target.x * width - RETICLE_SIZE / 2, loLeft), hiLeft),
-    top: Math.min(Math.max(target.y * height - RETICLE_SIZE / 2, loTop), hiTop),
+  const window = bounds ?? { left: 0, top: 0, width, height };
+  const area = safeAreaRect(window);
+  /*
+   * 退化分支（只在极小屏 + 极窄画幅同时出现）：**窗口本身**就比框窄/矮。
+   * 这时"框不越窗口"物理上做不到，"夹到安全区"更是没有意义 —— 安全区宽已经算成 0。
+   * 还能守住的语义只有一条：把框**居中**，让左右（上下）两侧的外溢量相等，
+   * 看上去是"框比取景器大"而不是"框被推到一边漏出去了"。
+   * 居中基准用**窗口**而不是已经塌成 0 宽的安全区：后者会把框钉在窗口左沿，反而更偏。
+   */
+  const centre = {
+    x: window.left + window.width / 2 - RETICLE_SIZE / 2,
+    y: window.top + window.height / 2 - RETICLE_SIZE / 2,
   };
+  // 轴向单独判：极窄窗口里"横向居中、纵向照常跟手指"才是对的（两个方向互不牵连）
+  const x = area.width < RETICLE_SIZE
+    ? centre.x
+    : clampWithin(target.x * width - RETICLE_SIZE / 2, area.left, area.left + area.width - RETICLE_SIZE);
+  const y = area.height < RETICLE_SIZE
+    ? centre.y
+    : clampWithin(target.y * height - RETICLE_SIZE / 2, area.top, area.top + area.height - RETICLE_SIZE);
+  return { left: x, top: y };
+}
+
+/** 把 `value` 夹进 [`lo`, `hi`]；`lo > hi`（退化输入）时取 `lo`，绝不返回越界值。 */
+function clampWithin(value: number, lo: number, hi: number): number {
+  return Math.min(Math.max(value, lo), Math.max(lo, hi));
 }
 
 export interface FocusReticleProps {
@@ -76,11 +132,12 @@ export interface FocusReticleProps {
   width: number;
   height: number;
   /**
-   * 镂空取景窗在**同一个坐标系**里的矩形。传了它，框就只会在窗口内出现
-   * （真机实测：不传时框会穿到窗口外的遮罩区）。不传 = 夹到整块画布。
+   * 镂空取景窗在**同一个坐标系**里的矩形。传了它，框就只会在窗口的**安全内区**
+   * （再内缩 `SAFE_INSET`，见 `safeAreaRect`）里出现；不传 = 夹到整块画布。
+   * 真机实测：完全不传时框会穿到窗口外的遮罩区。
    */
   bounds?: Rect;
-  /** 整层透明度由父级驱动：3 秒无操作时它要和曝光滑块一起淡出，所以不能各淡各的。 */
+  /** 整层透明度由父级驱动：`IDLE_MS` 无操作时它要和曝光滑块一起淡出，所以不能各淡各的。 */
   opacity: Animated.Value;
 }
 

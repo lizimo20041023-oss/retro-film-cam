@@ -119,19 +119,6 @@ export interface FrameOrientationVariant {
 }
 
 /**
- * 相框里的一个**画面开槽**。
- *
- * 只有"一框多图"的相框（半格双联框）才会写 `slots`。普通相框不写它，
- * 直接用自己的 `window`，行为与没有这个字段时完全一致。
- */
-export interface FrameSlot {
-  /** 开槽的归一化矩形。 */
-  window: NormalizedRect;
-  /** 这一格的照片怎么填，不写 = 跟相框的 `photoFit`。 */
-  photoFit?: 'cover' | 'contain';
-}
-
-/**
  * 一个相框 = 一张透明 PNG + 一个归一化镂空窗口。
  * 新增相框只需要往 `src/constants/frames.ts` 的数组里加一条，核心逻辑一行都不用改。
  */
@@ -184,14 +171,9 @@ export interface FrameSpec {
    * 字段与 4 款已有变体**仍然保留**：将来若真为横构图独立设计横版纸，只要把那一个开关
    * 改回按比例判就能重新启用这条路径。**不要**为了让它们"活起来"去改 `frameSourceOf`
    * 或绕过 `resolveFrameOrientation`。
-   * 不写 = 这款相框本来就只有竖版（`fp100c` / `half-frame` / `sheet8x10`）。
+   * 不写 = 这款相框本来就只有竖版（`fp100c`）。
    */
   landscape?: FrameOrientationVariant;
-  /**
-   * 一框多图的画面开槽。写了它时 `window` **仍然要写** ——
-   * 它同时是"没有第二张照片时的单图兜底"和取景器那条构图参考线的依据。
-   */
-  slots?: FrameSlot[];
   /** 一句话说明。 */
   description?: string;
 }
@@ -530,13 +512,6 @@ export interface FilmStageInput {
   overlayUri?: string | null;
   /** 重曝上面那张的不透明度（0~1），不填 = 0.5。只有 `overlayUri` 有值时才有意义。 */
   overlayOpacity?: number;
-  /**
-   * **一框多图**相框的第二张原片 uri（半格双联框的右格）。
-   *
-   * 和 `overlayUri` 的区别：这个是**并排放进另一个开槽**，不是叠在同一格里。
-   * 相框没有 `slots` 时这个字段无效。
-   */
-  secondUri?: string | null;
 }
 
 /**

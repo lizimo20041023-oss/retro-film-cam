@@ -24,25 +24,23 @@ import { useSettings } from './useSettings';
 const READY_TIMEOUT_MS = 1500;
 
 /**
- * 这次合成会**多**渲染几张参与就绪计数的图（§五.3）。
+ * 这次合成会**多**渲染一张参与就绪计数的图（§五.3 的重曝）。
  *
  * 为什么必须在这里补上：`countStageImages`（`gradeLayers.ts`，不在本次改动范围内）
- * 只知道"照片 1 张 + 相框 1 张 + 每个纹理层 1 张"。重曝是第二张照片、一框多图是第二格，
- * 两者都要等 `onLoad` 才能截，可它们不在那个函数的知识里。**计数少了不会死等**
- * （`whenReady` 的判据是 `loadedCount >= expectedCount`，欠着也能被 1500ms 兜底放行），
- * 但那正是最坏的情况：截到只解码了一半的第二张图，成片上出现半黑的一格。
+ * 只知道"照片 1 张 + 相框 1 张 + 每个纹理层 1 张"。重曝是第二张照片，也要等 `onLoad`
+ * 才能截，可它不在那个函数的知识里。**计数少了不会死等**（`whenReady` 的判据是
+ * `loadedCount >= expectedCount`，欠着也能被 1500ms 兜底放行），但那正是最坏的情况：
+ * 截到只解码了一半的第二张图，成片上出现半黑的一格。
  *
- * 判据必须和渲染层**逐字一致**（空串不算、`slots` 少于两格不算），
- * 否则计数和实际节点数会错开 —— 多了会白等到超时，少了会截早。
+ * 判据必须和渲染层**逐字一致**（空串不算），否则计数和实际节点数会错开 ——
+ * 多了会白等到超时，少了会截早。
+ *
+ * ⚠️ v1.6.1 之前这里还数"一框多图的第二格"（判据是 `frame.slots` 至少两格）。
+ * 那款半格双联框已随精简相框库下线、`slots` 机制整条摘除，所以这条分支也删掉了。
  */
 function countExtraStageImages(input: FilmStageInput): number {
   let extra = 0;
   if (typeof input.overlayUri === 'string' && input.overlayUri.length > 0) {
-    extra += 1;
-  }
-  const slots = input.frame.slots;
-  const hasSecondSlot = slots !== undefined && slots.length > 1;
-  if (hasSecondSlot && typeof input.secondUri === 'string' && input.secondUri.length > 0) {
     extra += 1;
   }
   return extra;

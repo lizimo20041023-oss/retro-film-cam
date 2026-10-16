@@ -152,13 +152,6 @@ export interface ProcessFilmPhotoInput {
    * 那不是重曝是替换；0.5 才是"两次曝光各占一半"的物理直觉。
    */
   overlayOpacity?: number;
-  /**
-   * 一框多图（半格双联）的**右格**那一张（§五.3）。
-   *
-   * 只在相框自带 `slots`（至少两格）时有效；相框没有 `slots` 时这个值被忽略，
-   * 渲染结果与 v1.3.0 一致（相机页拿到的相框目前都还没有 `slots`）。
-   */
-  secondUri?: string | null;
   /** 进度回调：'normalizing' → 'capturing' → 'saving'。 */
   onStage?: (stage: DevelopStage) => void;
 }
@@ -186,25 +179,18 @@ interface CroppedPhoto extends CapturedPhoto {
  * 这张照片该按什么宽高比裁 —— **就是合成层窗口的宽高比**。
  *
  * 返回 `null` = 这一步不做（调用方原样把归一化那张图交给合成层）。
- * 目前只有两种情况下会返回 `null`：
+ * 现在**只有一种**情况会返回 `null`：**`photoFit: 'contain'` 的相框**。`contain`
+ * 的语义是"整张完整放入、可以留黑边"，按窗口比例裁掉两边正好是它承诺**不做**的事。
+ * （当前 5 款全是 `'cover'`，这条分支是为将来新增相框留的；渲染侧用的是同一个判断
+ * ——`FilmCompositor.tsx` 三处都是 `frame.photoFit === 'contain' ? 'contain' : 'cover'`，
+ * 所以不会出现"这里按 cover 裁、那里按 contain 画"的错配。）
  *
- * ① **有开槽的相框**（`frame.slots` 非空；目前只有半格双联这一款，它有两个槽）。
- *    有槽走槽：`FilmCompositor` 里 `const mixing: Rect = slotRects.length > 0 ?
- *    slotBounds(slotRects) : layout.window;`（`FilmCompositor.tsx:301`）——
- *    也就是**照片被摆进的是槽位矩形，不是 `layout.window`**。而半格的 `window`
- *    是**两个槽的并集**（含中间那根立筋，比例 1.603），槽自己的比例是 3:4（0.75）：
- *    按并集裁出来的图送进 3:4 的槽还要再 `cover` 一次，那一次**不是恒等变换**，
- *    于是"裁了等于没裁"，却多付一次全图解码 + 重编码的内存峰值（老机器上是闪退风险）。
- *    ⚠️ 判定条件是 `length > 0` 而不是 `length > 1`：只有**一个**槽时槽位矩形与
- *    `window` 也未必重合（`window` 的文档写的就是"并集 / 单图兜底"），
- *    那时按 `window` 比例裁同样可能被槽里的 `cover` 再裁一次。多一个槽就多一个
- *    可能对不上的矩形，所以干脆"有槽就不裁"。
- * ② **`photoFit: 'contain'` 的相框**。`contain` 的语义是"整张完整放入、可以留黑边"，
- *    按窗口比例裁掉两边正好是它承诺**不做**的事。（当前 7 款全是 `'cover'`，
- *    这条分支是为将来新增相框留的；渲染侧用的是同一个判断
- *    ——`FilmCompositor.tsx:425,439,451` 三处都是
- *    `frame.photoFit === 'contain' ? 'contain' : 'cover'`，所以不会出现
- *    "这里按 cover 裁、那里按 contain 画"的错配。）
+ * ⚠️ 曾经还有第二种：**有开槽（`frame.slots`）的相框**不裁切。那条随 v1.6.1 精简相框库
+ * 一起删除了 —— 半格双联框下线后全仓库再没有任何相框带 `slots`，`slots` 机制本身也已
+ * 从 `types` / `geometry` / `FilmCompositor` 里整条摘掉。**将来若真要做"一框多图"，
+ * 这里必须同时恢复"有槽就不裁"的判断**：那时照片摆进的是槽位矩形而不是 `layout.window`，
+ * 按窗口比例裁出来的图会被槽里的 `cover` 再裁一次（不是恒等变换），白付一次全图
+ * 解码 + 重编码的内存峰值。
  *
  * 为什么读的是 `layout.window`（`Rect`，逻辑点）而不是 `frame.window`（归一化）：
  * 两者比例只差一次取整，但 `layout.window` 才是**合成层真正拿去摆照片的那个矩形**
@@ -212,10 +198,6 @@ interface CroppedPhoto extends CapturedPhoto {
  * 否则"结构性一致"就退化成"数值上很接近"。
  */
 function resolveCropAspect(frame: FrameSpec, layout: FrameLayout): number | null {
-  const slots = frame.slots;
-  if (slots !== undefined && slots.length > 0) {
-    return null;
-  }
   if (frame.photoFit === 'contain') {
     return null;
   }
@@ -434,7 +416,7 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
      * 类型是 `number | undefined`，多一个 `null` 会把"没填"和"填了 0"混起来
      * （虽然本意上没有第 0 张，但没必要给下游留一个要判的第三种状态）。
      *
-     * §五.3 的三个新字段按同样的规矩抄下来：`overlayUri` / `secondUri` 保持
+     * §五.3 的两个字段按同样的规矩抄下来：`overlayUri` 保持
      * `string | null | undefined` 原样（渲染层用"是字符串且非空"判断），
      * `overlayOpacity` 也**不在这里补 0.5** —— 默认值只在渲染层生效一次，
      * 两边各补一次默认值，将来改默认就可能只改一处，出现"数据说 0.5、界面是 0.8"。
@@ -442,7 +424,6 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     exposureIndex: input.exposureIndex ?? undefined,
     overlayUri: input.overlayUri ?? null,
     overlayOpacity: input.overlayOpacity,
-    secondUri: input.secondUri ?? null,
   };
   input.onStage?.('capturing');
   let uri = '';

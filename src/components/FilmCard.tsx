@@ -77,6 +77,16 @@ export function withAlpha(color: string, alpha: number): string {
 /** `✓` 角标的直径。小到不抢色块，大到 10pt 的字也放得下。 */
 const CHECK_SIZE = 16;
 
+/**
+ * 描述文字的最小缩放比（配 `adjustsFontSizeToFit`）。
+ * 取 0.7 是为了对齐标题那一处（`FilmDrawer` 的 `minimumFontScale={0.7}`），
+ * 同时把最窄的机器也罩住：最长那条描述 41 字，9pt 下约 334.6pt 宽，
+ * 而 320pt 宽的机器上卡片有 140pt、两行能给 248pt → 需要缩到约 0.74；
+ * 再窄到卡片下限 `CARD_MIN_WIDTH`（132pt）时可用 116pt、两行 232pt → 约 0.69。
+ * 缩到这个下限还不够就仍是 `…`，但那已经比 `numberOfLines={1}` 好得多。
+ */
+const DESCRIPTION_MIN_SCALE = 0.7;
+
 /** 把 0~255 夹回合法区间。 */
 function clampChannel(value: number): number {
   if (value < 0) {
@@ -225,7 +235,24 @@ export const FilmCard = memo(function FilmCard({
           {preset.name}
         </Text>
         {description.length > 0 ? (
-          <Text style={styles.description} numberOfLines={1}>
+          /*
+            两行 + 自动缩字，两个都要，理由是一条实测算出来的：
+            · 这五条描述是简中硬编码（`frames.ts`，不走 i18n），最长那条 41 字，
+              在 9pt 等宽/CJK 混排下约 334.6pt 宽；
+            · 卡片里能放字的宽度只有 `cardWidth - 16`（`body` 的 paddingHorizontal 8×2）
+              —— 390pt 屏上是 159pt，两行一共 318pt，**仍然小于 334.6pt**；
+            · 所以再挂 `adjustsFontSizeToFit` + `minimumFontScale`：iOS 侧
+              （`NSTextStorage+FontScaling.m` 的 `scaleFontSizeToFitSize:`）会二分字号，
+              直到布局管理器不再报告截断为止。390pt 屏只需 0.95、375pt 屏 0.90、
+              320pt 宽的机器 0.74、再窄到卡片下限 0.69。
+            宁可同一屏上最长的那两张卡小半号字，也不要出现 `…`（用户明确要求）。
+          */
+          <Text
+            style={styles.description}
+            numberOfLines={2}
+            adjustsFontSizeToFit
+            minimumFontScale={DESCRIPTION_MIN_SCALE}
+          >
             {description}
           </Text>
         ) : null}
@@ -299,6 +326,10 @@ function createStyles(theme: Theme) {
       marginTop: 3,
       color: ink.paperDim,
       fontSize: 9,
+      // 9pt 的字不带行高时两行会粘成一块（CJK 尤其明显），12 = 1.33 倍行距；
+      // 固定行高还有个好处：`adjustsFontSizeToFit` 缩字号时**行高不跟着变**，
+      // 卡片高度不会被撑开，两列卡片仍然对齐。
+      lineHeight: 12,
       letterSpacing: 0.4,
       fontFamily: UI_MONO,
     },

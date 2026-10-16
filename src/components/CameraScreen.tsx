@@ -50,6 +50,7 @@ import type { CameraType, CameraViewProps } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import type { MessageKey } from '../i18n';
 import { useI18n } from '../i18n';
 import { useFilmFonts } from '../hooks/useFilmFonts';
 import { useFilmStage } from '../hooks/useFilmStage';
@@ -94,10 +95,10 @@ import { ShutterButton } from './ShutterButton';
 import { ToolRow } from './ToolRow';
 import { ViewfinderWindow } from './ViewfinderWindow';
 import type { FocusTarget } from './FocusReticle';
-import type { TimerSeconds } from './ToolRow';
+import type { FlashMode, TimerSeconds } from './ToolRow';
 import type { ThemeInk } from '../constants/theme';
 import type { ZoomLensRole, ZoomStop } from '../constants/lenses';
-import type { CapturedPhoto, DevelopStatus, Rect, Size } from '../types';
+import type { CapturedPhoto, DevelopStatus, Size } from '../types';
 
 /** 画幅参考线四周留白：贴着屏幕边看不出画幅比，留一点才像取景框 */
 const PREVIEW_PADDING = 10;
@@ -107,6 +108,33 @@ const PREVIEW_PADDING = 10;
  * 不是当前焦段 —— 当前焦段是变焦档位，读数在胶囊上，而且它每一档都在变。
  */
 const GUIDE_LABEL = '35mm';
+
+/**
+ * 闪光灯的三档循环顺序：关 → 开 → 自动 → 关。
+ *
+ * 顺序不是随便排的：关和开是最常用的两档，放在最前面保证**一次点击**就能在
+ * "不闪 / 强闪"之间来回；自动要绕两下才回到关，代价最小。
+ */
+const FLASH_CYCLE: readonly FlashMode[] = ['off', 'on', 'auto'];
+
+/**
+ * 档位 → 状态文案的键。同一个串既当按钮的无障碍标签，也当浮在取景器顶部的那句提示
+ * —— 两处必须逐字一致，否则读屏念的和眼睛看到的会对不上。
+ *
+ * `satisfies` 而不是类型标注：既要 `Record<FlashMode, MessageKey>` 保证**三档一个不漏**，
+ * 又要保留字面量类型，`t()` 才收得下。
+ */
+const FLASH_STATE_KEY = {
+  off: 'camera.flash.state.off',
+  on: 'camera.flash.state.on',
+  auto: 'camera.flash.state.auto',
+} satisfies Record<FlashMode, MessageKey>;
+
+/**
+ * 瞬态提示的停留时长。0.8 秒是用户指定的值：够看清"闪 / 不闪 / 自动"，又不至于
+ * 在连续切档时几句话叠在一起。
+ */
+const FLASH_HINT_MS = 800;
 
 /**
  * 切档时画面先被"推"进去多少。幅度必须很小：这是镜头马达的步进，
@@ -305,7 +333,22 @@ export function CameraScreen() {
   const [frameIndex, setFrameIndex] = useState(() => findFrameIndex(DEFAULT_FRAME_ID));
   const [presetIndex, setPresetIndex] = useState(() => findPresetIndex(DEFAULT_PRESET_ID));
   const [facing, setFacing] = useState<CameraType>('back');
-  const [flashOn, setFlashOn] = useState(false);
+  /**
+   * 闪光灯三档，取值直接就是 `CameraView` 的 `flash` prop 域。
+   *
+   * 为什么不是 `boolean`（旧版就是）：expo-camera 的 `flash` 本来就吃
+   * `'off' | 'on' | 'auto'`（`node_modules/expo-camera/build/Camera.types.d.ts:17`），
+   * 把"自动"压掉等于白丢一档 —— 而自动恰恰是白天/夜里来回跑时最省事的那一档。
+   * 注意**新架构下 prop 名是 `flash` 而不是旧的 `flashMode`**（同文件 `:324`）。
+   */
+  const [flashMode, setFlashMode] = useState<FlashMode>('off');
+  /**
+   * 切换闪光灯后浮在取景器顶部的那句话，0.8 秒后自己消失。`null` = 不显示。
+   *
+   * 存**档位本身**而不是渲染好的字符串：`t()` 依赖当前语言，把成品字符串写进 state
+   * 会在切换语言后留一句旧语言的话。渲染时再 `t()`，语言一变它跟着变。
+   */
+  const [flashHint, setFlashHint] = useState<FlashMode | null>(null);
   /** 直接就是 `CameraView` 的 zoom 值（0~1 归一化），捏合与档位都往这里写 */
   const [zoom, setZoom] = useState<number>(DEFAULT_ZOOM);
   const [stopIndex, setStopIndex] = useState(DEFAULT_STOP_INDEX);
@@ -343,14 +386,6 @@ export function CameraScreen() {
   const [countdown, setCountdown] = useState<number | null>(null);
   const [doubleExposure, setDoubleExposure] = useState(false);
   const [pendingExposureUri, setPendingExposureUri] = useState<string | null>(null);
-  /**
-   * 一框多图相框（半格双联）的**第一格**：按下第一次快门后先存在这里，等第二格。
-   *
-   * 为什么存整个 `CapturedPhoto` 而不是只存 uri：冲印管道要按"原图的实际长宽比"
-   * 选相框朝向、按原图尺寸算归一化目标（见 `processFilmPhoto` 第 2 步），
-   * 只留一个 uri 的话第二格就得拿另一张照片的尺寸去蒙。
-   */
-  const [halfFrameBuffer, setHalfFrameBuffer] = useState<CapturedPhoto | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraKey, setCameraKey] = useState(0);
   const [mountError, setMountError] = useState<string | null>(null);
@@ -382,18 +417,6 @@ export function CameraScreen() {
   const lensScale = useRef(new Animated.Value(1)).current;
 
   const frame = FRAMES[frameIndex] ?? FRAMES[0];
-  /**
-   * 这个相框是不是"一框多图"（半格双联：左右两个 3:4 竖槽）。
-   *
-   * 判据**从相框数据推**，不许写死 `frame.id === 'half-frame'`：将来再加一款双联框
-   * （竖版三格、2×2 四格）时，这里不用动一行。`FrameSpec.slots` 的类型是
-   * `FrameSlot[] | undefined`，所以先判 `undefined` 再判长度。
-   *
-   * 为什么必须拦快门：合成层对"有槽位但没给第二张"的行为是**那一格留黑**
-   * （`FilmCompositor.slotPhotoUri` 返回 null），于是第一次快门就能冲出一张
-   * 右半边全黑的成片 —— 那看起来就是"坏了"，而不是"半格只用了一半"。
-   */
-  const needsTwoShots = frame.slots !== undefined && frame.slots.length >= 2;
   const preset = PRESETS[presetIndex] ?? PRESETS[0];
   const grainLevel = grainLevelAt(findGrainLevelIndex(settings.grainLevel));
   const effectivePreset = useMemo(() => applyGrainLevel(preset, grainLevel.scale), [preset, grainLevel.scale]);
@@ -449,6 +472,20 @@ export function CameraScreen() {
     ultraWideStop === undefined || !lensesKnown || resolveStop(ultraWideStop, { lenses, facing }).available
       ? ASSUMED_LENS_NATIVE_MM.ultraWide
       : ASSUMED_LENS_NATIVE_MM.wide;
+  /**
+   * 刻度尺焦段轴的高端：这台机器**当前这一面**有没有可用的长焦。
+   *
+   * 与 `focalMinMm` 是同一套判据，但**返回 `undefined` 而不是退到 52mm**：低端退到 26mm
+   * 是因为主摄一定存在（那是个安全的下界），高端却没有"一定存在的上界"——52mm 那档是
+   * 主摄上的数码裁切，不是物理长焦。若在这里假装有长焦，用户点下去会切镜头失败。
+   * 所以口径是"宁缺勿错"：判不出来就只给 13/26/35/52 四档，分段条自己少画一格。
+   * `!lensesKnown` 时按"够得到"放行，与 `focalMinMm` / `handleCycleFocal` 同一约定。
+   */
+  const telephotoStop = ZOOM_STOPS.find((candidate) => candidate.lens === 'telephoto');
+  const focalMaxMm =
+    telephotoStop === undefined || !lensesKnown || resolveStop(telephotoStop, { lenses, facing }).available
+      ? ASSUMED_LENS_NATIVE_MM.telephoto
+      : undefined;
 
   /**
    * 对焦点与曝光补偿一起下发给原生。EV 归零时故意省略 `exposureBias` 键：
@@ -581,21 +618,12 @@ export function CameraScreen() {
   const handleFrameChange = useCallback((next: number) => {
     setFrameIndex(wrapIndex(next));
     /*
-     * 换相框时把半格缓存**静默**丢掉（不弹提示、不冲印）。
-     *
-     * 为什么必须丢：缓存里那张是给**上一个相框**的槽位拍的 —— 槽位的宽高比、
-     * 位置都变了，拿它去填新相框的一格只会得到一张构图错的半格。
-     * 为什么静默：这是用户自己的选择（滑了一下相框），不是错误，
-     * 弹条提示等于拿一个"你刚才那张白拍了"去打断他。
-     * 为什么清得干脆（而不是留到切回来）：留一个跨相框的隐藏状态，
-     * 会出现"切回半格框，第一次快门直接出片"这种没人能预期的行为。
-     */
-    setHalfFrameBuffer(null);
-    /*
-     * 对焦框也必须一起清掉。它显示的是"上一次点击的落点"，而这个落点是按**上一个相框**
+     * 对焦框必须清掉。它显示的是"上一次点击的落点"，而这个落点是按**上一个相框**
      * 的归一化坐标算的 —— 换了相框，镂空窗的位置和大小都变了，同一个归一化坐标会落到
      * 完全不同的地方。真机实测：不清的话黄框会僵在旧位置上，直到用户再点一下画面。
      * 这和"切镜头都要归位"是同一条规矩（见 `handleFlipCamera`）。
+     *
+     * （这里原来还有一句"静默丢掉半格缓存"：半格框下线后缓存本身没了，那句一起删。）
      */
     setFocusTarget(null);
   }, []);
@@ -603,8 +631,7 @@ export function CameraScreen() {
   const handleBadgeFramePress = useCallback(() => {
     void Haptics.selectionAsync();
     setFrameIndex((current) => wrapIndex(current + 1));
-    // 顶栏徽标点一下也是换相框，和左右滑动同一条规则：静默丢掉半格缓存 + 清掉对焦框
-    setHalfFrameBuffer(null);
+    // 顶栏徽标点一下也是换相框，和左右滑动同一条规则：清掉对焦框
     setFocusTarget(null);
   }, []);
 
@@ -613,7 +640,10 @@ export function CameraScreen() {
     // 否则前摄会继承后摄的档位，拍出来跟读数对不上
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setFacing((current) => (current === 'back' ? 'front' : 'back'));
-    setFlashOn(false);
+    setFlashMode('off');
+    // 瞬态提示也要一起抹掉：留着的话翻到前摄后还会飘一句"闪光灯 · 開啟"，
+    // 而前摄根本没有闪光灯 —— 那句话会变成假信息
+    setFlashHint(null);
     setZoom(DEFAULT_ZOOM);
     setLens(undefined);
     setLenses([]);
@@ -790,13 +820,38 @@ export function CameraScreen() {
     [interactive, previewBox.width, previewBox.height],
   );
 
-  const handleToggleFlash = useCallback(() => {
+  /**
+   * 闪光灯三档循环。前摄没有闪光灯，直接吞掉这次点击（按钮那边也是灰的）。
+   *
+   * 为什么在**这里**算 next，而不是写 `setFlashMode(c => ...)` 的纯更新式：
+   * 提示语要跟着同一档一起变，而 React 在严格模式下会把更新函数跑两遍 ——
+   * 把 `setFlashHint` 写在更新函数里就会变成"副作用执行两次"。读当前 state 现算最直白。
+   */
+  const handleCycleFlash = useCallback(() => {
     if (facing !== 'back') {
       return;
     }
     void Haptics.selectionAsync();
-    setFlashOn((current) => !current);
-  }, [facing]);
+    const at = FLASH_CYCLE.indexOf(flashMode);
+    const next = FLASH_CYCLE[(at + 1) % FLASH_CYCLE.length] ?? 'off';
+    setFlashMode(next);
+    setFlashHint(next);
+  }, [facing, flashMode]);
+
+  /**
+   * 0.8 秒后收掉那句提示。
+   *
+   * 用 `flashHint` 本身当依赖：连续切档时 `'on' → 'auto'` 会换一个新引用，
+   * effect 重跑（cleanup 清掉上一支计时器）→ 计时从**最后一次点击**重新开始。
+   * 这正是想要的："每点一次，提示再活 0.8 秒"。
+   */
+  useEffect(() => {
+    if (flashHint === null) {
+      return;
+    }
+    const timer = setTimeout(() => setFlashHint(null), FLASH_HINT_MS);
+    return () => clearTimeout(timer);
+  }, [flashHint]);
 
   const handleCycleTimer = useCallback(() => {
     void Haptics.selectionAsync();
@@ -880,16 +935,18 @@ export function CameraScreen() {
   /**
    * 拍摄主流程。
    *
-   * 两条"要按两次才出片"的路径在这里分叉，**顺序不能换**：
+   * 只剩一条"要按两次才出片"的路径：重曝（§一.7）—— 开着重曝时第一次按快门
+   * 只把照片存进 `pendingExposureUri`，**不冲印**；第二次才把两张一起交给合成器。
    *
-   * 1. **半格双联**（§五.3，`frame.slots` 至少两格）：第一次把底片存进
-   *    `halfFrameBuffer`，第二次连同缓存一起冲印成左右两格。
-   * 2. 重曝（§一.7）：开着重曝时第一次按快门只把照片存进 `pendingExposureUri`，
-   *    **不冲印**；第二次才把两张一起交给合成器。
+   * 判据是"按下时手上有没有上一张"（`pendingExposureUri`），而不是"这是第几次" ——
+   * 中途关掉重曝不该把半成品冲出去。
    *
-   * 两条判据都是"按下时手上有没有上一张"（`halfFrameBuffer` / `pendingExposureUri`），
-   * 而不是"这是第几次" —— 中途关掉重曝不该把半成品冲出去。
-   * 半格必须排前面，理由见下面那条分支上的注释。
+   * 半格双联（`frame.slots` 至少两格）那条分支已随 v1.6.1 精简相框库**整条删除**：
+   * 那款相框下线后，全仓库再没有任何相框带 `slots`。**这个文件里现在既没有
+   * `needsTwoShots` 也没有 `halfFrameBuffer`，两个名字都已经不存在了**（不是"恒为 false"）
+   * —— 一起被带走的还有"半格两格只 +1 曝光数"的特例，以及"半格优先于重曝"这条规则：
+   * 那条规则的前提是"两个并排槽位里不知道该往哪一格叠重曝"，现在这个前提不存在了，
+   * 所以重曝恢复成对所有相框一视同仁。
    */
   const handleShutter = useCallback(async () => {
     const camera = cameraRef.current;
@@ -917,97 +974,6 @@ export function CameraScreen() {
       }
       const captured: CapturedPhoto = { uri: shot.uri, width: shot.width, height: shot.height };
       const place = await locationPromise;
-
-      /*
-       * ---- 半格双联的第一格 ----
-       *
-       * 拦住这一张：只入缓存，**不冲印、不算曝光数**（`exposureCount` 是"已出片张数"，
-       * 底片长卷、顶栏计数、EXP. 代号全读它；半格两格合起来才是 1 张成片）。
-       * 这三件事必须一起做：漏了任一条，用户会在第一格就看见成片或看见计数 +1，
-       * 而那张成片的右半边是黑的。
-       */
-      if (needsTwoShots && halfFrameBuffer === null) {
-        setHalfFrameBuffer(captured);
-        setStatus({ kind: 'idle' });
-        // 不设 `notice`：`pendingExposureUri` 的提示是走横幅的，而这条提示要留在
-        // 取景器里一直看得见（见下面 `halfFrameBuffer !== null` 那块），两条都弹会打架
-        return;
-      }
-
-      /*
-       * ---- 半格双联的第二格（同时挡掉重曝）----
-       *
-       * ⚠️ 顺序关键：这两条分支在重曝分支**之前**，所以"半格 + 重曝同时开着"时
-       * 重曝被静默忽略。选这条规则的理由（为什么不是别的方案）：
-       *
-       * - 半格的两个槽是**并排**的，重曝是**叠在同一格**里的 —— 半格没有"往哪一格叠"
-       *   的答案。合成层的规则是"重曝只叠在第一格上"（`FilmCompositor` 里
-       *   `index === 0 && overlayUri !== null`），那正是半格框最不该有的东西：
-       *   左半格是两次曝光的鬼影、右半格是单次曝光，一卷半格片里混进一格
-       *   双重曝光的半格，用户看到只会觉得坏了。
-       * - "开半格时禁掉重曝"要多改一处开关状态并解释为什么灯自己灭了；
-       *   "半格优先"只在快门这一处分叉，用户拍的每一张都符合直觉。
-       *
-       * 代价（已知且接受）：重曝开关的灯还亮着，但它对半格框不生效。
-       */
-      if (needsTwoShots && halfFrameBuffer !== null) {
-        const first = halfFrameBuffer;
-        /*
-         * **先拍的进左格、后拍的进右格。**
-         *
-         * 这张照片站在哪个槽位不是这里说了算的，是合成层写死的：
-         * `FilmCompositor.slotPhotoUri(slotIndex, rawUri, secondUri)` 里
-         * `slotIndex === 0 → rawUri`、`=== 1 → secondUri`；而 `half-frame` 的
-         * `slots[0]` 窗口 x 更小（见 `src/constants/frames.ts`），就是**左格**。
-         * 所以要让先拍的落在左格，先拍的必须是**主图** `photo`（→ `rawUri` → 左格），
-         * 后拍的走 `secondUri`（→ 右格）。
-         *
-         * 用第一张当主图还有第二个理由：主图决定相框朝向与归一化尺寸
-         * （`processFilmPhoto` 按它的长宽比算 `FrameLayout`）。用户构第一格的时候
-         * 取景器里显示的就是这个相框，让它说了算才符合预期。
-         */
-        const result = await processAndSaveFilmPhoto({
-          photo: first,
-          frame,
-          preset: gradedPreset,
-          stage: stageBox,
-          host: filmStage.host,
-          place,
-          locale: localeId,
-          watermarkLayout: settings.watermarkLayout,
-          placeDetail: settings.placeDetail,
-          exposureIndex: exposureCount + 1,
-          secondUri: captured.uri,
-          onStage: (nextStage) => setStatus({ kind: 'developing', stage: nextStage }),
-        });
-
-        setStatus({ kind: 'done', uri: result.photo.uri, saved: result.save.ok });
-        // 半格两格 = 1 张成片，所以只 +1
-        setExposureCount((current) => current + 1);
-        /*
-         * 缓存必须在**冲印成功之后**才清：冲印抛错时它还在，用户可以直接补拍第二格。
-         * 这就是"只存 uri"不够用的第二个理由 —— 缓存得完整到能重试。
-         */
-        setHalfFrameBuffer(null);
-        setAlbumKey((current) => current + 1);
-        // 存 App 相册故意不 await：失败也不该让已经冲好的照片看起来像失败
-        void addShot({
-          sourceUri: result.photo.uri,
-          width: result.photo.width,
-          height: result.photo.height,
-          frameId: frame.id,
-          presetId: effectivePreset.id,
-        }).catch((error: unknown) => {
-          console.warn('[retro-film-cam] 存进 App 相册失败：', describeError(error));
-        });
-        if (!result.save.ok) {
-          setSaveIssue(result.save.message);
-        }
-        if (result.photo.warnings.length > 0) {
-          console.warn('[retro-film-cam] 非致命提示：', result.photo.warnings.join(' / '));
-        }
-        return;
-      }
 
       if (doubleExposure && overlayUri === null) {
         // 重曝第一张：先留着不冲，等第二张叠上去一起冲
@@ -1065,10 +1031,6 @@ export function CameraScreen() {
     developing,
     doubleExposure,
     pendingExposureUri,
-    // 半格那两条分支读的就是这两个：漏了 `halfFrameBuffer`，第二次快门会看到
-    // 第一帧的 `null`，于是把第二张又存一遍 —— 永远出不了片
-    needsTwoShots,
-    halfFrameBuffer,
     filmStage.host,
     frame,
     // 依赖写 `gradedPreset` 而不是 `effectivePreset`：色温覆盖一变，这个回调必须拿到
@@ -1303,7 +1265,13 @@ export function CameraScreen() {
               facing={facing}
               mode="picture"
               {...cameraFocusProps}
-              flash={flashOn && facing === 'back' ? 'on' : 'off'}
+              /*
+                前摄没有硬件闪光灯，一律按 'off' 下发：`flashDisabled` 只是把按钮画灰，
+                真正决定硬件行为的是这里。三档原样透传，'auto' 就是原生测光那一档。
+                注意这里是 **JSX 属性位置**，注释必须写成裸块注释（本行上下这两行的形式）；
+                写成花括号包起来的 JSX 注释会被解析器当成展开语法，报 TS1005。
+              */
+              flash={facing === 'back' ? flashMode : 'off'}
               selectedLens={lens}
               onAvailableLensesChanged={handleLensesChanged}
               zoom={zoom}
@@ -1365,6 +1333,27 @@ export function CameraScreen() {
           onIdle={handleFocusIdle}
         />
 
+        {/*
+          闪光灯档位的瞬态提示：取景框**顶部中央**，0.8 秒后自己消失（`FLASH_HINT_MS`）。
+          `pointerEvents="none"` 是必须的 —— 它盖在实时画面上，不关掉命中测试就会把
+          点对焦的那一下吞掉。`accessibilityLiveRegion="polite"` 让读屏也念一遍：
+          视力用户看这行字，读屏用户靠它知道档位变了。
+        */}
+        {flashHint !== null ? (
+          <View
+            style={[styles.flashHint, pendingExposureUri !== null ? styles.flashHintTucked : null]}
+            pointerEvents="none"
+            accessible
+            accessibilityLiveRegion="polite"
+          >
+            <View style={styles.focusHintChip}>
+              <Text style={[styles.flashHintText, { color: ink.amber }]} allowFontScaling={false}>
+                {t(FLASH_STATE_KEY[flashHint])}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
         {focusHintVisible ? (
           <View style={styles.focusHint} pointerEvents="none">
             <View style={styles.focusHintChip}>
@@ -1395,27 +1384,6 @@ export function CameraScreen() {
             <View style={styles.focusHintChip}>
               <Text style={[styles.doubleHintText, { color: ink.amber }]} allowFontScaling={false}>
                 {t('camera.tool.double.hint')}
-              </Text>
-            </View>
-          </View>
-        ) : null}
-
-        {/* 半格双联：第一格已经进缓存，等第二格。和下面重曝那条同一种写法
-            （不走 DevelopOverlay：那层会挡住取景器），常显不闪 —— 它是一条
-            "现在还差一张"的状态读数，不是一次性的提示 */}
-        {halfFrameBuffer !== null ? (
-          <View
-            style={styles.halfHint}
-            pointerEvents="none"
-            accessible
-            accessibilityLabel={t('camera.half.hint')}
-          >
-            <View style={styles.focusHintChip}>
-              <Text style={[styles.halfPlateText, { color: ink.amber }]} allowFontScaling={false}>
-                {t('camera.half.plate')}
-              </Text>
-              <Text style={[styles.halfHintText, { color: ink.paper }]} allowFontScaling={false}>
-                {t('camera.half.hint')}
               </Text>
             </View>
           </View>
@@ -1469,6 +1437,7 @@ export function CameraScreen() {
             exposure={exposure}
             focalRole={focalRole}
             focalMinMm={focalMinMm}
+            focalMaxMm={focalMaxMm}
             onTemperature={handleTemperatureChange}
             onFocal={handleFocalScrub}
             onExposure={handleExposureChange}
@@ -1493,13 +1462,13 @@ export function CameraScreen() {
         <ToolRow
           doubleExposure={doubleExposure}
           timerSeconds={timerSeconds}
-          flashOn={flashOn}
+          flashMode={flashMode}
           flashDisabled={facing !== 'back'}
           busy={developing}
           onImport={handleImportPress}
           onToggleDouble={handleToggleDouble}
           onCycleTimer={handleCycleTimer}
-          onToggleFlash={handleToggleFlash}
+          onCycleFlash={handleCycleFlash}
           onFlip={handleFlipCamera}
         />
         <View style={styles.coreRow}>
@@ -1648,21 +1617,11 @@ function createStyles(ink: ThemeInk, scheme: 'dark' | 'light') {
     },
     doubleHint: { position: 'absolute', left: 0, right: 0, top: 26, alignItems: 'center' },
     doubleHintText: { fontFamily: UI_MONO, fontSize: 10, letterSpacing: 0.8 },
-    /*
-     * 半格提示固定在重曝提示**下面**一条（top 26 vs 54），而不是复用同一个位置：
-     * 两者虽然被"半格优先"这条规则挡住、不会同时显示（见 `handleShutter`），
-     * 但把它们叠在同一坐标上，将来任何一次规则调整都会直接变成两块字压在一起。
-     * 竖直排列顺序也正好对应"半格优先"。
-     */
-    halfHint: { position: 'absolute', left: 0, right: 0, top: 54, alignItems: 'center' },
-    halfPlateText: { fontFamily: UI_MONO, fontSize: 12, letterSpacing: 1.6 },
-    halfHintText: {
-      fontFamily: UI_MONO,
-      fontSize: 10,
-      letterSpacing: 0.8,
-      marginTop: 2,
-      opacity: 0.75,
-    },
+    // 闪光灯的瞬态提示和重曝的轻提示钉在同一个高度（都在取景框顶部中央），
+    // 两句同时活着时把闪光灯这句往下让一行 —— 多一次位置判断，好过两行字叠成一团糊
+    flashHint: { position: 'absolute', left: 0, right: 0, top: 26, alignItems: 'center' },
+    flashHintTucked: { top: 54 },
+    flashHintText: { fontFamily: UI_MONO, fontSize: 10, letterSpacing: 0.8 },
     // 横幅抬到胶囊行上方：压住胶囊的话，出问题时连焦段都点不了
     banner: {
       position: 'absolute',

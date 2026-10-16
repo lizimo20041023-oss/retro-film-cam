@@ -52,6 +52,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [28. v1.5.1：真机实测反馈的七条](#28-v151真机实测反馈的七条)
 - [29. 打包机换镜像这件事（v1.5.1 发布时踩出来的）](#29-打包机换镜像这件事v151-发布时踩出来的)
 - [30. v1.6.0：四模块重构（胶囊刻度尺 / 相纸正向 / 长卷不再叠合 / 地名与日期）](#30-v160四模块重构胶囊刻度尺--相纸正向--长卷不再叠合--地名与日期)
+- [31. v1.6.1：六模块体检落地 + 闪光灯三档](#31-v161六模块体检落地--闪光灯三档)
 
 ---
 
@@ -2358,8 +2359,11 @@ const needsTwoShots = frame.slots !== undefined && frame.slots.length >= 2;
 `DialButton` 的 props 因此从 `icon: ImageSourcePropType` 变成 `glyph: (color) => ReactElement`，
 点亮态改由玻璃自己的 overlay（`rgba(229,169,60,0.22)`）表达，图标保持纯白。
 
-⚠️ `leather-tile.png` **没有删**：`src/components/FilmDrawer.tsx` 的暗房面板还在用它。
-取景器里那块皮革底纹删了 —— 玻璃要能采到画面，铺一张不透明底纹等于让模糊去采一块死平的布。
+⚠️ `leather-tile.png` 从 **v1.6.1** 起**没有任何 `require` 了**（`UI_ASSETS.leatherTile` 条目已删），
+但**文件本身留在仓库里没删** —— `scripts/preview_ui_mock.py` 还要拿它出设计稿。
+暗房面板上那次撤除的理由见 §31.3：那张 320×320 的 tile 左右边缘对不上，`resizeMode="repeat"`
+每 320pt 就是一条贯穿全高的纵向断层，正是用户报的"✕ 旁边那条竖线"。
+（取景器里那块皮革底纹是 v1.5.0 删的 —— 玻璃要能采到画面，铺一张不透明底纹等于让模糊去采一块死平的布。）
 
 ### 27.2 §二 真光学变焦：五档，每档都切物理镜头
 
@@ -3034,6 +3038,218 @@ bundle id `com.canyerylee.fretrocam`；相框 PNG 仍 11 张。
 ⚠️ 那 4 张 `*-landscape.png` **还在包里但已是死资源**（`frameSourceOf` 的横版分支不可达）。留着是
 有意的 —— 将来真要给横构图设计横版纸时它们还在，删掉反而要多一次重新生成资源。代价是 IPA 里白白
 多背约 500KB。
+
+---
+
+## 31. v1.6.1：六模块体检落地 + 闪光灯三档
+
+这一版没有新玩法，全部是"把用户报的问题逐条核实、再改掉"。三条结论值得单独留档：
+一个 `require` 环让整排刻度算成了 `NaN`；一条 320×320 的 tile 因为左右边缘对不上，
+每 320pt 就切出一条贯穿全屏的竖线；以及"焦段卡在 13~15mm"的真因，跟用户描述的
+"边滑边切镜头"完全不是一回事。
+
+### 31.1 这一版改了什么
+
+| 模块 | 文件 | 关键改动 |
+| --- | --- | --- |
+| 相框精简 | `src/constants/frames.ts`、`FilmCompositor.tsx`、`useFilmStage.ts`、`src/utils/geometry.ts`、`src/utils/processFilmPhoto.ts`、`src/types/index.ts` | 相框 **7 → 5 款**，连带删掉整套"一框多图"机制（见 31.4） |
+| 三颗常驻胶囊 + 刻度尺 | `ParameterScrubBar.tsx`、`ViewfinderBar.tsx` | 修掉 `require` 环导致的 `NaN`、焦段改四档分段条（见 31.2 / 31.5） |
+| 对焦框与曝光条 | `FocusReticle.tsx`、`FocusExposure.tsx` | 新增 48pt 安全内区、淡出改 2000ms、拖动期间重置计时器（见 31.6） |
+| 底片库 | `FilmDrawer.tsx`、`FilmCard.tsx` | 撤纹理层、修卡片描述两行（见 31.3） |
+| 闪光灯 | `ToolRow.tsx`、`CameraScreen.tsx` | 两档开关 → 三档循环（见 31.7） |
+| 文案与死资源 | 5 个语言包、`src/constants/uiAssets.ts`、`assets/ui/README.md` | 删 6 个死键、订正 6 处过时文字（见 31.8） |
+
+`git diff --stat` 覆盖 **24 个文件**（2125 insertions / 1969 deletions）；`npm run typecheck` 与
+`npx expo export --platform ios` 两道门槛都 exit 0。
+
+### 31.2 一个 `require` 环，把 41 根刻度算成了 `NaN`
+
+**症状**：长按胶囊展开后是一个"玻璃在、指针在、刻度一根没有"的空洞灰框。
+
+**根因**：`ViewfinderBar.tsx` 反向从 `ParameterScrubBar.tsx` import 了 15 个几何常量，
+而 `ParameterScrubBar.tsx:32` 又 `import { ViewfinderBar } from './ViewfinderBar'`。于是
+`ViewfinderBar` 模块顶层那句
+
+```ts
+const MARK_COUNT = Math.round(RULER_RANGE_PX / MARK_GAP);
+```
+
+被求值的那一刻，`ParameterScrubBar` 才执行到第 32 行 —— `RULER_RANGE_PX` 的真定义
+（原 `ParameterScrubBar.tsx:435-436`）还在后面，读到的是 `undefined`：
+`Math.round(undefined / 8)` = `NaN`，`Array.from({ length: NaN })` = `[]`，**一根刻度都不画**。
+同一批 `undefined` / `NaN` 还进了 `styles.rulerClip.height`、`styles.marks.width`、
+`styles.markMajor` / `markMinor.height`、`styles.pointer.width` / `height`，以及三颗胶囊的
+`radius={CAPSULE_HEIGHT / 2}` —— 所以真机上那三颗也不是按规格画出来的壳子。
+
+**治法**：几何常量只归一处所有，且不反向依赖手势层。常量全部搬进 `ViewfinderBar.tsx`
+（`:4-14` 写明了原因），手势层单向 import、只用 `import type` 指一次类型。
+
+顺带把刻度数字对齐规格：主刻度高 12 → **14**，次刻度 6 → **7**，透明度 0.85 / 0.35，
+每 5 格一根主刻度、周期 40px。刻度根数**按窗口宽算**而不是写死：
+
+```ts
+rulerMarkCount(windowWidth) = Math.ceil((0.86 * windowWidth + 40) / 8) + 1
+// 320pt → 41 根（用户规格里的那个数）；390pt → 48 根（写死 41 右侧会露白）
+```
+
+### 31.3 暗房面板那条竖线：320×320 的 tile 左右边缘对不上
+
+`assets/ui/leather-tile.png` 是 320×320、同目录没有 @2x/@3x，以 `resizeMode="repeat"`
+铺在抽屉面板上。逐像素量下来它**左右边缘接不上**：`col319 ↔ col0` 的平均绝对差 **2.0697**
+= 内部相邻列 1.2812 的 **1.62 倍**，320 条边界里排**第 1 陡**；行方向 wrap 2.1343 vs
+内部 1.2854 = 1.66 倍。面板是全宽的，于是这条缝恒在 **x = 320pt**：屏宽 375 / 390 / 393 /
+414 / 430 时，它就在 ✕ 按钮左侧 3 / 18 / 21 / 42 / 58pt —— 与用户说的"✕ 旁边"吻合。
+
+**两条反证**（这次核实里最有价值的部分）：
+
+- 用户猜的"左右背景色不一致"**不成立** —— 接缝两侧各 20pt 的平均亮度是 18.855 vs 18.840
+  （差 −0.015，约等于 0），是**纹样断层**，不是两种底色。
+- 用户说的"✕ 外层多余异色背景块"在 v1.6.0 里**不存在** —— `git diff` 证明那个 `Pressable`
+  与 `HEAD` 逐字节相同，它本来就没有背景色。
+
+**分寸**：把合成接缝图 5× 放大亲眼看过，**肉眼并不显眼**（整图 std 0.643、接缝每行平均跳
+0.726）。所以只敢定性成"统计上最强 + 位置完全吻合的连贯断层"，**不写成"一条明显的黑线"**。
+
+**修法**：抽屉里删掉纹理层，只留一块不透明底色 `SHEET_SURFACE_DARK = '#141416'` 加一道顶部微光
+（`experimental_backgroundImage`，RN 0.86 核心能力、零新依赖；iOS 侧解析失败会优雅降级成纯色，
+**Android 侧未验**）。要的不变量是"抽屉内没有任何会横向变化的层"。
+`assets/ui/leather-tile.png` 从此在 App 里**没有任何 `require`**（`UI_ASSETS.leatherTile` 条目已删），
+但**文件本身留在仓库里**：`scripts/preview_ui_mock.py` 还要拿它出设计稿，
+`assets/ui/README.md` 里已写明"实测左右边缘仍然对不上，别再铺回任何面板"。
+
+### 31.4 相框 7 → 5：半格双联的退场
+
+删掉的是 `half-frame`（半格双联，v1.4.1 加的，见 §26）与 `sheet8x10`（8×10 散页）。剩下 5 款：
+`polaroid-600`（`INSTANT SQ`）、`instax-mini`（`INSTANT MINI`）、`neg-135`（`135 NEG`）、
+`slide-mount`（`SLIDE`）、`fp100c`（`FP-100C`）。
+
+连带删掉的是整套"一框多图"机制，一处不留：`FrameSpec.slots`、`FrameSlot` 类型、
+`geometry.ts` 的 `computeSlotRects` / `slotBounds`、`FilmCompositor` 的 `slotRects.map` 渲染路径
+（含每格 `overflow: hidden` 的 `styles.slot`）、`useFilmStage` 的就绪计数分支、`stage.secondUri`
+的一路透传。删除的理由很直接：5 款相框里再没有一款开槽，留着等于给不可能的状态写代码。
+
+- 五个语言包各删 4 键（`camera.half.plate`、`camera.half.hint`、`frame.halfFrame`、`frame.sheet8x10`）。
+- `assets/frames/half-frame.png`（177,081 B）与 `sheet8x10.png`（80,910 B）**文件仍在仓库里、已无 `require`**，
+  包里因此少背 **约 258 KB**。`sheet8x10.png` 也正是唯一印着 `KODAK 4142` 的那张图（§25 商标清理时改的片边字）。
+- `FilmCompositor.tsx` 805 → 719 行，`frames.ts` 326 → 252 行。
+
+### 31.5 焦段"卡在 13~15mm"的真因，与用户描述不符
+
+用户描述是"边滑边切镜头就卡死"。代码上**单指根本到不了** `handleZoomChange`
+（`src/hooks/usePinchZoom.ts:71,73` 要求 `touches.length === 2`），`CameraView` 也只在重试路径
+自增 `key`（`CameraScreen.tsx:1176`，自增点在 `:558`）—— 所以"切镜头导致 `CameraView` 重挂载、
+`PanResponder` 被 terminate"这条假说被**反证排除**。
+
+真凶是上一版的 `uAtFocalMm`：它把**绝对对数比** `ln(mm / 26)` 当成**段长** `ln(f₁ / f₀)` 来用，
+于是任何 ≤ 26mm 的输入都返回 `u = 0`；`offsetAtValue('zoom', 26)` 因此落在刻度轴最左端 `−720px`，
+**展开那一瞬间指针底下就是 13.0mm**，手指再走一点就上报 `onFocal(13.x, 'ultraWide', 1)`。
+
+这一版把整段"连续映射"删掉，换成**四档标准位**（13 / 26 / 35 / 52mm）的分段条：
+滑选期间**一次都不上报**（`previewFocal`），只在松手或点选那一刻提交一次（`commitFocal`，
+全仓唯一发 `onFocal` 的地方），13↔26 临界点自动切 `selectedLens`。因此**不存在"滑一半就把
+镜头切走"的路径**。手感常量沿用上一轮：长按判据 `HOLD_MS = 160`、抖动阈值 `TAP_SLOP = 5`、
+收拢延迟 `COLLAPSE_DELAY_MS = 350`、焦段 `FOCAL_COLLAPSE_DELAY_MS = 500`、父级同步节流
+`EMIT_INTERVAL_MS = 25`。
+
+⚠️ **曝光读数与写回相机的量化步长不是同一个**：胶囊按用户规格以 0.1 显示、触感也按 0.1 一步
+（`EV_HAPTIC_STEP = 0.1`），而写回相机的 `exposure` 恒为 `1/3` EV 的整数倍
+（`FocusExposure.tsx:30 EXPOSURE_STEP = 1 / 3`，`:41 quantizeExposure`）—— 读数并没有"对不上"
+（它显示的就是量化后的真值，`−1/3` 渲染成 `-0.3`），只是**数值每 1/3 才动一格、触感却响三下**。
+这是照用户原话实现的；若哪天想改成"响一下 = 读数动一格"，把
+`ParameterScrubBar.tsx:94` 的 `EV_HAPTIC_STEP` 改成 `1 / 3` 即可（一行）。
+
+### 31.6 对焦框：48pt 安全内区是新加的，淡出 3000 → 2000 不是根因
+
+- **"48pt 安全内区"这条规格从来就没实现过**。上一版只有一个 `BOUNDS_INSET = 6`，作用是把框
+  夹进窗口 —— 8 组真实窗口实测"贴角时距窗右沿恒 6.0pt、越界 = false"，所以"越窗"复现不出来。
+  这一版新增 `export const SAFE_INSET = 48;` 与 `export function safeAreaRect(bounds): Rect`，
+  `reticleOrigin` 改用安全区且**不再叠加 6**。实测：iPhone 15 Pro 方形窗口 `L20 T90 W353 H410`
+  → 安全区 `L68 T138 W257 H314`；左上角的框从 `(26, 96)` 挪到 `(68, 138)`。
+  退化窗口用 `insetX = Math.min(SAFE_INSET, Math.max(0, (width − RETICLE_SIZE) / 2))` 收缩到 0 ——
+  **硬收 48 会让框越界，而"越界"是明确禁止的那一条**，两者冲突时保不越界。
+- 淡出 `IDLE_MS` 3000 → **2000**，并按用户要求"拖动期间重置计时器"：`onPanResponderMove` 里
+  显式 `clearIdle(); resetIdleTimer();`，节流到 `IDLE_MS / 4 = 500ms`，且**"没到点"时不直接
+  return**，而是挂一个补偿计时器把重排补上（否则会出现"没有任何计时器在飞"的空档）。
+- ⚠️ **3000 → 2000 是"把等待期砍掉 1/3"的改善，不是被证实的根因**。"淡出提前"这条投诉的机理
+  **没能复现**：`fade` 是组件私有的 `Animated.Value`，全仓扫过 `fade.` / `Animated.Value` /
+  `.stop()`，没有任何跨文件共享的触点，"别处有人动了同一个值"从嫌疑名单里划掉。
+  真机若仍复现，下一步查"父级 `focusTarget` 没被清"或"目标机型 `useNativeDriver` 完成回调不回调"。
+
+### 31.7 闪光灯：两档开关 → 三档循环
+
+`CameraView` 的 `flash` 属性（**新架构里属性名是 `flash`，不是旧文档里的 `flashMode`**）现在接
+`'off' | 'on' | 'auto'`，`ToolRow` 那颗按钮从"开/关"变成三档循环，切换瞬间在取景器顶部浮
+0.8 秒的微型状态提示（`FLASH_HINT_MS = 800`）。
+
+三种状态刻意落在**三条互相独立的通道**上（描边 / 图标 / 底盘），日光下也能一眼分清：
+
+| | off | auto | on |
+| --- | --- | --- | --- |
+| 图标 | 半透明暗灰 + 一道 `View` 画的斜杠 | 纯白 | 琥珀橙 `#E5A93C` + 琥珀发光 |
+| 底盘 | 深色玻璃原样 | 深色玻璃原样 | 再压一层 `rgba(229,169,60,0.28)` |
+| 描边 | 1pt `rgba(255,255,255,0.45)` | 无 | 1pt `#E5A93C` |
+| 角标 | 无 | 右上角 15×13 琥珀胶囊 `A` | 无 |
+
+- **"实心闪电"办不到**：`assets/ui/` 只有两张闪电贴图，都是 168×168、不透明像素都是 3951、
+  bbox 都是 `(47,15,122,154)`、**alpha 通道逐字节相同**（只有预烤 RGB 不同，RN 的 `tintColor`
+  按 alpha 上色），bbox 内覆盖率只有 37.1% —— 是线稿，不是实心。实心感由"琥珀底 + 发光"承载，
+  不手画多边形。
+- `on` 档走的是**叠层**而不是 `LiquidGlassView` 的 `overlay`：后者的 `overlay ?? …` 是**替换**
+  语义，走它会把深色玻璃底丢掉，过曝天空一淹，琥珀图标就没了。
+- 琥珀色写死成 `FLASH_AMBER`，**不取 `ink.amber`**：`src/constants/theme.ts:72` 的深色机身是
+  `#E5A93C`，但 `:83` 的 `LIGHT_INK.amber` 是**朱红 `#D32F2F`** —— 闪光灯与 `theme.focus` 一样
+  是硬件信号，不跟机身换色（`:60` 有先例）。
+- 角标 `A` 的文字用近黑 `#1A1206`（对琥珀底 8.7:1，纯白只有 2.1:1）+ 1pt 暗描边。
+- ⚠️ **Android 上 `shadow*` 不吃 `elevation`**，`on` 档的"微发光"等于没有，那台机器只剩
+  "琥珀图标 + 琥珀底 + 琥珀描边"三条通道。
+
+### 31.8 这一版删掉 / 订正的文字
+
+- **删** 闪光灯旧的两个**动作**键 `camera.flash.on` / `camera.flash.off`（三档之后一个动作名
+  覆盖不了三种状态，全仓零消费）→ 5 个语言包各删 2 键，现每包 **174 键**。
+- **订正** 5 个语言包的"胶卷库"小节注释：原文写着"长按取景器下方的胶片名打开"，而**全仓根本
+  没有那个长按手势**（`onLongPress` 只出现在 `GalleryScreen.tsx:636/659/662` 与
+  `StripView.tsx:461/468/720`）→ 改成"点右下角那颗胶卷按钮打开"
+  （`zh-Hans.ts:48` / `zh-Hant.ts:39` / `en.ts:40` / `fr.ts:40` / `ja.ts:39`）。
+- **订正** 底片库提示文案 `film.drawer.hint`：旧文案描述的也是那个不存在的手势。
+- **订正** `camera.bar.temp/focal/ev.a11y` 三条无障碍标签：上一版写"轻点切换"，在焦段改成
+  原地展开分段条之后已不成立 → 补上真实手势（"长按滑动调整，轻点归零 / 展开档位"）。
+- **删** `UI_ASSETS.leatherTile` 条目（见 31.3）。
+
+### 31.9 这一版验证到什么程度
+
+- `npm run typecheck` **exit 0**；`npx expo export --platform ios --no-bytecode` **exit 0**。
+- 各模块自带的探针（typescript `transpileModule` + require 桩，不装任何测试框架）分别跑过
+  123 / 176 / 179 / 297 条断言，全绿；跑完的临时目录与脚本**全部自删**，`git status` 无残留。
+- 每次导出的 bundle 都做了**包内 grep**（`rgba(40,40,45`、`#141416`、五种语言的新文案等），
+  确认改动真的进了包。⚠️ 这里有个假阴性坑：Metro 把 CJK 转义成 `\uXXXX`、把 `·`(U+00B7)
+  转义成 `\xXX`，探针只解 `\uXXXX` 会把中文文案全判成"没进包"。
+
+**真机未验证清单**（一条都没跑过，本机无设备无模拟器）：
+
+- 全部触摸手感：160ms 长按判据、5pt 抖动阈值、"不松手接着滑"、350ms 收拢、磁吸与 `Haptics` 实感；
+- 展开态 86%×48 玻璃的观感、`alignSelf:'stretch'` 下 `86%` 的实际解析值、320pt 窄屏上三颗胶囊
+  是否会先丢中文词；刻度尺是否真的 60fps（只保证"25ms 节流 + `Animated.Value` 驱动"两条代码事实）；
+- 13↔26 换镜头时 `CameraView` 是否闪黑；"零上报"是否真能根除卡顿（机制上成立，未在设备上验）；
+- 闪光灯三档在真机上的可分辨度、`auto` 档是否真被相机接受、`A` 角标在 15×13 里能否读出；
+- 暗房那条竖线是否真的消失（本机没有那条竖线的实拍，做不了 A/B）；弹簧手感（`speed 14 / bounciness 0`
+  是纸面推算，位移约 490pt）；
+- 对焦框 48pt 安全区与 2000ms 淡出的观感；探针**只覆盖纯函数，没有渲染过组件**
+  （"屏幕上真有 41 根可见"没验）；
+- VoiceOver 实读顺序、浅色主题下的对比度。
+
+### 31.10 v1.6.1 产物指纹（发布后回填）
+
+| 项目 | 值 |
+| --- | --- |
+| 本地提交 | （待回填） |
+| 远端提交 | （待回填） |
+| CI | （待回填） |
+| artifact | （待回填） |
+| Release | （待回填） |
+| asset | （待回填） |
+| sha256 | （待回填） |
+| 下载地址 | （待回填） |
 
 ---
 

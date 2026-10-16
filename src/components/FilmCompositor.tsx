@@ -22,10 +22,6 @@
  * RN 没有现成的 `isolation` 便捷写法可用（它是 layout prop 不是 style prop，写错会静默失效），
  * 而 `overflow: 'hidden'` 本身就建立了裁剪与合成边界：混合只发生在窗口内部、
  * 只跟底下的照片混，既不会溢出到相框上，也不会混到取景器背景。
- *
- * 一框多图（`frame.slots`，§五.3）怎么摆：每一格有自己的窗口，按 `slots` 的**并集**
- * 建立那一个裁剪 / 混合边界 —— 理由见 `src/utils/geometry.ts` 的 `slotBounds`：
- * 颗粒是"整卷洗一遍"的效果，分格各洗一次会在接缝处露出两遍。相框 PNG 依然铺满整台。
  */
 import { useMemo } from 'react';
 import type { RefObject } from 'react';
@@ -38,11 +34,9 @@ import type { LocaleId } from '../i18n/types';
 import type {
   FilmStageInput,
   FrameLayout,
-  FrameSlot,
   FrameSpec,
   GradeLayer,
   PlaceDetail,
-  Rect,
   ResolvedPlace,
   ResolvedTimestampConfig,
   WatermarkLayout,
@@ -51,13 +45,11 @@ import { formatQuartzDate } from '../utils/formatTimestamp';
 import { compactPlace, formatResolvedPlace } from '../utils/placeNames';
 import { planCapture } from '../utils/captureOptions';
 import {
-  computeSlotRects,
   computeWatermarkPlan,
   formatExposureCode,
   frameOrientationOfLayout,
   frameSourceOf,
   shouldCompactPlaceText,
-  slotBounds,
   splitPlaceAvailableWidth,
 } from '../utils/geometry';
 import type { WatermarkQuartz } from '../utils/geometry';
@@ -307,9 +299,6 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
  */
 const OVERLAY_DEFAULT_OPACITY = 0.5;
 
-/** 空数组常量：没有开槽时复用同一个引用，免得每次渲染都新建一个数组。 */
-const NO_SLOTS: readonly Rect[] = [];
-
 /** 只认"非空的字符串 uri"：`null` / `undefined` / `''` 都表示这次没有这一张。 */
 function nonEmptyUri(value: string | null | undefined): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
@@ -323,20 +312,6 @@ function overlayOpacityOf(value: number | undefined): number {
   return Math.min(1, Math.max(0, value));
 }
 
-/** 某一格画哪张底片：0 = 第一张（`rawUri`），1 = 第二张；再多的槽位没有底片。 */
-function slotPhotoUri(slotIndex: number, rawUri: string, secondUri: string | null): string | null {
-  if (slotIndex === 0) {
-    return rawUri;
-  }
-  return slotIndex === 1 ? secondUri : null;
-}
-
-/** 某一格的填充方式：格子自己没写就沿用相框的 `photoFit`（`FrameSlot` 上没有这一项）。 */
-function slotPhotoFit(frame: FrameSpec, slot: FrameSlot | undefined): 'cover' | 'contain' {
-  const fit = slot?.photoFit ?? frame.photoFit;
-  return fit === 'contain' ? 'contain' : 'cover';
-}
-
 export function FilmCompositor({
   stage,
   viewShotRef,
@@ -348,20 +323,14 @@ export function FilmCompositor({
   const { layout, preset, frame, rawUri, capturedAt } = stage;
 
   /*
-   * §五.3 的三块渲染输入，在这里一次算清（渲染段只读结果，不再自己判断）：
+   * 渲染只读这里算好的结果，不再自己判断：
    * - `overlayUri`：重曝的第二张，空串 / null 都当没有；
-   * - `secondUri`：一框多图的右格；
-   * - `slotRects`：开槽的绝对坐标；空数组 = 相框没有开槽，走 v1.3.0 的单窗口老路。
-   *
-   * `mixing`（混合边界）取所有开槽的**并集**：调色 / 颗粒 / 暗角盖在这一块上，
-   * 而不是每格各盖一遍 —— 分格各洗一遍会在接缝两侧露出两遍颗粒。
+   * - `windowRect`：照片与整条调色 / 颗粒 / 暗角管线的裁剪边界，就是相框的镂空窗口。
+   *   （名字不叫 `window` 是为了不遮蔽 RN 里的全局 `window`。）
    */
   const overlayUri = nonEmptyUri(stage.overlayUri);
-  const secondUri = nonEmptyUri(stage.secondUri);
   const overlayOpacity = overlayOpacityOf(stage.overlayOpacity);
-  const slots = frame.slots;
-  const slotRects = slots !== undefined && slots.length > 0 ? computeSlotRects(layout, slots) : NO_SLOTS;
-  const mixing: Rect = slotRects.length > 0 ? slotBounds(slotRects) : layout.window;
+  const windowRect = layout.window;
 
   // 调色层：纯函数算出来的声明式图层，渲染层只按 kind 分发
   const layers = useMemo(() => buildGradeLayers(preset), [preset]);
@@ -423,89 +392,40 @@ export function FilmCompositor({
       style={[styles.stage, { width: layout.width, height: layout.height }, style]}
       onLayout={onLayout}
     >
-      {/* ① 画面：单格 = 一个窗口；一框多图 = 每格一个窗口，共用一块裁剪 / 混合边界 */}
+      {/* ① 画面：照片铺进相框的镂空窗口，调色 / 颗粒 / 暗角都关在这个窗口里 */}
       <View
         style={[
           styles.window,
           {
-            left: mixing.left,
-            top: mixing.top,
-            width: mixing.width,
-            height: mixing.height,
+            left: windowRect.left,
+            top: windowRect.top,
+            width: windowRect.width,
+            height: windowRect.height,
           },
         ]}
       >
-        {slotRects.length > 0 ? (
-          slotRects.map((rect, index) => {
-            const uri = slotPhotoUri(index, rawUri, secondUri);
-            if (uri === null) {
-              /*
-               * 这一格没有底片（相框有两个槽位但调用方没给第二张）：**什么都不画**，
-               * 露出舞台底色（黑）。不要拿第一张去填第二格 —— 半格空着是真实的
-               * 半格相机结果，用同一张图填满反而像成了"两张一样的"。
-               */
-              return null;
-            }
-            return (
-              <View
-                key={`slot-${index}`}
-                style={[
-                  styles.slot,
-                  {
-                    // `computeSlotRects` 给的是相对舞台的坐标，这里换算成相对并集容器的。
-                    left: rect.left - mixing.left,
-                    top: rect.top - mixing.top,
-                    width: rect.width,
-                    height: rect.height,
-                  },
-                ]}
-              >
-                <Image
-                  source={{ uri }}
-                  style={styles.fill}
-                  resizeMode={slotPhotoFit(frame, slots?.[index])}
-                  onLoad={onImageLoad}
-                  fadeDuration={0}
-                />
-                {/* 重曝只叠在**第一格**上：第二格是另一半格，本来就没有第二次曝光 */}
-                {index === 0 && overlayUri !== null ? (
-                  <Image
-                    source={{ uri: overlayUri }}
-                    style={[styles.fill, { opacity: overlayOpacity }]}
-                    resizeMode={slotPhotoFit(frame, slots?.[0])}
-                    onLoad={onImageLoad}
-                    fadeDuration={0}
-                  />
-                ) : null}
-              </View>
-            );
-          })
-        ) : (
-          <>
-            <Image
-              source={{ uri: rawUri }}
-              style={styles.fill}
-              resizeMode={frame.photoFit === 'contain' ? 'contain' : 'cover'}
-              onLoad={onImageLoad}
-              fadeDuration={0}
-            />
-            {/*
-              重曝（§五.3）：第二张底片叠在**同一个窗口内**、叠在原片之上、
-              叠在调色层之下 —— 顺序就是这个功能的全部语义：
-              "两张底片叠在同一格上晒一次"，所以下面那条调色 / 颗粒 / 暗角管线
-              作用的是合成结果，而不是各洗一遍再叠（后者会得到两道暗角和双份颗粒）。
-            */}
-            {overlayUri !== null ? (
-              <Image
-                source={{ uri: overlayUri }}
-                style={[styles.fill, { opacity: overlayOpacity }]}
-                resizeMode={frame.photoFit === 'contain' ? 'contain' : 'cover'}
-                onLoad={onImageLoad}
-                fadeDuration={0}
-              />
-            ) : null}
-          </>
-        )}
+        <Image
+          source={{ uri: rawUri }}
+          style={styles.fill}
+          resizeMode={frame.photoFit === 'contain' ? 'contain' : 'cover'}
+          onLoad={onImageLoad}
+          fadeDuration={0}
+        />
+        {/*
+          重曝（§五.3）：第二张底片叠在**同一个窗口内**、叠在原片之上、
+          叠在调色层之下 —— 顺序就是这个功能的全部语义：
+          "两张底片叠在同一格上晒一次"，所以下面那条调色 / 颗粒 / 暗角管线
+          作用的是合成结果，而不是各洗一遍再叠（后者会得到两道暗角和双份颗粒）。
+        */}
+        {overlayUri !== null ? (
+          <Image
+            source={{ uri: overlayUri }}
+            style={[styles.fill, { opacity: overlayOpacity }]}
+            resizeMode={frame.photoFit === 'contain' ? 'contain' : 'cover'}
+            onLoad={onImageLoad}
+            fadeDuration={0}
+          />
+        ) : null}
         {layers.map((layer) => (
           <GradeLayerView
             key={layer.key}
@@ -525,8 +445,9 @@ export function FilmCompositor({
         ⚠️ 这段注释以前写的是"横构图（原图 width > height）且相框有横版变体时换成横版 PNG…
         这一行对现有四款相框（都还没有 `landscape`）是零行为变化"，**两句都已不成立**，留着会
         误导下一轮排查：
-        · 7 款相框里有 **4 款真的带 `landscape` 变体**（polaroid-600 / instax-mini / neg-135 /
-          slide-mount，见 `constants/frames.ts`），"都还没有"是当时凭印象写的；
+        · 现有 5 款相框里有 **4 款真的带 `landscape` 变体**（`polaroid-600` / `instax-mini` /
+          `neg-135` / `slide-mount`，见 `constants/frames.ts`；只有 `fp100c` 没有），
+          "都还没有"是当时凭印象写的；
         · 上游 `resolveFrameOrientation` 现在**恒返回 `'portrait'`**，所以**永远走不到横版分支**。
         · 真机上"横图缩在相纸一角、另一侧一条大白边"正是这里选错版的后果：横版 PNG 是竖版
           纸转 90° 出来的，窗口坐标跟着转，`polaroid-600-landscape` 的 `window.x = 0.219626`
@@ -771,14 +692,6 @@ const styles = StyleSheet.create({
   window: {
     position: 'absolute',
     // 关键：把混合层关在窗口里，混合只作用于底下的照片
-    overflow: 'hidden',
-  },
-  /**
-   * 一框多图里的**一格**。相对并集容器绝对定位，而且自己也是一层裁剪边界 ——
-   * 每格各自 `overflow: hidden`，`cover` 才只裁自己那一格，不会盖住邻居。
-   */
-  slot: {
-    position: 'absolute',
     overflow: 'hidden',
   },
   fill: {

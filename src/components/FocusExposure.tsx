@@ -5,8 +5,9 @@
  * 横向滑动会和捏合变焦抢手势。离框 8pt 是为了让"对焦"和"调光"看起来是同一次操作的
  * 两个部分，而不是两个互不相干的控件。
  *
- * 为什么 3 秒后整层自己淡出、并且要回调父级清掉 `focusTarget`：常驻的滑块会一直挡着
- * 右上角那块画面的点按对焦。只淡出不清状态，等于把一个看不见却仍然吃触摸的层留在屏幕上。
+ * 为什么 `IDLE_MS` 无操作后整层自己淡出、并且要回调父级清掉 `focusTarget`：常驻的滑块
+ * 会一直挡着右上角那块画面的点按对焦。只淡出不清状态，等于把一个看不见却仍然吃触摸的
+ * 层留在屏幕上。
  */
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Animated, PanResponder, StyleSheet, View } from 'react-native';
@@ -14,7 +15,7 @@ import * as Haptics from 'expo-haptics';
 import { useI18n } from '../i18n';
 import type { Rect } from '../types';
 import { useTheme } from '../constants/theme';
-import { FocusReticle, RETICLE_SIZE, reticleOrigin } from './FocusReticle';
+import { FocusReticle, RETICLE_SIZE, reticleOrigin, safeAreaRect } from './FocusReticle';
 import type { FocusTarget } from './FocusReticle';
 
 export const EXPOSURE_MIN = -2;
@@ -54,14 +55,29 @@ export function formatExposure(value: number): string {
   return `${rounded > 0 ? '+' : '-'}${Math.abs(rounded).toFixed(1)}`;
 }
 
-/** 滑块长度：对焦框高度的 1.6 倍 —— 比框长，但不会长到戳出取景器。 */
+/**
+ * 滑块长度：对焦框高度的 1.6 倍 —— 比框长，但不会长到戳出安全内区。
+ *
+ * 用户报的"高约 90px"与真值 `Math.round(76 * 1.6) = 122` 差 32pt：
+ * 122 是**触摸区全高**（`styles.strip` 的 `height`），不是那根 1pt 竖线看起来的长度 ——
+ * 竖线本身从 `top: 0` 拉到 `bottom: 0`，视觉上就是 122；圆点在 110pt 的行程上跑
+ * （`SLIDER_LENGTH - DOT_SIZE`）。用户量到的 90 大概率是"眼睛看到的竖线 + 两端留白"
+ * 的目测值，两种口径都不是错误，但**代码口径是 122**，下面所有夹紧都按它算。
+ */
 const SLIDER_LENGTH = Math.round(RETICLE_SIZE * 1.6);
 const SLIDER_GAP = 8;
 /** 触摸区宽度：细线本身只有 1pt，44pt 才是手指点得住的最小宽度。 */
 const HIT_WIDTH = 44;
 const DOT_SIZE = 12;
 const DOT_CORE = 4;
-const IDLE_MS = 3000;
+/**
+ * 无操作多久开始淡出。用户要 **2000ms**（规格 §三-2「启动 2000ms 定时器」）。
+ *
+ * 为什么从 3000 改到 2000：3 秒之间对焦框一直钉在画面上，用户会以为它"卡住了"；
+ * 2 秒是"看完这一眼"与"它还赖着不走"之间的分界。淡出本身仍是 `FADE_OUT_MS`，
+ * 所以"最后一次操作 → 完全消失"总共 2260ms。
+ */
+const IDLE_MS = 2000;
 const FADE_IN_MS = 120;
 const FADE_OUT_MS = 260;
 
@@ -72,8 +88,9 @@ export interface FocusExposureProps {
   /**
    * 镂空取景窗矩形（与 `width` / `height` 同一个坐标系）。
    *
-   * 对焦框和曝光竖条都只许出现在这一块里 —— 真机实测报的"黄色对焦框卡在取景框最下边缘，
-   * 一半在框内一半漏到框外的遮罩区"就是没有它导致的。不传 = 退回整块画布。
+   * 对焦框和曝光竖条都只许出现在这一块**再内缩 `SAFE_INSET`(48)** 之后的安全内区里 ——
+   * 真机实测报的"黄色对焦框卡在取景框最下边缘，一半在框内一半漏到框外的遮罩区"
+   * 就是没有它导致的。不传 = 退回整块画布（内缩照旧）。
    */
   bounds?: Rect;
   /** 当前曝光补偿（EV）。 */
@@ -98,6 +115,9 @@ export function FocusExposure({
   const idle = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startExposure = useRef(0);
   const lastStep = useRef(0);
+  const lastIdleReset = useRef(0);
+  /** 节流窗口内挂起的"补偿重排"计时器；`clearIdle` 不管它，它由 `resetIdleTimer` 自己管。 */
+  const pendingReset = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /**
    * PanResponder 只建一次（依赖数组为空），所以它读不到最新的 props。
@@ -131,6 +151,50 @@ export function FocusExposure({
 
   const stamp = target === null ? 0 : target.at;
 
+  /**
+   * 拖动过程中把淡出计时器往后推 —— 用户的规格原文是"拖动期间重置计时器"。
+   *
+   * 为什么不能只靠上面那条 `useEffect([stamp, …])`：拖动曝光只改 `exposure`，`stamp`
+   * （= `target.at`）从头到尾不变，那条 effect 不会重跑，于是"按下时清掉的计时器"再也
+   * 没被排回来 —— 实测手指按住不放超过 `IDLE_MS`，对焦框会在指头底下自己开始淡出。
+   *
+   * 为什么要节流：`onPanResponderMove` 一次拖动可以触发上百次，而 `scheduleIdle` 每次
+   * 都会重排 `setTimeout`；不节流就等于用几十赫兹的频率在后面排队建/毁计时器，还全程占着
+   * JS 线程（这条路径上还有震动和 setState）。间隔取 `IDLE_MS / 4 = 500ms`：计时器永远
+   * 被推到"离超时至少 3/4 个周期"的地方，用户感知到的行为与逐次重置完全一致，代价只有
+   * 每 500ms 一次。
+   *
+   * ⚠️ 但节流**不能**做成"没到点就直接 return"：那样手指连续移动时，`onPanResponderMove`
+   * 里那次 `clearIdle()` 已经把在飞的计时器取消了，而节流又拒绝补新的，
+   * 于是"一个计时器都没有"的空档会一直拖到下一次节流窗口才结束（旧写法实测 400ms）。
+   * 所以这里在"还不能重排"时挂一个**补偿计时器**，把重排补上，空档的上界锁死在 `IDLE_MS / 4`。
+   *
+   * 不节流 `Animated.timing` 也是同一个理由：`Animated.Value` 上只有一个在跑的动画，
+   * 每次 `scheduleIdle` 都会用一条新的淡出动画顶掉旧的（这也正是它不该按移动频率跑的原因）。
+   */
+  const resetIdleTimer = useCallback(() => {
+    const now = Date.now();
+    const elapsed = now - lastIdleReset.current;
+    if (elapsed >= IDLE_MS / 4) {
+      lastIdleReset.current = now;
+      if (pendingReset.current !== null) {
+        clearTimeout(pendingReset.current);
+        pendingReset.current = null;
+      }
+      scheduleIdle();
+      return;
+    }
+    if (pendingReset.current !== null) {
+      return;
+    }
+    // 补偿计时器只负责"把重排补上"，不参与节流记账：它的到点时间恰好是节流窗口的剩余量
+    pendingReset.current = setTimeout(() => {
+      pendingReset.current = null;
+      lastIdleReset.current = Date.now();
+      scheduleIdle();
+    }, IDLE_MS / 4 - elapsed);
+  }, [scheduleIdle]);
+
   useEffect(() => {
     if (stamp === 0) {
       // 被父级清掉（翻转相机、换镜头）时立刻收起，别留一个看不见却还在计时的手势层
@@ -152,7 +216,9 @@ export function FocusExposure({
         // 接管后不许被抢走：拖到一半被父级捏合接管，会出现"手指还在动、读数不动"
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: () => {
+          // 按下 = 一次操作：清掉旧计时器后**立刻**重排一个，别留一段"没有任何计时器"的空档
           clearIdle();
+          resetIdleTimer();
           startExposure.current = latest.current.exposure;
           lastStep.current = Math.round(latest.current.exposure / EXPOSURE_STEP);
         },
@@ -164,6 +230,12 @@ export function FocusExposure({
             return;
           }
           lastStep.current = steps;
+          // 手指还在动 = 用户还在操作，把淡出往后推（内部已按 IDLE_MS/4 节流）。
+          // 先无条件 `clearIdle()` 再节流重排：节流只允许推迟"重排"，不允许丢掉"取消" ——
+          // 否则 500ms 窗口内那几次移动会走到不重置的分支，而按下时清掉的计时器还没排回来，
+          // 中间就出现一段"没有任何计时器"的空档（探针会断言这段空档不存在）。
+          clearIdle();
+          resetIdleTimer();
           // 每跨一格震一次：连续震会变成噪音，完全不震又不知道自己走没走
           void Haptics.selectionAsync();
           latest.current.onExposure(Number((steps / 3).toFixed(3)));
@@ -171,7 +243,7 @@ export function FocusExposure({
         onPanResponderRelease: scheduleIdle,
         onPanResponderTerminate: scheduleIdle,
       }),
-    [clearIdle, scheduleIdle],
+    [clearIdle, resetIdleTimer, scheduleIdle],
   );
 
   const bump = useCallback(
@@ -188,28 +260,44 @@ export function FocusExposure({
   }
 
   /*
-   * 竖条的位置。三处夹紧，都只为了解决"越界穿模"：
-   *   1. 竖直方向按**窗口**夹，不再按整块画布 —— 否则滑条会伸到遮罩区里去；
-   *   2. 横向优先放在框右侧；右侧放不下（框已经贴着窗口右沿）时**翻到左侧**，
+   * 竖条的位置。四步，都只为了解决"越界穿模"：
+   *   0. 先把窗口矩形内缩成**安全内区** —— 这是用户要的 48pt 行为要求（规格 §三-1）。
+   *      对焦框和滑条用的是**同一个** `safe` 矩形，两条几何口径不许各算一遍：
+   *      各算一遍就迟早会在某台机器上出现"框在安全区、条在安全区外"。
+   *   1. 竖直方向按 `safe` 夹，不再按整块画布 —— 否则滑条会伸到遮罩区里去；
+   *   2. 横向优先放在框右侧；右侧放不下（框已经贴着安全区右沿）时**翻到左侧**，
    *      而不是硬挤在窗口外；
-   *   3. 翻转之后仍以窗口为界夹一次。
-   * 宽度用 `HIT_WIDTH`（44pt 手指宽度）而不是细线本身的宽度：夹的是**触摸区**，
-   * 只夹那 1pt 的线，等于留了一个伸到窗口外、看不见却点得着的热区。
+   *   3. 翻转之后夹一次 —— 夹的是**触摸区**（`HIT_WIDTH` 44pt 手指宽度），不是那 1pt
+   *      的细线：只夹细线等于留了一个伸到窗口外、看不见却点得着的热区。
+   *
+   * 第 3 步为什么要两个上界取小：正常窗口里 `safe.right - HIT_WIDTH` 就是正确上界；
+   * 但窗口本身比 `HIT_WIDTH` 还窄、或比 `RETICLE_SIZE + SLIDER_GAP + HIT_WIDTH` 还窄时，
+   * `safe` 会被 `safeAreaRect` 收缩成一条线，仅按 `safe` 夹出来的条会整根挂在窗口右边
+   * 之外（探针里 60pt 宽的窗口：条右沿 74 > 窗口右沿 60）。所以在
+   * 「安全区右沿」与「窗口右沿」里取更靠左的那个当分界：安全区永远是窗口的子集，
+   * 于是这个取小不改变正常窗口的任何结果，只在退化窗口里多挡住一次外溢。
+   * 上界本身再与下界取 `max`，保证极窄窗口下宽度仍为正（`HIT_WIDTH`），不出现负宽元素。
+   *
+   * 退化说明：窗口比 `SLIDER_LENGTH` 矮时，第 1 步的夹紧会把条顶在 `safe.top`，
+   * 条的**下沿**会超出安全区 —— 这在真实机型 + 现有画幅下取不到（最矮的 `fp100c`
+   * 窗口在 360×800 上也有 ~199pt > 122），只有人为构造的极窄窗口才会触发；
+   * 那种窗口下"条有 122pt 的可拖长度"和"像素级不越界"不能同时满足，优先保住前者。
    */
-  const area = bounds ?? { left: 0, top: 0, width, height };
+  const safe = safeAreaRect(bounds ?? { left: 0, top: 0, width, height });
   const origin = reticleOrigin(target, width, height, bounds);
   const centreY = origin.top + RETICLE_SIZE / 2;
   const stripTop = Math.min(
-    Math.max(centreY - SLIDER_LENGTH / 2, area.top),
-    Math.max(area.top, area.top + area.height - SLIDER_LENGTH),
+    Math.max(centreY - SLIDER_LENGTH / 2, safe.top),
+    Math.max(safe.top, safe.top + safe.height - SLIDER_LENGTH),
   );
+  const safeRight = safe.left + safe.width;
+  const windowRight = bounds ? bounds.left + bounds.width : width;
+  const rightBound = Math.min(safeRight, windowRight) - HIT_WIDTH;
+  const stripRightLimit = Math.max(safe.left, rightBound);
   const rightSide = origin.left + RETICLE_SIZE + SLIDER_GAP;
   const leftSide = origin.left - SLIDER_GAP - HIT_WIDTH;
-  const preferred = rightSide + HIT_WIDTH <= area.left + area.width ? rightSide : leftSide;
-  const stripLeft = Math.min(
-    Math.max(preferred, area.left),
-    Math.max(area.left, area.left + area.width - HIT_WIDTH),
-  );
+  const preferred = rightSide + HIT_WIDTH <= safeRight ? rightSide : leftSide;
+  const stripLeft = Math.min(Math.max(preferred, safe.left), stripRightLimit);
   const value = quantizeExposure(exposure);
   // 圆点跟着 EV 走：0 EV 停在正中。固定不动的圆点等于没有反馈
   const ratio = (value - EXPOSURE_MIN) / (EXPOSURE_MAX - EXPOSURE_MIN);
@@ -217,7 +305,11 @@ export function FocusExposure({
 
   return (
     <>
-      <FocusReticle target={target} width={width} height={height} bounds={bounds} opacity={fade} />
+      {/*
+        传 `safe` 而不是 `bounds`：`reticleOrigin` 内部也会走 `safeAreaRect`，两次结果完全相同
+        （纯函数、同一输入），显式传是为了让 JSX 上就能看出"框和条共享同一个安全矩形"。
+      */}
+      <FocusReticle target={target} width={width} height={height} bounds={safe} opacity={fade} />
       <Animated.View
         {...responder.panHandlers}
         accessibilityRole="adjustable"

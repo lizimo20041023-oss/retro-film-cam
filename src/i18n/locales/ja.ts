@@ -10,9 +10,12 @@ export const ja: Messages = {
   'common.unknownError': '不明なエラー',
 
   /* ---------------- ① 上部バー ---------------- */
-  'camera.flash.on': 'フラッシュを切る',
-  'camera.flash.off': 'フラッシュを点ける',
   'camera.flash.label': 'フラッシュ',
+  // 状態の説明（動作ではない）：同じ文字列をボタンのアクセシビリティラベルと
+  // ファインダー上部の一時ヒントの両方で使う — 文言がずれないようにするため。
+  'camera.flash.state.off': 'フラッシュ · オフ',
+  'camera.flash.state.on': 'フラッシュ · オン',
+  'camera.flash.state.auto': 'フラッシュ · オート',
   'camera.flip.a11y': 'カメラを切り替え',
   'camera.flip.label': '反転',
   'camera.settings.a11y': '設定を開く',
@@ -31,13 +34,13 @@ export const ja: Messages = {
   'camera.shutter.a11y': '撮影',
   'camera.shutter.busy': '現像中',
 
-  /* ---------------- フィルムライブラリ（ファインダー下のフィルム名を長押しで開く） ---------------- */
+  /* ---------------- フィルムライブラリ（右下のフィルムボタンで開く） ---------------- */
   // パネル見出し = 印刷された英語プレート（翻訳しない）+ 現地語の語、間は ' · ' で区切る。
   // プレートは筐体の刻印、後ろの語が人に向けた説明 —— 5言語で同じ表記ではなくなった。
   'film.drawer.title': 'SELECT FILM STOCK · フィルムライブラリ',
   'film.drawer.a11y': 'フィルムライブラリ、フィルムプリセットを選択',
   'film.drawer.close': '完了',
-  'film.drawer.hint': 'ファインダー下のフィルム名を長押ししても開けます',
+  'film.drawer.hint': 'タップでフィルムを選択 · 右下のフィルムボタンでいつでも切り替え',
   'film.card.a11y': '{name}、{description}',
   'film.card.selected': '選択中',
 
@@ -209,9 +212,9 @@ export const ja: Messages = {
   'camera.bar.temp': '色温度',
   'camera.bar.focal': '焦点距離',
   'camera.bar.ev': '露出',
-  'camera.bar.temp.a11y': '色温度、現在 {label}',
-  'camera.bar.focal.a11y': '焦点距離 {label}、タップで切替',
-  'camera.bar.ev.a11y': '露出補正 {value}',
+  'camera.bar.temp.a11y': '色温度、現在 {label}。長押ししてスライドで調整、タップでリセット',
+  'camera.bar.focal.a11y': '焦点距離 {label}。長押ししてスライドで調整、タップで段階を開く',
+  'camera.bar.ev.a11y': '露出補正 {value}。長押ししてスライドで調整、タップでリセット',
   'camera.bar.ev.hint': '上下にスワイプして露出を調整',
   'camera.tool.import': '読み込み',
   'camera.tool.double': '多重露光',
@@ -227,10 +230,6 @@ export const ja: Messages = {
   'camera.focus.hint': 'タップしてピント合わせ',
   'camera.exposure.a11y': '露出スライダー、上下にスワイプして調整',
   'camera.frame.slot2': '2 コマ目を撮影',
-  'camera.half.plate': '[ 1 / 2 ]',
-  'camera.half.hint': 'もう一度押すと完成',
   'frame.fp100c': 'ピールアパート',
-  'frame.halfFrame': 'ハーフ判二連',
-  'frame.sheet8x10': '8×10 シート',
   'camera.thumb.a11y': 'アルバムを開く',
 };

@@ -10,9 +10,12 @@ export const zhHant: Messages = {
   'common.unknownError': '未知錯誤',
 
   /* ---------------- ① 頂部操作列 ---------------- */
-  'camera.flash.on': '關閉閃光燈',
-  'camera.flash.off': '打開閃光燈',
   'camera.flash.label': '閃光燈',
+  // 三檔狀態的**狀態描述**（不是動作描述）：同一個串既當按鈕的無障礙標籤，
+  // 也當切換瞬間浮在取景器頂部的那句提示 —— 兩處用詞必須一致。
+  'camera.flash.state.off': '閃光燈 · 關閉',
+  'camera.flash.state.on': '閃光燈 · 開啟',
+  'camera.flash.state.auto': '閃光燈 · 自動',
   'camera.flip.a11y': '切換前後鏡頭',
   'camera.flip.label': '翻轉',
   'camera.settings.a11y': '打開設定',
@@ -31,13 +34,13 @@ export const zhHant: Messages = {
   'camera.shutter.a11y': '拍照',
   'camera.shutter.busy': '正在顯影',
 
-  /* ---------------- 底片庫（長按觀景窗下方的底片名打開） ---------------- */
+  /* ---------------- 底片庫（點右下角那顆膠卷按鈕打開） ---------------- */
   // 面板標題 = 印上去的英文標牌（永遠不翻譯）+ 一個本地語言的詞，中間用 ' · ' 分開。
   // 牌子相當於機身刻字，後面那個詞才是給人看的說明 —— 所以這一串不再跨語言相同。
   'film.drawer.title': 'SELECT FILM STOCK · 底片庫',
   'film.drawer.a11y': '底片庫，選擇底片預設',
   'film.drawer.close': '完成',
-  'film.drawer.hint': '長按觀景窗下方的底片名稱也可以打開這裡',
+  'film.drawer.hint': '輕觸選擇底片 · 點擊右下角膠卷按鈕可隨時切換',
   'film.card.a11y': '{name}，{description}',
   'film.card.selected': '已選擇',
 
@@ -203,9 +206,9 @@ export const zhHant: Messages = {
   'camera.bar.temp': '色溫',
   'camera.bar.focal': '焦段',
   'camera.bar.ev': '曝光',
-  'camera.bar.temp.a11y': '色溫，目前 {label}',
-  'camera.bar.focal.a11y': '焦段 {label}，輕點切換',
-  'camera.bar.ev.a11y': '曝光補償 {value}',
+  'camera.bar.temp.a11y': '色溫，目前 {label}，長按滑動調整，輕點歸零',
+  'camera.bar.focal.a11y': '焦段 {label}，長按滑動調整，輕點展開檔位',
+  'camera.bar.ev.a11y': '曝光補償 {value}，長按滑動調整，輕點歸零',
   'camera.bar.ev.hint': '上下滑動調整曝光',
   'camera.tool.import': '匯入',
   'camera.tool.double': '重曝',
@@ -221,10 +224,6 @@ export const zhHant: Messages = {
   'camera.focus.hint': '輕觸對焦',
   'camera.exposure.a11y': '曝光滑桿，上下滑動調整',
   'camera.frame.slot2': '拍第二格',
-  'camera.half.plate': '[ 1 / 2 ]',
-  'camera.half.hint': '再按一次完成',
   'frame.fp100c': '撕拉片',
-  'frame.halfFrame': '半格雙聯',
-  'frame.sheet8x10': '8×10 散頁',
   'camera.thumb.a11y': '開啟相簿',
 };

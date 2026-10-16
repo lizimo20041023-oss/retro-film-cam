@@ -1,5 +1,6 @@
 /**
- * 胶卷库抽屉：长按底部的胶片名 400ms 打开，从屏幕底部滑出，高度约窗口的 58%。
+ * 胶卷库抽屉：点 `CameraScreen` 右下角那颗胶卷按钮打开（`DialButton`，
+ * `onPress={handleOpenFilmDrawer}`），从屏幕底部整张滑上来，高度约窗口的 58%。
  *
  * ─────────────────────────────────────────────────────────────────────
  * 为什么是"底部抽屉"而不是 v1.2.0 那种整屏面板
@@ -34,19 +35,30 @@
  *     最低可用高度，0.62 是"不能把取景器吃光"的上限。
  *
  * ─────────────────────────────────────────────────────────────────────
- * 为什么底色是实心面板色 + 一层纹理，而不是半透明"毛玻璃"
+ * 为什么底色是"一整块实心面板色 + 顶部一道微光"，而不是"底色 + 一层皮纹"
  * ─────────────────────────────────────────────────────────────────────
- * 真正的毛玻璃要 `expo-blur`（= 新依赖，本项目禁止）。用半透明黑
- * 假装透光只会让卡片上的等宽小字压在相机画面上，读不清。
- * 这里的"磨砂"是**材质**意义上的：实心打底（`theme.panel`，深色下就是原来写死的
- * `#1A1A1A` 那一档；浅色下跟着换，否则面板是黑板、标题却是深色字）+ 一张极低
- * 透明度的皮纹（和机身、设置页同一张 tile）+ 顶部一道亮边。
+ * 1. 真正的毛玻璃要 `expo-blur` 的 `BlurView` 铺满全屏，而抽屉只占下半屏、上面
+ *    40% 还要能看见取景器，铺满反而不对。所以这里的"磨砂"是**材质**意义上的：
+ *    一整块实心底色 + 顶部一道从上往下衰减的微光。
+ * 2. 底色**只有一块，并且把 Header + 关闭按钮区 + 列表全包在里面**
+ *    （用户这次的原话）。多一块底色就多一条分界线：横向的色差看起来是"上下两块
+ *    色"，而纵向的色差（一条没铺满宽度、左右两端对不齐的纹理或高光）看起来就是
+ *    用户报的那种"竖直断层"。
+ * 3. v1.6.0 这里还铺过一张 `leatherTile`（`resizeMode="repeat"`、35% 不透明度）。
+ *    v1.7.0 删掉了，因为**它就是用户报的那条竖线的来源**：这张 tile 是 320×320
+ *    的 1x 资源（Metro 里没有 @2x 变体，缩放系数 = 1），铺在 390~430pt 宽的
+ *    sheet 上时会在 x = 320pt 处留下一条平铺接缝。而这条接缝在**逐像素**意义上是
+ *    整张图里最陡的一处：接缝落差 2.065，内部相邻列落差均值 1.280（接缝是它的
+ *    1.61 倍，在 320 条边界里排第 1）；乘上 35% 不透明度合成到深色底上之后，
+ *    它仍是整幅合成图里最强的一条落差（0.7345，内部均值 0.1493 的 **4.92 倍**，
+ *    排名 1/1169），且纵向贯穿整张面板 —— x = 320pt 恰好落在 ✕ 左边十几点
+ *    （390pt 屏上 ✕ 的触控区是 [338, 382]），就是用户说的"✕ 旁边一条垂直黑线"。
+ *    删掉纹理层之后，抽屉里**每一层都左右均匀**，这一类问题在结构上不再可能发生。
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   BackHandler,
-  Image,
   Platform,
   Pressable,
   ScrollView,
@@ -59,7 +71,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PRESETS } from '../constants/presets';
 import { UI_MONO, useTheme } from '../constants/theme';
 import type { Theme } from '../constants/theme';
-import { UI_ASSETS } from '../constants/uiAssets';
 import { useI18n } from '../i18n';
 import { FilmCard, withAlpha } from './FilmCard';
 
@@ -77,8 +88,18 @@ const GRID_PADDING = 16;
 const GRID_GAP = 8;
 /** 单列最小宽度：窗口极窄时宁可横向滚动，也不把工业代号挤成两行。 */
 const CARD_MIN_WIDTH = 132;
-/** 开合动画时长。够短，不挡手；够长，能看出是"面板推上来 / 收回去"而不是闪一下。 */
-const REVEAL_MS = 180;
+/**
+ * 开合弹簧：`speed` 越大越快，`bounciness` 越大越弹。
+ * · speed 14（比 §25.3 那个 120ms / speed 28 的变焦推拉慢一半）：这里的位移是
+ *   **整张面板的高度**（约 490pt），比那 3.5% 的推拉大两个数量级，同样的"重量感"
+ *   需要慢得多的速度；14 大致落在 250ms 量级。
+ * · bounciness **必须是 0**（临界阻尼，不回弹）：面板贴着屏幕底边，开抽屉时任何
+ *   正向过冲都会把它顶过静止位，底部露出一条遮罩缝（关抽屉时过冲方向朝下、
+ *   反而看不出来，但手感两边得对称，所以统一取 0）。
+ * 真机手感没跑过 —— 见交付报告里"没能验证的"那一节。
+ */
+const SHEET_SPRING_SPEED = 14;
+const SHEET_SPRING_BOUNCINESS = 0;
 /** 面板高度 = 窗口高度 × 该比例（用户给的 55%~60% 取中值）。 */
 const SHEET_HEIGHT_RATIO = 0.58;
 /** 面板高度下限：小屏上"5 行卡 + 标题"的最低可用高度。 */
@@ -87,8 +108,20 @@ const SHEET_MIN_HEIGHT = 380;
 const SHEET_MAX_RATIO = 0.62;
 /** 关闭按钮的触控区边长。用户要求 ≥ 44，所以这里就是 44 —— 不做 hitSlop 取巧。 */
 const CLOSE_TOUCH_SIZE = 44;
-/** 面板初始位移：从下方 28pt 处推上来。够看出方向，又不至于飞过整屏。 */
-const SHEET_SLIDE = 28;
+/** 深色下抽屉的统一底色：用户点名的 `#141416`（比 `theme.panel` 的 `#101013` 亮一档）。 */
+const SHEET_SURFACE_DARK = '#141416';
+/**
+ * 顶部微光渐变。**不引 expo-linear-gradient**，用 RN 0.86 核心自带的
+ * `experimental_backgroundImage`：iOS 侧它落到 `RCTViewComponentView` 里
+ * 由 `RCTLinearGradient` 造出的 CAGradientLayer 上（见 `_props->backgroundImage`
+ * 分支），好处是渐变**画在底色之上、所有子视图之下**（`BACKGROUND_COLOR_ZPOSITION`），
+ * 所以不用再叠一层 View —— 也就不会再出现"两块底色拼在一起"的接缝。
+ */
+const SHEET_SHEEN_DARK =
+  'linear-gradient(to bottom, rgba(255, 255, 255, 0.055) 0%, rgba(255, 255, 255, 0.018) 42%, rgba(255, 255, 255, 0) 100%)';
+/** 浅色下白微光要比深色重一个数量级才看得出来（底色本来就是 `#F2F2EF`）。 */
+const SHEET_SHEEN_LIGHT =
+  'linear-gradient(to bottom, rgba(255, 255, 255, 0.6) 0%, rgba(255, 255, 255, 0.2) 42%, rgba(255, 255, 255, 0) 100%)';
 
 /**
  * `memo` 的意义有限（父组件只在开关时重渲染它），保留是为了让"这个组件的 props
@@ -107,10 +140,11 @@ export const FilmDrawer = memo(function FilmDrawer({
   const styles = useMemo(() => createStyles(theme), [theme]);
   const window = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  // 0 → 1 的开合进度，同时驱动遮罩透明度、面板位移和整体淡出。
+  // 0 → 1 的开合进度：遮罩的不透明度 + 面板的位移都由它驱动。
+  // （v1.6.0 还用它驱动整层的淡出，现在面板是"实心滑上来"，不再跟着淡。）
   const reveal = useRef(new Animated.Value(0)).current;
   /*
-    为什么要多一个 `mounted`：用户这次要求"自动平滑收起"，
+    为什么要多一个 `mounted`：用户要求"关闭时滑到底再卸载"，
     所以 `visible` 变 false 之后面板还得留在树上把退场动画跑完，不能立刻 `return null`。
     `mounted` 就是"还在树上"这件事的开关，动画回调负责把它关掉。
   */
@@ -126,9 +160,12 @@ export const FilmDrawer = memo(function FilmDrawer({
     if (!mounted) {
       return;
     }
-    const animation = Animated.timing(reveal, {
+    // `spring` + `useNativeDriver`：位移和透明度都交给原生驱动，JS 线程正忙
+    // （比如同时在写相册）也不会把抽屉卡在半路。参数理由见上面的常量注释。
+    const animation = Animated.spring(reveal, {
       toValue: visible ? 1 : 0,
-      duration: REVEAL_MS,
+      speed: SHEET_SPRING_SPEED,
+      bounciness: SHEET_SPRING_BOUNCINESS,
       useNativeDriver: true,
     });
     animation.start(({ finished }) => {
@@ -210,16 +247,23 @@ export const FilmDrawer = memo(function FilmDrawer({
     return null;
   }
 
+  /*
+    位移量取**面板自己的高度**：progress = 0 时整张面板在屏幕下沿之外（它的顶边
+    正好压在屏幕底边上），progress = 1 时归位。v1.6.0 用的是固定 28pt 的小位移，
+    那更像"淡出一个浮层"，不是用户这次要的"从屏幕底部升起"。
+    这里依赖 `sheetHeight`（每台设备算出来不一样），所以插值写在 render 里。
+  */
   const translateY = reveal.interpolate({
     inputRange: [0, 1],
-    outputRange: [SHEET_SLIDE, 0],
+    outputRange: [sheetHeight, 0],
   });
 
   return (
     <Animated.View
-      style={[styles.root, { opacity: reveal }]}
+      /* 这一层不再做整体淡出：面板要"实心滑上来"，只有遮罩淡入淡出。 */
+      style={styles.root}
       /*
-        退场动画期间面板还挂在树上，但**不能再接收触摸** —— 否则那 180ms 里
+        退场动画期间面板还挂在树上，但**不能再接收触摸** —— 否则那 250ms 里
         用户点到的是正在消失的按钮。（`opacity` 为 0 的视图在 iOS 上依然命中测试。）
       */
       pointerEvents={visible ? 'auto' : 'none'}
@@ -229,9 +273,13 @@ export const FilmDrawer = memo(function FilmDrawer({
       onAccessibilityTap={onClose}
     >
       {/*
-        遮罩：点空白处收起抽屉。`accessible={false}` —— 它是个纯手势区，
-        在无障碍树里多一个"按钮"只会让读屏用户多滑一次。
+        遮罩拆成两层："颜色"必须挂在 `Animated.View` 上才吃得到原生驱动的
+        opacity（`Pressable` 不是 Animated 组件，往它 style 里塞 Animated.Value
+        只会得到一条警告、动画不生效）；"手势区"还是那个纯 Pressable。
+        `accessible={false}` —— 它是个纯手势区，在无障碍树里多一个"按钮"
+        只会让读屏用户多滑一次。
       */}
+      <Animated.View style={[styles.scrimDim, { opacity: reveal }]} pointerEvents="none" />
       <Pressable style={styles.scrim} accessible={false} onPress={onClose} />
 
       <Animated.View
@@ -241,17 +289,8 @@ export const FilmDrawer = memo(function FilmDrawer({
           { transform: [{ translateY }] },
         ]}
       >
-        {/* 磨砂材质：实心 #1A1A1A 打底（见文件头），上面一张极淡的皮纹。
-            包一层 View 是为了 `pointerEvents` —— RN 的类型里它只属于 ViewStyle，
-            不能直接写在 <Image> 上（写了 tsc 会报 property does not exist）。 */}
-        <View style={styles.sheetTexture} pointerEvents="none">
-          <Image
-            source={UI_ASSETS.leatherTile}
-            style={StyleSheet.absoluteFill}
-            resizeMode="repeat"
-            fadeDuration={0}
-          />
-        </View>
+        {/* 这里**没有**独立的纹理层：抽屉只有 `sheet` 一块底色 + 一道顶部微光。
+            v1.6.0 的皮纹 tile（`resizeMode="repeat"`）就是那条竖线的来源，见文件头。 */}
 
         <View style={styles.plate}>
           <View style={styles.plateTitles}>
@@ -268,7 +307,12 @@ export const FilmDrawer = memo(function FilmDrawer({
             >
               {t('film.drawer.title')}
             </Text>
-            <Text style={styles.hint} numberOfLines={1}>
+            {/*
+              副标题给两行：中文一行放得下，但英/法那句在 390pt 屏上要 1.4 行，
+              写 `numberOfLines={1}` 就会把句尾截成 `…`（用户明确不要截断）。
+              中文仍然只占一行，面板高度不变。
+            */}
+            <Text style={styles.hint} numberOfLines={2}>
               {t('film.drawer.hint')}
             </Text>
           </View>
@@ -301,6 +345,10 @@ export const FilmDrawer = memo(function FilmDrawer({
 
 function createStyles(theme: Theme) {
   const { ink } = theme;
+  // 深色用用户点名的 `#141416`；浅色跟主题走 —— 浅色里塞一块近黑面板会跟浅色
+  // 遮罩、玻璃控制台打架，取舍写在交付报告的"拿不准的"那一节。微光强度同理。
+  const sheetSurface = theme.scheme === 'dark' ? SHEET_SURFACE_DARK : theme.panel;
+  const sheetSheen = theme.scheme === 'dark' ? SHEET_SHEEN_DARK : SHEET_SHEEN_LIGHT;
   return StyleSheet.create({
     root: {
       // 注意：RN 0.86 已移除 StyleSheet.absoluteFillObject，只能用 absoluteFill
@@ -316,9 +364,14 @@ function createStyles(theme: Theme) {
        * 上面还要给冲印遮罩（20）、相册/设置页（30）、全屏提示（50）留出位置。
        */
       zIndex: 10,
+      // 遮罩的底色不挂在这一层：这一层不参与动画（面板要实心滑上来），
+      // 而遮罩得能淡入淡出，所以颜色挪到了 `scrimDim`。
+      justifyContent: 'flex-end',
+    },
+    scrimDim: {
+      ...StyleSheet.absoluteFill,
       // 抽屉只占下半屏，所以遮罩是**半透明**的：上面那 40% 要能看见取景器。
       // 这里刻意不跟 `theme.scrim`（它接近全不透明，是给整屏弹层用的）。
-      justifyContent: 'flex-end',
       backgroundColor: 'rgba(6, 6, 6, 0.55)',
     },
     scrim: {
@@ -327,18 +380,16 @@ function createStyles(theme: Theme) {
     sheet: {
       borderTopLeftRadius: 14,
       borderTopRightRadius: 14,
-      // 实心面板色（理由见文件头）：不跟 `theme.scrim` 走，因为那会让卡片上的
-      // 小字压着相机画面读不清。
-      backgroundColor: theme.panel,
+      // **唯一**的一块实心底色：Header + 关闭按钮区 + 列表全部住在这一个容器里。
+      backgroundColor: sheetSurface,
+      // 顶部微光：画在底色之上、子视图之下（理由见常量注释）。整层左右均匀，
+      // 不会在横向任何位置切出分界线。
+      experimental_backgroundImage: sheetSheen,
       borderTopWidth: StyleSheet.hairlineWidth,
       // 顶部一道亮边：让"纸从下面推上来"这件事有厚度，也是磨砂感的来源之一。
       borderTopColor: ink.hairline,
-      // 圆角要把内部的纹理层裁掉，否则四个角会露出直角。
+      // 圆角要把里面的内容（包括那张滚动列表）裁掉，否则四个角会露出直角。
       overflow: 'hidden',
-    },
-    sheetTexture: {
-      ...StyleSheet.absoluteFill,
-      opacity: 0.35,
     },
     plate: {
       flexDirection: 'row',
@@ -348,6 +399,9 @@ function createStyles(theme: Theme) {
       paddingRight: GRID_PADDING - 8,
       paddingTop: 14,
       paddingBottom: 10,
+      // 这一层**不能有 backgroundColor**：抽屉只有一块底色（`sheet`）。
+      // 多一块底色就多一条分界线 —— 横向色差是"上下两块色"，纵向色差（一条左右
+      // 对不齐的纹理/高光）就是用户报的那种"竖直断层"。
       borderBottomWidth: StyleSheet.hairlineWidth,
       // 标题下面那道暖色分隔线：琥珀色压到 28%，只留一点温度，不抢标题。
       borderBottomColor: withAlpha(ink.amber, 0.28),
@@ -367,12 +421,17 @@ function createStyles(theme: Theme) {
       color: ink.paperDim,
       fontSize: 9,
       letterSpacing: 0.4,
+      // 两行之间的呼吸：9pt 的字不带行高时两行会粘在一起（英文尤其明显）。
+      lineHeight: 12,
     },
     close: {
       width: CLOSE_TOUCH_SIZE,
       height: CLOSE_TOUCH_SIZE,
       alignItems: 'center',
       justifyContent: 'center',
+      // 刻意**零背景、零圆角**：用户报的"✕ 外面一块异色背景"在 v1.6.0 的代码里
+      // 并不存在（已用 git 逐字节核对过 HEAD），这里保持零背景 —— 别为了"看起来
+      // 像个按钮"再加一块底色，抽屉里第二块底色就是第二处接缝的来源。
     },
     closeMark: {
       color: ink.paperDim,

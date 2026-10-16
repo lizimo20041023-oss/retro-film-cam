@@ -19,9 +19,12 @@ export const zhHans = {
   'common.unknownError': '未知错误',
 
   /* ---------------- ① 顶部操作栏（拨轮底下的蚀刻小字） ---------------- */
-  'camera.flash.on': '关闭闪光灯',
-  'camera.flash.off': '打开闪光灯',
   'camera.flash.label': '闪光灯',
+  // 三档状态的**状态描述**（不是动作描述）：同一个串既当按钮的无障碍标签，
+  // 也当切换瞬间浮在取景器顶部的那句提示 —— 两处用词必须一致，否则用户听到的和看到的对不上。
+  'camera.flash.state.off': '闪光灯 · 关闭',
+  'camera.flash.state.on': '闪光灯 · 开启',
+  'camera.flash.state.auto': '闪光灯 · 自动',
   'camera.flip.a11y': '切换前后摄像头',
   'camera.flip.label': '翻转',
   'camera.settings.a11y': '打开设置',
@@ -40,13 +43,13 @@ export const zhHans = {
   'camera.shutter.a11y': '拍照',
   'camera.shutter.busy': '正在显影',
 
-  /* ---------------- 胶卷库（长按取景器下方的胶片名打开） ---------------- */
+  /* ---------------- 胶卷库（点右下角那颗胶卷按钮打开） ---------------- */
   // 面板标题 = 印上去的英文标牌（永远不翻译）+ 一个本地语言的词，中间用 ' · ' 分开。
   // 牌子相当于机身刻字，后面那个词才是给人看的说明 —— 所以这一串不再跨语言相同。
   'film.drawer.title': 'SELECT FILM STOCK · 胶卷库',
   'film.drawer.a11y': '胶卷库，选择胶卷预设',
   'film.drawer.close': '完成',
-  'film.drawer.hint': '长按取景器下方胶片名也可以打开这里',
+  'film.drawer.hint': '轻触选择底片 · 点击右下角胶卷按钮可随时切换',
   'film.card.a11y': '{name}，{description}',
   'film.card.selected': '已选择',
 
@@ -214,9 +217,9 @@ export const zhHans = {
   'camera.bar.temp': '色温',
   'camera.bar.focal': '焦段',
   'camera.bar.ev': '曝光',
-  'camera.bar.temp.a11y': '色温，当前 {label}',
-  'camera.bar.focal.a11y': '焦段 {label}，轻点切换',
-  'camera.bar.ev.a11y': '曝光补偿 {value}',
+  'camera.bar.temp.a11y': '色温，当前 {label}，长按滑动调整，轻点归零',
+  'camera.bar.focal.a11y': '焦段 {label}，长按滑动调整，轻点展开档位',
+  'camera.bar.ev.a11y': '曝光补偿 {value}，长按滑动调整，轻点归零',
   'camera.bar.ev.hint': '上下滑动调整曝光',
   'camera.tool.import': '导入',
   'camera.tool.double': '重曝',
@@ -232,12 +235,6 @@ export const zhHans = {
   'camera.focus.hint': '轻触对焦',
   'camera.exposure.a11y': '曝光滑块，上下滑动调整',
   'camera.frame.slot2': '拍第二格',
-  // 半格双联：第一格已入缓存、等第二格时的提示。`plate` 里是"第几张 / 共几张"，
-  // 数字在两格里写死 —— 半格就是 2 格，不做成占位符省得将来有人传错参数。
-  'camera.half.plate': '[ 1 / 2 ]',
-  'camera.half.hint': '再按一次完成',
   'frame.fp100c': '撕拉片',
-  'frame.halfFrame': '半格双联',
-  'frame.sheet8x10': '8×10 散页',
   'camera.thumb.a11y': '打开相册',
 } as const;
