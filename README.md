@@ -3238,18 +3238,30 @@ rulerMarkCount(windowWidth) = Math.ceil((0.86 * windowWidth + 40) / 8) + 1
   （"屏幕上真有 41 根可见"没验）；
 - VoiceOver 实读顺序、浅色主题下的对比度。
 
-### 31.10 v1.6.1 产物指纹（发布后回填）
+### 31.10 v1.6.1 产物指纹（已回填）
 
 | 项目 | 值 |
 | --- | --- |
-| 本地提交 | （待回填） |
-| 远端提交 | （待回填） |
-| CI | （待回填） |
-| artifact | （待回填） |
-| Release | （待回填） |
-| asset | （待回填） |
-| sha256 | （待回填） |
-| 下载地址 | （待回填） |
+| 本地提交 | `0c88268c9e1daa3f455b2cc727bc48d9eef87fef`（24 files changed, 2338 insertions(+), 1969 deletions(-)，树 `c37e07ea7d69f5c1a4701113c84ceb51442883db`） |
+| 远端提交 | `28ddb003e8060b0f4eddd25ab78e6b10248df8b2`（树与本地逐字节相同；父是远端 docs 提交 `43b4d530c28ba87d3ec64efaffe9ba64d6c76b2e`） |
+| CI | run `38925319275` / job `117055245208` `build-ipa` = **success**（13 步全绿，`macos-26-intel`） |
+| artifact | `12056588356` `FretroCam-unsigned-ipa`，10,527,599 B |
+| Release | `v1.6.1`，release id `415140877` |
+| asset | asset id `647843907` `FretroCam-v1.6.1-unsigned.ipa`，10,641,027 B（回读 digest 一致） |
+| sha256 | `93ea7dc20a5f2aaa2c3e74da885b8ef3f4da4b063b0fefeca30ddacc8a578ebd` |
+| 下载地址 | `https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.6.1/FretroCam-v1.6.1-unsigned.ipa` |
+
+产物结构自证（`_verify_ipa_v161.py 12056588356` → `RESULT: OK`）：`Payload/FretroCam.app/main.jsbundle`
+1,951,603 B；**应存在的 55 个符号 / 字面量全部 ×1**（`ParameterScrubBarInner`、`RulerStrip`、
+`rulerMarkCount`、`buildFocalOptions`、`magnetToZero` 与 `offsetAtValue` / `valueAtOffset` /
+`formatScrubTemperature` / `formatScrubExposure` 等纯函数、`safeAreaRect`、`reticleOrigin`、
+`FilmDrawer`、`FilmCard`、`withAlpha`、`computeStripLayout`、
+`resolvePlaceFromGeocode`、`api.bigdatacloud.net/…`、`camera.flash.state.{off,on,auto}`、
+`camera.bar.{temp,focal,ev}.a11y`、5 个画幅代号）；**应缺席的 26 个符号全部 ×0**
+（`computeSlotRects` / `slotBounds` / `secondUri` / `leatherTile` / `leather-tile` /
+`camera.flash.on` / `camera.flash.off` / `half-frame` / `sheet8x10` + 历次守着的黑名单）；
+`assets/assets/frames/` 只剩 **9 张** PNG（5 款相框，`half-frame` 与 `sheet8x10` 已随之出包）；
+`Info.plist` 2469 B，版本 `1.6.1`、bundle id `com.canyerylee.fretrocam`，旧版本号 `1.6.0` 已不在。
 
 ---
 
