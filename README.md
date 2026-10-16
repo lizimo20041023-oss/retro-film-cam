@@ -4087,9 +4087,21 @@ iOS 的 `resizeMode="repeat"` 不是 `colorWithPatternImage`，而是
 - 没有真机验证：本机跑不了 iOS 模拟器/真机，"斑块消失"的结论来自 §35.5 的离线仿真 + §35.2 的
   RN 源码级路径分析。
 
-### 35.9 产物指纹
+### 35.9 产物指纹（全部为本次实测值）
 
-（本节在发布后回填：提交 / CI / artifact / IPA / Release / 核验。）
+| 项目 | 实测值 |
+| --- | --- |
+| 本地提交 | `cbe4e45`（6 files changed，376 insertions(+)，43 deletions(-)） |
+| 推送 | `_push_v180_api.py` 重建远端提交 `60680533a35b49e4d1d559fbe8bc6c5f1e1d4f15`（`TREE MATCH = True`；上传 6 个 blob；130 个条目逐个比对：无 only-remote / only-local / differ） |
+| 远端备注 | 上一条被同步出来的远端提交 `22ee7cb1…` 与当时的远端树 `1c90bdc5…` **完全一致**（内容无差异的空提交，`_push_v180_api.py` 每次都会重建提交对象所致） |
+| CI | run `38964010866`（event=push，master）→ job `117185858537` 全部 success；<https://github.com/lizimo20041023-oss/retro-film-cam/actions/runs/38964010866> |
+| artifact | `FretroCam-unsigned-ipa`，id `12074597677`，zip 10,387,445 B |
+| IPA 内 bundle | `Payload/FretroCam.app/main.jsbundle` 2,041,414 B；IPA 条目 115 |
+| IPA | `FretroCam-v1.8.2-unsigned.ipa` **10,501,887 B**，SHA-256 `108cdd8d886f602406a127e221cc696ffc2a1967ac852d704589e70dddbd0d35` |
+| 核验（CI 产物） | `python _verify_ipa_v182.py 12074597677` ⇒ **`RESULT: OK`**：新针 `planTextureTiles` / `TEXTURE_SIZE_PX` / `TEXTURE_TILE_PT` 各 x1；`assets/assets/textures/grain.png` 249,201 B **字节 sha256 = `2d30d077…86ad0` 一致** + 解码频谱 `<8=65.7% / 24-64=5.0%` 两道门 OK；`Info.plist` = `1.8.2` + `com.canyerylee.fretrocam`；相框素材 10 张（含 `no-frame.png` 68 B）；`SHOULD_BE_ABSENT` 全部 0 命中 |
+| Release | id `415371815`，tag `v1.8.2`，asset id `648592311`，`SIZE MATCH = True` / `DIGEST MATCH = True` |
+| 打包前 export 冒烟 | `npx expo export --platform ios --no-bytecode` ⇒ EXIT=0；bundle `index-d4e1b8f6aebafebdb42f7c62aaf5d2e8.js` 1,339,980 B；导出目录 20 文件 / 2,855,835 B；`python _verify_ipa_v182.py --local …` ⇒ `RESULT(local): OK`；导出资产 `assets/5ebf6a817cd386ced4e993fe322baa5f` 与源 `grain.png` 逐字节一致 |
+| 下载 | <https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.8.2/FretroCam-v1.8.2-unsigned.ipa> |
 
 ---
 
