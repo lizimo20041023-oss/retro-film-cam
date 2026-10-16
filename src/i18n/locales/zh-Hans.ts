@@ -257,6 +257,18 @@ export const zhHans = {
   'frame.variant.archival': '经典原白',
   'frame.variant.baryta': '岁月暖黄',
   'frame.variant.obsidian': '暗房雅黑',
+  /* ---------------- v1.8.1：无相框纯净全屏（00 NO FRAME） ---------------- */
+  'frame.noFrame': '无相框',
+  // 三档画幅比的**结果**，不是名字：门禁把 `3:2` 那一档冻成了 `ratio = 2/3`
+  // （2:3 竖幅，比 3:4 更高），所以标签只报比例数字、不写"横幅 / 竖幅"这种方向词
+  // —— 写了就会和实际拿到的画布相反。取舍写在设置页那行 hint 里。
+  'frame.noFrame.aspect11': '画幅 1:1',
+  'frame.noFrame.aspect34': '画幅 3:4',
+  'frame.noFrame.aspect32': '画幅 3:2',
+  'settings.noFrame.title': '无相框画幅',
+  'settings.noFrame.a11y': '无相框画幅，当前 {label}',
+  'settings.noFrame.hint':
+    '只在选中「无相框（00）」时起作用：没有纸面定比例，照片按这一档铺满整幅。3:2 一档拿到的是 2:3 竖幅（比 3:4 更高），不是横幅 —— 这个取值由仓库的门禁脚本冻结。',
 
   /* ---------------- v1.8.0：日期烙印引擎（13 格式 × 5 字形 × 8 机位 × 5 发光色） ---------------- */
   'settings.dateEngine.title': '日期烙印',

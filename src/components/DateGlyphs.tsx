@@ -388,21 +388,46 @@ export function segmentsOf(char: string): readonly LedSegmentId[] {
 export interface GlyphPalette {
   /** 亮起的笔画色（= 配方里的 `filament`）。 */
   lit: string;
-  /** 熄灭段的暗色残影。 */
+  /** 熄灭段的暗色残影。**v1.8.1 起 alpha 恒为 0**（熄灭段根本不渲染）。 */
   ghost: string;
   /** 灯丝中心的过曝色。 */
   core: string;
   /** 文字字形用的颜色（可能是排版层解析好的墨色，而不是发光色）。 */
   text: string;
+  /**
+   * 亮灯的**副本光**：外圈（大、淡）与内圈（小、浓）的 rgba 颜色。
+   *
+   * 渲染层只允许拿它们画**与灯同形状的放大副本** —— 绝不许画矩形底块。
+   * 这就是 v1.8.1 取代 `DateHaze` 的地方（用户强制规范：日期背景 100% 透明）。
+   */
+  haloOuter: string;
+  haloInner: string;
+  /** 两圈副本光相对字号的半径比例（= `hazeLayers(1, glow)` 的 spread：0.18 / 0.09）。 */
+  haloOuterRatio: number;
+  haloInnerRatio: number;
 }
 
 /**
- * 熄灭段的残影色。
+ * 熄灭段的残影色 —— **v1.8.1 起恒为 0：熄灭段一个像素都不画。**
  *
- * 为什么不用纯黑：真机上没通电的段在斜射光下是**能看见轮廓**的暗红，纯黑会丢掉
- * "这是一块数码管"的信息，日期看上去像贴在照片上的贴纸。0.18 是这里唯一的不透明度。
+ * 历史：v1.8.0 这里写 0.18，理由是"真机上没通电的段在斜射光下能看见轮廓，
+ * 纯黑会丢掉『这是一块数码管』的信息"。那个理由在**深色背景**上成立，
+ * 在**白色相纸**上却是错的：七段管的每个数字有 7 段、一档日期十几位，
+ * 18% 琥珀色的熄段密排在一起，在相纸上就是一块淡橙色卡片 —— 用户实测图 21 里
+ * 日期背后那块"诡异的橙色大方块"，一半来自 `DateHaze` 的实心矩形，
+ * 另一半就来自这些熄段。
+ *
+ * 现在的规矩（用户强制规范）：**日期水印的背景必须 100% 透明，任何实色或半透明
+ * 矩形都不许有**。于是熄段从"画一个 alpha 0.18 的 View"改成**根本不渲染**
+ * （见 `Led7SegGlyph` 的 `if (!on) return null;`）。为什么不是留一个
+ * `backgroundColor: 'transparent'` 的空 View：RN 里**空蒙版照样会投出阴影**
+ * （iOS 按渲染后的 alpha 蒙版生成），一旦哪天给灯挂了 shadow，那个"看不见"的
+ * 熄段就会变成一块灰影 —— 不渲染才是唯一稳的写法。
+ *
+ * 常量本身保留：`GlyphPalette.ghost` 仍是公开字段（探针按 alpha === 0 断言），
+ * 形状与亮度信息由**亮段自己**表达。
  */
-const GHOST_OPACITY = 0.18;
+const GHOST_OPACITY = 0;
 
 /**
  * 从发光色构造一笔的颜色。`tint` 是"这一笔用什么当亮色"。
@@ -414,11 +439,24 @@ const GHOST_OPACITY = 0.18;
 export function glyphPalette(glow: DateGlowId, tint?: string): GlyphPalette {
   const recipe = DATE_GLOW_PALETTE[glow];
   const ink = tint ?? recipe.filament;
+  /*
+   * 副本光的两圈半径与颜色**直接取 `hazeLayers(1, glow)`**：字号传 1，拿到的 spread 就是
+   * 比例（0.18 / 0.09），color 就是配方里那两笔 rgba。这样"光晕多大、多浓"仍然只有一个
+   * 产地（`dateEngine` 的配方），渲染层与探针读的是同一份数值。
+   * v1.8.0 的毛病是**实现**（两个实心矩形铺在文字框底下），不是这组数值 —— 数值一个字没改。
+   */
+  const haze = hazeLayers(1, glow);
+  const outer = haze.find((layer) => layer.kind === 'outer');
+  const inner = haze.find((layer) => layer.kind === 'inner');
   return {
     lit: tint ?? recipe.filament,
     ghost: withAlpha(recipe.filament, GHOST_OPACITY),
     core: recipe.core,
     text: ink,
+    haloOuter: outer?.color ?? recipe.outer,
+    haloInner: inner?.color ?? recipe.inner,
+    haloOuterRatio: outer?.spread ?? 0,
+    haloInnerRatio: inner?.spread ?? 0,
   };
 }
 
@@ -468,6 +506,118 @@ function cellHeight(style: DateGlyphStyleId, fontPx: number): number {
   return glyphHeight(style, fontPx);
 }
 
+/** 一颗"灯"画出来的三层：外圈副本光 → 内圈副本光 → 灯芯。 */
+interface LampLayer {
+  key: 'halo-outer' | 'halo-inner' | 'core';
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  radius: number;
+  /**
+   * 填色。**字段名故意不叫 `color`**：源码级门禁用 `backgroundColor: layer.color`
+   * 这个形状来抓"整盒铺色"（旧 `DateHaze` 的写法），灯芯是逐灯铺色、不是整盒，
+   * 换个名字既保住那条守卫、也把两种东西区分开。
+   */
+  fill: string;
+}
+
+/** 一个灯的盒子（相对它所在的墨迹框）。 */
+interface LampBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * 一个亮灯的"副本光"叠层 —— **这就是 v1.8.1 取代 `DateHaze` 的东西**。
+ *
+ * 用户实测图 21：日期背后有一块亮橙色**矩形**底块。根因是 v1.8.0 的晕染层拿两个实心
+ * 圆角矩形铺在文字框底下（`DateHaze` + `hazeLayers`）—— 在白色相纸上，那就是一张橙色卡片。
+ * 用户强制规范：**日期水印的背景必须 100% 透明，任何实色或半透明矩形都不许有**。
+ *
+ * 换成"副本光"：每颗**亮**灯背后叠同形状的放大副本（外圈 0.18×字号、内圈 0.09×字号，
+ * 与 `hazeLayers` 同源，数值一个字没改）。于是光晕的轮廓**就是字形的轮廓**：圆点是圆环、
+ * 段码是圆角条、文字是字的影子 —— 无论哪一种都**不可能**出现矩形底块。
+ * 熄灭段根本不渲染（见 `GHOST_OPACITY`），所以相纸上没有任何"没通电的段"在铺色。
+ *
+ * 为什么不用 `shadow*`：iOS 的 `View` shadow 按**渲染后的 alpha 蒙版**生成，1~2pt 的小灯
+ * 挂 `shadowRadius` 会糊成一块橙雾（等于把 bug 再复现一遍），而且每层要一次离屏栅格化。
+ * 副本光是纯几何、顺序确定、**可断言**（探针按"每个亮灯恰好三层 + 尺寸关系"验）。
+ */
+function lampLayers(box: LampBox, palette: GlyphPalette, fontPx: number, round: boolean): LampLayer[] {
+  const layers: LampLayer[] = [];
+  const halos: { key: 'halo-outer' | 'halo-inner'; spread: number; fill: string }[] = [
+    { key: 'halo-outer', spread: r2(palette.haloOuterRatio * fontPx), fill: palette.haloOuter },
+    { key: 'halo-inner', spread: r2(palette.haloInnerRatio * fontPx), fill: palette.haloInner },
+  ];
+  for (const halo of halos) {
+    if (!(halo.spread > 0)) {
+      continue;
+    }
+    layers.push({
+      key: halo.key,
+      left: r2(box.left - halo.spread),
+      top: r2(box.top - halo.spread),
+      width: r2(box.width + halo.spread * 2),
+      height: r2(box.height + halo.spread * 2),
+      radius: round ? r2(box.width / 2 + halo.spread) : halo.spread,
+      fill: halo.fill,
+    });
+  }
+  layers.push({
+    key: 'core',
+    left: box.left,
+    top: box.top,
+    width: box.width,
+    height: box.height,
+    radius: round ? r2(box.width / 2) : 0,
+    fill: palette.lit,
+  });
+  return layers;
+}
+
+/**
+ * 画一颗亮灯（副本光 + 灯芯）。坐标是**绝对定位**，父级必须是一个定位容器。
+ * 副本光会**外扩出盒子**（不参与布局、默认不裁切），这正是"光晕跟着字形走"的实现方式。
+ */
+function Lamp({ box, palette, fontPx, round = false }: { box: LampBox; palette: GlyphPalette; fontPx: number; round?: boolean }): ReactElement {
+  return (
+    <>
+      {lampLayers(box, palette, fontPx, round).map((layer) => (
+        <View
+          key={layer.key}
+          style={{
+            position: 'absolute',
+            left: layer.left,
+            top: layer.top,
+            width: layer.width,
+            height: layer.height,
+            borderRadius: layer.radius,
+            backgroundColor: layer.fill,
+          }}
+        />
+      ))}
+    </>
+  );
+}
+
+/**
+ * 标点的小灯（`.` `:` `'`）：位置交给外层布局，副本光在这个格子里相对外扩。
+ *
+ * 为什么需要这一层包装：标点是**布局流里的**元素（`justifyContent: 'space-evenly'`），
+ * 而副本光必须比它大一圈。包一个与灯同尺寸的 `View` 当定位容器，副本光就是它的绝对定位
+ * 子节点 —— 布局占位仍然是"一颗小灯那么大"，不会因为发光把整行撑宽。
+ */
+function PunctuationLamp({ width, height, palette, fontPx }: { width: number; height: number; palette: GlyphPalette; fontPx: number }): ReactElement {
+  return (
+    <View style={{ width, height }}>
+      <Lamp box={{ left: 0, top: 0, width, height }} palette={palette} fontPx={fontPx} />
+    </View>
+  );
+}
+
 /** 七段数码管的一个字符。 */
 function Led7SegGlyph({ char, fontPx, advance, palette, fontFamily }: GlyphProps): ReactElement {
   const geo = ledSegmentGeometry(fontPx);
@@ -488,34 +638,18 @@ function Led7SegGlyph({ char, fontPx, advance, palette, fontFamily }: GlyphProps
   }
 
   if (punctuation) {
+    const dotWidth = r2(fontPx * punctuation.widthRatio);
+    const dotHeight = r2(fontPx * punctuation.heightRatio);
     return (
       <View style={{ width: advance, height, alignItems: 'center', justifyContent: 'center' }}>
         {punctuation.dots === 2 ? (
-          // `:` —— 真机上是上下两颗独立的小灯，所以是两个 View 而不是一个高块
-          <View style={{ width: r2(fontPx * punctuation.widthRatio), height: height, justifyContent: 'space-evenly' }}>
-            <View
-              style={{
-                width: r2(fontPx * punctuation.widthRatio),
-                height: r2(fontPx * punctuation.heightRatio),
-                backgroundColor: palette.lit,
-              }}
-            />
-            <View
-              style={{
-                width: r2(fontPx * punctuation.widthRatio),
-                height: r2(fontPx * punctuation.heightRatio),
-                backgroundColor: palette.lit,
-              }}
-            />
+          // `:` —— 真机上是上下两颗独立的小灯，所以是两个 Lamp 而不是一个高块
+          <View style={{ width: dotWidth, height, justifyContent: 'space-evenly' }}>
+            <PunctuationLamp width={dotWidth} height={dotHeight} palette={palette} fontPx={fontPx} />
+            <PunctuationLamp width={dotWidth} height={dotHeight} palette={palette} fontPx={fontPx} />
           </View>
         ) : (
-          <View
-            style={{
-              width: r2(fontPx * punctuation.widthRatio),
-              height: r2(fontPx * punctuation.heightRatio),
-              backgroundColor: palette.lit,
-            }}
-          />
+          <PunctuationLamp width={dotWidth} height={dotHeight} palette={palette} fontPx={fontPx} />
         )}
       </View>
     );
@@ -558,21 +692,18 @@ function Led7SegGlyph({ char, fontPx, advance, palette, fontFamily }: GlyphProps
     <View style={{ width: advance, height, alignItems: 'center', justifyContent: 'center' }}>
       <View style={{ width: inkWidth, height }}>
         {LED_SEGMENT_IDS.map((id) => {
-          const box = segmentBox(id);
           const on = lit.includes(id);
-          return (
-            <View
-              key={id}
-              style={{
-                position: 'absolute',
-                left: box.left,
-                top: box.top,
-                width: box.width,
-                height: box.height,
-                backgroundColor: on ? palette.lit : palette.ghost,
-              }}
-            />
-          );
+          /*
+           * 熄灭段：**一个像素都不画**（v1.8.1 用户强制规范 —— 日期水印的背景必须 100% 透明）。
+           * 以前这里画的是 `palette.ghost`（v1.8.0 时 alpha 0.18 的暗橙）：在白色相纸上，
+           * 七段全画出来就是一个**橙色方块**，这正是用户实测图 21 里那块东西的另一半来源。
+           * 顺带一条 iOS 事实：`backgroundColor: 'transparent'` 的**空蒙版照样会投阴影**，
+           * 所以"熄灭段留着但透明"并不安全 —— 不渲染才是最稳的写法。
+           */
+          if (!on) {
+            return null;
+          }
+          return <Lamp key={id} box={segmentBox(id)} palette={palette} fontPx={fontPx} />;
         })}
       </View>
     </View>
@@ -597,18 +728,13 @@ function DotMatrixGlyph({ char, fontPx, advance, palette }: GlyphProps): ReactEl
               return null;
             }
             return (
-              <View
+              <Lamp
                 key={`${row}-${col}`}
-                style={{
-                  position: 'absolute',
-                  left: r2(col * geo.pitch),
-                  top: r2(row * geo.pitch),
-                  width: geo.diameter,
-                  height: geo.diameter,
-                  // 圆点：radius = 直径的一半。用户要的"针式圆点矩阵"就靠这一条
-                  borderRadius: r2(geo.diameter / 2),
-                  backgroundColor: palette.lit,
-                }}
+                box={{ left: r2(col * geo.pitch), top: r2(row * geo.pitch), width: geo.diameter, height: geo.diameter }}
+                palette={palette}
+                fontPx={fontPx}
+                // 圆点：radius = 直径的一半。用户要的"针式圆点矩阵"就靠这一条，副本光跟着圆
+                round
               />
             );
           }),
@@ -636,9 +762,19 @@ function TextGlyph({ char, style, fontPx, palette, fontFamily }: GlyphProps): Re
           fontWeight: spec.fontWeight,
           letterSpacing: tracking,
           textAlign: 'center',
-          // 只有 CCD 取景器那一档要一圈荧光；印字风格围一圈光会像蹭脏了（同 v1.7.0 的规则）
-          textShadowColor: spec.textGlow ? palette.core : 'transparent',
-          textShadowRadius: spec.textGlow ? r2(fontPx * 0.28) : 0,
+          /*
+           * 字形形状的微发光。v1.8.1 起**每一档都有一点**，只是浓度不同：
+           * - `ccd_osd`（真机取景器字）：中心过曝色 + 0.28×字号，最亮。
+           * - 印字档（`lab_inkjet` / `archival_steel`）：内圈副本光的颜色 + 外圈半径
+           *   （0.18×字号 ≈ 2pt），**半透明微发光**。
+           *
+           * 为什么印字档也要给：v1.8.0 的 `DateHaze` 对**所有**字形档都在文字框底下铺过橙光，
+           * 现在把矩形删掉、只留字形自己的影子 —— 不给的话印字档的日期会突然"完全没光"，
+           * 而无相框模式（`00 NO FRAME`）明确要求日期与地名都是"半透明微发光浮雕在画面内"。
+           * 注意 `textShadow` 生成的影子**就是字形的轮廓**（不是矩形），符合强制规范。
+           */
+          textShadowColor: spec.textGlow ? palette.core : palette.haloInner,
+          textShadowRadius: spec.textGlow ? r2(fontPx * 0.28) : r2(fontPx * palette.haloOuterRatio),
           textShadowOffset: { width: 0, height: 0 },
         }}
       >
@@ -755,68 +891,21 @@ export function DateGlyphs({
 export const MONO_FONT_FAMILY = 'monospace';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 八、发光层（双层荧光晕染）
+// 八、发光层（v1.8.1 起并入字形本身，这里不再有独立组件）
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** 晕染层的渲染输入。 */
-export interface DateHazeProps {
-  /** 文本自然宽度（`glyphWidth` 的返回值）。 */
-  textWidth: number;
-  /** 文本自然高度（`glyphHeight` 的返回值）。 */
-  textHeight: number;
-  /** 字号。 */
-  fontPx: number;
-  /** 发光色。 */
-  glow: DateGlowId;
-  /** 旋转角，与字形一致。 */
-  rotationDeg?: 0 | 90;
-}
-
-/**
- * 双层荧光晕染。**范围有界**：每一层最多比文字框外扩 `hazeSpread()` pt，
- * 也就是字号的 18%（硬上限 30%）—— 绝不铺满画幅（用户明令禁止的白雾）。
+/*
+ * v1.8.0 在这里有一个 `DateHaze` 组件：拿 `hazeLayers()` 返回的两层**实心圆角矩形**
+ * 铺在文字框底下，当作"荧光晕染"。用户实测图 21 里日期背后那块**亮橙色大方块**就是它 ——
+ * 在白色相纸上，两个半透明橙色矩形叠起来就是一张橙色卡片，跟"发光"毫无关系。
  *
- * 实现上**不用** `shadowRadius` 去做这层光：`shadowRadius` 的扩散范围由平台渲染器
- * 决定、iOS 与 Android 差得很远，而"范围必须可断言"是这一轮的硬要求。
- * 用带圆角的半透明 `View` 是最诚实的做法 —— 它扩散多少，代码里就写着多少。
+ * v1.8.1 按用户强制规范（日期水印的背景必须 100% 透明）把它整个删掉，光晕改成
+ * **每个亮灯自己的放大副本**（见本文件上半部分的 `lampLayers` / `Lamp`，以及
+ * `TextGlyph` 的 `textShadow*`）。配方数值一个字没改：`hazeLayers()` 仍然存在、
+ * 仍然由 `dateEngine` 拥有，现在由 `glyphPalette()` 取它的 spread 与颜色。
+ *
+ * 所以：**渲染层里任何地方都不该再出现"矩形底块"**，探针据此按源码级守卫断言。
  */
-export function DateHaze({ textWidth, textHeight, fontPx, glow, rotationDeg = 0 }: DateHazeProps): ReactElement | null {
-  const layers = hazeLayers(fontPx, glow);
-  if (layers.length === 0 || !(textWidth > 0) || !(textHeight > 0)) {
-    return null;
-  }
-  return (
-    <View
-      style={{
-        position: 'absolute',
-        left: 0,
-        top: 0,
-        width: textWidth,
-        height: textHeight,
-        alignItems: 'center',
-        justifyContent: 'center',
-        transform: rotationDeg === 0 ? undefined : [{ rotate: `${rotationDeg}deg` }],
-        // 光晕不是触摸目标（成片里根本没有触摸，但预览层在同一棵树上）
-        pointerEvents: 'none',
-      }}
-    >
-      {layers.map((layer) => (
-        <View
-          key={layer.kind}
-          style={{
-            position: 'absolute',
-            left: -layer.spread,
-            top: -layer.spread,
-            width: textWidth + layer.spread * 2,
-            height: textHeight + layer.spread * 2,
-            borderRadius: layer.radius,
-            backgroundColor: layer.color,
-          }}
-        />
-      ))}
-    </View>
-  );
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 九、临时：8 机位落点（`resolveDateSpot` 落地后删这一段）

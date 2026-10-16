@@ -49,6 +49,7 @@
  * 要覆盖它们，得在带原生模块的环境里跑，或者把这两步换成可注入的假实现。
  */
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
+import { DEFAULT_NO_FRAME_ASPECT, resolveFrame } from '../constants/frames';
 import { resolvePreset } from '../constants/presets';
 import type {
   CapturedPhoto,
@@ -58,6 +59,7 @@ import type {
   FilmStageInput,
   FrameLayout,
   FrameSpec,
+  NoFrameAspect,
   NormalizedPhoto,
   PlaceDetail,
   ProcessedPhoto,
@@ -80,6 +82,16 @@ export interface ProcessFilmPhotoInput {
   photo: CapturedPhoto;
   /** 相框（`FRAMES` 里的一项）。 */
   frame: FrameSpec;
+  /**
+   * 无相框（`00 NO FRAME`）的画幅比（v1.8.1）。**可选**：只有 `frame.fullBleed === true`
+   * 时才被读，纸框一律忽略。不传时按 `DEFAULT_NO_FRAME_ASPECT`（`'3:4'`）算。
+   *
+   * 为什么放在这里而不是让调用方先 `resolveFrame` 再传：`processFilmPhoto` 是
+   * "相框 → 几何 → 画布"的**唯一**入口，解析放在入口内侧，取景器预览
+   * （`CameraScreen` 自己也调 `resolveFrame`）与成片就必然是同一个函数的同参调用；
+   * 让调用方解析就得把这个默认值复制到每个调用点，哪天改了默认值必然漏一处。
+   */
+  noFrameAspect?: NoFrameAspect;
   /** 预设（`PRESETS` 里的一项，原始数据即可，内部会补默认值）。 */
   preset: FilmPreset;
   /**
@@ -353,7 +365,19 @@ function centerCropOrigin(
  * 不写相册（写相册是 `saveToLibrary` 的事，方便单独重试一次保存）。
  */
 export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<ProcessedPhoto> {
-  const { photo, frame, preset: rawPreset, stage, host } = input;
+  const { photo, preset: rawPreset, stage, host } = input;
+  /*
+   * v1.8.1 无相框（`00 NO FRAME`）：相框先在**入口**解析一次，后面全用 `frame`。
+   *
+   * `resolveFrame` 对纸框返回**同一个引用**（零开销、零行为变化），只对全铺帧返回
+   * 一个新对象：`aspect` 换成设置里那一档（1:1 / 3:4 / 3:2）、`window` 铺满整幅。
+   *
+   * 一处解析、全链受益：`computeFrameLayout` / `resolveCropAspect` / `stageInput.frame` /
+   * 返回的 `frameId` 全部自动一致 —— 尤其 `resolveCropAspect` 读的是
+   * `layout.window.width / layout.window.height`，所以"照片按所选画幅比裁一刀"
+   * 这件事不需要另写一行代码，`normalizePhoto` / `planCapture` 也不用改。
+   */
+  const frame = resolveFrame(input.frame, input.noFrameAspect ?? DEFAULT_NO_FRAME_ASPECT);
 
   // 1) 预设补默认值 —— 纯函数
   const preset = resolvePreset(rawPreset);

@@ -263,6 +263,17 @@ export const fr: Messages = {
   'frame.variant.archival': 'Blanc archive',
   'frame.variant.baryta': 'Baryta chaud',
   'frame.variant.obsidian': 'Noir obsidienne',
+  /* ---------------- v1.8.1 : plein cadre sans bordure (00 NO FRAME) ---------------- */
+  'frame.noFrame': 'Sans cadre',
+  // Chiffres du ratio uniquement — voir le commentaire de la section zh-Hans pour la
+  // raison (le créneau 3:2 est figé sur un cadre portrait 2:3).
+  'frame.noFrame.aspect11': 'Cadre 1:1',
+  'frame.noFrame.aspect34': 'Cadre 3:4',
+  'frame.noFrame.aspect32': 'Cadre 3:2',
+  'settings.noFrame.title': 'Format sans cadre',
+  'settings.noFrame.a11y': 'Format sans cadre, actuellement {label}',
+  'settings.noFrame.hint':
+    "Utilisé uniquement avec « Sans cadre (00) » : sans papier pour fixer la forme, la photo remplit le cadre à ce ratio. Le créneau 3:2 donne un cadre portrait 2:3 (plus haut que 3:4), pas un paysage — cette valeur est figée par les scripts de contrôle du dépôt.",
 
   /* ---------------- v1.8.0：日期烙印引擎（13 格式 × 5 字形 × 8 机位 × 5 发光色） ---------------- */
   'settings.dateEngine.title': 'Empreinte de date',

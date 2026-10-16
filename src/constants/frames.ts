@@ -40,8 +40,12 @@
  *    （见 `src/utils/geometry.ts` 的 computeFrameLayout）。
  *
  * ─────────────────────────────────────────────────────────────────────────
- * 这五款是怎么来的：**每一款对应一种真实存在的物理产物**（v1.6.1 精简前的 7 款里
+ * ⚠️ v1.8.1 起数组的 **0 位不是纸框**，是 `00 NO FRAME`（`fullBleed: true`）——
+ *    「不要相框」这一个选择。它是"材质之外的第二个轴"，渲染层必须整组早退；
+ *    下面这五款纸框才是真正的物理产物（v1.6.1 精简前的 7 款里
  * 另有半格双联框与 8×10 散页，因为「一框多图」那条链路整体下线而一并删除）。
+ * ─────────────────────────────────────────────────────────────────────────
+ * 这五款是怎么来的：**每一款对应一种真实存在的物理产物**。
  * ─────────────────────────────────────────────────────────────────────────
  * 上一版有 8 款，问题不在数量，在于其中几款是"滤镜思维"的产物 —— 靠撒噪点、
  * 撒污渍、印一行 `RT-400 · 36 EXP · C-41` 来暗示"我很旧"。真实相纸不长那样：
@@ -66,9 +70,114 @@
  *      这一条没有真机验证过，见交付报告"没能验证的"一节。
  * ─────────────────────────────────────────────────────────────────────────
  */
-import type { FrameSpec } from '../types';
+import type { FrameSpec, NoFrameAspect } from '../types';
+
+/**
+ * 无相框模式（`00 NO FRAME`）的稳定 id —— **字符串字面量，不许改**。
+ *
+ * 它是 `FRAMES[0]` 的 id，会被写进 `AppSettings` 之外的地方（相册条目的 `frameId`、
+ * 顶栏徽标代号、日志），也可能被用户的老存档引用 ⇒ 改名等于让所有历史无相框成片
+ * 落到 `findFrameIndex` 的兜底帧上，变成"打开旧片子相框自己长出来了"。
+ */
+export const NO_FRAME_ID = 'no-frame';
+
+/** 一档无相框画幅比。`ratio` 是**宽 / 高**（`computeFrameLayout` / `fitBox` 的口径）。 */
+export interface NoFrameAspectSpec {
+  id: NoFrameAspect;
+  ratio: number;
+}
+
+/**
+ * 无相框的三档画幅比 —— 恰好三项，顺序 = 界面上的顺序。
+ *
+ * ⚠️ **这三个数字是门禁脚本 `_probe_noframe_v181.cjs` 的 B15 逐位冻结的**
+ * （`{id:'1:1',ratio:1}` / `{id:'3:4',ratio:0.75}` / `{id:'3:2',ratio:2/3}`，容差 1e-9）：
+ *   · `3:2` 这一档给出的画布是 **2:3 竖幅**（`ratio = 2/3`，`fitBox` 的宽/高口径），
+ *     不是"3:2 横幅"（那需要 1.5）。这一点与"3:2 = 横向"的日常直觉相反，
+ *     但它就是冻结规格，**不要**为了让命名顺眼把它改成 1.5（门禁会红）。
+ *   · 三档都不超过 1（正方形或竖幅）。竖屏取景器里"全屏铺展"的语义就是
+ *     "在 358×435 那种竖盒子里按这个比例铺满"，横幅会在上下留黑边。
+ */
+export const NO_FRAME_ASPECTS: readonly NoFrameAspectSpec[] = [
+  { id: '1:1', ratio: 1 },
+  { id: '3:4', ratio: 0.75 },
+  { id: '3:2', ratio: 2 / 3 },
+];
+
+/**
+ * `resolveFrame` 的兜底档 = 无相框的默认画幅。
+ *
+ * ⚠️ 这个字面量在 `src/utils/settingsStore.ts` 的默认值表里**刻意再写一份**
+ * （那个文件不许 import 常量模块，理由写在它自己的注释里：启动最早一帧就会被求值，
+ * 而它要能被独立加载）。两处必须一致，改一处就要改另一处。
+ */
+export const DEFAULT_NO_FRAME_ASPECT: NoFrameAspect = '3:4';
+
+/**
+ * 把"用户选中的相框" + "无相框画幅档"解析成**真正拿去排版的那一个 `FrameSpec`**。
+ *
+ * 这是全项目唯一一处把"无相框"从"一个相框"变成"一套几何"的地方，渲染层与几何层
+ * 都只消费它的返回值：
+ *   · `fullBleed !== true`（普通纸框）→ **原样返回同一个引用**。零拷贝、零分配，
+ *     也保证 `useMemo` 的依赖比较与以前逐位相同（老路径一行行为都不变）。
+ *   · `fullBleed === true` → **返回新对象**（`window` 铺满自己的画布、`aspect` = 该档比例），
+ *     **绝不就地改写**：`FRAMES` 是模块级常量表，改它 = 污染所有画幅并把
+ *     `_probe_geo_lock.cjs` 里"纸框窗口落在 [0,1]"那一批断言带偏。
+ *
+ * `aspect` 传未知值时按 `DEFAULT_NO_FRAME_ASPECT` 兜底（老存档 / 手改 JSON 都不会白屏）。
+ */
+export function resolveFrame(frame: FrameSpec, aspect: NoFrameAspect): FrameSpec {
+  if (frame.fullBleed !== true) {
+    return frame;
+  }
+  const spec =
+    NO_FRAME_ASPECTS.find((entry) => entry.id === aspect) ??
+    NO_FRAME_ASPECTS.find((entry) => entry.id === DEFAULT_NO_FRAME_ASPECT) ??
+    NO_FRAME_ASPECTS[0];
+
+  return {
+    ...frame,
+    // 画幅比归这一档决定；`window` 铺满自己的画布（= 铺满整幅照片）
+    aspect: spec.ratio,
+    window: { x: 0, y: 0, width: 1, height: 1 },
+  };
+}
 
 export const FRAMES: FrameSpec[] = [
+  /**
+   * `00 NO FRAME`（v1.8.1）—— **必须钉在 0 位**。
+   *
+   * 为什么放在数组第一位而不是末尾：抽屉里的相框行、顶栏徽标的 `n/N`、左右滑切换
+   * 都按数组顺序走，用户要的"新编号 00"就是这套顺序里的第一格；而且
+   * `_probe_geo_lock.cjs` 明写"fullBleed 相框至多一项且必须占 0 位"。
+   *
+   * ⚠️ 它**不是一款相框**，是"不要相框"这一个选择：所以它没有纸、没有窗口留白、
+   * 也没有做旧皮肤 —— 渲染层（`FilmCompositor` / `FramePreviewLayer` / `FilmDrawer`）
+   * 都必须凭 `fullBleed` 整组早退，连取景器里那四块不透明幕布都不许画（画了 = 黑屏）。
+   *
+   * `aspect` / `window` 这里写的是**默认档（3:4）的兜底值**：真正排版时由
+   * `resolveFrame(frame, settings.noFrameAspect)` 按用户选的那一档现算出新对象。
+   * 直接拿这一条去 `computeFrameLayout` 得到的是"3:4 铺满"，不是错，只是没读设置。
+   *
+   * `source` 指向一张 1×1 全透明 PNG：`FrameSpec.source` 是必填字段，而这张图
+   * **永远不会被渲染**（三处渲染点都有 `fullBleed` 守卫）。给一张真透明的而不是
+   * 复用某款拍立得的纸：万一哪条守卫漏了，用户看到的是一张什么都没画的图，
+   * 而不是"选了无相框却冒出一张白边纸"。
+   */
+  {
+    id: NO_FRAME_ID,
+    name: '无相框',
+    nameKey: 'frame.noFrame',
+    // 徽标代号：用户原话里的"编号 00"。纯 ASCII、不翻译（与 `INSTANT SQ` 同一类）。
+    code: '00',
+    source: require('../../assets/frames/no-frame.png'),
+    aspect: 3 / 4,
+    window: { x: 0, y: 0, width: 1, height: 1 },
+    photoFit: 'cover',
+    fullBleed: true,
+    designSize: { width: 1, height: 1 },
+    description: '无相框纯净全屏（00）：没有卡纸 / 白边 / 齿孔 / 压痕，照片按所选画幅比铺满整幅，日期与地名直接印在画面上',
+  },
   {
     id: 'polaroid-600',
     name: '一次成像',
@@ -233,11 +342,21 @@ export const FRAMES: FrameSpec[] = [
 export const DEFAULT_FRAME_ID = 'polaroid-600';
 
 /**
- * 按 id 找相框下标；找不到返回 0，绝不抛错（用户改了 id 也不至于白屏）。
+ * 按 id 找相框下标；找不到**退回默认帧**（`DEFAULT_FRAME_ID`），绝不抛错。
+ *
+ * ⚠️ 兜底必须显式找 `DEFAULT_FRAME_ID`，**不能**再写 `: 0`：
+ * v1.8.1 起 0 位是 `no-frame`，而"找不到"最常见的来源是**用户的老存档里存着一个
+ * 已经下线的相框 id**（v1.6.1 删过半格双联框与 8×10 散页）。`return 0` 会让这些
+ * 老片子静默变成"无相框"，用户看到的不是"回落默认纸框"，而是"我的相框被吃掉了"。
+ * 库里那两个已删除的 id 至今还可能躺在任意一台设备的相册条目里。
  */
 export function findFrameIndex(id: string): number {
   const index = FRAMES.findIndex((frame) => frame.id === id);
-  return index >= 0 ? index : 0;
+  if (index >= 0) {
+    return index;
+  }
+  const fallback = FRAMES.findIndex((frame) => frame.id === DEFAULT_FRAME_ID);
+  return fallback >= 0 ? fallback : 0;
 }
 
 /**

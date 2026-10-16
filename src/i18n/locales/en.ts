@@ -257,6 +257,17 @@ export const en: Messages = {
   'frame.variant.archival': 'Archival white',
   'frame.variant.baryta': 'Baryta warm',
   'frame.variant.obsidian': 'Obsidian black',
+  /* ---------------- v1.8.1: borderless full-bleed capture (00 NO FRAME) ---------------- */
+  'frame.noFrame': 'No frame',
+  // Ratio digits only — see the zh-Hans section comment for why no "landscape/portrait"
+  // wording is allowed here (the 3:2 slot is frozen to a 2:3 portrait canvas).
+  'frame.noFrame.aspect11': 'Frame 1:1',
+  'frame.noFrame.aspect34': 'Frame 3:4',
+  'frame.noFrame.aspect32': 'Frame 3:2',
+  'settings.noFrame.title': 'No-frame aspect',
+  'settings.noFrame.a11y': 'No-frame aspect, currently {label}',
+  'settings.noFrame.hint':
+    'Used only while "No frame (00)" is selected: with no paper to fix the shape, the photo fills the canvas at this ratio. The 3:2 slot yields a 2:3 portrait canvas (taller than 3:4), not a landscape one — that value is frozen by this repo\u2019s gate scripts.',
 
   /* ---------------- v1.8.0：日期烙印引擎（13 格式 × 5 字形 × 8 机位 × 5 发光色） ---------------- */
   'settings.dateEngine.title': 'Date imprint',

@@ -102,6 +102,18 @@ export type CaptureQuality = 'standard' | 'high' | 'max';
 export type FrameVariant = 'archival' | 'baryta' | 'obsidian';
 
 /**
+ * 无相框模式的画幅比（v1.8.1）。
+ *
+ * 用户原话是"照片按当前取景长宽比（1:1 / 3:4 / 3:2）全屏铺展"，所以这是一个**三选一**，
+ * 不是连续量：三个值就是三个真正常用的构图比例（正方形 / 竖 4:3 / 横 3:2）。
+ *
+ * ⚠️ 字符串是**真源**：它同时是持久化进 `settingsStore` 的字面量、i18n 键名后缀
+ * （`frame.noFrame.aspect11` / `.aspect34` / `.aspect32`）与 `NO_FRAME_ASPECTS` 里的
+ * `id`。改这里的字符串 = 老存档回落默认值 + 三个语言包键名全部失配，别改。
+ */
+export type NoFrameAspect = '1:1' | '3:4' | '3:2';
+
+/**
  * 相框自带的水印偏好。
  *
  * 为什么水印样式挂在**相框**上而不是预设上：纸是什么颜色、留白多宽、有没有印字，
@@ -179,6 +191,21 @@ export interface FrameSpec {
   window: NormalizedRect;
   /** 照片填窗口的方式：`cover`（默认，裁切填满）/ `contain`（完整放入，可能留黑边）。 */
   photoFit?: 'cover' | 'contain';
+  /**
+   * **无相框纯净全屏**（v1.8.1）：这张"相框"其实没有纸 —— 照片铺满整个画布，
+   * 不画卡纸 PNG、不画皮肤、不留白边、不烧纸面铭文。
+   *
+   * 语义只此一条，渲染层与几何层都只读它：
+   *   · `window` 必须是 `{ x: 0, y: 0, width: 1, height: 1 }`（铺满自己的画布）；
+   *   · 画幅比不写死在 `aspect` 里，由 `resolveFrame(frame, aspect)` 按用户在设置里
+   *     选的那一档（`NoFrameAspect`）现算 —— 见 `constants/frames.ts` 的 `resolveFrame`；
+   *   · `computeFrameLayout` 因此给出 `window === { 0, 0, layout.width, layout.height }`、
+   *     `bottomStripHeight === 0`、`rightMargin === 0`（白边/下巴的概念不存在）。
+   *
+   * 不写 = 普通相框（有纸）。**渲染层遇到它必须整组早退**：相纸 `Image`、`FrameSkin`、
+   * 以及"取景器相纸外的幕布"都不许画（幕布是 100% 不透明的，画了会把预览涂成黑屏）。
+   */
+  fullBleed?: boolean;
   /**
    * 该相框默认的水印样式。`preset.timestamp.anchor` 只覆盖它的 `anchor`，
    * 墨色 / 对齐 / 大写始终听相框的。
@@ -773,6 +800,17 @@ export interface AppSettings {
    * 用户滑到"暖黄"是想看所有相框暖黄起来的样子，而不是给五款相框维护五份记忆。
    */
   frameVariant: FrameVariant;
+  /**
+   * 无相框模式（`00 NO FRAME`）的画幅比，默认 `'3:4'`。
+   *
+   * 为什么是一个设置项而不是固定值：无相框时**没有纸**，画幅比就没有物理依据了 ——
+   * 纸的窗口比例是相框数据的一部分（拍立得是 1:1、135 是 3:2），而无相框只剩"用户
+   * 想拍成什么形状"。所以它归设置，和"这台机器装着什么相框"分开：切回有纸的相框时
+   * 这个值原样留着，下次再切回 `00` 还是同一档。
+   *
+   * 只在 `frame.fullBleed === true` 时被 `resolveFrame` 读取（普通相框完全不受影响）。
+   */
+  noFrameAspect: NoFrameAspect;
   /**
    * 日期烙印引擎（v1.8.0）：格式 / 字形 / 机位 / 发光色四个轴，默认值见
    * `DateEngineConfig` 的字段注释与 `settingsStore.DEFAULT_SETTINGS`。

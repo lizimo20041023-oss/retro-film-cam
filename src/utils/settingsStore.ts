@@ -22,6 +22,7 @@ import type {
   GrainLevelId,
   LocalePreference,
   LocationMode,
+  NoFrameAspect,
   PlaceDetail,
   WatermarkLayout,
 } from '../types';
@@ -57,6 +58,15 @@ export const DEFAULT_SETTINGS: AppSettings = {
   captureQuality: 'standard',
   /* 相框材质默认 A 档（经典原白）：升级上来的第一眼不发黄、不压暗。 */
   frameVariant: 'archival',
+  /*
+   * 无相框画幅（v1.8.1）。只有选中 `00 NO FRAME` 时才会被读到 ——
+   * 出厂相框是 `polaroid-600`，所以这个新字段对老用户的成片零影响，
+   * 不需要迁移代码（老 JSON 里没有它，`pick` 直接给默认值）。
+   *
+   * `'3:4'` 是竖幅里最"像手机"的一档，也是 v1.6.1 全屏预览的老比例；
+   * `'1:1'` 会明显裁掉上下，不适合当出厂值。
+   */
+  noFrameAspect: '3:4',
   /*
    * 日期引擎出厂设置：美式日期 + 7 段数码管 + 白边下巴左右分列 + 钨丝琥珀橙。
    *
@@ -102,6 +112,15 @@ const CAPTURE_QUALITIES: readonly CaptureQuality[] = ['standard', 'high', 'max']
  * 这是"读永远不抛、认不出就用默认值"那条设计的直接收益，不需要写迁移代码。
  */
 const FRAME_VARIANTS: readonly FrameVariant[] = ['archival', 'baryta', 'obsidian'];
+/**
+ * 无相框画幅白名单（v1.8.1）。
+ *
+ * 与 `FRAME_VARIANTS` 同一个理由**故意不 import `constants/frames.ts`**：那份
+ * `NO_FRAME_ASPECTS` 会连带拉起 6 张相框素材的 `require`，而本模块在启动最早的
+ * 一帧就要被求值。这里只重复三个字面量；`NoFrameAspect` 联合类型仍然是真源，
+ * 两边不同步时 `tsc` 会在 `pick<T>` 的泛型上先炸。
+ */
+const NO_FRAME_ASPECT_IDS: readonly NoFrameAspect[] = ['1:1', '3:4', '3:2'];
 const DATE_FORMATS: readonly DateFormatId[] = [
   'MM_DD_YY',
   'YY_MM_DD',
@@ -204,6 +223,11 @@ function sanitize(raw: unknown): AppSettings {
       DEFAULT_SETTINGS.captureQuality,
     ),
     frameVariant: pick(raw.frameVariant, FRAME_VARIANTS, DEFAULT_SETTINGS.frameVariant),
+    noFrameAspect: pick(
+      raw.noFrameAspect,
+      NO_FRAME_ASPECT_IDS,
+      DEFAULT_SETTINGS.noFrameAspect,
+    ),
     dateEngine: pickDateEngine(raw.dateEngine),
   };
 }

@@ -71,7 +71,7 @@ import {
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex, frameSkinSeedOf } from '../constants/frames';
+import { DEFAULT_FRAME_ID, FRAMES, NO_FRAME_ID, findFrameIndex, frameSkinSeedOf } from '../constants/frames';
 import { FRAME_VARIANTS, findFrameVariantIndex, wrapFrameVariant } from '../constants/frameVariants';
 import { PRESETS } from '../constants/presets';
 import { UI_MONO, useTheme } from '../constants/theme';
@@ -95,6 +95,14 @@ export interface FilmDrawerProps {
    * 不传时退回默认相框，这一行照样能用，只是名字固定。
    */
   frameId?: string;
+  /**
+   * 选中某款相框（v1.8.1：抽屉里的 `00 NO FRAME` 角标要靠它切档）。
+   *
+   * **可选**：相框下标仍然活在 `CameraScreen` 的局部 state 里（理由同上），
+   * 抽屉只负责"用户点了 00"这一件事，具体怎么落由调用方决定；
+   * 不传时角标退化成纯展示（点不动、读屏也不报 selected），抽屉其余部分照常工作。
+   */
+  onSelectFrame?: (frameId: string) => void;
   onClose: () => void;
 }
 
@@ -191,6 +199,7 @@ export const FilmDrawer = memo(function FilmDrawer({
   presetIndex,
   onSelect,
   frameId,
+  onSelectFrame,
   onClose,
 }: FilmDrawerProps) {
   const { t } = useI18n();
@@ -234,6 +243,25 @@ export const FilmDrawer = memo(function FilmDrawer({
     () => ({ width: previewLayout.width, height: previewLayout.height }),
     [previewLayout],
   );
+  /*
+    v1.8.1 无相框（`00 NO FRAME`）：这一档没有纸，相纸 PNG 与材质一个都不画。
+    · 判据只看 `frame.fullBleed`（契约字段），**不能**拿"窗口是否铺满"当判据；
+    · `previewLayout` 仍然照算：迷你预览的**盒子**尺寸来自 `previewBox`，
+      纸不画的时候这个 layout 用不到，但留着不花什么钱，也免得守卫写歪时
+      出现"布局和纸各算一套"的第二条路径；
+    · 角标（`00`）是可点的开关：`onSelectFrame` 是可选 prop，
+      不传时它只显示状态、点不动（读屏也不报 selected）。
+  */
+  const fullBleed = frame.fullBleed === true;
+  const handleToggleNoFrame = useCallback((): void => {
+    if (onSelectFrame === undefined) {
+      return;
+    }
+    void Haptics.selectionAsync();
+    // 已经是无相框 → 切回出厂相框；否则切到无相框。抽屉只拿得到"当前 id"，
+    // 记不住"上一个纸框是哪个"，所以回退目标是 `DEFAULT_FRAME_ID`（出厂款）。
+    onSelectFrame(fullBleed ? DEFAULT_FRAME_ID : NO_FRAME_ID);
+  }, [onSelectFrame, fullBleed]);
   /*
     「相框」行的手势状态。技法照 `FrameSwitcher`（拖动只 `setValue`、越阈值震一下、
     松手要么提交要么弹回），但**不复用那个组件**：它的无障碍文案写死了
@@ -586,27 +614,58 @@ export const FilmDrawer = memo(function FilmDrawer({
                   预览要的是"相纸比例 + 皮肤花纹"；
                 · 尺寸跟着窄屏缩（`previewBox`），跟着 `window.width` 走，不横向溢出。
               */}
-              <View
-                style={[styles.framePreviewBox, previewBox]}
-                pointerEvents="none"
-                accessibilityElementsHidden
-                importantForAccessibility="no-hide-descendants"
-              >
-                <View style={previewPaper}>
-                  <Image
-                    source={frameSourceOf(frame, 'portrait')}
-                    style={previewPaper}
-                    resizeMode="stretch"
-                    fadeDuration={0}
-                  />
-                  <FrameSkin
-                    width={previewLayout.width}
-                    height={previewLayout.height}
-                    window={previewLayout.window}
-                    variant={settings.frameVariant}
-                    seed={frameSkinSeedOf(frame)}
-                  />
+              <View style={[styles.framePreviewBox, previewBox]}>
+                {/*
+                  纸 / 材质那一层单独包一层：它整层对触控与读屏都是隐形的
+                  （`pointerEvents="none"` 只作用在这一层，角标要能点、能读）。
+                */}
+                <View
+                  style={styles.framePreviewPaperLayer}
+                  pointerEvents="none"
+                  accessibilityElementsHidden
+                  importantForAccessibility="no-hide-descendants"
+                >
+                  {/*
+                    v1.8.1：`fullBleed ? null` —— 无相框模式下这层是空的，
+                    盒子露出底色（= 整块 "照片"铺满卡片），只在左上角留 `00` 角标。
+                  */}
+                  {fullBleed ? null : (
+                    <>
+                      <View style={previewPaper}>
+                        <Image
+                          source={frameSourceOf(frame, 'portrait')}
+                          style={previewPaper}
+                          resizeMode="stretch"
+                          fadeDuration={0}
+                        />
+                        <FrameSkin
+                          width={previewLayout.width}
+                          height={previewLayout.height}
+                          window={previewLayout.window}
+                          variant={settings.frameVariant}
+                          seed={frameSkinSeedOf(frame)}
+                        />
+                      </View>
+                    </>
+                  )}
                 </View>
+                {/*
+                  `00` 角标（v1.8.1）：12pt、底色 `rgba(0, 0, 0, 0.45)`、白字、内缩 6pt。
+                  它同时是"切到无相框 / 切回纸框"的开关 —— 抽屉里这是唯一能直达 00 的地方
+                  （取景器那边靠 `FrameSwitcher` 左右滑，要滑 6 下才到）。
+                */}
+                <Pressable
+                  style={[styles.noFrameChip, fullBleed ? styles.noFrameChipActive : null]}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  onPress={handleToggleNoFrame}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('frame.noFrame')}
+                  accessibilityState={{ selected: fullBleed, disabled: onSelectFrame === undefined }}
+                >
+                  <Text style={styles.noFrameChipText} allowFontScaling={false}>
+                    {FRAMES[0].code}
+                  </Text>
+                </Pressable>
               </View>
             </View>
             <Animated.View
@@ -842,6 +901,46 @@ function createStyles(theme: Theme) {
       // 一道极细的亮边：把"窗"从抽屉底上抠出来，不需要阴影（阴影在深色下看不见）。
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: ink.hairline,
+    },
+    /*
+      纸 / 材质那一层：铺满预览盒并居中放纸，**整层不接事件**（角标要能点）。
+    */
+    framePreviewPaperLayer: {
+      position: 'absolute',
+      left: 0,
+      top: 0,
+      right: 0,
+      bottom: 0,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    /*
+      `00 NO FRAME` 角标（v1.8.1）：左上角、内缩 6pt、12pt 白字、底色 `rgba(0,0,0,0.45)`。
+      选中态只换描边（琥珀），**不动底色** —— 底色是"盖在照片上的角标"这件事本身。
+    */
+    noFrameChip: {
+      position: 'absolute',
+      left: 6,
+      top: 6,
+      minWidth: 20,
+      paddingHorizontal: 4,
+      paddingVertical: 1,
+      borderRadius: 3,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: 'rgba(0, 0, 0, 0.45)',
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: 'transparent',
+    },
+    noFrameChipActive: {
+      borderColor: withAlpha(ink.amber, 0.85),
+    },
+    noFrameChipText: {
+      color: '#FFFFFF',
+      fontSize: 12,
+      lineHeight: 14,
+      letterSpacing: 0.4,
+      fontFamily: UI_MONO,
     },
     frameHint: {
       color: ink.paperDim,

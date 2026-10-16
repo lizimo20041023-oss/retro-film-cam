@@ -19,6 +19,7 @@ import type {
   GrainLevelId,
   LocalePreference,
   LocationMode,
+  NoFrameAspect,
   PlaceDetail,
   WatermarkLayout,
 } from '../types';
@@ -45,6 +46,11 @@ export interface SettingsContextValue {
   setCaptureQuality: (next: CaptureQuality) => void;
   /** 相框风格变体（v1.7.0）。抽屉里左右滑动调它，取景器与成片同时跟着变。 */
   setFrameVariant: (next: FrameVariant) => void;
+  /**
+   * 无相框画幅（v1.8.1）：只在选中 `00 NO FRAME` 时生效 ——
+   * 那张照片没有纸面定比例，按这里的比例铺满整幅。
+   */
+  setNoFrameAspect: (next: NoFrameAspect) => void;
   /**
    * 日期烙印引擎（v1.8.0）：格式 / 字形 / 机位 / 发光色四项一起改。
    *
@@ -125,6 +131,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     [update],
   );
 
+  const setNoFrameAspect = useCallback(
+    (next: NoFrameAspect) => update({ noFrameAspect: next }),
+    [update],
+  );
+
   const setDateEngine = useCallback(
     (next: DateEngineConfig) => update({ dateEngine: next }),
     [update],
@@ -142,6 +153,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setGeoLocale,
       setCaptureQuality,
       setFrameVariant,
+      setNoFrameAspect,
       setDateEngine,
     }),
     [
@@ -155,6 +167,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setGeoLocale,
       setCaptureQuality,
       setFrameVariant,
+      setNoFrameAspect,
       setDateEngine,
     ],
   );

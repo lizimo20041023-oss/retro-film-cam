@@ -42,7 +42,7 @@ import type { ReactElement } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import type { DateGlowId, DateGlyphStyleId, DateStampSpot } from '../types';
 import { DATE_SPOT_TRAITS, dateEngineFontPx } from '../constants/dateEngine';
-import { DateGlyphs, DateHaze, glyphHeight } from './DateGlyphs';
+import { DateGlyphs, glyphHeight } from './DateGlyphs';
 import type { WatermarkQuartz } from '../utils/geometry';
 
 /** 行高 ÷ 字号。1.16 = iOS 默认行高，与 `geometry.ts` 的 `QUARTZ_LINE_BOX_RATIO` 同一个数。 */
@@ -164,21 +164,14 @@ function DateStampImpl({
 
   /*
    * ── 新路径（日期引擎）───────────────────────────────────────────────────
-   * 晕染层先画（在字形**下面**），字形后画。两层都放进同一个非旋转容器里，
-   * 旋转角交给各自的 `transform` —— 这样"绕中心转"对字形和光晕是同一个中心，
-   * 不会出现光和字错开 90° 的情况。
+   * v1.8.1 起**没有独立的晕染层**了：光晕由每个字形自己画（亮灯的放大副本 + 文字字形的
+   * `textShadow`），所以这一行只剩字形。用户强制规范：日期水印的背景必须 100% 透明，
+   * 任何实色或半透明矩形都不许有 —— 旧 `DateHaze` 的两层实心圆角矩形正是实测图 21 里
+   * 那块橙色方块的来源，已整体删除（见 `DateGlyphs.tsx` 第八节的说明）。
+   * 旋转仍然由 `DateGlyphs` 自己处理，光的中心与字形中心同源。
    */
   const fontPx = engineFontPx(glyphStyle, quartz, canvasWidth);
   const glowId: DateGlowId = glow ?? 'classic_amber';
-  /*
-   * 晕染层的外框 = **排版层算好的 `quartz.width`**，不是字形墨迹的实际宽度。
-   *
-   * 为什么：光晕的可见边界应该跟着"这一块占了多少板面"走。用墨迹宽度的话，
-   * 七段管比格子窄 20%，光晕就会往右少扩一截、看上去偏在左半边；
-   * 而 `quartz.width` 正是排版层为这一行留出来的整块宽度，旋转变换的中心也由它决定。
-   */
-  const hazeW = width;
-  const hazeH = height;
   /** 排版层给的字距优先；它是日期行真正会用的那个数（`DATE_LETTER_SPACING = 2`）。 */
   const tracking = quartz.letterSpacing;
 
@@ -197,7 +190,6 @@ function DateStampImpl({
       ]}
     >
       <View style={{ width, height, justifyContent: 'center' }}>
-        <DateHaze textWidth={hazeW} textHeight={hazeH} fontPx={fontPx} glow={glowId} rotationDeg={rotationDeg} />
         <DateGlyphs
           text={quartz.text}
           style={glyphStyle}

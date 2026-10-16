@@ -38,6 +38,7 @@
  * （曾经在 ⑧ 和 ⑨ 之间还有一层 `chroma-noise` 彩噪贴图，已在 2026-10-12 彻底删除，
  *   理由见下面 ⑨ 处的注释 —— 那一层是满屏紫绿伪色的唯一来源。）
  */
+import { grainLayerOpacity } from '../constants/grain';
 import type { GradeLayer, ResolvedFilmPreset } from '../types';
 
 /*
@@ -276,7 +277,17 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
   //
   // 贴图本身是"双尺度团簇颗粒"（`scripts/generate_grain_clump.py` 烘焙：粗网格上细颗粒
   // σ=0.55 + 团簇 σ=1.6 → 1.4× 周期放大 → 0.7px 周期高斯模糊 → 绕中灰 127.5、σ≈66/255），
-  // 所以这一层的视觉效果完全由"贴图对比度 × 预设 grain 值"决定。
+  // 所以这一层的视觉效果完全由"贴图对比度 × 图层不透明度"决定。
+  //
+  // ⚠️ **v1.8.1 用户强制规范**：颗粒层的总不透明度**必须锁死在 [0.12, 0.22]**，
+  // 绝不允许随参数调节变成实心遮罩。
+  // v1.8.0 这里写的是 `clamp01(preset.grain)` —— 而 v1.8.0 起 `preset.grain` 是**振幅**
+  // （0.42~0.62），再乘档位 scale（`applyGrainLevel` 的 max 档 ×2.2）就是 1.364 →
+  // `clamp01` 夹成 **1.0**：`grain.png` 是不透明中灰噪声贴图，于是取景器被一整块
+  // 不透明灰网盖死（用户实测图 23/24）。根因是**"振幅"被当成了 opacity**。
+  // 现在由 `grainLayerOpacity()` 做这一层映射（唯一产地，带硬上限），并且
+  // `surface='live'`（取景器实时预览）与 `'composite'`（ViewShot 成片）走的是**同一个**
+  // `buildGradeLayers` —— 两边的颗粒层语义天然一致，都是 overlay。
   if (preset.grain > 0.01) {
     layers.push({
       kind: 'texture',
@@ -285,7 +296,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
       textureId: 'grain',
       resizeMode: 'repeat',
       blendMode: 'overlay',
-      opacity: clamp01(preset.grain),
+      opacity: grainLayerOpacity(preset.grain),
     });
   }
 

@@ -21,16 +21,26 @@
  *   bloom         0..1  两层：模糊 8pt 的原图 'screen'（真泛光，× 0.14）+ 暖红 '#FF4B2D'
  *                        'screen'（光晕色偏，× 0.05）。screen 在纯白上恒等 ⇒ 永不压白
  *   grain         0..1  grain.png 平铺 + 'overlay'（单色亮度颗粒，无任何色度噪声）
+ *                        **v1.8.1 起这一列是"强度"，图层 opacity 由
+ *                        `grainLayerOpacity()` 夹进 [0.12, 0.22]（硬上限，不许抬）**
  *   vignette      0..1  vignette.png 拉伸 + 'overlay'（'multiply' 会把纯白压暗 ⇒ 白变形）
  *   lightLeak     0..1  light-leak.png 拉伸 + 'screen'，opacity = min(0.10, × 0.29)
  *                        （lightLeakFlip: true 换到左边）
  *
  *  ── 为什么 grain 的数值看起来这么大（0.42 ~ 0.62）─────────────────────────
- *  v1.8.0 的颗粒幅度是**可算**的：`effAmp(cb) = grain × 2·min(cb,1−cb) × σ_贴图`，
- *  其中 σ_贴图 = 0.2605（`scripts/generate_grain_clump.py` 烘出来的对比度）。
- *  要落进验收窗 `effAmp(0.5) ∈ [0.10, 0.22]`，就得 `grain ∈ [0.384, 0.672]`：
- *  老值 0.08~0.15 在 3x 屏上被插值稀释后几乎看不见（这就是"颗粒像数码噪点"的由来）。
- *  ⚠️ 这组数值和 `grain.png` 的对比度是**绑死**的：重烤贴图必须回来重算这一列。
+ *  v1.8.0 时它是**振幅**：`effAmp(cb) = grain × 2·min(cb,1−cb) × σ_贴图`，
+ *  其中 σ_贴图 = 0.2605（`scripts/generate_grain_clump.py` 烘出来的对比度），
+ *  这样才落进当时的验收窗 `effAmp(0.5) ∈ [0.10, 0.22]`（老值 0.08~0.15 在 3x 屏上
+ *  被插值稀释后几乎看不见 —— 那就是"颗粒像数码噪点"的由来）。
+ *
+ *  **v1.8.1 起语义变了（用户强制规范）**：这一列现在是**强度**，不再直接是图层 opacity。
+ *  真正写进图层的透明度由 `grainLayerOpacity()`（`constants/grain.ts`）夹进
+ *  **[0.12, 0.22]**，因为 0.42~0.62 直接当 opacity、再乘「极重」档的 2.2 会变成 1.0 ——
+ *  颗粒层就是一整张不透明的中灰贴图，把实时取景画面整个盖住（用户实测图 23/24）。
+ *  可见振幅随之变成 `σ_贴图 × [0.12, 0.22]` ≈ **[0.031, 0.057]**：这条列**越大仍然越浓**
+ *  （单调映射），但绝对量比 v1.8.0 低约 2.4 倍。想更浓只能重烤更高对比度的贴图，
+ *  **不许抬 opacity 上限**。
+ *  ⚠️ 这组数值和 `grain.png` 的对比度仍然是**绑死**的：重烤贴图必须回来重算这一列。
  *
  *  中性值不产生图层：temperature/tint/fade/lightLeak = 0、saturation/contrast = 1、
  *  exposure = 0、grain/vignette 不写就有一点点默认值（见 PRESET_DEFAULTS）。
@@ -66,8 +76,9 @@ export const PRESET_DEFAULTS = {
   /** 光晕：高光变暖发亮。0 = 关。 */
   bloom: 0,
   /**
-   * 颗粒幅度（默认值 = 标准档：`effAmp(0.5) ≈ 0.135`，验收窗 [0.10, 0.22]）。
-   * 与 `grain.png` 的对比度绑死，见文件头"为什么 grain 的数值看起来这么大"。
+   * 颗粒**强度**（不再直接是图层 opacity）：默认值 0.52 = 标准档，
+   * 经 `grainLayerOpacity()` 夹进 [0.12, 0.22] 后落到图层上，见文件头
+   * "为什么 grain 的数值看起来这么大"。
    */
   grain: 0.52,
   /** 灰尘与划痕。0 = 关。 */

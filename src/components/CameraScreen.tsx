@@ -59,7 +59,7 @@ import { usePhysicalShutter } from '../hooks/usePhysicalShutter';
 import { usePinchZoom } from '../hooks/usePinchZoom';
 import { useSettings } from '../hooks/useSettings';
 import { CAPTURE_QUALITIES, findCaptureQualitySpec, resolveCaptureLongEdge } from '../constants/captureQuality';
-import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex, wrapIndex } from '../constants/frames';
+import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex, resolveFrame, wrapIndex } from '../constants/frames';
 import { applyGrainLevel, findGrainLevelIndex, grainLevelAt } from '../constants/grain';
 import {
   ASSUMED_LENS_NATIVE_MM,
@@ -459,6 +459,25 @@ export function CameraScreen() {
   const lensScale = useRef(new Animated.Value(1)).current;
 
   const frame = FRAMES[frameIndex] ?? FRAMES[0];
+  /*
+   * v1.8.1 无相框（`00 NO FRAME`）：`frame` 是**用户选中的那一项**（可能是全铺帧，
+   * 其 `window` 恒为 `{0,0,1,1}`、`aspect` 只是占位 3/4），真正拿去做几何的必须是
+   * `resolveFrame(frame, settings.noFrameAspect)` 的结果 —— 全铺帧的画幅比来自
+   * 设置里的那一档（1:1 / 3:4 / 3:2），`resolveFrame` 会现算 `aspect` 并返回新对象；
+   * 纸框则原样返回同一个引用（零开销、零行为变化）。
+   *
+   * 取景器预览、成片、导入三条路都用这一个 `resolvedFrame`：
+   *   · `previewLayout` / `previewPieces` / `<FramePreviewLayer>` 用解析后的；
+   *   · 快门那条路把**原始** `frame` 交给 `processFilmPhoto`，由它内部按
+   *     `noFrameAspect` 再解析一次（那边是唯一入口，避免"解析两次、默认值不知道
+   *     用户档"的分叉）；
+   *   · `addShot({ frameId })` 存的是**原始 id**（`resolveFrame` 不改 id），
+   *     所以相册里那一格仍然是 `00`，重冲印时才按当时的设置再解析。
+   */
+  const resolvedFrame = useMemo(
+    () => resolveFrame(frame, settings.noFrameAspect),
+    [frame, settings.noFrameAspect],
+  );
   const preset = PRESETS[presetIndex] ?? PRESETS[0];
   const grainLevel = grainLevelAt(findGrainLevelIndex(settings.grainLevel));
   /**
@@ -566,11 +585,11 @@ export function CameraScreen() {
   const previewLayout = useMemo(
     () =>
       computeFrameLayout(
-        frame,
+        resolvedFrame,
         Math.max(1, (previewBox.width > 1 ? previewBox.width : window.width) - PREVIEW_PADDING * 2),
         Math.max(1, (previewBox.height > 1 ? previewBox.height : window.height * 0.62) - PREVIEW_PADDING * 2),
       ),
-    [frame, previewBox.width, previewBox.height, window.width, window.height],
+    [resolvedFrame, previewBox.width, previewBox.height, window.width, window.height],
   );
 
   const frameOffset = useMemo(
@@ -656,7 +675,7 @@ export function CameraScreen() {
     }
     return planWatermark({
       layout: previewLayout,
-      frame,
+      frame: resolvedFrame,
       timestamp: resolved.timestamp,
       capturedAt: previewClock,
       locationText: '',
@@ -676,7 +695,7 @@ export function CameraScreen() {
   }, [
     framePreviewVisible,
     previewLayout,
-    frame,
+    resolvedFrame,
     resolved.timestamp,
     resolved.name,
     previewClock,
@@ -797,6 +816,21 @@ export function CameraScreen() {
     void Haptics.selectionAsync();
     setFrameIndex((current) => wrapIndex(current + 1));
     // 顶栏徽标点一下也是换相框，和左右滑动同一条规则：清掉对焦框
+    setFocusTarget(null);
+  }, []);
+
+  /**
+   * 抽屉里那颗 `00` 角标点名要某一款相框（v1.8.1）。
+   *
+   * 与 `handleFrameChange` 的区别只有一个：那边给的是**步进下标**（左右滑），
+   * 这边给的是**id**（抽屉只认 id，见 `FilmDrawerProps.frameId` 的注释）。
+   * 落点仍然只改 `frameIndex` 这一个 state —— 不复用 `handleFrameChange`，
+   * 因为 `wrapIndex(next)` 收到"找不到的 id 兜回来的出厂下标"时会把它当步进量，
+   * 语义对不上；这里的 `findFrameIndex` 负责兜底（找不到就回出厂款）。
+   * 对焦框同一条规矩：换了相框必须清掉。
+   */
+  const handleSelectFrame = useCallback((id: string) => {
+    setFrameIndex(findFrameIndex(id));
     setFocusTarget(null);
   }, []);
 
@@ -1204,6 +1238,13 @@ export function CameraScreen() {
       const result = await processAndSaveFilmPhoto({
         photo: captured,
         frame,
+        /*
+         * v1.8.1：无相框的画幅比只在这里交给冲印链路，**传原始 `frame`**。
+         * `processFilmPhoto` 内部会 `resolveFrame(frame, noFrameAspect)` 解析出真正的
+         * 画幅（纸框原样返回），这样"取景器预览用的解析"和"成片用的解析"是同一个函数的
+         * 两次同参调用；这里若先解析一遍再传进去，就得把默认值也复制一份，迟早分叉。
+         */
+        noFrameAspect: settings.noFrameAspect,
         /*
          * 必须是 `gradedPreset`（= `effectivePreset` + 用户拖过的色温），不是
          * `effectivePreset`：取景器的实时滤镜与底部胶囊读数都读 `resolved`
@@ -1632,8 +1673,13 @@ export function CameraScreen() {
           要的坐标系。
         */}
         {framePreviewVisible && previewBox.width > 1 && previewBox.height > 1 ? (
+          /*
+           * v1.8.1：传**解析后**的相框 —— 无相框那一档的画幅比来自设置
+           * （`resolveFrame`），而这一层现在会在 `fullBleed` 时整组跳过幕布/相纸/材质，
+           * 它必须看得见那张"全铺"的标志位。
+           */
           <FramePreviewLayer
-            frame={frame}
+            frame={resolvedFrame}
             layout={previewLayout}
             left={frameOffset.left}
             top={frameOffset.top}
@@ -1892,8 +1938,13 @@ export function CameraScreen() {
          * 相框 id 只用来**显示**抽屉里那一行"现在套的是哪款相框"（v1.7.0 · 模块二）。
          * 换相框仍然归取景器左右滑 / 顶栏 `FrameBadge` 管 —— 抽屉里那条横向手势
          * 已经给了 A/B/C 变体，再叠一层"横向换相框"会让同一根手指有两种含义。
+         *
+         * v1.8.1 的例外是那颗 `00` 角标：它**是**一个按下去就切档的按钮
+         * （`onSelectFrame`），因为用户要的是"相框抽屉首页能直接进无相框"，
+         * 而左右滑要滑 6 下才轮到 00。它只改 `frameIndex`，不碰抽屉那条手势。
          */
         frameId={frame.id}
+        onSelectFrame={handleSelectFrame}
         onSelect={handleFilmDrawerSelect}
         onClose={handleCloseFilmDrawer}
       />

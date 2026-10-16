@@ -197,6 +197,19 @@ function FramePreviewLayerImpl({
   const containerWidth = layout.width + left * 2;
   const containerHeight = layout.height + top * 2;
 
+  /*
+   * v1.8.1 无相框（`00 NO FRAME`）：幕布、相纸、材质**整组不画**，只留水印。
+   *
+   * 为什么幕布必须一起跳过（而不是"顺手也能画"）：那四块是 **100% 不透明的
+   * `CURTAIN_COLOR`**，它们存在的意义是盖住"相纸之外"那一圈实时画面。无相框模式下
+   * 相纸矩形 = 整幅画布、窗口也铺满它，于是"相纸之外"只剩居中留白 —— 幕布一画，
+   * 预览立刻变成满屏黑（用户报的就是这个）。
+   *
+   * 相纸与皮肤同理：这一档没有纸，PNG 铺上去就是"照片外面多一圈白边"。
+   * `layout` 不再需要额外处理：`window` 已经等于整块画布（`resolveFrame` 保证）。
+   */
+  const fullBleed = frame.fullBleed === true;
+
   return (
     <View
       /*
@@ -210,16 +223,20 @@ function FramePreviewLayerImpl({
         ⓪ 相框外围的不透明幕布（v1.8.0）。**在 0.82 那一层之外** —— 见文件头。
         渲染顺序上它们在最底下：相纸压在它们上面，于是相纸的四条边是"纸压黑"
         而不是"黑压纸"，边缘那半个像素的过渡也是正常的抗锯齿，不会切掉纸边。
+
+        v1.8.1：`fullBleed` 时整组不画 —— 见上面 `fullBleed` 那段注释
+        （这几块是全不透明的，画上去预览满屏黑）。
       */}
-      {curtains.map(({ side, rect }) => (
-        <View
-          key={side}
-          style={[
-            styles.curtain,
-            { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
-          ]}
-        />
-      ))}
+      {!fullBleed &&
+        curtains.map(({ side, rect }) => (
+          <View
+            key={side}
+            style={[
+              styles.curtain,
+              { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+            ]}
+          />
+        ))}
 
       <View
         style={[
@@ -228,30 +245,40 @@ function FramePreviewLayerImpl({
         ]}
       >
         {/*
-          ① 相纸：与 `FilmCompositor` 同一句 `frameSourceOf(frame, frameOrientationOfLayout(...))`。
-          朝向**从 layout 反推**、不在这里重判一次 —— 判两次就会出现"布局按竖版算、PNG 铺了
-          横版"的错位，合成器那段注释里记着这个坑。
+          ①② 相纸 + 材质：整组挂在 `fullBleed ? null` 上（v1.8.1 无相框）。
+          没有纸就没有这两层 —— 这一档 `layout` 已经是整块画布，铺 PNG 就是画面外多一圈白边。
+          ③ 水印**留在门外**：它的坐标是相对"相纸容器"的，而这个容器在 fullBleed 下
+          正好等于整幅画布，所以坐标一个字都不用改。
         */}
-        <Image
-          source={frameSourceOf(frame, frameOrientationOfLayout(frame, layout))}
-          style={[styles.frame, { width: layout.width, height: layout.height }]}
-          resizeMode="stretch"
-          fadeDuration={0}
-        />
+        {fullBleed ? null : (
+          <>
+            {/*
+              ① 相纸：与 `FilmCompositor` 同一句 `frameSourceOf(frame, frameOrientationOfLayout(...))`。
+              朝向**从 layout 反推**、不在这里重判一次 —— 判两次就会出现"布局按竖版算、PNG 铺了
+              横版"的错位，合成器那段注释里记着这个坑。
+            */}
+            <Image
+              source={frameSourceOf(frame, frameOrientationOfLayout(frame, layout))}
+              style={[styles.frame, { width: layout.width, height: layout.height }]}
+              resizeMode="stretch"
+              fadeDuration={0}
+            />
 
-        {/*
-          ② 材质层（A/B/C 三档全在画）。`seed` 走 `frameSkinSeedOf(frame)`（现已返 `frame.id`）：
-          种子只许有一个产地，免得将来三处调用点各写一遍、其中一处写成别的东西。
-          ⚠️ v1.8.0 起 `FrameSkin` **不用**这个种子了（材质是纯几何，没有随机图案），
-          但字段是冻结接口的一部分、且三个调用点都还在传，所以留在这里别删。
-        */}
-        <FrameSkin
-          width={layout.width}
-          height={layout.height}
-          window={layout.window}
-          variant={variant}
-          seed={frameSkinSeedOf(frame)}
-        />
+            {/*
+              ② 材质层（A/B/C 三档全在画）。`seed` 走 `frameSkinSeedOf(frame)`（现已返 `frame.id`）：
+              种子只许有一个产地，免得将来三处调用点各写一遍、其中一处写成别的东西。
+              ⚠️ v1.8.0 起 `FrameSkin` **不用**这个种子了（材质是纯几何，没有随机图案），
+              但字段是冻结接口的一部分、且三个调用点都还在传，所以留在这里别删。
+            */}
+            <FrameSkin
+              width={layout.width}
+              height={layout.height}
+              window={layout.window}
+              variant={variant}
+              seed={frameSkinSeedOf(frame)}
+            />
+          </>
+        )}
 
         {/* ③ 水印：三条分支与 `FilmCompositor` 的 ③ 段一一对应 */}
         {pieces.map((piece) => {

@@ -92,6 +92,7 @@ import type {
   FilmStageHost,
   FrameSpec,
   LocationMode,
+  NoFrameAspect,
   PlaceDetail,
   ResolvedPlace,
   Size,
@@ -127,6 +128,15 @@ export interface ImportAndDevelopOptions {
   host: FilmStageHost;
   /** 当前选中的相框 —— 导入的照片按它的比例**居中裁切**（合成层用 `cover` 居中）。 */
   frame: FrameSpec;
+  /**
+   * 无相框（`00 NO FRAME`）的画幅比（v1.8.1）。**可选**：只有 `frame.fullBleed === true`
+   * 时才被读，纸框一律忽略。
+   *
+   * 只是原样转交给 `processFilmPhoto`（那边是"相框 → 几何"的唯一入口），
+   * 导入这条路**不自己解析** —— 相机页、导入两条路必须由同一个函数解析同一份数据，
+   * 否则"导入的照片按 1:1 裁、取景器按 3:4 显示"这种分叉迟早出现。
+   */
+  noFrameAspect?: NoFrameAspect;
   /** 当前选中的胶卷。内部会乘上颗粒档位，保证"设置里选多粗，出片就多粗"。 */
   preset: FilmPreset;
   /** 合成舞台逻辑尺寸（pt）；调用方按屏幕算好传进来，两边用同一个尺寸才"所见即所得"。 */
@@ -612,6 +622,8 @@ export async function importAndDevelop(
           height: Math.max(1, Math.round(asset.height)),
         },
         frame,
+        // v1.8.1：无相框的画幅比原样转交（纸框忽略它）—— 见 `ImportAndDevelopOptions` 里那段注释。
+        noFrameAspect: options.noFrameAspect,
         preset: effectivePreset,
         stage,
         host,

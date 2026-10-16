@@ -54,6 +54,22 @@ function countExtraStageImages(input: FilmStageInput): number {
   return extra;
 }
 
+/**
+ * 渲染层**故意不画**的 `<Image onLoad>` 有几张（v1.8.1：目前只有无相框那一张）。
+ *
+ * `00 NO FRAME` 下 `FilmCompositor` 整组跳过了相纸 `<Image>`（见那边 `fullBleed`
+ * 那段注释），而 `countStageImages` 的 `2 + …` 里那份"相框 1 张"是**按纸框写死**的。
+ * 不减这一下，`expectedCount` 就永远比实际节点数多 1：`whenReady()` 的判据是
+ * `loadedCount >= expectedCount`，于是每一次快门都要白等到 `READY_TIMEOUT_MS`
+ * （1500ms）才被兜底放行 —— 功能不算坏，但每一张都慢一拍半。
+ *
+ * 判据必须与渲染层**逐字一致**（`frame.fullBleed === true`，不是"窗口是否铺满"），
+ * 两边任何一处改了口径，这里就得跟着改。
+ */
+function countMissingStageImages(input: FilmStageInput): number {
+  return input.frame.fullBleed === true ? 1 : 0;
+}
+
 export interface FilmStageController {
   /** 交给 `processFilmPhoto` 的宿主。 */
   host: FilmStageHost;
@@ -139,7 +155,8 @@ export function useFilmStage(): FilmStageController {
         clearTimer();
         layoutDoneRef.current = false;
         loadedCountRef.current = 0;
-        expectedCountRef.current = countStageImages(input.preset) + countExtraStageImages(input);
+        expectedCountRef.current =
+          countStageImages(input.preset) + countExtraStageImages(input) - countMissingStageImages(input);
         settledRef.current = false;
         readyPromiseRef.current = new Promise<void>((resolve) => {
           resolveReadyRef.current = resolve;

@@ -246,6 +246,16 @@ export const zhHant: Messages = {
   'frame.variant.archival': '經典原白',
   'frame.variant.baryta': '歲月暖黃',
   'frame.variant.obsidian': '暗房雅黑',
+  /* ---------------- v1.8.1：無相框純淨全螢幕（00 NO FRAME） ---------------- */
+  'frame.noFrame': '無相框',
+  // 標籤只報比例數字、不寫方向詞（理由見 zh-Hans 同一段的註解）。
+  'frame.noFrame.aspect11': '畫幅 1:1',
+  'frame.noFrame.aspect34': '畫幅 3:4',
+  'frame.noFrame.aspect32': '畫幅 3:2',
+  'settings.noFrame.title': '無相框畫幅',
+  'settings.noFrame.a11y': '無相框畫幅，目前 {label}',
+  'settings.noFrame.hint':
+    '只在選中「無相框（00）」時起作用：沒有紙面定比例，照片按這一檔鋪滿整幅。3:2 一檔拿到的是 2:3 豎幅（比 3:4 更高），不是橫幅 —— 這個取值由倉庫的門禁腳本凍結。',
 
   /* ---------------- v1.8.0：日期烙印引擎（13 格式 × 5 字形 × 8 机位 × 5 发光色） ---------------- */
   'settings.dateEngine.title': '日期烙印',

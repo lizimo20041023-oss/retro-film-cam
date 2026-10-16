@@ -621,6 +621,14 @@ export interface WatermarkPlan {
  */
 export interface WatermarkFrameSpec {
   watermark?: FrameSpec['watermark'];
+  /**
+   * 无相框（`00 NO FRAME`，v1.8.1）：这一档 `window` 铺满整块画布，排版要按"整幅照片"
+   * 而不是"相纸留白"来算（画内机位 + 短边 4.5% 内缩 + 地名/日期两行堆叠）。
+   *
+   * 只读这一个布尔，**不看"窗口是否恰好铺满"**：纸框的窗口铺满只能说明它没有留白
+   * （比如满幅机背），那种相框仍然有自己的相纸与白边，排版规则一点都不能变。
+   */
+  fullBleed?: boolean;
 }
 
 /** 墨色 → 颜色 / 字重 / 字号系数 / 字距系数。`tone` 只影响这些，不影响任何定位。 */
@@ -780,8 +788,16 @@ function resolveBaselineAndRegion(
   config: ResolvedTimestampConfig,
   anchor: TimestampAnchor,
   fontSize: number,
+  /**
+   * 覆盖内缩（v1.8.1）。不传 = 老口径 `max(2, round(画布宽 × insetRatio))`。
+   *
+   * 存在的理由只有一个：无相框（`00 NO FRAME`）没有相纸留白可当参照，内缩要按
+   * **短边**的 4.5% 算（见 `NO_FRAME_INSET_RATIO`）。相纸那一档必须原样走老口径 ——
+   * 那是 19028 条锁定断言里印着的数，不能顺手统一。
+   */
+  insetOverride?: number,
 ): { bottom: number; region: Rect } {
-  const inset = Math.max(2, Math.round(layout.width * config.insetRatio));
+  const inset = insetOverride ?? Math.max(2, Math.round(layout.width * config.insetRatio));
   const regionLeft = layout.window.left + inset;
   const regionRight = layout.rightMargin + inset;
   const regionWidth = Math.max(1, layout.width - regionLeft - regionRight);
@@ -890,6 +906,19 @@ function quartzShadow(
 }
 
 /**
+ * 无相框（`00 NO FRAME`）时水印距离画布边缘的内缩 —— 短边的 4.5%。
+ *
+ * 为什么不能沿用相纸那一档的 `insetRatio`（画布宽的 2.8%）：那一档的"画布"是相纸，
+ * 空白留白本身就叫"边"，字离边缘 10pt 是合适的；无相框下整幅都是照片，字直接压在
+ * 影像上，10pt 会贴边到看不清、而且四个方向的内缩必须**一样大**才有"留白呼吸感"
+ * （按宽算时横竖两个方向不等，竖幅上尤其明显）。
+ *
+ * 取短边而不是宽：横幅 3:2 的短边是高、竖幅 3:4 的短边是宽，两边都能得到
+ * "离边缘约一寸"的观感。0.045 这个数由 358pt 画布给出 16.11pt（老口径 10pt）。
+ */
+const NO_FRAME_INSET_RATIO = 0.045;
+
+/**
  * 四种版式的排版方案 —— 合成层只需要照着 `lines` 画。
  *
  * 输入输出单位：`layout` 是逻辑点；返回的 `bottom` / `left` / `right` / `maxWidth` /
@@ -958,9 +987,30 @@ export function computeWatermarkPlan(
   const dateSpacing = dateLetterSpacingOf(canvasWidth);
   const glyphSlack = dateGlyphSlackOf(canvasWidth);
   const splitGutter = splitGutterOf(canvasWidth);
-  const inset = Math.max(2, Math.round(layout.width * config.insetRatio));
-  const { bottom, region } = resolveBaselineAndRegion(layout, config, anchor, dateFont);
-  const vertical = regionVertical(layout, anchor, inset);
+  /*
+   * 无相框（`00 NO FRAME`，v1.8.1）：整幅画布都是照片，水印按"压在影像上"处理。
+   *
+   * 只认 `fullBleed` 这一个布尔，**不**用"窗口是否铺满画布"当判据（纸框里也有铺满的）。
+   * 具体的三处差别都在下面就地说明：内缩按短边 4.5%、水印区改成整块画布、
+   * 版式一律走 `stacked`（地名在上、日期在下、同侧贴边 = 用户要的"两行右对齐"）。
+   */
+  const noFrame = frame.fullBleed === true;
+  const inset = noFrame
+    ? Math.max(2, Math.round(Math.min(layout.width, layout.height) * NO_FRAME_INSET_RATIO))
+    : Math.max(2, Math.round(layout.width * config.insetRatio));
+  const { bottom, region } = resolveBaselineAndRegion(layout, config, anchor, dateFont, inset);
+  /*
+   * 无相框的水印区 = **整块画布四周各留 `inset`**，不是相纸那一档的"下留白条"。
+   *
+   * 为什么不能沿用 `regionVertical(layout, anchor, inset)`：它的 `'window'` 分支返回的是
+   * `{top: 0, bottom: layout.bottomStripHeight}`（= 下留白那一条），无相框下
+   * `bottomStripHeight === 0` ⇒ 高度 0 ⇒ `stacked` 的"放不下就丢掉地名行"判据
+   * （`vertical.top + placeTop <= vertical.bottom`）永远失败，地名会被**静默丢掉**，
+   * 面板上那个"地区 + 日期两行右对齐"就只剩日期。
+   */
+  const vertical = noFrame
+    ? { top: inset, bottom: layout.height - inset, height: Math.max(0, layout.height - inset * 2) }
+    : regionVertical(layout, anchor, inset);
   /** 水印区右沿（距舞台右沿的距离）。文字行要补一个尾字距，数码管不补。 */
   const regionRight = layout.rightMargin + inset;
 
@@ -1082,7 +1132,21 @@ export function computeWatermarkPlan(
   // 相框说贴哪边。`centered` 不看它（居中本身就是"两边都不贴"）。
   const side: 'left' | 'right' = frame.watermark?.align ?? 'right';
 
-  if (layoutId === 'dateOnly') {
+  /*
+   * 无相框下 `split`（默认版式）改走 `stacked`：地名在上、日期在下、两行贴同一边（默认右）。
+   *
+   * ⚠️ **只改 `split`，不动另外三种**：`dateOnly` / `centered` / `stacked` 是用户在设置页
+   * 明确选出来的"我要这么排"，切到无相框时把它们悄悄换掉 = 用户的选择失效
+   * （`_probe_geo_lock.cjs` 的 ④ 组就在这两条上锁着：`dateOnly` + 画内机位必须 0 行）。
+   * 而 `split` 是默认值 —— 它原本是"地名贴左、日期贴右共用一条基线"，在整幅照片上会
+   * 拉成一条横贯画面的字带，所以才换成堆叠。
+   *
+   * 为什么不新写一种版式：`stacked` 的语义**就是**"两行同侧堆叠"，复用还顺带白拿了
+   * 它的两条现成规则：行距 `STACKED_LEADING`、以及"两行放不下时先丢地名"的退化处理。
+   */
+  const planLayoutId: WatermarkLayout = noFrame && layoutId === 'split' ? 'stacked' : layoutId;
+
+  if (planLayoutId === 'dateOnly') {
     if (hasDate) {
       // 没有地名可贴，"贴哪边"就由相框说了算：左对齐的相框（拍立得下巴）日期也在左。
       lines.push(
@@ -1093,7 +1157,7 @@ export function computeWatermarkPlan(
         ),
       );
     }
-  } else if (layoutId === 'centered') {
+  } else if (planLayoutId === 'centered') {
     if (hasDate) {
       /*
        * 底部正中等宽单行：`[ 地名 · 'YY MM DD ]`。
@@ -1127,7 +1191,7 @@ export function computeWatermarkPlan(
         }),
       );
     }
-  } else if (layoutId === 'stacked') {
+  } else if (planLayoutId === 'stacked') {
     // 地名在上、日期在下，两行都贴同一边。地名行被顶出水印区就丢掉它 ——
     // 宁可少印一行，也不要让地名压到照片或相框边框上。
     const placeBottom = bottom + dateFont * STACKED_LEADING;
@@ -1203,7 +1267,13 @@ export function computeWatermarkPlan(
 
   return {
     anchor,
-    layout: layoutId,
+    /*
+     * 回**生效的**版式，不是用户选的那一项：无相框下 `layoutId` 可能是 `split`，
+     * 而这里真的按 `stacked` 排了。消费方（`FilmCompositor.planWatermark` 的
+     * "地名太长就精简重排"那一支）只对 `'split'` 生效 —— 报错版式会让它拿
+     * "左右并排"的公式去量一个上下堆叠的版式，把地名白白精简掉。
+     */
+    layout: planLayoutId,
     tone,
     uppercase: tracking.uppercase,
     region,

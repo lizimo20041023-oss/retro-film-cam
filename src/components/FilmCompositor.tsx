@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 合成视图 —— 整个 App 的"显影"画面，同时也是 `captureRef` 的截图目标。
  *
  * 绘制顺序（也就是最终成片的图层顺序）：
@@ -491,6 +491,19 @@ export function FilmCompositor({
   const overlayUri = nonEmptyUri(stage.overlayUri);
   const overlayOpacity = overlayOpacityOf(stage.overlayOpacity);
   const windowRect = layout.window;
+  /*
+   * v1.8.1 无相框（`00 NO FRAME`）：相纸与材质整组不画。
+   *
+   * 这一档的 `layout.window` 就是整块画布（全铺窗口），照片自己填满 `layout`，
+   * 再叠一张纸 PNG 等于在画面外圈一圈白边 —— 那就不是"无相框"。
+   * 判据只看 `frame.fullBleed`：窗口是否全铺**不能**当判据（老相框的窗口
+   * 在某些比例下也会几乎铺满），这个标志位是 `frames.ts` 里写死的契约。
+   *
+   * ⚠️ 计数联动：相纸那张 `<Image>` 是 `countStageImages()` 里 `2 + …` 的一份，
+   * 这里不画它就少一次 `onLoad`，`useFilmStage.mount` 必须同步 −1，
+   * 否则每次快门都白等到 `READY_TIMEOUT_MS`。
+   */
+  const fullBleed = frame.fullBleed === true;
 
   // 截图尺寸：预设的 captureLongEdge 决定成片长边有多少像素
   const captureOptions = useMemo(
@@ -640,30 +653,39 @@ export function FilmCompositor({
           朝向钉死之后这条路径不可达，但**相框数组仍保留横版变体**：所以这里不能顺手改成直接
           `frame.source`，否则哪天朝向开关被放开，PNG 与 layout 又会各走一边。反推逻辑留着，
           它现在是"永远推出竖版"的保险丝，而不是死代码。
-      */}
-      <Image
-        source={frameSourceOf(frame, frameOrientationOfLayout(frame, layout))}
-        style={[styles.frame, { width: layout.width, height: layout.height }]}
-        resizeMode="stretch"
-        onLoad={onImageLoad}
-        fadeDuration={0}
-      />
 
-      {/*
-        ②b 相框皮肤（v1.7.0）。挂在相框 PNG **之后** = 盖在纸面上；水印在它之后画，
-        所以日期与地名永远压在皮肤之上（不会被斑点糊掉）。
-        · `window` 必须是 `layout.window`（不是相框数据里的归一化窗口）——
-          皮肤要严格对齐**已经取整过的**那一个矩形，否则边上会露半像素照片。
-        · `seed` 走 `frameSkinSeedOf(frame)`：同一款相框永远同一套花纹，
-          取景器预览与成片才对得上（见 frames.ts 里那个函数的说明）。
+        v1.8.1：整块（相纸 + ②b 皮肤）挂在 `!fullBleed` 这个渲染门后面 —— 无相框模式下
+        没有纸可贴，画了反而是"照片外面多一圈白边"。守卫在**第一个** `<FrameSkin` 之前。
       */}
-      <FrameSkin
-        width={layout.width}
-        height={layout.height}
-        window={windowRect}
-        variant={frameVariant}
-        seed={frameSkinSeedOf(frame)}
-      />
+      {!fullBleed && (
+        <>
+          <Image
+            source={frameSourceOf(frame, frameOrientationOfLayout(frame, layout))}
+            style={[styles.frame, { width: layout.width, height: layout.height }]}
+            resizeMode="stretch"
+            onLoad={onImageLoad}
+            fadeDuration={0}
+          />
+
+          {/*
+            ②b 相框皮肤（v1.7.0）。挂在相框 PNG **之后** = 盖在纸面上；水印在它之后画，
+            所以日期与地名永远压在皮肤之上（不会被斑点糊掉）。
+            · `window` 必须是 `layout.window`（不是相框数据里的归一化窗口）——
+              皮肤要严格对齐**已经取整过的**那一个矩形，否则边上会露半像素照片。
+            · `seed` 走 `frameSkinSeedOf(frame)`：同一款相框永远同一套花纹，
+              取景器预览与成片才对得上（见 frames.ts 里那个函数的说明）。
+            · v1.8.1：`fullBleed` 下与相纸一起不画 —— 没有纸，皮肤画上去就是
+              "花纹印在画面上"。同一个渲染门，不另开一处判断。
+          */}
+          <FrameSkin
+            width={layout.width}
+            height={layout.height}
+            window={windowRect}
+            variant={frameVariant}
+            seed={frameSkinSeedOf(frame)}
+          />
+        </>
+      )}
 
       {/* ③ 水印（日期 + 定位，一次画完） */}
       {pieces.map((piece) => {

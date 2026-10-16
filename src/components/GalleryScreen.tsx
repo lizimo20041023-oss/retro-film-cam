@@ -331,6 +331,12 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
       const result = await importAndDevelop({
         host: filmStage.host,
         frame: importFrame,
+        /*
+         * v1.8.1：无相框的画幅比跟着**设置**走（`00 NO FRAME` 下画布比例由用户选），
+         * 纸框忽略它。转交而不是在这里解析：解析只在 `processFilmPhoto` 入口做一次
+         * （见那边的注释），这里再解析一遍就成了第二个产地。
+         */
+        noFrameAspect: settings.noFrameAspect,
         preset: importPreset,
         stage: importStage,
         locale: localeId,

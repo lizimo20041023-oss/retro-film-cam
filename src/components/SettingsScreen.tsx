@@ -23,7 +23,7 @@
  * 顺序 = 「越常改的越靠上」+「有从属关系的必须相邻」：
  * 语言 → 定位水印 → 地名详细度（只在"地名"档下起作用，所以紧贴其后）
  * → 水印版式（水印长什么样）→ 日期引擎（日期自己长什么样 · v1.8.0）
- * → 画质（成片有多大 · v1.7.0）→ 颗粒（成像质感）→ 页脚。
+ * → 画质（成片有多大 · v1.7.0）→ 颗粒（成像质感）→ 无相框画幅（只在 00 下生效 · v1.8.1）→ 页脚。
  *
  * 日期引擎为什么紧跟水印版式、而不是另起一段更靠下：这两段说的是同一件事的两半
  * —— 版式决定"地名与日期怎么排"，日期引擎决定"日期本身的格式/字形/机位/发光"。
@@ -38,6 +38,7 @@ import * as Haptics from 'expo-haptics';
 import { useTheme, UI_MONO } from '../constants/theme';
 import type { Theme } from '../constants/theme';
 import { CAPTURE_QUALITIES, captureQualityCapNote } from '../constants/captureQuality';
+import { NO_FRAME_ASPECTS } from '../constants/frames';
 import { GRAIN_LEVELS } from '../constants/grain';
 import { useI18n } from '../i18n';
 import type { MessageKey } from '../i18n';
@@ -55,6 +56,7 @@ import type {
   LocalePreference,
   LocationMode,
   LocationStampState,
+  NoFrameAspect,
   PlaceDetail,
   WatermarkLayout,
 } from '../types';
@@ -107,6 +109,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
     setGrainLevel,
     setGeoLocale,
     setCaptureQuality,
+    setNoFrameAspect,
     setDateEngine,
   } = useSettings();
 
@@ -249,6 +252,20 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
       setGrainLevel(next);
     },
     [setGrainLevel],
+  );
+
+  /**
+   * 无相框画幅（v1.8.1）。和上面几条一样：一次选择触感 + 落设置。
+   *
+   * 这一行**在任何相框下都能点**（刻意不 `disabled`）：它不是"当前成片会怎么变"，
+   * 而是"下次切到 00 时用哪个比例"。灰掉它只会让用户以为无相框模式坏了。
+   */
+  const handleNoFrameAspect = useCallback(
+    (next: NoFrameAspect): void => {
+      void Haptics.selectionAsync();
+      setNoFrameAspect(next);
+    },
+    [setNoFrameAspect],
   );
 
   const handleClose = useCallback((): void => {
@@ -513,6 +530,30 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
         </View>
         <Text style={styles.hint}>{t('grain.note')}</Text>
 
+        {/*
+          ⑨ 无相框画幅（v1.8.1 · 00 NO FRAME）。
+          为什么排在最后：它只在"相框 = 00"时改变成片，别的相框下点了没有任何
+          视觉反馈。塞在画质/颗粒中间会让它看起来是一个"总是生效"的选项。
+        */}
+        <SectionHeading label={t('settings.noFrame.title')} />
+        <View style={styles.group}>
+          {NO_FRAME_ASPECTS.map((spec) => (
+            <OptionRow
+              key={spec.id}
+              // 档位名走 i18n（`frame.noFrame.aspect*`）；`note` 位显示真实比例数字，
+              // 与画质行的 `2048px` 同类 —— 数字不随语言变，也不该被翻译。
+              label={t(NO_FRAME_ASPECT_LABEL_KEYS[spec.id])}
+              note={`${spec.ratio.toFixed(2)}`}
+              selected={settings.noFrameAspect === spec.id}
+              onPress={() => handleNoFrameAspect(spec.id)}
+              a11yLabel={t('settings.noFrame.a11y', {
+                label: t(NO_FRAME_ASPECT_LABEL_KEYS[spec.id]),
+              })}
+            />
+          ))}
+        </View>
+        <Text style={styles.hint}>{t('settings.noFrame.hint')}</Text>
+
         <Text style={styles.footer}>{t('settings.footer')}</Text>
       </ScrollView>
     </View>
@@ -630,6 +671,20 @@ const DATE_GLOW_ROWS: readonly { glow: DateGlowId; labelKey: MessageKey }[] = [
   { glow: 'ccd_green', labelKey: 'settings.dateEngine.glow.ccd_green' },
   { glow: 'cyber_cyan', labelKey: 'settings.dateEngine.glow.cyber_cyan' },
 ];
+
+/**
+ * 无相框三档的档位名（v1.8.1）。
+ *
+ * 键名由门禁探针冻结成 `frame.noFrame.aspect11 / aspect34 / aspect32`
+ * （后缀是**比例数字**，不是档位序号），所以这里用一张显式映射把
+ * `NoFrameAspect` 的字面量接到键上 —— 顺序不再靠 `NO_FRAME_ASPECTS` 的数组下标，
+ * 以后谁调整了数组顺序也不会把标签接错档。
+ */
+const NO_FRAME_ASPECT_LABEL_KEYS: Record<NoFrameAspect, MessageKey> = {
+  '1:1': 'frame.noFrame.aspect11',
+  '3:4': 'frame.noFrame.aspect34',
+  '3:2': 'frame.noFrame.aspect32',
+};
 
 function SectionHeading({ label }: { label: string }) {
   // 每个用到样式的组件各取一份"当前机身配色"。理由见 SettingsScreen 里 `styles` 的注释：

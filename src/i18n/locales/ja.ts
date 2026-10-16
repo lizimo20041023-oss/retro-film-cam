@@ -252,6 +252,16 @@ export const ja: Messages = {
   'frame.variant.archival': 'クラシック白',
   'frame.variant.baryta': 'バライタ暖黄',
   'frame.variant.obsidian': 'ダークルーム黒',
+  /* ---------------- v1.8.1：枠なし全画面（00 NO FRAME） ---------------- */
+  'frame.noFrame': '枠なし',
+  // 比率の数字だけを出し、方向の語は書かない（理由は zh-Hans の同じ節の注記）。
+  'frame.noFrame.aspect11': '画角 1:1',
+  'frame.noFrame.aspect34': '画角 3:4',
+  'frame.noFrame.aspect32': '画角 3:2',
+  'settings.noFrame.title': '枠なしの画角',
+  'settings.noFrame.a11y': '枠なしの画角、現在 {label}',
+  'settings.noFrame.hint':
+    '「枠なし（00）」を選んでいる間だけ効きます。紙がないので比率はここで決まり、写真はこの画角で全面に広がります。3:2 は 2:3 の縦長（3:4 より高い）になり、横長にはなりません — この値はリポジトリのゲートスクリプトで固定されています。',
 
   /* ---------------- v1.8.0：日期烙印引擎（13 格式 × 5 字形 × 8 机位 × 5 发光色） ---------------- */
   'settings.dateEngine.title': '日付刻印',

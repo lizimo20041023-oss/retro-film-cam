@@ -55,6 +55,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [31. v1.6.1：六模块体检落地 + 闪光灯三档](#31-v161六模块体检落地--闪光灯三档)
 - [32. v1.7.0：画幅强锁 + 相框三变体 + 实时预览 + 水印像素锁定](#32-v170画幅强锁--相框三变体--实时预览--水印像素锁定)
 - [33. v1.8.0：去白雾的色彩引擎 + 暗房纸材 + 参数胶囊 + 日期引擎 + 像素级锁定](#33-v180去白雾的色彩引擎--暗房纸材--参数胶囊--日期引擎--像素级锁定)
+- [34. v1.8.1：日期背景 100% 透明 + 颗粒不透明度硬上限 + `00 NO FRAME` 无相框模式](#34-v181日期背景-100-透明--颗粒不透明度硬上限--00-no-frame-无相框模式)
 
 ---
 
@@ -3712,6 +3713,194 @@ TINT_MAGENTA #E657E6   Y = 0.5009      |Y − 0.5| ≤ 0.002
 | Release | [`v1.8.0`](https://github.com/lizimo20041023-oss/retro-film-cam/releases/tag/v1.8.0)（release id `415279702`，asset id `648273642`，`target_commitish` = 远端 `1c2eca96`；下载地址见 Release 页） |
 | bundle `main.jsbundle` | 本地 `expo export --platform ios --no-bytecode` **EXIT=0** ⇒ `_expo/static/js/ios/index-7631b44e6b5afcf4be18cc38f3a1110e.js` **1,331,062 B**；17 个资源（`grain.png` 211111 B / `light-leak.png` 18214 B，与源文件逐字节同尺寸）；`_verify_ipa_v180.py --local` 在该产物上校准后 **RESULT: OK**（`SHOULD_BE_ABSENT` 全 0 命中） |
 | 核验 | `python _verify_ipa_v180.py 12068516114` → **RESULT: OK**：IPA 内 114 个条目、`Payload/FretroCam.app/main.jsbundle` **2,032,295 B**、`Info.plist` 版本 `1.8.0` + `com.canyerylee.fretrocam`、相框 PNG 恰好 **9 张**、v1.8.0 贴图 4 张（grain / light-leak / vignette / dust）都在包、撤掉的素材（`leather` / `half-frame` / `sheet8x10`）**全 0 命中**、`SHOULD_BE_ABSENT` 清单**全 x0** |
+
+---
+
+## 34. v1.8.1：日期背景 100% 透明 + 颗粒不透明度硬上限 + `00 NO FRAME` 无相框模式
+
+这一版是**三条真机投诉**的抢修，不是新功能版：① 日期背后那块"诡异的橙色大方块"；
+② 调颗粒强度/大小时整幅画面被一层**不透明灰色大网**盖住；③ 新增 `00 NO FRAME` 无相框纯净全屏模式。
+三条都按用户给的**强制规范**做（"背景必须 100% 透明，绝对禁止任何实色或半透明矩形背景框"、
+"不透明度严格锁死在 0.12~0.22，绝不随参数变成实心遮罩"、"彻底隐藏所有实体相纸外框"）。
+
+### 34.1 日期背后那块橙色大方块：根因与"副本光"
+
+**现象**（真机实测）：相纸下巴上的 `10 17 '26` 背后有一块亮橙色长方形底块。
+
+**根因**（两个矩形叠出来的，跟颜色浓淡无关）：
+
+1. `DateStamp.tsx` 在字形之外还渲染一层独立的晕染层 `DateHaze`，它的实现是"按**文字盒**的宽高铺两层圆角矩形"——
+   文字盒是矩形，光晕于是也是矩形；
+2. `DateGlyphs.tsx` 里 LED 段/点阵点在**未点亮**时仍各画一个矩形（`ghost` 色，`GHOST_OPACITY = 0.18`），
+   一行 8~11 个字形的熄灭段加起来就是一块几乎连续的浅色底。
+
+**修法**（三处；全部否决"把颜色调淡一点遮过去"这类做法）：
+
+1. `GHOST_OPACITY` **0.18 → 0**：熄灭段**一个像素都不渲染**（`_probe_date_engine.cjs` 逐字形断言 `ghost` 是
+   `rgba(r,g,b,0)`）；
+2. **删掉整个 `DateHaze`**（`DateGlyphs.tsx` 的"八、发光层"段 + `DateStamp.tsx:45` 的 import 与
+   `hazeW`/`hazeH` 两个变量），顶部只留一句说明它为什么不存在了；
+3. 光晕改成**每个灯自己画的「副本光」**：`lampLayers(box, palette, fontPx, round)` 把同一个灯的盒子
+   按配方 spread **放大两层垫在灯下面**——外圈 spread `= 0.18 × fontPx`、内圈 `= 0.09 × fontPx`，
+   两层 alpha 仍是配方的 `0.22` / `0.30`（**颜色与配方一个字没改**，只改了"这层光画多大、什么形状"）。
+   矩形不见了，光的形状 = 字形的形状。
+
+> **为什么不用 `View` 的 `shadowColor` / `shadowRadius`**：iOS 的阴影是按**渲染后的 alpha 蒙版**生成的，
+> 一盏 1~2pt 的小灯配 `shadowRadius ≈ 2pt` 只会糊成一片橙雾，而且每个带阴影的 View 都要一次离屏栅格化
+> ——取景器里要逐帧付这个代价。副本光没有这两个问题，并且能被探针逐像素断言。
+> 代价写在 §34.6：外扩的副本光不参与布局（父容器不被撑开），贴边放置时最外圈理论上可能被裁。
+
+`TextGlyph`（`ccd_osd` / `lab_inkjet` / `archival_steel` 这三个真字体字形档）现在也带**字形形状**的微发光：
+`textShadowColor: palette.haloInner` + `textShadowRadius: r2(fontPx × haloOuterRatio)`。
+理由：旧 `DateHaze` 是**对所有字形档**都铺橙光的，删掉矩形后不把"光"还给印字档，
+这三种日期的观感会从"微微发光"直接掉到"完全没光"——而无相框模式（§34.3）明确要求日期与地名都带半透明微发光。
+
+**现在的防线**（三重，都在 `_probe_*` 里，不是靠注释约束）：
+
+- `_probe_noframe_v181.cjs` A 组：`DateHaze` 不存在、`stripComments` 后的源码里没有 `DateHazeProps`/`DateHaze`
+  标识符、没有 `backgroundColor: layer.color` 这类"整盒铺色"写法、`GHOST_OPACITY === 0`；
+- `_probe_date_engine.cjs`：每个字形的熄灭段 alpha 恒 0、`haloOuter`/`haloInner` 必须是半透明 rgba、
+  `haloOuterRatio ∈ (0, 0.3]`、`haloInnerRatio ∈ (0, haloOuterRatio)`；
+- `_probe_film_look.cjs` ②.5 组：颗粒层不透明度硬上限（见 §34.2）。
+
+### 34.2 颗粒层变成"不透明灰色大网"：一行算术的根因与硬上限
+
+**现象**（真机实测）：在取景器里把颗粒强度/大小往上调，整个相机画面被灰网盖住。
+
+**根因**（就一行）：v1.8.0 把 `preset.grain` 的语义从"图层 opacity"改成了"颗粒**强度**"（0.42~0.62），
+但 `gradeLayers.ts` ⑨ 颗粒层写的仍是 `opacity: clamp01(preset.grain)`；而档位是**乘**在预设值上的
+（`applyGrainLevel`：off 0 / light 0.45 / std 1 / heavy 1.5 / max 2.2）⇒ max 档
+**0.52 × 2.2 = 1.144** → `clamp01` 夹成 **1.0** ⇒ 一张 σ=0.2605 的中灰贴图以 100% 不透明度铺满画面。
+取景器与成片共用同一份 `buildGradeLayers`，所以成片同样中招（只是没人会拿成片去调这个滑块）。
+
+**修法**：`src/constants/grain.ts` 新增
+
+```ts
+export const GRAIN_OPACITY_MIN = 0.12;   // 硬上限：不许抬
+export const GRAIN_OPACITY_MAX = 0.22;
+export function grainLayerOpacity(strength: number): number   // clamp01 后线性映射进 [0.12, 0.22]
+```
+
+⑨ 层改成 `opacity: grainLayerOpacity(preset.grain)`。**预设的 `grain` 列一个数字没动**（仍 0.42~0.62，
+语义 = 强度），`GRAIN_LEVELS` 五个档位也没动，`GRAIN_OPACITY_MAX = 0.22` 是**规范里写死的硬上限**。
+
+**这一版颗粒看起来会比 v1.8.0 细**，这是上限的必然代价，数字如下：
+
+| 项 | v1.8.0（口径） | v1.8.1（硬上限） |
+| --- | --- | --- |
+| 图层 opacity | `clamp01(grain × scale)`，max 档 = **1.000** | `grainLayerOpacity(...)` ∈ **[0.12, 0.22]** |
+| 可见振幅 `opacity × σ(0.2605)` | 探针实测窗 [0.10, 0.22] | **0.0313 ~ 0.0573**（`effAmp(0.5)` 实测 0.0422~0.0474） |
+| 混合模式被降级时最坏灰度覆盖 | 0.5 | **≤ 0.11** |
+
+想要更浓的颗粒：**重烤更高对比度的 `assets/textures/grain.png`**（`scripts/generate_grain_clump.py`），
+不许抬 opacity 上限。另外两条用户规范也已在位：`FilmLookLayers` 根容器本来就是 `pointerEvents="none"`
+（规范①），取景器实时预览与 ViewShot 成片走的是**同一份** `planFilmLooks`（规范③）。
+
+### 34.3 `00 NO FRAME`：无相框纯净全屏模式
+
+相框抽屉首页新增编号 **`00 NO FRAME`**（`FRAMES[0]`，`fullBleed: true`）。其余 5 款纸框的 id/顺序/窗口参数一字未动，
+`DEFAULT_FRAME_ID` 仍是 `'polaroid-600'`（现在下标 1）。
+
+- **三档画幅**（设置页 `⑨ 无相框画幅`）：`1:1` = 1、`3:4` = **0.75**、`3:2` = **2/3**，默认 `3:4`。
+  390×844 上实测成片 **390×390 / 390×520 / 390×585**（照片按 `cover` 铺满，**不拉伸**；
+  `computeFrameLayout` 的 contain 语义作用在相框盒上，`fitBox` 一行未改）。
+- **不画任何实体相纸**（卡纸/白边/齿孔/压痕/阴影全不渲染），三处守卫都在首个 `<FrameSkin` **之前**：
+  `FilmCompositor.tsx:506/:660`（相纸 `Image` + 皮肤）、`FramePreviewLayer.tsx:211/:253`
+  （纸/皮肤）、`FilmDrawer.tsx:255`（抽屉预览）。
+  ⚠️ `FramePreviewLayer` 还要**整组跳过四块 `CURTAIN_COLOR = '#0A0A0C'` 幕布**（`:230`）——
+  那块幕布是"相机画面只在镂空窗内透出"的机制，全铺时留着会把预览整片涂黑。
+- **水印**：默认右下 `in_br_h`（左下 `in_bl_h` 保留，竖排机位只留左下）；
+  内缩 = `max(2, round(短边 × 0.045))`（390 上 **18pt**、358 上 **16pt**，比纸框的 0.028 大，
+  因为不再有相纸留白当护边）；**分两行右对齐**（**地名在上、日期在下**，行距 = **1.32 × 日期字号**）
+  ⇒ 390 上日期底沿 18 / 右沿 18，地名底沿 **33.73** / 右沿 **19.21**。
+  日期行仍受 v1.8.0 那条"日期宽度压不动"的约束（`maxWidth === quartz.width`）。
+- **抽屉缩略图**：铺满卡片的纯照片 + 左上角 12pt `00` 角标（`rgba(0,0,0,0.45)` 底、白字、内缩 6pt、选中琥珀描边），
+  沿用抽屉既有的 96×72pt 迷你实时预览机制。
+- **顺手修掉一个静默丢失的 bug**：全铺帧的 `bottomStripHeight === 0`，而 `stacked` 版式的守卫
+  `hasSlot && vertical.top + placeTop <= vertical.bottom`（[`geometry.ts:1199`](src/utils/geometry.ts#L1199)）因此**恒假** ⇒
+  地名行不 push、**不报错、不打印**。机制：`regionVertical`（`geometry.ts:772`）的 `'window'` 分支返回
+  `height = max(0, layout.bottomStripHeight)`，而这个高度由 `geometry.ts:245` 的
+  `max(0, box.height - (top + height))` 算出 —— 全铺帧就是 0。
+  现在由 `geometry.ts:1005-1013` 给无相框换了一条专用区域（理由写在注释里，纸框老口径逐位不变）；
+  `geometry.ts:1147` 的 `planLayoutId` 只在用户选默认 `split` 时才重判成 `stacked`，
+  明确选过 `dateOnly` / `centered` / `stacked` 的版式原样保留。
+
+### 34.4 这一版动了哪些文件
+
+（探针脚本全在工作区根，不进仓库；下表是 `retro-film-cam` 内的改动。）
+
+| 文件 | 改动 | 说明 |
+| --- | --- | --- |
+| `src/components/DateGlyphs.tsx` | 重写发光机制 | `GHOST_OPACITY = 0`；`GlyphPalette` 增 4 个副本光字段；新增 `lampLayers` / `Lamp` / `PunctuationLamp`；删整个 `DateHaze` |
+| `src/components/DateStamp.tsx` | 删除晕染层调用 | 去掉 `DateHaze`、`hazeW`/`hazeH` |
+| `src/constants/grain.ts` | 新增硬上限 | `GRAIN_OPACITY_MIN/MAX` + `grainLayerOpacity()` |
+| `src/utils/gradeLayers.ts` | ⑨ 层接线 | `opacity: grainLayerOpacity(preset.grain)` |
+| `src/constants/presets.ts` | 注释订正 | `grain` 列语义 = 强度；图层 opacity 归 `grainLayerOpacity()` |
+| `src/types/index.ts` | 契约 | `NoFrameAspect`（`:114`）、`FrameSpec.fullBleed?`（`:208`）、`AppSettings.noFrameAspect`（`:813`） |
+| `src/constants/frames.ts` | 名录 + 解析 | `NO_FRAME_ASPECTS`（`:85-105`）、`resolveFrame`（`:129-145`）、`FRAMES[0]`（`:168/177`） |
+| `src/utils/geometry.ts` | 无相框几何与水印 | `NO_FRAME_INSET_RATIO = 0.045`（`:919`）、内缩算式（`:999`）、`insetOverride`（`:798-800`）、无相框专用区域（`:1005-1013`）、`planLayoutId`（`:1147`） |
+| `src/utils/settingsStore.ts` | 白名单 + 默认 | `noFrameAspect: '3:4'`（`:69`）、文件内白名单（`:119-123`）、`pick`（`:226-229`） |
+| `src/hooks/useSettings.tsx` | setter | `setNoFrameAspect` |
+| `src/components/SettingsScreen.tsx` | 设置区 | `⑨ 无相框画幅` 三行 `OptionRow`（`:540-550`） |
+| `src/components/CameraScreen.tsx` | 接线 | `resolvedFrame`（`:478`）、快门带 `noFrameAspect`（`:1247`）、抽屉回调（`:832/:1947`） |
+| `src/utils/processFilmPhoto.ts` | 单点解析 | `resolveFrame(...)`（`:380`）——只解析一次，layout/裁切/frameId 自动一致 |
+| `src/hooks/useFilmStage.ts` | 就绪计数 −1 | 全铺帧没有贴图（不减则每次快门白等 1500ms） |
+| `src/components/FilmCompositor.tsx` · `FramePreviewLayer.tsx` · `FilmDrawer.tsx` | `fullBleed` 守卫 | 见 §34.3 |
+| `src/i18n/locales/*.ts`（5 个） | 各 +7 键 | 4 个 `frame.noFrame*` + 3 个 `settings.noFrame.*` |
+| `assets/frames/no-frame.png` | 新素材 | 全铺帧占位（`source` 必填） |
+| `app.json` | +1 / −1 | 版本号 1.8.1 |
+
+### 34.5 验证清单（本地，全部实际跑过）
+
+| 命令 | 结果 |
+| --- | --- |
+| `cd retro-film-cam; npx tsc --noEmit -p tsconfig.json` | **EXIT=0**，零诊断 |
+| `node _probe_noframe_v181.cjs` | **217 断言 / 0 失败 / PENDING 0 / EXIT=0**（本版规格真源） |
+| `node _probe_noframe_watermark.cjs` | **458 断言 / 0 失败 / EXIT=0**（无相框几何/水印 + 纸框 60 例回归） |
+| `node _probe_date_engine.cjs` | **1818 断言 / 0 失败 / EXIT=0**（v1.8.0 是 1793） |
+| `node _probe_film_look.cjs` | **1126 断言 / 0 失败 / EXIT=0**（新增 ②.5 颗粒上限组） |
+| `node _probe_geo_lock.cjs` | **19336 断言 / 0 失败 / EXIT=0** |
+| `node _probe_skin_material.cjs` | **859 断言 / 0 失败 / EXIT=0** |
+| `node _probe_v180_seams.mjs` | **1312 断言 / 0 失败 / EXIT=0** |
+| `node _probe_lead_integration.mjs` | **133 断言 / 0 失败 / EXIT=0** |
+| `node _probe_capture_quality.mjs` | **78 断言 / 0 失败 / EXIT=0** |
+| `node _haze_audit.mjs` | 超预算预设 **0 / 10**，**EXIT=0** |
+| `node _purity_audit.mjs` | **59 断言 / 0 失败 / RESULT: PURE** |
+| `npx expo export --platform ios --no-bytecode` | **EXIT=0**（产物目录在工作区根，不进仓库） |
+
+去污染说明：`00 NO FRAME` 让 `FRAMES` 从 5 项变 6 项且 **`FRAMES[0]` 不再是 `polaroid-600`**，
+几个探针里"取 `FRAMES[0]` 当默认相框"的写法会**静默测错对象**（其中一个会直接 `TypeError`）。
+本轮把它们统一改成 `findFrameIndex(DEFAULT_FRAME_ID)` 显式取样，并把纸边元素数之类的期望值改成派生式
+（`FRAMES.length × FRAME_VARIANTS.length`）。
+**只改取样口径与过期期望值，没有放宽任何阈值**；`_probe_geo_lock.cjs` ④ 组里"无相框 + `split`"那两条
+改成了**更强的正面断言**（地名行 `align.maxWidth` 必须等于整条画布宽 + 该机位确实被判成 `stacked`），
+不是删断言。
+
+### 34.6 已知缺口 / 没能验证的事
+
+1. **这一版仍然没有任何真机或模拟器验证**（本机没有 iOS 运行时）。三条修复都只有"数学 + 源码形状"级别的证据：
+   橙色方块是否真的从成片里消失、颗粒灰网是否真的不再遮住画面、无相框模式铺满后取景器里的实际观感、
+   `pointerEvents` 是否真的把轻触对焦让出来。
+2. **无相框模式下，取景器实时预览看不到画内日期**（`in_*` 机位）——与 §33.12 第 3 条同源的结构性缺口
+   （预览幕布按设计只盖相纸留白、绝不压照片区），这一版不做。
+3. **副本光的代价**：外扩的灯圈不参与布局（父容器不被撑开），贴边放置时最外圈理论上会被裁。
+   已用机位内缩（纸框 0.028 / 无相框 0.045）把光圈留在安全区内，但没有真机确认"看起来是否被切"。
+4. **颗粒幅度仍是推算值**：按"1 贴图像素 = 1 逻辑点、3x 屏"换算，0.031~0.057 是数学振幅不是观感；
+   设备缩放口径若变，σ 约按 0.35 倍衰减（探针会红）。
+5. **`heavy` 与 `max` 两档的差距被上限压小了**：`grainLayerOpacity` 是线性映射 ⇒ heavy(×1.5) 0.198、
+   max(×2.2) 0.22，只差 0.022。这是硬上限的必然代价，要拉开只能重烤贴图（**不许抬上限**）。
+6. `tri-x-400` 的图层数是 9 层而其余 9 支是 10~13 层——这是该卷配方本身（4 个 color 层而不是 6 个），
+   **不是缺层**（同 §33.12 第 7 条）。
+
+### 34.7 产物指纹
+
+| 项 | 值 |
+| --- | --- |
+| 提交 | 待发布后回填 |
+| CI | 待发布后回填 |
+| IPA | 待发布后回填 |
+| 体积 / SHA-256 | 待发布后回填 |
+| Release | 待发布后回填 |
 
 ---
 
