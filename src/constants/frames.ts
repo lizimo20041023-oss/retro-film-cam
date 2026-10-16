@@ -250,3 +250,18 @@ export function wrapIndex(index: number, length: number = FRAMES.length): number
   }
   return ((index % length) + length) % length;
 }
+
+/**
+ * 相框皮肤（`FrameSkin`）的图案种子 —— v1.7.0 的做旧斑点 / 涂鸦波点靠它决定落在哪。
+ *
+ * 为什么要有这个函数，而不是在渲染层直接 `seed={frame.id}`：
+ *   1. **只此一处**。种子一改，所有相框的花纹全变；将来想换算法（比如掺进画幅比、
+ *      或者让同一款相框的正反打用两套花纹），只改这里，取景器预览与成片不会分叉。
+ *   2. 它保证"同一款相框永远是同一套花纹"：种子里**不许**掺时间 / 随机数，
+ *      否则取景器里看到的和成片里拿到的就不是同一张。
+ *
+ * 种子只决定图案的**随机序列**；颜色与尺寸区间在 `FrameSkin` 的配方常量里，不在这里。
+ */
+export function frameSkinSeedOf(frame: FrameSpec): string {
+  return frame.id;
+}

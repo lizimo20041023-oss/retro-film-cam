@@ -43,11 +43,19 @@
  * 容器既不会小于它该有的宽度（`width` 固定），也不会大于文本真正能画的范围
  * （`maxWidth` 等于同一个数），宽度再也不是"排出来的"，而是"发下来的"。
  *
- * ── 为什么还要 `adjustsFontSizeToFit` ──────────────────────────────────────
- * 现在这条分支比上面的余量**更**不可能触发，但留着它是刻意的：
- * 万一某个字形的真实 advance 比实测值大（换字体族、iOS 版本改了度量），
- * 缩到 0.9 倍仍然比在成片上出现一个 `…` 好得多。**它只是兜底，不是宽度来源**——
- * 宽度来源永远是 `quartz.width`（见上一条契约）。
+ * ── 为什么**删掉**了 `adjustsFontSizeToFit`（v1.7.0 §四）────────────────────
+ * 上一版留它是想"万一塞不下就缩到 0.9 倍，总比出现一个 `…` 好"。代价是：
+ * **水位被静默吃掉** —— 日期一旦被 iOS 自动缩放，成片上的字高就不再等于排版层算出的
+ * 那个数，"绝对像素锁定"当场失效，而且没有任何地方能发现（屏幕上看着"还行"）。
+ * 本轮要的是"画布上日期的像素高度绝对恒定"，所以这条后门必须关掉。
+ *
+ * 关掉之后靠什么不溢出：宽度是 `dateStampWidth(text, 同一个字号, 同一个字距)` 算出来的
+ * （`quartz.width`），公式里含 `DATE_GLYPH_SLACK`（每个字形 +0.5pt）的正向余量，
+ * 所以"容器 ≥ 文字"是结构性成立的。真到余量也不够的那天，`ellipsizeMode="clip"`
+ * 会让它**可见地切掉一截**，而不是静默缩小 —— 我们要的是可发现，不是掩盖。
+ *
+ * ⚠️ 因此**不许**再把 `adjustsFontSizeToFit` / `minimumFontScale` 加回来，
+ * 也不许改成 `ellipsizeMode="tail"`：省略号会把"算错了"伪装成"字体没装好"。
  */
 import { memo } from 'react';
 import type { ReactElement } from 'react';
@@ -74,11 +82,14 @@ function DateStampImpl({ quartz, color, fontFamily }: DateStampProps): ReactElem
      * 两个一起写 = 这一块的宽度完全由排版层决定，和渲染层的排版结果无关。
      */
     <View style={[styles.root, { width: quartz.width, maxWidth: quartz.width }]}>
+      {/*
+       * 不缩（没有 `adjustsFontSizeToFit`）、不省略（`clip`）：宽度是排版层发下来的确定值，
+       * 字号就是成片上的字号。理由见文件头"为什么删掉了 adjustsFontSizeToFit"。
+       */}
       <Text
         allowFontScaling={false}
         numberOfLines={1}
-        adjustsFontSizeToFit
-        minimumFontScale={0.9}
+        ellipsizeMode="clip"
         style={{
           color,
           fontFamily,

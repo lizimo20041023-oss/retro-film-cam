@@ -29,6 +29,8 @@
  * │              「地名和日期怎么摆」，摆在哪块矩形里由相框的 watermark 决定。│
  * │              **取值在按快门那一刻完成**，见 input.place / locationText     │
  * │ 4. 套相框    相框 PNG `resizeMode="stretch"` 铺满合成舞台，压在照片之上   │
+ * │ 5.5 尺寸规划  → 成片长边由画质档定（`captureQuality.ts`，默认 2048 px）。 │
+ * │              源图更小时夹回源长边（不凭空插值），见 `captureOptions.ts`。 │
  * │ 5. 截图      react-native-view-shot 的 captureRef（Expo Go 内置）         │
  * │ 6. 存相册    expo-media-library 新 API：`Asset.create(uri)`               │
  * └──────────────────────────────────────────────────────────────────────────┘
@@ -59,6 +61,7 @@ import type {
   NormalizedPhoto,
   PlaceDetail,
   ProcessedPhoto,
+  ResolvedFilmPreset,
   ResolvedPlace,
   SaveOutcome,
   Size,
@@ -196,6 +199,22 @@ interface CroppedPhoto extends CapturedPhoto {
  * 两者比例只差一次取整，但 `layout.window` 才是**合成层真正拿去摆照片的那个矩形**
  * （`FilmCompositor` 的 `styles.window` 用的就是它）。裁切比对的基准必须是同一份数据，
  * 否则"结构性一致"就退化成"数值上很接近"。
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * 画幅强锁（v1.7.0）：这里的比例 == 取景器中央镂空视窗的比例
+ * ─────────────────────────────────────────────────────────────────────────
+ *   取景器：`CameraScreen` 用 `computeFrameLayout(frame, previewBox - 2×PREVIEW_PADDING)`
+ *           算 `previewLayout`，再让预览层把相框与照片按它摆好 ——
+ *           用户从镂空里看到的那块画面就是 `previewLayout.window`
+ *           （`FramePreviewLayer.tsx:7-14` 把"两边共用同一个 `previewLayout`"写在组件那边）。
+ *   成片：  同一个 `computeFrameLayout(frame, stage.width, stage.height)` 得到 `layout`，
+ *           `FilmCompositor` 摆照片用的也是 `layout.window`，而这里裁切用的比例
+ *           正是它的 `width / height`。
+ * 两边是**同一个纯函数 + 同一份 `frame` 几何**，只差一次 `Math.round` 取整，
+ * 所以"取景器看见多大，成片就是多大"是结构性成立的（不是靠凑巧）。
+ * `FilmCompositor.tsx:12` / `:80`（预览与成片共用同一个 `FrameSkin`）也是同一条规矩，
+ * `geometry.ts` 头注释同样是。
+ * ⚠️ 真要动窗口几何，就动 `geometry.ts` —— 两边会一起变，这正是要的效果；别只改一边。
  */
 function resolveCropAspect(frame: FrameSpec, layout: FrameLayout): number | null {
   if (frame.photoFit === 'contain') {
@@ -394,11 +413,41 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
   // 5) 调色图层：这里就决定了成片长什么样（纯数据，可断言）
   const layers = buildGradeLayers(preset).map((layer) => layer.label);
 
+  /*
+   * 5.5) 尺寸规划：画质档（`captureQuality.ts`）最终就是在**这里**变成成片像素的。
+   *      必须在挂载之前算完，因为它的结果要吃进 `stageInput.preset` —— 真正决定文件
+   *      大小的是合成层拿到的 `preset.captureLongEdge`（`FilmCompositor` 也调这个纯函数
+   *      去算 `captureRef` 的 width/height，见 `useFilmStage.capture`）。两条路径共用
+   *      同一个数，报告给用户的像素数才不会和实际文件对不上。
+   *
+   *      v1.7.0"不凭空上采样"：底片到这里已经过归一化 + 中心裁切，源长边常常**小于**
+   *      画质档的目标长边（尤其 max 档 4032px）。这时照样把画布开到目标值，只会得到
+   *      "小源图插值放大成大文件"：更慢、更吃内存、清晰度一点没涨。所以把裁完这张的
+   *      **长边**传给 `planCapture` 当上限；真被夹了就把夹过的目标回写进 `preset`，
+   *      让合成层实际截出的画布 = 我们报告的像素数（两边一致，不撒谎）。
+   */
+  const sourceLongEdge = Math.max(cropped.width, cropped.height);
+  const capture = planCapture({
+    width: layout.width,
+    height: layout.height,
+    targetLongEdge: preset.captureLongEdge,
+    sourceLongEdge,
+  });
+  const capturePreset: ResolvedFilmPreset =
+    capture.clampedToSource && capture.targetLongEdge !== preset.captureLongEdge
+      ? { ...preset, captureLongEdge: capture.targetLongEdge }
+      : preset;
+  if (capture.clampedToSource) {
+    warnings.push(
+      `底片长边只有 ${sourceLongEdge}px（相框窗口裁切后），不再请求 ${preset.captureLongEdge}px 的画布：有效目标 ${capture.targetLongEdge}px（若仍低于屏幕原生尺寸，就按屏幕原生出图）`,
+    );
+  }
+
   // 6) 挂载合成视图 → 等布局和图片就绪 → 截图 → 立刻卸载
   const stageInput: FilmStageInput = {
     rawUri: cropped.uri,
     layout,
-    preset,
+    preset: capturePreset,
     frame,
     capturedAt,
     locationText: input.locationText ?? null,
@@ -436,12 +485,8 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     host.unmount();
   }
 
-  // 和 FilmCompositor 用同一个纯函数推尺寸，保证报告的像素数和真截出来的文件一致
-  const capture = planCapture({
-    width: layout.width,
-    height: layout.height,
-    targetLongEdge: preset.captureLongEdge,
-  });
+  // 尺寸已经在 5.5) 算过（`capture`），这里只负责回报 —— 它和合成层用的是同一个纯函数、
+  // 同一份 `layout`、同一个（可能被夹过的）`captureLongEdge`，所以数字和文件必然一致。
 
   return {
     uri,

@@ -54,6 +54,12 @@ export const en: Messages = {
   'frame.neg135': '135',
   'frame.slideMount': 'SLIDE',
   'frame.badge.a11y': 'Frame {name}, photo {count}',
+  'frame.variant.classic': 'Classic',
+  'frame.variant.aged': 'Aged',
+  'frame.variant.doodle': 'Doodle',
+  'frame.variant.a11y': 'Frame style {name}',
+  'drawer.frame.title': 'Frame',
+  'drawer.frame.hint': 'Swipe to change the style',
 
   /* ---------------- ② zoom rail on the viewfinder ---------------- */
   'zoom.a11y': 'Zoom {percent} percent, tap a stop to switch',
@@ -162,6 +168,16 @@ export const en: Messages = {
   'settings.subtitle': 'SETTINGS',
   'settings.title': 'Settings',
   'settings.watermark.title': 'Watermark layout',
+  'settings.quality.title': 'Image quality',
+  'settings.quality.a11y': 'Image quality: {label}',
+  'settings.quality.standard': 'Standard',
+  'settings.quality.high': 'High',
+  'settings.quality.max': 'Maximum',
+  'settings.quality.note':
+    'Sets the long edge of the final print. Bigger is sharper, and costs more memory.',
+  'settings.quality.capNote':
+    'Long edge {longEdge}px. A true 48MP capture needs a native camera module — this setting only sets the print size.',
+
   'settings.watermark.a11y': 'Watermark layout: {label}',
   'settings.watermark.split': 'Place left · date right',
   'settings.watermark.stacked': 'Place above · date below',
@@ -225,6 +241,10 @@ export const en: Messages = {
   'camera.tool.timer': 'Timer',
   'camera.tool.flash': 'Flash',
   'camera.tool.flip': 'Flip',
+  'camera.tool.preview': 'Preview',
+  'camera.tool.preview.on': 'On',
+  'camera.tool.preview.off': 'Off',
+  'camera.tool.preview.a11y': 'Live frame preview, {state}',
   'camera.tool.double.on': 'Double exposure on',
   'camera.tool.double.hint': 'Press the shutter again to stack two frames',
   'camera.tool.timer.off': 'Off',

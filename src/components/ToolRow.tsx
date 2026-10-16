@@ -1,20 +1,26 @@
 /**
- * 次级功能横排：导入 / 重曝 / 定时 / 闪光灯 / 翻转。
+ * 次级功能横排：导入 / 重曝 / 定时 / 闪光灯 / 翻转 / 相框预览。
  *
- * 为什么这五个是"图标 + 无障碍标签"而不是"图标 + 文字"：这一行在 375pt 宽的机型上要塞下
- * 五个 44pt 的触控区，加文字就必然缩到 36pt 以下 —— 那是点不准的尺寸。功能名交给
- * VoiceOver 念，视力用户靠图标和状态点（重曝的小圆点、定时的秒数）就够分辨了。
+ * 为什么这六枚是"图标 + 无障碍标签"而不是"图标 + 文字"：这一行在 375pt 宽的机型上要
+ * 塞下六枚 44pt 的触控区，加文字就必然缩到 36pt 以下 —— 那是点不准的尺寸。功能名交给
+ * VoiceOver 念，视力用户靠图标和状态点（重曝的小圆点、定时的秒数、预览的圆点 + 描边）
+ * 就够分辨了。
+ *
+ * **六枚是这一行的上限**：6 × 44pt + 左右各 6pt 内边距 = 276pt，375pt 的机型还剩 99pt；
+ * 再塞第七枚就要挤进 320pt 的老 SE 且缝里只剩 4pt，"六个按钮"会连成一条玻璃带。
+ * 下一个功能该拆成第二行，而不是继续缩触控区。
  *
  * 为什么导入/重曝/定时三个是自己画的线框而不是图标字体：`assets/ui/icon-*.png` 里没有它们，
  * 而"新增一个图标库"是这份任务书明确禁止的。几个 1pt 的 View 足够画出这三个形状。
- * 闪光灯后来也走上了同一条路：贴图只有两张、斜杠与角标根本没有素材（见 `FlashGlyph`）。
+ * 闪光灯后来也走上了同一条路：贴图只有两张、斜杠与角标根本没有素材（见 `FlashGlyph`）；
+ * 相框预览（v1.7.0）同理 —— 外框 + 内衬 + 一枚太阳，见 `PreviewGlyph`。
  *
  * 液态玻璃改版后，这一行的**外壳**换成了一枚 40pt 的玻璃圆盘（见 `ToolButton`），
  * 当时五个图标的画法、状态判据、无障碍标签一个字节都没动 —— 只换了它们脚下垫的东西。
  *
  * 例外是闪光灯那一枚（v1.6.2 重做）：用户反馈"⚡️ 按钮看不出开没开"，它从两档布尔值
  * 变成了三档（off / on / auto），并拿到了这一行里唯一一块会变色的底盘与描边。
- * 另外四枚仍然是"图标 + 状态点"，判据没动。
+ * 另外五枚仍然是"图标 + 状态点"，判据没动。
  */
 import { memo } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -61,8 +67,8 @@ const ICON_SIZE = 22;
 const TOUCH = 44;
 /**
  * 玻璃圆盘直径。比触控区小 4pt，留出 2pt 的呼吸边：
- * 五枚盘子如果顶满 44pt，相邻两枚之间就只剩 `space-around` 挤出来的缝，
- * 在 375pt 宽的机型上会连成一整条玻璃带，"五个按钮"这件事就看不出来了。
+ * 六枚盘子如果顶满 44pt，相邻两枚之间就只剩 `space-around` 挤出来的缝，
+ * 在 375pt 宽的机型上会连成一整条玻璃带，"六个按钮"这件事就看不出来了。
  */
 const DISC = 40;
 
@@ -100,6 +106,13 @@ export interface ToolRowProps {
   flashMode: FlashMode;
   /** 前摄没有闪光灯：按钮该是灰的，而不是点了没反应 */
   flashDisabled: boolean;
+  /**
+   * 相框实时预览开着没有（v1.7.0 · 模块三）。
+   *
+   * 状态**只**从父组件来：开关本身住在 `CameraScreen` 的本地 state 里，因为面板一盖住
+   * 取景器它就得跟着灭（`covered`），那是父组件才知道的事。
+   */
+  framePreview: boolean;
   /** 正在冲印 / 导入：所有会改变拍摄参数的动作都禁用，免得改了参数却不是这一张 */
   busy: boolean;
   onImport: () => void;
@@ -107,6 +120,7 @@ export interface ToolRowProps {
   onCycleTimer: () => void;
   onCycleFlash: () => void;
   onFlip: () => void;
+  onToggleFramePreview: () => void;
 }
 
 interface ToolButtonProps {
@@ -191,12 +205,14 @@ function ToolRowInner({
   timerSeconds,
   flashMode,
   flashDisabled,
+  framePreview,
   busy,
   onImport,
   onToggleDouble,
   onCycleTimer,
   onCycleFlash,
   onFlip,
+  onToggleFramePreview,
 }: ToolRowProps) {
   const { ink } = useTheme();
   const { t } = useI18n();
@@ -308,11 +324,40 @@ function ToolRowInner({
       <ToolButton a11yLabel={t('camera.tool.flip')} disabled={busy} onPress={onFlip}>
         <Image source={UI_ASSETS.iconFlip} style={[styles.icon, { tintColor: iconColor }]} />
       </ToolButton>
+
+      {/*
+        相框实时预览（v1.7.0 · 模块三）。
+
+        为什么排在最右：前五枚的位置**一个都没动** —— 它们从 v1.6.x 就在那儿，
+        老用户的手是照着那个顺序记的。新功能一律往后排，这是这一行唯一的扩展方式。
+
+        为什么它还敢进来（这一行原本的注释担心"375pt 塞不下第六个"）：五枚 44pt 触控区
+        加 6pt 左右内边距是 232pt，375pt 的机型还剩 143pt，塞得下第六枚 44pt
+        （合计 276pt）。**再加第七枚就不行了** —— 到那时该拆成两行或改布局，
+        而不是继续缩触控区：低于 44pt 的按钮在移动端就是点不准。
+
+        状态语言用「左上角琥珀圆点 + 琥珀描边」，不跟闪光灯抢那层琥珀底盘：
+        闪光灯的点亮态是"硬件在工作"（用户明确要求它最抢眼），预览是"我在看东西"，
+        两种状态不该长得一样。`dot` 是这一行现成的语言（重曝在用），不新增视觉词汇。
+      */}
+      <ToolButton
+        a11yLabel={t('camera.tool.preview.a11y', {
+          state: framePreview ? t('camera.tool.preview.on') : t('camera.tool.preview.off'),
+        })}
+        a11yValue={framePreview ? t('camera.tool.preview.on') : t('camera.tool.preview.off')}
+        a11yState={{ selected: framePreview }}
+        disabled={busy}
+        dot={framePreview}
+        accentRing={framePreview ? litColor : undefined}
+        onPress={onToggleFramePreview}
+      >
+        <PreviewGlyph color={iconColor} />
+      </ToolButton>
     </View>
   );
 }
 
-/** 五个按钮、十个原始值 prop、五个稳定回调：整屏重渲染时不该跟着重排一遍布局。 */
+/** 六个按钮、十二个原始值 prop、六个稳定回调：整屏重渲染时不该跟着重排一遍布局。 */
 export const ToolRow = memo(ToolRowInner);
 
 /* ---------------------------------------------------------------------------
@@ -335,6 +380,25 @@ function DoubleGlyph({ color }: { color: string }) {
       {/* 后面那张压低透明度：重曝就是"两张叠在一起"，一眼要看得出前后关系 */}
       <View style={[styles.doubleBack, { borderColor: color }]} />
       <View style={[styles.doubleFront, { borderColor: color }]} />
+    </View>
+  );
+}
+
+/**
+ * 相框实时预览的图标（v1.7.0 · 模块三）：**一个装着照片的相框** —— 外框、内衬、一枚小小的太阳。
+ *
+ * 为什么还是 `View` 画的线框：`assets/ui/` 里没有"相框"这张贴图，而"新增图标库 / 新增 PNG"
+ * 是这份任务书明令禁止的（见文件头）。三根线足够表达，和导入 / 重曝 / 定时三个是同一套路。
+ *
+ * 为什么不能只画一个方框：那样和 `ImportGlyph`（方框 + 加号）在 22pt 下几乎分不出来。
+ * 内衬（第二层边框）把它和"导入"区分开，太阳那一点再把它和"重曝的两张错位纸"区分开。
+ */
+function PreviewGlyph({ color }: { color: string }) {
+  return (
+    <View style={styles.glyph}>
+      <View style={[styles.previewFrame, { borderColor: color }]} />
+      <View style={[styles.previewMat, { borderColor: color }]} />
+      <View style={[styles.previewSun, { backgroundColor: color }]} />
     </View>
   );
 }
@@ -554,5 +618,37 @@ const styles = StyleSheet.create({
     top: 11,
     width: 4,
     height: 1,
+  },
+  /*
+   * 「相框」那三根线。全部按 22pt 画布居中排布：
+   * 外框 18×14（左右各留 2、上下各留 4），内衬再收 3pt 进去 —— 上下左右的内衬
+   * 恰好都是 3pt，这是"一张装裱好的照片"该有的等宽卡纸，不能有哪边偏一点。
+   * 太阳 2.5pt 落在内衬里面（内衬可画区是 x 6~16 / y 8~14），四周都不压线。
+   */
+  previewFrame: {
+    position: 'absolute',
+    left: 2,
+    top: 4,
+    width: 18,
+    height: 14,
+    borderWidth: 1,
+    borderRadius: 2,
+  },
+  previewMat: {
+    position: 'absolute',
+    left: 5,
+    top: 7,
+    width: 12,
+    height: 8,
+    borderWidth: 1,
+    borderRadius: 1,
+  },
+  previewSun: {
+    position: 'absolute',
+    left: 7.5,
+    top: 9.5,
+    width: 2.5,
+    height: 2.5,
+    borderRadius: 1.25,
   },
 });

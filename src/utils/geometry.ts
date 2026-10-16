@@ -19,9 +19,12 @@
  *    （见 `TONE_STYLE`）—— 打字机体是印在相纸上的小字，本来就比点阵液晶小一圈。
  *
  * 三条从上一版保留下来的规则，别顺手改掉：
- *   1. 日期 / 地名的字号**跟画布短边成比例**（`DATE_FONT_SHORT_EDGE_RATIO`）：换相框、
- *      换手机都不会比例失衡。预设里的 `fontSizeRatio` 没被删掉，它降级成"这一卷想印多大"
- *      的相对权重 —— 绝对值由短边那条线收口。**改字号只改这一个函数**，四种版式一起动；
+ *   1. 日期 / 地名的字号**只来自 `watermarkTypography.ts` 的绝对基准**
+ *      （`dateFontOf(画布宽度)`）：换相框、换手机、换成片分辨率，成片上的像素高度都恒定。
+ *      预设里的 `fontSizeRatio` 降级成"这一卷想印多大"的相对权重（`dateFontRatioOf`）——
+ *      绝对值只由那一个模块收口。**改字号只改那一个文件**，四种版式一起动；
+ *      （v1.7.0 §四废掉了"短边"那条旁路：短边在小屏上会撞到字号下限，
+ *      于是同样一款相框在 320pt 手机和 iPad 上印出两种比例 —— 那正是用户报的浮动。）
  *   2. 边距是**相框宽度**的比例：留白随图放大缩小；
  *   3. `frame` 锚点在**下留白里垂直居中**，用 0.62 修正基线（数码管字面偏上）。
  *
@@ -30,7 +33,7 @@
  *    渲染层把这一行当**固定宽度**容器画（`<DateStamp/>`，`flexShrink: 0`）——
  *    这就是"时间被截断成 `26 10...`"的根治办法（文字行会被 `flexShrink` 压，
  *    固定宽度压不动）。字宽的常量（`MONO_ADVANCE_RATIO` / `DATE_LETTER_SPACING`）
- *    也放在这里，和 `DateStamp.tsx` 共用同一份，两边不会漂。
+ *    定义在 `./watermarkTypography`，和 `DateStamp.tsx` 共用同一份，两边不会漂。
  *
  *    ⚠️ v1.4.1 起这一行**不再是七段数码管**（原 `SegmentDate.tsx` 已删除）。
  *    七段是画出来的形体，字号收到 8pt 时管高只剩 6pt、竖段 0.74pt 比段厚 0.84pt 还短，
@@ -39,6 +42,16 @@
  */
 import type { LocaleId } from '../i18n/types';
 import { CENTERED_SEPARATOR, pad2, timestampTracking } from './formatTimestamp';
+import {
+  DATE_LETTER_SPACING,
+  SPLIT_GUTTER,
+  codeFontOf,
+  dateFontOf,
+  dateFontRatioOf,
+  dateStampWidth,
+  placeFontOf,
+  splitPlaceAvailableWidth,
+} from './watermarkTypography';
 import type {
   FontWeight,
   FrameLayout,
@@ -257,157 +270,29 @@ export function resolveTimestampAnchor(
 export type WatermarkLineKind = 'place' | 'date' | 'code';
 
 /* ==========================================================================
- * 日期串的字宽（等宽字体的 advance）
+ * 日期串的字宽 —— 实现已迁到 `watermarkTypography.ts`（这里只转发导出）
  * ========================================================================== */
 
-/**
- * 等宽字体一个字符的 advance ÷ 字号。
+/*
+ * ── 字号与字宽算术已迁到 `watermarkTypography.ts`（v1.7.0 §四）───────────────
+ * `MONO_ADVANCE_RATIO` / `DATE_LETTER_SPACING` / `DATE_GLYPH_SLACK` /
+ * `dateStampWidth` / `estimatePlaceTextWidth` / `shouldCompactPlaceText` /
+ * `splitPlaceAvailableWidth` 的**定义**现在都在 `./watermarkTypography` ——
+ * 那是水印排版的"绝对像素基准层"，连为什么这么定都写在那里。
  *
- * **0.6 是两平台可以共用同一个数的原因**：iOS 的 `CourierNewPS-BoldMT`（Courier New）
- * 与 Android 的 `monospace`（Roboto Mono / Droid Sans Mono）都是 600/1000 em 的等宽字。
- * 也就是说这条宽度公式不需要 `Platform.select`，算出来的宽度在两个平台上逐点相同。
- *
- * **换字体之前先把这一条重新量一遍。** 它错了不会报错，只会让日期行的宽度整体偏 ——
- * 靠右时表现为"离相框边多远不对"，靠左时表现为"压没压到地名"。
+ * 这里只**原样转发导出**：调用方（`FilmCompositor` / `DateStamp` / 探针）的导入路径
+ * 与签名一个都没变，而"两份实现"这件事在结构上不可能再发生 —— 要改字宽，
+ * 只能改那一个文件。
  */
-export const MONO_ADVANCE_RATIO = 0.6;
-
-/**
- * 日期串的默认字距（逻辑点）。
- *
- * 值由用户直接指定（"等宽粗体 + letterSpacing 2"要的那种数字显示感）。
- * 它不只是好看：等宽字在小字号下字与字挨得很近，2pt 的缝把每一位分开，
- * 压在杂乱的照片上更容易一眼读出来 —— 这一点在 8pt 时比在大字号时重要得多。
- */
-export const DATE_LETTER_SPACING = 2;
-
-/** 两位小数。水印全链路的"精度收敛点"，免得 `0.55 * 10` 的浮点尾巴跑到宽度上。 */
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
-/**
- * 每个字形后面留的**冗余**（逻辑点）。
- *
- * ## 为什么必须有这一条（本轮的改动，别删）
- *
- * 本轮把 `0.6em` 这条公式拿真字体验过一遍：Windows 的 `courbd.ttf`
- * （CoreText 上 `CourierNewPS-BoldMT` 的同族）里 `'` `0`-`9` 空格 `A` `M` 的 advance
- * **全部逐位等于 600/1000 em**，`"'26  10  12"` 的 11 个字形加起来正好 6.6em。
- * 也就是说 `length × (fontSize × 0.6 + letterSpacing)` 算出来的数**恰好等于**
- * 这段字墨迹的真实占宽 —— 一分不多。
- *
- * "恰好相等"在渲染层是个危险值：容器宽度一旦等于（而不是大于）文字宽度，
- * 就得靠 `Text` 自己四舍五入到同一侧才不会截断。CoreText 里
- * `CTLineGetTypographicBounds` 与每个 `CGGlyph` 的 advance 各自取整，
- * 亚点级的差值（<1pt）是必然存在的；此时 iOS 的行为是**从尾部收掉字形**
- * （表现为用户报的「掉字」），而不是优雅地缩小 —— 因为 `adjustsFontSizeToFit`
- * 有 `minimumFontScale` 下限，一旦缩到下限还塞不下就只剩截断一条路。
- *
- * 所以这里给每个字形留 0.5pt：11 个字形 = 5.5pt 的确定性余量，
- * 相对 94.6pt 的日期块是 5.8%，肉眼看不出来，但足以让"容器 ≥ 文字"永远为真。
- * **它不是对 0.6em 的不信任，是对"两边各自取整"这件事的保险。**
- *
- * ⚠️ 上限：只有 `MAX_DATE_FONT`（96pt）那一档会真的碰到它，那时它是 5.5pt，
- * 而日期块的宽度已经是 650pt 量级。
- */
-export const DATE_GLYPH_SLACK = 0.5;
-
-/**
- * 日期串的渲染宽度（逻辑点）。
- *
- * **这是"日期行宽度"的唯一定义**：`computeWatermarkPlan` 用它算 `quartz.width`，
- * `DateStamp` 拿它当容器宽度。两边共用同一个函数，"算出来的宽度"和"画出来的宽度"
- * 在结构上不可能不一致 —— 这正是"日期被截断"那个 bug 的修复方式。
- *
- * 为什么是 `length × (advance + letterSpacing)` 而**不减掉**尾字距：
- * RN 的 `letterSpacing` 在 iOS 走 `NSKernAttributeName`，**每个**字形后面都加一笔，
- * 最后一个也加。所以整块的真实占宽就是 `n × (advance + ls)`。
- * 减掉尾字距会让容器比文字窄 2pt，靠右的那一行就有被省略号收掉的风险 ——
- * 宁可让日期离右边多出 2pt（肉眼看不出来），也不能冒截断的险。
- *
- * 尾字距 + 每个字形的冗余（`DATE_GLYPH_SLACK`，理由见上方那段）就是"容器永远比
- * 文字宽"的全部来源。**改小这两个数之前先读 `DateStamp.tsx` 的注释**。
- */
-export function dateStampWidth(text: string, fontSize: number, letterSpacing: number = DATE_LETTER_SPACING): number {
-  return round2(text.length * (fontSize * MONO_ADVANCE_RATIO + letterSpacing + DATE_GLYPH_SLACK));
-}
-
-/**
- * 全角字形判定（CJK / 假名 / 全角标点）—— 地名宽度估算用。
- *
- * ⚠️ 与 `placeNames.ts` 里那个 `CJK`（判断"中文之间不留分隔符"）**不是一回事**，
- * 别合并：那个是排版语义，这个是**字形宽度**（全角 ≈ 1em）。
- */
-const FULL_WIDTH_GLYPH = /[\u2E80-\u303F\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFF60\uFFE0-\uFFE6]/u;
-
-/**
- * 一个地名串大概占多宽（逻辑点）。**这是估算，不是量出来的。**
- *
- * 为什么需要估算：`split` 版式里地名和日期共用一条基线，地名太长就必须**先精简**
- * （用户的要求是"超出就只留国家 + 城市"），而"太长"只有算过才知道。
- * 地名用的是**比例字体**（中文按全角、拉丁按等宽 0.6em 近似），拿不到真字体度量，
- * 所以这里按"全角 1em / 其余 0.6em"取上界估。
- *
- * ⚠️ 估算偏保守的方向是刻意的：**宁可多精简一次，也不要让地名去挤日期**
- * —— 这一整轮的红线就是"日期永远是完整的 8 位"。宁可错杀地名，不可错放日期。
- */
-export function estimatePlaceTextWidth(
-  text: string,
-  fontSize: number,
-  letterSpacing: number,
-): number {
-  let em = 0;
-  for (const glyph of text) {
-    em += FULL_WIDTH_GLYPH.test(glyph) ? 1 : MONO_ADVANCE_RATIO;
-  }
-  return round2(text.length * letterSpacing + em * fontSize);
-}
-
-/**
- * 这个地名是不是"太长了、该降级成国家 + 城市"。
- *
- * `maxWidth` 传的是这一行**真正能用的宽度**（`split` 里就是
- * `region.width - quartz.width - SPLIT_GUTTER`）。留 2% 的缝给估算误差。
- *
- * 为什么压缩比是**全有或全无**、不做"截断加省略号"：地名被截成
- * 「上海市 · 黄浦…」比「中国 · 上海」更没用 —— 后者至少是个完整的地名。
- * 压缩形由 `placeNames.compactPlace` 产出，走的还是同一套渲染器（红线不受影响）。
- */
-export function shouldCompactPlaceText(
-  text: string,
-  fontSize: number,
-  letterSpacing: number,
-  maxWidth: number,
-): boolean {
-  if (text.length === 0) {
-    return false;
-  }
-  return estimatePlaceTextWidth(text, fontSize, letterSpacing) > maxWidth * 0.98;
-}
-
-/**
- * `split` 版式下地名那一行**还剩多少宽度**（逻辑点）。返回值可能是 0。
- *
- * 为什么要有这个函数：本轮的硬要求是「日期永远是完整的 8 位，绝不被左侧地名挤压」，
- * 而"地名放不放得下"只有把日期块和缝扣掉之后才知道。这个算法原先**内联**在
- * `computeWatermarkPlan` 的 `split` 分支里，调用方（合成层）看不到也就算不出来 ——
- * 于是"地名超长就自动精简成国家 + 城市"无从落地。抽出来的同时保持**逐字相同的算术**，
- * `computeWatermarkPlan` 自己调它，所以"算出来的宽度"和"画出来的宽度"还是同一个数。
- *
- * 公式：`可利用水位 = 水印区宽 − 日期块宽 − 缝`。日期块用的是 `quartz` 里
- * **算好的那个宽度**（含尾字距与 `DATE_GLYPH_SLACK`），所以这里不存在第二套量法。
- *
- * ⚠️ 返回 0 表示"这一档连日期块都占满了"——调用方应当按 0 处理（不印地名），
- * **不许**拿它去反推日期块的宽度然后压缩日期。日期块是不可协商的那一方。
- */
-export function splitPlaceAvailableWidth(
-  regionWidth: number,
-  quartzWidth: number,
-  gutter: number = SPLIT_GUTTER,
-): number {
-  return Math.max(0, round2(regionWidth - quartzWidth - gutter));
-}
+export {
+  DATE_GLYPH_SLACK,
+  DATE_LETTER_SPACING,
+  MONO_ADVANCE_RATIO,
+  dateStampWidth,
+  estimatePlaceTextWidth,
+  shouldCompactPlaceText,
+  splitPlaceAvailableWidth,
+} from './watermarkTypography';
 
 /** 一段水印文字的水平贴边方式。 */
 export interface WatermarkTextAlign {
@@ -577,84 +462,42 @@ const OVER_PHOTO_INK = TONE_STYLE.graphite.color;
 /** 压在照片上的印字投影：小半径纯黑。这是**投影**不是辉光 —— 辉光只给液晶日期。 */
 const OVER_PHOTO_SHADOW = 'rgba(0, 0, 0, 0.6)';
 
-/**
- * 日期字号的上下限（逻辑点）。
+/*
+ * ── 日期字号：唯一算法在 `watermarkTypography.ts`（v1.7.0 §四）───────────────
+ * 旧实现就长在这里，是这样三行：
  *
- * ## v1.5.1 把它从 8 提到 11
+ *     function dateFontOf(layout, config, fontScale) {
+ *       const shortEdge = Math.min(layout.width, layout.height);
+ *       const capped = Math.min(layout.window.width * config.fontSizeRatio,
+ *                               shortEdge * DATE_FONT_SHORT_EDGE_RATIO);
+ *       return Math.round(clamp(capped * fontScale, MIN_DATE_FONT, MAX_DATE_FONT));
+ *     }
  *
- * 8 是 v1.4.0 §五"整体缩 35~40%（目标短边 2%）"的产物，配的是**画出来的七段数码管** ——
- * 那时"管子高 6pt、段厚 0.84pt"确实是当时能画出的最细一档，所以 8 是硬下限。
+ * 它有三个各自独立、合起来正好构成用户报的"水印随画布浮动"的问题：
+ *   1. **两条线同时取小**：`窗口宽 × 5.5%` 与 `短边 × 3.2%`。五款相框的窗口占比
+ *      从 68.6% 到 93.3% 不等，于是"同一台手机换相框"字号会跳档。实测 20 组
+ *      （5 相框 × 4 视口）里窗口项**全部大于**短边项 —— 真正生效的一直只有短边那条，
+ *      窗口项是死代码，却让"字号跟谁走"在源码里说不清。
+ *   2. **短边项在小画布上跌破下限**：320pt 视口下五款相框算出 7.33~9.22pt，
+ *      统统被 `MIN_DATE_FONT = 11` 抬到 11 —— 小屏的"字号 ÷ 画布"反而比 iPad 大，
+ *      同一款相框在两种设备上印出两种比例。**这就是"浮动"的机制本身。**
+ *   3. **上下限是绝对点数**（`MIN = 11` / `MAX = 96`），谁先撞到只取决于画布多大，
+ *      不取决于设计意图 —— 于是"字号"这件设计决策被藏进两个常量里。
  *
- * 真机上这一版被报"水印过小"。看着像主观感受，其实是两个客观变化叠加：
- *   1. v1.4.1 把七段管换成了**真字形**（等宽粗体）。同一字号下，真字形的笔画比自绘管子
- *      更饱满、也更经得起放大 —— 当初为了迁就管子而定死的 8 已经不成立了；
- *   2. 那次实验还证明了"短边 2%"在手机上算出来只有 7.16pt，也就是`DATE_FONT_SHORT_EDGE_RATIO`
- *      这条上限**从来没真正生效过**，实际字号永远停在 `MIN_DATE_FONT`。换句话说：
- *      **这一个常量就是成片上真正在用的字号**，短边比例只是个摆设。
+ * 新算法把这三件事一起收口（实现与完整推导在 `watermarkTypography.ts`）：
+ *   - 基准只有一个：**画布宽度 × 0.032** —— 正是旧公式里那条真正在生效的线，
+ *     所以 390pt 上的观感逐点不变（验收门槛③由此成立）；
+ *   - 上下限改用**比例**表达（`MIN_DATE_FONT_PT = 5` + 画布宽 12% 的硬顶），
+ *     正常画布上永不触发；触发时画布已经小到"字再小也不可读"或大到"字再大也只是水印"；
+ *   - 预设的 `fontSizeRatio`（0.055）不再乘窗口，而是当"这一卷想印多大"的
+ *     **相对权重**（`dateFontRatioOf`，以 0.055 为 1.0）：语义保住，
+ *     绝对值不再被"相框裁得狠不狠"污染。
  *
- * 所以现在按下限本身给足：11pt 在成片里（`captureLongEdge = 2048`，舞台短边 358）
- * 换算成约 63px 字高，落在"清晰可读、又不至于压过照片"的位置。
- * 上限 96 是给平板/外接屏留的余量，没有实测依据，但也不会被手机档碰到。
+ * **不要再在这里写第二份字号算术。** 四种版式 + 两个旧接口
+ * （`computeTimestampLayout` / `computeLocationLayout`）共用
+ * `dateFontOf(画布宽度, 权重)` 这一个数，这才叫"比例在同一处收口"。
  */
-const MIN_DATE_FONT = 11;
-const MAX_DATE_FONT = 96;
 
-/**
- * 日期字号的**绝对上限**：画布短边的比例（规格 §五.1 原来写 2%）。
- *
- * 为什么"跟谁成比例"从画面宽度换成短边：日期是**成片上的字**，它的可读性只跟这块画布
- * 有多小有关 —— 长边再长也不会让字更好认。而画面宽度是相框自己的事（拍立得的窗口
- * 占 89.8%、35mm 只占 68.6%），拿它当基准等于让"相框裁得狠不狠"决定字号。
- *
- * 为什么预设的 `fontSizeRatio` 没有被删：它仍然是"这一卷想印多大"的相对权重，
- * 只是绝对值被这条线收口。三层（预设权重 → 短边收口 → 墨色系数）**全部在
- * `dateFontOf` 这一行里合成** —— 这就是"比例必须在同一处收口"的全部意思：
- * 四种版式、五款相框、五个预设共用这一个数，不存在某一版跑偏的可能。
- *
- * ## v1.5.1：0.02 → 0.032
- *
- * 2% 这条线当初是按"日期是画面角落的附注"定的，实测下来它**在手机上根本够不到**
- * （358 × 2% = 7.16pt < 下限 11），真正生效的一直是 `MIN_DATE_FONT`。
- * 既然用户反馈"过小"，这条摆设线的值就跟着抬到与下限匹配的位置：
- * 358 × 3.2% = 11.46pt，正好压在下限上方一点点 —— 于是它**开始真正起作用**，
- * 大屏上日期会随短边继续变大，小屏则由下限兜住。两条线终于咬合上了。
- *
- * 注意：改这个数**只影响大屏**（手机档永远被 11 兜住）。想整体再大一档，
- * 要动的是 `MIN_DATE_FONT`，不是这里。
- */
-const DATE_FONT_SHORT_EDGE_RATIO = 0.032;
-
-/**
- * 日期字号的**唯一**算法：预设权重 → 画布短边收口 → 墨色系数 → 上下限。
- *
- * 为什么要抽成一个函数：四种版式和两个旧接口（`computeTimestampLayout` /
- * `computeLocationLayout`）都必须**逐位相同**地得到这个数。散在五处写五遍，
- * 迟早有一处忘了改，而"字号对不齐"这种问题在成片上表现为"某个版式的日期大一圈"，
- * 极难回溯到是谁算的。
- *
- * `fontScale` 是墨色系数（`TONE_STYLE[*].fontScale`）：它乘在**收口之后**，
- * 因为"打字机体比液晶小一档"是相对关系，不该被短边那条线抹平 ——
- * 乘在收口之前的话，琥珀和石墨在小画布上会被同一个上限压成一样大。
- */
-function dateFontOf(layout: FrameLayout, config: ResolvedTimestampConfig, fontScale: number): number {
-  const shortEdge = Math.min(layout.width, layout.height);
-  const capped = Math.min(layout.window.width * config.fontSizeRatio, shortEdge * DATE_FONT_SHORT_EDGE_RATIO);
-  return Math.round(clamp(capped * fontScale, MIN_DATE_FONT, MAX_DATE_FONT));
-}
-
-/**
- * 地名相对日期的字号系数。
- *
- * 0.62 是视觉权重排出来的：地点是"附注"，日期才是主角；而且 35mm 那种窄幅相框里，
- * 等大的两行会显得很挤。这个系数**不跟墨色走** —— 墨色已经缩过一次了，
- * 再叠一次会让灰色小字变成不可读的 5pt。
- *
- * v1.5.1 随 `MIN_DATE_FONT` 从 8 提到 11 一起抬到 0.72：日期长大之后，
- * 地名如果还按 0.62 缩，会从"附注"变成"看不清的灰影子"（11 × 0.62 = 6.8pt，
- * 比 iOS 上任何一寸可读小字都小）。0.72 让两行的视觉落差保持和上一版一样
- * （11 : 7.92 ≈ 8 : 5.8），同时地名终于落在 8pt 这条可读线上。
- */
-const PLACE_FONT_SCALE = 0.72;
 
 /**
  * 下留白里的基线修正（0.62）。
@@ -682,10 +525,12 @@ const STACKED_LEADING = 1.32;
  * 整串日期退化成"一排横虚线"的直接原因。两个常量连同这条数学一起删除。
  */
 export const QUARTZ_LINE_BOX_RATIO = 1.16;
-/** 摄影代号行字号 ÷ 地名行字号（规格：代号比地名再小一档）。 */
-const CODE_FONT_SCALE = 0.9;
-/** `split` 版式里地名与日期之间至少留的空档（逻辑点），免得两段字贴在一起。 */
-const SPLIT_GUTTER = 12;
+/*
+ * `CODE_FONT_SCALE = 0.9`（代号 ÷ 地名）与 `SPLIT_GUTTER = 12`（`split` 里地名与日期
+ * 之间至少留的空档）也一并迁进 `watermarkTypography.ts`：它们是和字号基准同一组的数，
+ * 分开放迟早出现"改了字号、忘了改缝"这种看不见的漂移。调用点改用 `codeFontOf()`
+ * 与这个文件顶部 import 进来的 `SPLIT_GUTTER`。
+ */
 /** 石英管的辉光色：规格给的 `rgba(255, 144, 0, 0.45)`，就是琥珀橙 `#FF9000` 的 45%。 */
 const QUARTZ_GLOW_COLOR = 'rgba(255, 144, 0, 0.45)';
 /** 压在照片上的辉光半径（逻辑点）。规格给的 3 —— 管子细，半径一大就糊成一根亮棒。 */
@@ -878,12 +723,17 @@ export function computeWatermarkPlan(
     anchor === 'window' ? { color: OVER_PHOTO_INK, fontWeight: TONE_STYLE.graphite.fontWeight } : ink;
 
   /*
-   * 日期字号：**唯一**入口 `dateFontOf`（预设权重 → 短边 2% 收口 → 墨色系数 → 上下限）。
+   * 日期字号：**唯一**入口 `dateFontOf`（在 `watermarkTypography.ts` 里：
+   * 画布宽度 × 0.032 → 预设权重 → 墨色系数 → 比例的上下限）。
    * 渲染层一个系数都不乘 —— "渲染层再乘 0.6"那种做法会让四种版式各缩各的，
    * 而这条规则要的是四版对齐。
+   *
+   * ⚠️ 传进去的是 **layout.width**（画布宽度），不是 `layout.window.width`：
+   * 水印是印在**这块画布**上的字，它的绝对高度只跟画布有关。旧版拿窗口宽当基准，
+   * 等于让"相框裁得狠不狠"决定字号（拍立得窗口占 89.8%、35mm 只占 68.6%）。
    */
-  const dateFont = dateFontOf(layout, config, toneStyle.fontScale);
-  const placeFont = Math.max(6, Math.round(dateFont * PLACE_FONT_SCALE));
+  const dateFont = dateFontOf(layout.width, dateFontRatioOf(config.fontSizeRatio, toneStyle.fontScale));
+  const placeFont = placeFontOf(dateFont);
   const inset = Math.max(2, Math.round(layout.width * config.insetRatio));
   const { bottom, region } = resolveBaselineAndRegion(layout, config, anchor, dateFont);
   const vertical = regionVertical(layout, anchor, inset);
@@ -896,7 +746,8 @@ export function computeWatermarkPlan(
     100;
   // RN 会在每个字符**后面**加字距，最后一个字符后面那一点也被算进文本宽度，
   // 靠右的行于是看着比边距远了半个字距。加宽字距的英文尤其明显，所以补回来。
-  // ⚠️ 数码管**不做**这个补偿：它的宽度是 `segmentDateWidth` 算出来的，没有尾字距。
+  // ⚠️ 日期块（`quartz`）**不做**这个补偿：它的宽度是 `dateStampWidth` 算出来的，
+  // 公式里已经把尾字距算进去了，再加一次会让日期离右边远半个字距。
   const flushRightOffset = (spacing: number): number => Math.round((layout.rightMargin + inset + spacing) * 100) / 100;
 
   // 辉光 / 投影只解决一个问题：让压在照片上的字从杂乱背景里浮出来。
@@ -1001,7 +852,7 @@ export function computeWatermarkPlan(
   const slotKind: WatermarkLineKind = hasPlace ? 'place' : 'code';
   const hasSlot = slotText.trim().length > 0;
   // 代号行字号比地名行再小一档（× 0.9），颜色与墨色一致（`placeLine` 会给）
-  const slotFont = hasPlace ? placeFont : Math.max(6, Math.round(placeFont * CODE_FONT_SCALE));
+  const slotFont = hasPlace ? placeFont : codeFontOf(placeFont);
   // 相框说贴哪边。`centered` 不看它（居中本身就是"两边都不贴"）。
   const side: 'left' | 'right' = frame.watermark?.align ?? 'right';
 
@@ -1094,6 +945,12 @@ export function computeWatermarkPlan(
      *      再超就让 RN 按 `maxWidth` 收省略号。
      * **绝不允许为了塞下地名去动 `quartz.width`** —— "日期永远是完整的 8 位"是这一轮的
      * 验收线，用户报的「掉字」就是反着来造成的。
+     *
+     * ⚠️ 下面那一行日期**无条件贴右，不看 `side`** —— 与另外三种版式（`dateOnly` 会看
+     * `side`、`centered` 居中、`stacked` 看 `side`）刻意不同，别"顺手对齐"成一样：
+     * `split` 的地名是从 `region.left` 起笔的，日期若也贴左，两行会从同一个 x 出发
+     * 而完全重叠（实测 `polaroid-600` 358×640 上重叠 188.2pt）。
+     * "日期贴右 + 地名拿剩下的"才是这一版式能同时满足"日期恒完整"与"地名尽量长"的原因。
      */
     const slotMaxWidth = hasDate
       ? splitPlaceAvailableWidth(region.width, quartz.width, SPLIT_GUTTER)
@@ -1135,7 +992,8 @@ export function computeWatermarkPlan(
 /**
  * 日期水印的位置与字号。
  *
- * - 字号跟**画布短边**绑定（见 `DATE_FONT_SHORT_EDGE_RATIO`）：换相框、换手机都不会比例失衡；
+ * - 字号跟**画布宽度**绑定（见 `watermarkTypography.ts`）：换相框、换手机、换分辨率，
+ *   成片上的绝对像素高度都恒定；
  * - `inset` 跟相框宽度绑定，留白随图放大缩小；
  * - 锚点 `frame` 时垂直居中于下留白（数码管基线偏低，用 0.62 修正）；
  * - 锚点 `window` 时贴在画面内部右下角，退到下留白之上 inset 的位置。
@@ -1153,7 +1011,7 @@ export function computeTimestampLayout(
   // 兜底字号也必须走同一个 `dateFontOf`：`dateOnly` 版式基本不会走到这里，
   // 但"旧接口自己另算一套字号"正是这条规则最容易被绕开的地方，留一条旧公式就等于留一个坑。
   // 这里用 amber 的系数：这个壳子不带 tone（旧签名就没有），取"不打折"的那一档才不会偏小。
-  const fallbackFont = dateFontOf(layout, config, TONE_STYLE.amber.fontScale);
+  const fallbackFont = dateFontOf(layout.width, dateFontRatioOf(config.fontSizeRatio, TONE_STYLE.amber.fontScale));
   return {
     right: line?.align.right ?? layout.rightMargin + Math.max(2, Math.round(layout.width * config.insetRatio)),
     bottom: line?.bottom ?? Math.max(2, Math.round(layout.width * config.insetRatio)),
@@ -1170,7 +1028,7 @@ export function computeTimestampLayout(
  *    一行在左下、一行在右下，永远齐平，也永远撞不上 —— 不用为"谁更长"做避让；
  * 2. 左边距 = `window.left + inset`，正好是日期右边距的镜像（日期是
  *    `rightMargin + inset`，而 `rightMargin` 就是窗口右沿到相框右沿的距离）；
- * 3. 字号是日期的 **0.62 倍**：地点是"附注"，日期才是主角，
+ * 3. 字号是日期的 **0.72 倍**（`placeFontOf`）：地点是"附注"，日期才是主角，
  *    而且 35mm 那种窄幅相框里，等大的两行会显得很挤。
  */
 export function computeLocationLayout(
@@ -1183,7 +1041,7 @@ export function computeLocationLayout(
   return {
     left: layout.window.left + inset,
     bottom: timestamp.bottom,
-    fontSize: Math.max(6, Math.round(timestamp.fontSize * PLACE_FONT_SCALE)),
+    fontSize: placeFontOf(timestamp.fontSize),
     letterSpacing: timestamp.letterSpacing,
   };
 }

@@ -12,6 +12,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from 'react';
 import type {
   AppSettings,
+  CaptureQuality,
+  FrameVariant,
   GeoLocale,
   GrainLevelId,
   LocalePreference,
@@ -38,6 +40,10 @@ export interface SettingsContextValue {
    * 和 `setLocalePreference` 是两件事：这个是照片上那行字，不是界面。
    */
   setGeoLocale: (next: GeoLocale | 'auto') => void;
+  /** 成片画质档（v1.7.0）。只决定成片长边像素，不改构图。 */
+  setCaptureQuality: (next: CaptureQuality) => void;
+  /** 相框风格变体（v1.7.0）。抽屉里左右滑动调它，取景器与成片同时跟着变。 */
+  setFrameVariant: (next: FrameVariant) => void;
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
@@ -100,6 +106,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     [update],
   );
 
+  const setCaptureQuality = useCallback(
+    (next: CaptureQuality) => update({ captureQuality: next }),
+    [update],
+  );
+
+  const setFrameVariant = useCallback(
+    (next: FrameVariant) => update({ frameVariant: next }),
+    [update],
+  );
+
   const value = useMemo<SettingsContextValue>(
     () => ({
       settings,
@@ -110,6 +126,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setPlaceDetail,
       setGrainLevel,
       setGeoLocale,
+      setCaptureQuality,
+      setFrameVariant,
     }),
     [
       settings,
@@ -120,6 +138,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setPlaceDetail,
       setGrainLevel,
       setGeoLocale,
+      setCaptureQuality,
+      setFrameVariant,
     ],
   );
 

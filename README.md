@@ -53,6 +53,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [29. 打包机换镜像这件事（v1.5.1 发布时踩出来的）](#29-打包机换镜像这件事v151-发布时踩出来的)
 - [30. v1.6.0：四模块重构（胶囊刻度尺 / 相纸正向 / 长卷不再叠合 / 地名与日期）](#30-v160四模块重构胶囊刻度尺--相纸正向--长卷不再叠合--地名与日期)
 - [31. v1.6.1：六模块体检落地 + 闪光灯三档](#31-v161六模块体检落地--闪光灯三档)
+- [32. v1.7.0：画幅强锁 + 相框三变体 + 实时预览 + 水印像素锁定](#32-v170画幅强锁--相框三变体--实时预览--水印像素锁定)
 
 ---
 
@@ -3262,6 +3263,202 @@ rulerMarkCount(windowWidth) = Math.ceil((0.86 * windowWidth + 40) / 8) + 1
 `camera.flash.on` / `camera.flash.off` / `half-frame` / `sheet8x10` + 历次守着的黑名单）；
 `assets/assets/frames/` 只剩 **9 张** PNG（5 款相框，`half-frame` 与 `sheet8x10` 已随之出包）；
 `Info.plist` 2469 B，版本 `1.6.1`、bundle id `com.canyerylee.fretrocam`，旧版本号 `1.6.0` 已不在。
+
+---
+
+## 32. v1.7.0：画幅强锁 + 相框三变体 + 实时预览 + 水印像素锁定
+
+四大模块。原则和上一版一样：**症状一律采信，随症状附上的"病因推断"逐条用真代码核实** ——
+这一轮三条推断是错的，逐条记在下面（§32.1 的"视差"、§32.2 的"48MP 能接"、
+§32.5 的"字号随画布缩放"的真机制），三条都被改成了实测结论而不是照着改。
+
+### 32.1 模块一 · 画幅强锁（"取景器里看见多大，洗出来就是多大"）
+
+整条锁只靠**一个等式**：取景器中央镂空窗的比例 = 静态原图进合成器前的居中裁切比例。
+
+- 取景器的洞是 `frameOffset + previewLayout.window`（`CameraScreen.tsx`），
+  成片的裁切比例是 `resolveCropAspect(frame, layout) = layout.window.width / layout.window.height`
+  （`src/utils/processFilmPhoto.ts:219`），`layout` 同样来自
+  `computeFrameLayout(frame, stage.w, stage.h)`（`src/utils/geometry.ts:218`）。
+  **两边不是"对得齐"，是同一个数**。用户报的"成片比取景框大"因此从结构上消失。
+- 裁切本身是 `centerCropPhoto()`（`src/utils/processFilmPhoto.ts:268`）：按窗口比例算最大内接矩形，
+  `originX = Math.floor((width - cropWidth) / 2)`、`originY` 同理 —— **严格居中，零偏移**，
+  绝不放传感器边缘那些没进过取景器的像素。
+- 平台侧还有一层：iOS 拍完就已经把原图裁成 `CameraView` 的宽高比
+  （`node_modules/expo-camera/ios/**/CameraPhotoCapture.swift:187-190`，纯裁剪零缩放），
+  所以"捕获全传感器、成片比预览大"这件事**本来就不会发生** —— 上一轮那个推断是错的，
+  真正缺的是"从 CameraView 比例再收到镂空窗比例"这一步居中裁切。
+- 实测（`_probe_lead_integration.mjs` A 节）：5 款相框 × 3 种设备 = 15 组，
+  「取景器窗比例 vs 成片裁切比例」相对差**最差 0.429%**（`neg-135` / iPhone 16 Pro Max 440pt）。
+  这点残差的来源是 `computeFrameLayout` 把窗口矩形 `Math.round` 成整数（±0.5pt），
+  **不是算法差异** —— 相框的 `window` / `aspect` / `source` / `code` 数值这一版一个都没动
+  （动了会同时破坏画幅锁与相框对位）。
+
+### 32.2 模块一 · 高画质捕获 + `[标准/高清/极致]` 档位的真相
+
+- 快门走 expo-camera 的**高画质静态拍摄**通道（`CameraScreen.tsx` 快门处）：
+  `takePictureAsync({ quality: 1, skipProcessing: false, exif: false })`。
+  **全仓没有任何"截取实时预览流"的路径**。`skipProcessing: false` 是显式写出来的
+  （它本来就是默认值，`expo-camera` 的 `Options.kt:15`）：置 `true` 会跳过后处理，
+  官方文档原话是 "Enabling skipProcessing would cause orientation uncertainty" ——
+  方向不定 + 压缩质量丢失，正是"模糊/马赛克 + 方向乱"的来源。该开关在 expo-camera 57 里
+  **只有 Android 读**（`ResolveTakenPicture.kt:81`），iOS 无论传什么都走后处理，写上对两端都安全。
+- 真正的画质瓶颈从来不在那次调用上，而在**成片像素口径**：成片是把合成舞台 `captureRef` 出来的一张图，
+  v1.6.1 把 `captureLongEdge` 钉死在 2048。现在三档 **2048 / 3024 / 4032**，
+  在 402×489pt 的舞台上实测成片 **1683×2049（≈3.45MP）/ 2487×3024（≈7.5MP）/ 3315×4032（≈13.4MP）**，
+  `max` 档是 `standard` 档的**约 3.9 倍像素数**。
+- ⚠️ **这一档不是 48MP，也不可能是 48MP。** 证据（不是猜）：把
+  `node_modules/expo-camera/ios/**/*.swift` 全文 grep `activeFormat` / `setActiveFormat` /
+  `device.formats` / `supportedMaxPhotoDimensions` —— **零命中**；整个 iOS 侧唯一的尺寸声明是
+  `CameraPhotoCapture.swift` 的 `photoSettings.maxPhotoDimensions = photoOutput.maxPhotoDimensions`
+  （系统给多少要多少）；`getAvailablePictureSizesAsync()` 在 iOS 上是 `CameraViewModule.swift:268-270`
+  的 9 个硬编码枚举值。**真 48MP 必须写原生相机模块**，不在本版范围内。
+  所以 UI 上写的是 `[标准]/[高清]/[极致]`（顶栏胶囊循环 + 设置页 ⑥ 画质分区），
+  并配一句如实说明 `settings.quality.capNote`：
+  「最长边 `{longEdge}`px。真正的 48MP 需要原生相机模块 —— 这一档只决定成片尺寸。」
+  **把 4032 说成 48MP 就是撒谎，这一版不做这件事。**
+- 档位真的生效，四条缝全接上了：`settings.captureQuality` → `effectivePreset.captureLongEdge`
+  （`CameraScreen.tsx`，拍摄与相册导入两条路共用同一个 `effectivePreset`）→
+  `processFilmPhoto.ts:430` 的 `planCapture({ targetLongEdge })` → 合成层；
+  另一条是 App 内相册副本 `addShot({ maxLongEdge })` → `galleryStore.ts` 的 `planResize`。
+- `planCapture` 新增 `targetLongEdge` / `clampedToSource`（`src/utils/captureOptions.ts:65` / `:73`）：
+  **绝不凭空上采样** —— 目标长边超过源图长边时夹到源长边并在返回值里说明。
+  不传 `sourceLongEdge` 时与 v1.6.0 **逐字同行为**。
+
+### 32.3 模块二 · 相框 A/B/C 三风格变体（`FrameSkin`）
+
+- **零新素材**：全仓没有 canvas，变体是用 React Native 的 `<View>` 叠加层画出来的。
+  `expo export` 产物仍是 17 个 assets（9 张相框 PNG + 颗粒/灰尘/漏光/暗角 + 4 张 UI），**一张没多**。
+- 新建 `src/constants/frameVariants.ts`（纯查表，零 `require`，避免把 PNG 拖进这条依赖链）与
+  `src/components/FrameSkin.tsx`（749 行）。
+- **A 经典（`classic`）**：`buildSkinElements('classic', …)` 恒返回 `[]`，组件 `return null`
+  ⇒ 老用户外观**逐像素不变**（这也是默认档）。
+- **B 泛黄复古（`aged`）**：整幅 `#F4EEDC` 以 `multiply` 盖 0.6 不透明度；四边由外向内 6 级暗房晕染
+  （α 0.2 → 0.034，越靠边越深）；20 颗确定性岁月斑点（直径 0.30%~1.28% 相纸宽，
+  `rgba(120,90,40,0.05~0.14)`）。`fp100c` 因左右留白只有 3.3%/9.2%，最内侧一级放不进被过滤 ⇒ 19 条。
+- **C Dazz 手绘涂鸦（`doodle`）**：16 颗不规则撞色圆点（粉 `#FF5FA2` / 黄 `#FFD34D` / 蓝 `#3FB6F0` /
+  薄荷 `#7BE3C0`，直径 1.51%~4.99% 相纸宽）+ 4 个空心圈 + **恒定 3 条**圆角笔触
+  （长 65.5~127.9pt、厚 6.9~28.4pt、倾角 ≤14°）。
+- **确定性**：`mulberry32(hashSeed(变体名 · seed))`，`useMemo` 只算一次，全文件 `Math.random` 零命中
+  ⇒ 同一款相框每次进来图案一样。**预览与成片必须一致才可能"所见即所得"**，随机纹样做不到这一点。
+- **绝不画进照片窗口**：生成时双重过滤（中心 + 外接盒，按相纸短边 0.6% 内缩），
+  探针在 5 款相框 × 2 档尺寸下断言**窗口内 0 命中**。
+- 两个**绝对 pt 阈值改成了比例**（`MIN_VISIBLE_RATIO = 0.004`、`SKIN_WINDOW_PADDING_RATIO = 0.006`）：
+  绝对阈值会让 96pt 的预览与 390pt 的成片**元素集合不同**。改成比例的过程里探针抓出一个真 bug：
+  空心圈的 `borderWidth < 0.4`（写死 0.4pt）在 96×72 预览里把 4 个圈**全过滤掉**了，成片里 4 个都在。
+- **一处做不到，如实记**：`fp100c / aged` 在 96×72 预览是 17 条晕染、成片 18 条（差最贴边那一级）。
+  根因不在皮肤：`computeFrameLayout` 把归一化窗口乘尺寸后取整（±0.5pt），在 55pt 宽的相纸上
+  相对误差 0.9%，而皮肤必须严格避让**已取整**的那个窗口（否则边上露半像素照片）。
+  冻结的接口只给取整后的 `window: Rect`，这 0.5pt 无法两全。所以该处断言是
+  「非晕染元素逐元素全等 + 晕染条数差 ≤ 1」；理想等比（同一归一化窗口按比例放大）下的
+  **逐元素全等 < 1e-9** 仍由探针严格保证。
+- **抽屉里的一行**（`src/components/FilmDrawer.tsx`）：相框名 + 左右滑动切档（阈值 34pt）
+  + 三颗药丸点按（永远可用的第二条路）+ VoiceOver 的 `adjustable` 上/下滑动动作；
+  右侧一块 **96×72（窄屏 76×57）迷你成片预览**，几何走**同一个** `computeFrameLayout`、
+  皮肤走**同一个** `FrameSkin`。
+  **为什么预览不放在取景器里**：抽屉一开 `covered` 为真（`CameraScreen.tsx:589`），
+  整个取景器被 `previewCovered`（`opacity: 0`）隐掉 —— 而且抽屉占屏高 0.58，相纸中心恰好被盖住，
+  放宽那个 `opacity` 也没用。所以"实时更新预览效果"落在抽屉自己身上。
+- 种子只许有一个产地：`frameSkinSeedOf(frame)`（`src/constants/frames.ts:265`，返回 `frame.id`），
+  三个调用点（成片 / 取景器预览 / 抽屉预览）全走它。
+- 删掉 `src/components/FrameOverlay.tsx`（43 行死代码，全仓零 import）——留着就是第二份实现。
+
+### 32.4 模块三 · 取景器「相框实时预览」开关
+
+- 工具行第 **6** 枚按钮 `[🖼️ 预览 开/关]`（`src/components/ToolRow.tsx`）。
+  **六枚是这一行的上限**：6×44 + 12 = 276pt，375pt 机型剩 99pt；第七枚会挤进 320pt 老 SE 且缝里只剩 4pt。
+- 新建 `src/components/FramePreviewLayer.tsx`：**不重算任何几何**，直接吃 `CameraScreen` 里
+  已经存在的 `previewLayout` 与 `frameOffset`，于是"预览层画的窗口"与"玻璃遮罩挖的窗口"
+  逐点重合 —— 这不是对齐得好，这是同一个数。
+- **不画照片**：相框 PNG 的画面区是全透明的，合成时透出底图，取景时透出的就是实时画面。
+  多铺一层截图反而会把实时预览挡住。
+- 半透明 `FRAME_PREVIEW_OPACITY = 0.82`：纸面盖住取景器边缘的同时，窗外实时画面仍看得见在动。
+- 时钟与地名每 `FRAME_PREVIEW_REFRESH_MS = 30_000` 刷一次（地名走 `locationStamp.resolveForShot()`）；
+  `resolveForShot` **必须**从 `useLocationStamp()` 里解构出来再用 —— 那个 hook 每次渲染返回新对象字面量，
+  直接当依赖会"重建 → tick → setState → 重渲染"死循环。
+- 开关是**本地 state 不是设置项**：它回答的是"这一张我想怎么看"，不是"App 该怎么工作"；
+  而且开着时取景器边缘一直是半透明的，不该是"用户忘了关就一直背着"的状态。
+- 抽屉 / 设置 / 相册、以及冲印期间，预览层一律隐藏。
+
+### 32.5 模块四 · 水印字体绝对像素锁定
+
+- 字号算法收归一处：新建 `src/utils/watermarkTypography.ts`，**零 import**（连 `react-native` 都不许进）
+  —— 否则早晚会出现"看着屏幕调字号"的第二套算法。
+- 旧机制为什么"时大时小"：`min(窗口宽 × fontSizeRatio, 短边 × 0.032) × 墨色系数`，
+  再被 `MIN_DATE_FONT = 11` 从下面顶住。**两处都在破坏比例**：`min()` 让两款基准
+  在不同相框之间跳变；11pt 下限让小画布上的字**相对变大**（320pt 上五款相框的字号
+  实测全是 11 —— 那不是比例，那是下限）。
+- 新机制：`dateFontOf(canvasWidth, ratio) = round2(clamp(canvasWidth × ratio, 5, canvasWidth × 0.12))`，
+  地名字号 `×0.72`、代号 `×0.9`，间距 `dateLetterSpacing = 2pt` 绝对值。
+  **不变量：字号 ÷ 相纸宽度 = 常数**（用户要的"绝对像素基准"）。
+  旧常量（`MIN_DATE_FONT` / `MAX_DATE_FONT` / `DATE_FONT_SHORT_EDGE_RATIO` / 旧 `dateFontOf`）
+  已删净，`geometry.ts` 里的旧调用点改成从新模块转发导出，调用方导入路径与签名一字未变。
+- 渲染期**唯一会偷偷缩放**的地方也拆了：`DateStamp.tsx` 去掉
+  `adjustsFontSizeToFit` + `minimumFontScale={0.9}`，改 `ellipsizeMode="clip"`。
+  静默缩放会让"算出来的字号 ≠ 画出来的字号"，绝对锁定当场失效且**没人能发现**；
+  现在真溢出会变成**可见的裁切**。宽度由 `dateStampWidth`（含每字形 +0.5pt 正向余量）结构性保证。
+- 实测：四档画布宽 289/358/400/440 上「字号 ÷ 画布宽」相对离散 **0.035%**；
+  同一相框 4 种视口、成片 2048 长边下日期像素高 44.24 / 44.21 / 44.18 / 44.22 px
+  （极差 **0.06px = 0.14%**）。这点残差来自 `fitBox` 的整数取整与 `round2`，
+  已量化到"肉眼与像素级都不可见"，不再动它。
+- 390pt / 430pt 的 amber 档与旧值**四舍五入后相同**（11.46 → 11），默认观感不变；
+  iPad 锚点 25 → 25.09。
+- **两处可见变化，装之前请知情**：① 320pt 档 5 款相框的日期都变小了
+  （amber 7.33~9.22 / graphite 6.01~7.56，旧值恒为 11 的下限）；
+  ② 390/430pt 的 graphite 档变小（默认相框 `polaroid-600` 上 11 → 9.39）。
+  这是"去掉尺寸相关下限"的必然结果 —— 旧值**就是**那个下限，不是比例。
+  若真机上觉得小屏偏小，唯一的杠杆是 `geometry.ts` 的 `TONE_STYLE.graphite.fontScale`（0.82），
+  但改它会让 iPad 涨 18%，所以这一版保持不动。
+
+### 32.6 集成接缝（四处模块之间最容易漏的地方，由 Lead 收口）
+
+1. **画质档并进 `effectivePreset`**：`preset` 是整条成片链路唯一的像素口径入口，
+   用户档位**无条件**覆盖预设自带值（全仓没有任何 `PRESETS` 卷显式声明过 `captureLongEdge`）。
+2. **`frameVariant` 漏传了两个调用点**：`<FilmCompositor>` 在 `CameraScreen.tsx` 与
+   `GalleryScreen.tsx` 各有一个，都不传就退回默认 `'classic'` ⇒
+   取景器预览是泛黄相纸、洗出来却是白卡纸，**直接违背"所见即所得"**。两处都补上了。
+3. **`<FilmDrawer frameId>` 一直是 `undefined`** ⇒ 抽屉里"现在套的是哪款相框"永远显示默认款。已补。
+4. **相册副本不认画质档**：`addShot` 原来硬写 2048，用户选了极致档回 App 相册还是小图。
+   新增 `AddShotInput.maxLongEdge`（`planResize` 只缩不放，所以小档位不会把大图放大）。
+
+### 32.7 验证清单
+
+| 探针 | 断言 | 覆盖 |
+| --- | --- | --- |
+| `_probe_capture_quality.mjs` | **77 / 0** | 三档表、`planCapture` 夹取、预设通道、端到端像素 |
+| `_probe_typo_invariant.cjs` | **464 / 0** | 不变量、MIN/MAX 从未触发、旧接口逐位同源、split 分栏 80 例、结构断言 |
+| `_probe_frameskin.cjs` | **347 / 0** | 确定性、绝不画进窗口、预览与成片元素集合、空心圈 bug 回归 |
+| `_probe_lead_integration.mjs` | **85 / 0** | 画幅锁、预览层对齐、皮肤、水印不变量、档位接线（源码级）、三档成片长边 |
+
+合计 **973 条断言 / 0 失败**。另加冻结版本后跑的最终门槛：`npx tsc --noEmit -p tsconfig.json` → **EXIT 0 零诊断**；
+`npx expo export --platform ios --no-bytecode` → **EXIT 0**，bundle `index-fec6a7d4d51ab5447a94b88b2b3a8226.js` = **1,283,975 B**，
+产物 19 个文件 / 2,981,584 B，其中素材仍是 **17 个**（9 张相框 PNG + 4 张纹理 + 4 张 UI）——
+**`FrameSkin` 一个素材都没新增**，变体全是 `<View>` 画出来的。
+所有探针都在**工作区根**，不在仓库里（产物目录也在仓库外 `_export_v170_final`）。
+
+### 32.8 没能验证的 / 拿不准的
+
+- **没有真机、也没有模拟器**：上面每一条视觉结论都是纯函数探针 + 算术，**一张截图都没有**。
+  `aged` / `doodle` 的实际观感、96×72 迷你预览里皮肤是否还看得出纹样、取景器叠加层 0.82
+  是否真的"既能看清相框又不挡构图"—— 全部未验证。
+- 画幅锁最差 0.429% 的取整残差、水印 0.14% 的像素残差：都已量化，都没有归零。
+- 抽屉里**横向滑动**能否在纵向 ScrollView 里稳定接管手势，未在真机上验证；
+  药丸点按是刻意留的第二条路。
+- `fp100c / aged` 的 17 vs 18 条晕染差异（原因见 §32.3）。
+- 320pt 档与 graphite 档的字号变化是否是你想要的最终观感（见 §32.5 末）。
+
+### 32.9 v1.7.0 产物指纹（发布后回填）
+
+| 项目 | 值 |
+| --- | --- |
+| 本地提交 | 待回填 |
+| 远端提交 | 待回填 |
+| CI | 待回填 |
+| artifact | 待回填 |
+| Release | 待回填 |
+| asset | 待回填 |
+| sha256 | 待回填 |
+| 下载地址 | 待回填 |
 
 ---
 

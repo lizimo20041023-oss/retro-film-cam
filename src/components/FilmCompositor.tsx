@@ -7,6 +7,10 @@
  *        · 重曝的第二张（`overlayUri`，`overlayOpacity` 默认 0.5，叠在同一格里）
  *        · 调色图层（纯色层 / 同图自叠 / 纹理层，全部用 mixBlendMode 混合）
  *   ② 相框 PNG（resizeMode="stretch" 铺满整个合成舞台，透明处露出照片）
+ *   ②b 相框皮肤（`FrameSkin`，v1.7.0）：纸面做旧 / 手绘涂鸦，画在相框 PNG **之上**、
+ *      水印**之下** —— 它是"相纸上的痕迹"，该压住纸面，但不该压住日期和地名。
+ *      取景器里的实时预览挂的是**同一个组件**（只是画幅小），所以预览与成片等比。
+ *      `classic` 档 `FrameSkin` 返回 `null`：老成片的渲染树与 v1.6.1 逐像素一致。
  *   ③ 水印。日期和定位**一起**排在最后：
  *      烧在画面内部时画在照片之上，烧在相框留白里时必须盖在相框之上，
  *      两种锚点都是"最后画"最安全 —— 所以它们共用一个 `pieces` 数组、一次渲染。
@@ -29,12 +33,14 @@ import { Image, StyleSheet, Text, View } from 'react-native';
 import type { StyleProp, TextStyle, ViewStyle } from 'react-native';
 import ViewShot from 'react-native-view-shot';
 import type { ViewShotRef } from 'react-native-view-shot';
+import { frameSkinSeedOf } from '../constants/frames';
 import { textureSource } from '../constants/textures';
 import type { LocaleId } from '../i18n/types';
 import type {
   FilmStageInput,
   FrameLayout,
   FrameSpec,
+  FrameVariant,
   GradeLayer,
   PlaceDetail,
   ResolvedPlace,
@@ -55,6 +61,7 @@ import {
 import type { WatermarkQuartz } from '../utils/geometry';
 import { buildGradeLayers } from '../utils/gradeLayers';
 import { DateStamp } from './DateStamp';
+import { FrameSkin } from './FrameSkin';
 
 export interface FilmCompositorProps {
   /** 要合成的一切数据（由 `useFilmStage` 提供）。 */
@@ -67,6 +74,12 @@ export interface FilmCompositorProps {
   onImageLoad: () => void;
   /** 系统等宽字体兜底（预设里指定的 fontFamily 优先）。 */
   timestampFontFamily: string;
+  /**
+   * 相框风格变体（v1.7.0）。不传 = `'classic'`（不叠皮肤）——
+   * 老调用方（`GalleryScreen` 的导入链路）一行不改也和 v1.6.1 逐像素一致。
+   * 取景器预览与成片共用同一个 `FrameSkin`，所以两边长得一样。
+   */
+  frameVariant?: FrameVariant;
   style?: StyleProp<ViewStyle>;
 }
 
@@ -318,6 +331,7 @@ export function FilmCompositor({
   onLayout,
   onImageLoad,
   timestampFontFamily,
+  frameVariant = 'classic',
   style,
 }: FilmCompositorProps) {
   const { layout, preset, frame, rawUri, capturedAt } = stage;
@@ -464,6 +478,22 @@ export function FilmCompositor({
         fadeDuration={0}
       />
 
+      {/*
+        ②b 相框皮肤（v1.7.0）。挂在相框 PNG **之后** = 盖在纸面上；水印在它之后画，
+        所以日期与地名永远压在皮肤之上（不会被斑点糊掉）。
+        · `window` 必须是 `layout.window`（不是相框数据里的归一化窗口）——
+          皮肤要严格对齐**已经取整过的**那一个矩形，否则边上会露半像素照片。
+        · `seed` 走 `frameSkinSeedOf(frame)`：同一款相框永远同一套花纹，
+          取景器预览与成片才对得上（见 frames.ts 里那个函数的说明）。
+      */}
+      <FrameSkin
+        width={layout.width}
+        height={layout.height}
+        window={windowRect}
+        variant={frameVariant}
+        seed={frameSkinSeedOf(frame)}
+      />
+
       {/* ③ 水印（日期 + 定位，一次画完） */}
       {pieces.map((piece) => {
         const fontFamily = preset.timestamp.fontFamily ?? timestampFontFamily;
@@ -496,7 +526,8 @@ export function FilmCompositor({
 
         /*
           只有七段日期（split / stacked / dateOnly）：**固定宽度的独立容器**。
-          宽度来自 `segmentDateWidth()`，不是量出来的 —— 这就是"日期再也不会被截断"
+          宽度来自 `dateStampWidth()`（`utils/watermarkTypography.ts`，v1.7.0 起字宽
+          算术的唯一归口），不是量出来的 —— 这就是"日期再也不会被截断"
           的落点。RN 的 flexShrink 默认就是 0，这里显式再写一遍：
           这条契约值得被后来的人看见（曾经就是被压成了 `26 10...`）。
         */

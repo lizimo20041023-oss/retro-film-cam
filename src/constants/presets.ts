@@ -37,6 +37,7 @@ import type {
   ResolvedFilmPreset,
   ResolvedTimestampConfig,
 } from '../types';
+import { DEFAULT_CAPTURE_QUALITY, resolveCaptureLongEdge } from './captureQuality';
 
 /** 调色/颗粒/暗角等参数的默认值：不写就用它。 */
 export const PRESET_DEFAULTS = {
@@ -63,7 +64,10 @@ export const PRESET_DEFAULTS = {
    */
   normalizeMaxLongEdge: 0,
   /**
-   * 成片的长边目标像素数。0 = 用屏幕原生分辨率（舞台逻辑尺寸 × 设备像素比，约 1119×1488）。
+   * 成片的长边目标像素数。**默认值来自画质档**：`resolveCaptureLongEdge(DEFAULT_CAPTURE_QUALITY)`
+   * —— 三档与内存口径见 `captureQuality.ts`，当前默认 = 2048（standard）。
+   * 单支卷想永远更大/更小，就自己写一个数；`resolvePreset` 里的 `??` 会给它让路。
+   * 0 = 不指定，用屏幕原生分辨率（舞台逻辑尺寸 × 设备像素比，约 1119×1488）。
    *
    * 为什么要有这个旋钮：调色全部靠 `mixBlendMode`（= iOS 的 `layer.compositingFilter`），
    * 而截图走的是 `drawViewHierarchyInRect`，默认只按"视图在屏幕上的逻辑尺寸 × 设备像素比"出图。
@@ -71,8 +75,11 @@ export const PRESET_DEFAULTS = {
    * 重绘到更大的画布上 —— 照片、相框 PNG、日期文字都会从各自的源图重新采样，
    * 所以只要源图分辨率够（相框已生成到 2700×3600），就能真的拿到更多像素。
    * 代价是内存：2048 约 +12 MB，3024 约 +30 MB。
+   *
+   * v1.7.0：这一档现在**由用户在设置页里选**（标准/高清/极致），并实时生效；
+   * 这里给的只是"用户还没选过"的默认锚点，不再是唯一真相。
    */
-  captureLongEdge: 2048,
+  captureLongEdge: resolveCaptureLongEdge(DEFAULT_CAPTURE_QUALITY),
 } as const;
 
 /** 日期水印默认值（经典橙色液晶）。 */

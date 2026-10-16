@@ -721,6 +721,16 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
               onLayout={filmStage.handleStageLayout}
               onImageLoad={filmStage.handleStageImageLoad}
               timestampFontFamily={fonts.fontFamily}
+              /*
+               * 相框风格变体（v1.7.0 · 模块二）。相册导入冲印走的是**同一个**合成舞台，
+               * 所以这里也得带上 —— 否则同一个相框设置下，"拍出来的"和"导进来的"
+               * 会洗出两种相纸，用户只会觉得 App 坏了。
+               *
+               * 刻意读**当前设置**而不是这一张拍摄时记下的值：`galleryStore` 里没有
+               * 存过变体（历史成片也没有这个概念），而且用户按下"导入"这一刻的意图，
+               * 就是他此刻在设置里选的那一档。
+               */
+              frameVariant={settings.frameVariant}
             />
           ) : null}
           <ActivityIndicator color={darkroom.ink.amberSoft} />

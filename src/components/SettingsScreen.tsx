@@ -9,8 +9,8 @@
  * 引了导航库反而要给取景器套一层 navigator，得不偿失。
  *
  * 用整屏 `ScrollView` 而不是 `View`：iPhone SE 上"语言 6 行 + 定位 4 行 + 页脚"
- * 会超出一屏，而设置界面**绝不能有滚不动的选项**。本次加了三个分区之后更长了 ——
- * 这也是那个 `ScrollView` 至今没被换成 `View` 的原因。
+ * 会超出一屏，而设置界面**绝不能有滚不动的选项**。本次加了三个分区之后更长了，
+ * v1.7.0 的画质分区又添了 3 行 —— 这也是那个 `ScrollView` 至今没被换成 `View` 的原因。
  *
  * ── 为什么所有"拍之前要定好"的参数都收到这里 ──────────────────────────────
  * 颗粒原本是取景器底部的一条横向滑轨。取景时最不该做的事就是分心去调颗粒：
@@ -20,7 +20,7 @@
  * ── 排序说明 ──────────────────────────────────────────────────────────────
  * 顺序 = 「越常改的越靠上」+「有从属关系的必须相邻」：
  * 语言 → 定位水印 → 地名详细度（只在"地名"档下起作用，所以紧贴其后）
- * → 水印版式（水印长什么样）→ 颗粒（成像质感）→ 页脚。
+ * → 水印版式（水印长什么样）→ 画质（成片有多大 · v1.7.0）→ 颗粒（成像质感）→ 页脚。
  */
 import { useCallback, useMemo } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -28,12 +28,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { useTheme, UI_MONO } from '../constants/theme';
 import type { Theme } from '../constants/theme';
+import { CAPTURE_QUALITIES, captureQualityCapNote } from '../constants/captureQuality';
 import { GRAIN_LEVELS } from '../constants/grain';
 import { useI18n } from '../i18n';
 import { LOCALES } from '../i18n/locales';
 import { useSettings } from '../hooks/useSettings';
 import { LOCATION_FAILURE_COPY } from '../utils/locationStamp';
 import type {
+  CaptureQuality,
   GeoLocale,
   GrainLevelId,
   LocalePreference,
@@ -90,6 +92,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
     setPlaceDetail,
     setGrainLevel,
     setGeoLocale,
+    setCaptureQuality,
   } = useSettings();
 
   /**
@@ -125,7 +128,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   const placeDetailDisabled = settings.locationMode !== 'place';
 
   /**
-   * 下面六个 handler 都只做两件事：一次选择触感 + 落设置。
+   * 下面七个 handler 都只做两件事：一次选择触感 + 落设置。
    *
    * 为什么都走 `useCallback`：`OptionRow` 是纯展示组件，但它在 `map` 里被创建，
    * handler 每次渲染换新会让每一行都白重渲染一次；也顺便让依赖关系显式可见。
@@ -171,6 +174,14 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
       setWatermarkLayout(next);
     },
     [setWatermarkLayout],
+  );
+
+  const handleCaptureQuality = useCallback(
+    (next: CaptureQuality): void => {
+      void Haptics.selectionAsync();
+      setCaptureQuality(next);
+    },
+    [setCaptureQuality],
   );
 
   const handleGrainLevel = useCallback(
@@ -328,7 +339,32 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
           ))}
         </View>
 
-        {/* ⑥ 颗粒。从取景器底部那条横向滑轨搬过来的（见文件头）。 */}
+        {/* ⑥ 画质（v1.7.0 · 模块一）：成片长边像素。 */}
+        <SectionHeading label={t('settings.quality.title')} />
+        <View style={styles.group}>
+          {CAPTURE_QUALITIES.map((spec) => (
+            <OptionRow
+              key={spec.id}
+              // 档位名走 i18n（`settings.quality.*`）。`spec.note` 是常量表里给开发者
+              // 看的中文说明，**不进 UI**；这一列的"代号"位显示真实的长边像素，
+              // 与颗粒行的 `STD` 同类：数字不随语言变，也不该被翻译。
+              label={t(spec.labelKey)}
+              note={`${spec.longEdge}px`}
+              selected={settings.captureQuality === spec.id}
+              onPress={() => handleCaptureQuality(spec.id)}
+              a11yLabel={t('settings.quality.a11y', { label: t(spec.labelKey) })}
+            />
+          ))}
+        </View>
+        {/*
+          如实说明这一档**买不到什么**：真 48MP 要原生相机模块，纯 JS 侧没有这条路。
+          第一句是本地化的（`settings.quality.note`），后半句是语言中立的事实标注
+          —— 详见 `captureQuality.ts` 里 `captureQualityCapNote` 的注释。
+          刻意写在**行下方**而不是塞进某一行：它不是某一档的属性，是三档共同的前提。
+        */}
+        <Text style={styles.hint}>{captureQualityCapNote(settings.captureQuality, t)}</Text>
+
+        {/* ⑦ 颗粒。从取景器底部那条横向滑轨搬过来的（见文件头）。 */}
         <SectionHeading label={t('settings.grain.title')} />
         <View style={styles.group}>
           {GRAIN_LEVELS.map((level) => (

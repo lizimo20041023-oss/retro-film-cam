@@ -79,6 +79,22 @@ export type WatermarkLayout = 'split' | 'stacked' | 'centered' | 'dateOnly';
 export type PlaceDetail = 'archive' | 'full';
 
 /**
+ * 成片画质档（v1.7.0）。
+ *
+ * 它不是"相机要拍多大"——iOS 上 `takePictureAsync` 的输出尺寸由
+ * `AVCaptureSession.sessionPreset` 决定，expo-camera 57 没有任何接口能改它
+ * （详见 `captureQuality.ts` 顶部的长篇说明）。它管的是**合成舞台截屏时要把
+ * 成片画到多长边**，也就是 `ResolvedFilmPreset.captureLongEdge` 的取值来源。
+ *
+ * 三档刻意只差在这一个数上：舞台上的一切（水印字号、相框比例、颗粒强度）
+ * 都是逻辑点，成片像素 = 点尺寸 × 缩放，所以画质档只影响清晰度、不影响构图。
+ */
+export type CaptureQuality = 'standard' | 'high' | 'max';
+
+/** 相框风格变体（v1.7.0）：A 经典纯净 / B 泛黄复古 / C 手绘涂鸦。 */
+export type FrameVariant = 'classic' | 'aged' | 'doodle';
+
+/**
  * 相框自带的水印偏好。
  *
  * 为什么水印样式挂在**相框**上而不是预设上：纸是什么颜色、留白多宽、有没有印字，
@@ -637,6 +653,16 @@ export interface AppSettings {
    * 其余（ja / fr）退回 `'en'`，因为反查回来的行政名在日法两种语言下没有可靠的对应词表。
    */
   geoLocale: GeoLocale | 'auto';
+  /**
+   * 成片画质档（v1.7.0），默认 `'standard'`。只决定成片长边像素，不改构图。
+   * 三档取值与内存代价见 `constants/captureQuality.ts`。
+   */
+  captureQuality: CaptureQuality;
+  /**
+   * 相框风格变体（v1.7.0），默认 `'classic'`。**全局一份**，不是"每款相框各记一份"：
+   * 用户滑到"复古"是想看所有相框复古起来的样子，而不是给五款相框维护五份记忆。
+   */
+  frameVariant: FrameVariant;
 }
 
 /** 写字机里定位这一格的状态（只影响 LCD 显示，不影响能否拍照）。 */

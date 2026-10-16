@@ -11,6 +11,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type {
   AppSettings,
+  CaptureQuality,
+  FrameVariant,
   GeoLocale,
   GrainLevelId,
   LocalePreference,
@@ -42,6 +44,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
   placeDetail: 'archive',
   grainLevel: DEFAULT_GRAIN_LEVEL_ID,
   geoLocale: 'auto',
+  /*
+   * `captureQuality: 'standard'` 是**必须**的默认值：`high` / `max` 会把成片
+   * 长边从 2048 抬到 3024 / 4032，截屏上下文的内存代价从约 12 MB 涨到约 27 / 48 MB
+   * （`captureOptions.ts` 头注释里有实测口径）。老用户升级上来不该被悄悄加内存。
+   */
+  captureQuality: 'standard',
+  /* 相框风格默认 A 档：和 v1.6.1 的相纸外观逐像素相同，升级上来视觉不变。 */
+  frameVariant: 'classic',
 };
 
 const LOCALE_IDS: readonly LocalePreference[] = ['auto', ...LOCALES.map((l) => l.id)];
@@ -56,6 +66,16 @@ const PLACE_DETAILS: readonly PlaceDetail[] = ['archive', 'full'];
 const GRAIN_IDS: readonly GrainLevelId[] = GRAIN_LEVELS.map((level) => level.id);
 /** 地名语言只有三种，外加一个"跟界面语言走"。 */
 const GEO_LOCALES: readonly (GeoLocale | 'auto')[] = ['auto', 'zh-Hans', 'zh-Hant', 'en'];
+/**
+ * 画质档与相框风格变体的白名单。
+ *
+ * 这两条**故意不 import 常量模块**（`constants/captureQuality.ts` / `constants/frameVariants.ts`）：
+ * `settingsStore` 在启动最早的一帧就要被求值，而那两个模块会连带拉起相框素材与
+ * 皮肤组件。这里只是"字符串认不认"，重复一份字面量比多一条启动期依赖划算；
+ * 两边不同步时 `tsc` 会先在 `pick<T>` 的泛型上炸掉，不会静默跑偏。
+ */
+const CAPTURE_QUALITIES: readonly CaptureQuality[] = ['standard', 'high', 'max'];
+const FRAME_VARIANTS: readonly FrameVariant[] = ['classic', 'aged', 'doodle'];
 
 /**
  * 白名单里挑一个，挑不到就用默认值。
@@ -93,6 +113,12 @@ function sanitize(raw: unknown): AppSettings {
     placeDetail: pick(raw.placeDetail, PLACE_DETAILS, DEFAULT_SETTINGS.placeDetail),
     grainLevel: pick(raw.grainLevel, GRAIN_IDS, DEFAULT_SETTINGS.grainLevel),
     geoLocale: pick(raw.geoLocale, GEO_LOCALES, DEFAULT_SETTINGS.geoLocale),
+    captureQuality: pick(
+      raw.captureQuality,
+      CAPTURE_QUALITIES,
+      DEFAULT_SETTINGS.captureQuality,
+    ),
+    frameVariant: pick(raw.frameVariant, FRAME_VARIANTS, DEFAULT_SETTINGS.frameVariant),
   };
 }
 

@@ -58,6 +58,7 @@ import { useLocationStamp } from '../hooks/useLocationStamp';
 import { usePhysicalShutter } from '../hooks/usePhysicalShutter';
 import { usePinchZoom } from '../hooks/usePinchZoom';
 import { useSettings } from '../hooks/useSettings';
+import { CAPTURE_QUALITIES, findCaptureQualitySpec, resolveCaptureLongEdge } from '../constants/captureQuality';
 import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex, wrapIndex } from '../constants/frames';
 import { applyGrainLevel, findGrainLevelIndex, grainLevelAt } from '../constants/grain';
 import {
@@ -81,10 +82,11 @@ import { processAndSaveFilmPhoto } from '../utils/processFilmPhoto';
 import { AlbumThumb } from './AlbumThumb';
 import { DevelopOverlay, computeDevelopStageBox } from './DevelopOverlay';
 import { DialButton } from './DialButton';
-import { FilmCompositor } from './FilmCompositor';
+import { FilmCompositor, planWatermark } from './FilmCompositor';
 import { FilmDrawer } from './FilmDrawer';
 import { FocusExposure } from './FocusExposure';
 import { FrameBadge } from './FrameBadge';
+import { FramePreviewLayer } from './FramePreviewLayer';
 import { FrameSwitcher } from './FrameSwitcher';
 import { GalleryScreen } from './GalleryScreen';
 import { GLASS_TEXT_COLOR, LiquidGlassView } from './LiquidGlassView';
@@ -98,10 +100,18 @@ import type { FocusTarget } from './FocusReticle';
 import type { FlashMode, TimerSeconds } from './ToolRow';
 import type { ThemeInk } from '../constants/theme';
 import type { ZoomLensRole, ZoomStop } from '../constants/lenses';
-import type { CapturedPhoto, DevelopStatus, Size } from '../types';
+import type { CapturedPhoto, DevelopStatus, ResolvedPlace, Size } from '../types';
 
 /** 画幅参考线四周留白：贴着屏幕边看不出画幅比，留一点才像取景框 */
 const PREVIEW_PADDING = 10;
+
+/**
+ * 相框实时预览的心跳间隔（v1.7.0 · 模块三）。
+ *
+ * 30 秒是"日期/地名都对得上"与"别白白耗电"之间的折中，理由写在那个 effect 的注释里。
+ * 调小它没有收益：跨零点最多晚 30 秒翻页，而用户不会举着手机盯到零点。
+ */
+const FRAME_PREVIEW_REFRESH_MS = 30_000;
 
 /**
  * 镂空取景窗顶部那行标签。写的是**参照画幅**（这块机器按 35mm 的视场标定），
@@ -323,7 +333,7 @@ export function CameraScreen() {
   const fonts = useFilmFonts();
   const filmStage = useFilmStage();
   const locationStamp = useLocationStamp();
-  const { settings } = useSettings();
+  const { settings, setCaptureQuality } = useSettings();
   const { t, localeId } = useI18n();
   const theme = useTheme();
   const { ink } = theme;
@@ -386,6 +396,24 @@ export function CameraScreen() {
   const [countdown, setCountdown] = useState<number | null>(null);
   const [doubleExposure, setDoubleExposure] = useState(false);
   const [pendingExposureUri, setPendingExposureUri] = useState<string | null>(null);
+  /**
+   * 相框实时预览开关（v1.7.0 · 模块三）。
+   *
+   * 为什么是**本地 state 而不是设置项**：它和重曝 / 定时器是同一类东西 ——
+   * "这一张我想怎么看"，不是"这个 App 该怎么工作"。做成设置项还要多一个持久化键、
+   * 多一处迁移，收益只是重启后还开着；而它开着的时候取景器边缘一直是半透明的，
+   * 那不该是用户忘了关就一直背着的状态。
+   */
+  const [framePreview, setFramePreview] = useState(false);
+  /**
+   * 预览层的"当前时刻"与"当前位置"。
+   *
+   * 这两个量本来只有按快门那一刻才需要（`resolveForShot` + `new Date()`）。预览要
+   * 显示**同一行日期和地名**，但一个实时时钟 + 一次 GPS 反查不能塞进渲染路径 ——
+   * 所以由下面那个 effect 低频刷新，这里只存结果。
+   */
+  const [previewClock, setPreviewClock] = useState<Date>(() => new Date());
+  const [previewPlace, setPreviewPlace] = useState<ResolvedPlace | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraKey, setCameraKey] = useState(0);
   const [mountError, setMountError] = useState<string | null>(null);
@@ -419,7 +447,26 @@ export function CameraScreen() {
   const frame = FRAMES[frameIndex] ?? FRAMES[0];
   const preset = PRESETS[presetIndex] ?? PRESETS[0];
   const grainLevel = grainLevelAt(findGrainLevelIndex(settings.grainLevel));
-  const effectivePreset = useMemo(() => applyGrainLevel(preset, grainLevel.scale), [preset, grainLevel.scale]);
+  /**
+   * 冲印用的预设 = 胶卷本色 + 颗粒刻度 + **画质档**（v1.7.0 · 模块一）。
+   *
+   * 画质档必须在这里并进去，而不是在 `processFilmPhoto` 里现读设置：`preset` 是
+   * 整条成片链路唯一的"像素口径"入口（`processFilmPhoto.ts:430` 拿它的
+   * `captureLongEdge` 去 `planCapture`），拍摄与相册导入两条路都从
+   * `effectivePreset` / `gradedPreset` 派生 ⇒ 改这一处，两条路一起生效。
+   *
+   * 用户档位**无条件**覆盖预设自带值：`PRESETS` 里至今没有任何一支卷显式声明
+   * `captureLongEdge`（只有 `PRESET_DEFAULTS` 那份默认，而它本身也由默认档位算出），
+   * 所以"用户选了极致档却因为某支卷写死 2048 而拍出小图"这种事现在不可能发生；
+   * 将来真有卷要锁自己的像素口径，再改成 `preset.captureLongEdge ?? ...`。
+   */
+  const effectivePreset = useMemo(
+    () => ({
+      ...applyGrainLevel(preset, grainLevel.scale),
+      captureLongEdge: resolveCaptureLongEdge(settings.captureQuality),
+    }),
+    [preset, grainLevel.scale, settings.captureQuality],
+  );
   /**
    * 真正拿去冲印/导入的预设 = 胶卷本色 + 刻度尺拧出来的临时色温覆盖。
    *
@@ -560,6 +607,66 @@ export function CameraScreen() {
    */
   const covered = settingsVisible || galleryVisible || filmDrawerVisible;
 
+  /*
+   * 先解构出来：`useLocationStamp()` 每次渲染都返回**新的对象字面量**，
+   * 直接把它当 effect 依赖会让那个心跳 effect 每渲染一次就重建一次 ——
+   * 而心跳自己会 `setPreviewClock`，于是"重建 → 立刻 tick → setState → 重渲染"
+   * 变成一个无限循环。`resolveForShot` 是 `useCallback` 出来的稳定引用
+   * （只随 mode / 地名语言 / 界面语言 / 详细度档变化），它才是正确的依赖。
+   */
+  const { resolveForShot } = locationStamp;
+
+  /** 面板盖住取景器时预览必须一起灭掉：看不见的东西没有理由还在占渲染预算 */
+  const framePreviewVisible = framePreview && !covered;
+
+  /**
+   * 预览要画的水印片段（v1.7.0 · 模块三）。
+   *
+   * **一行都不能自己算**：`planWatermark` 就是 `FilmCompositor` 用来排成片水印的那个
+   * 函数（`FilmCompositor.tsx:147`），传进去的 `layout` 是取景器里的相纸矩形、
+   * `frame` / `timestamp` / 版式 / 详细度 / 语言全部与成片同源。所以预览里看到的
+   * "地名被精简成 中国 · 上海""日期不被挤压"这些行为，和洗出来的那张**是同一份代码
+   * 决定的**，不是"照着成片又写了一遍"。
+   *
+   * 唯一的差别是 `capturedAt`：成片用快门那一刻，预览用 `previewClock`（30 秒心跳）。
+   * `locationText` 传空串是刻意的 —— 相机页的定位一律走 `place` 结构（经纬度档在
+   * hook 里也会返回一个"只有坐标"的结构），传空串就走不到那个向后兼容的兜底分支，
+   * 与按快门那次调用的行为一致。
+   *
+   * `presetName` 取 `resolved.name`：关闭定位时"摄影代号 + 第几张"顶上地名那一行，
+   * 代号必须和这张要用的预设一致，否则预览会印着上一卷的代号。
+   */
+  const previewPieces = useMemo(() => {
+    if (!framePreviewVisible) {
+      return [];
+    }
+    return planWatermark({
+      layout: previewLayout,
+      frame,
+      timestamp: resolved.timestamp,
+      capturedAt: previewClock,
+      locationText: '',
+      place: previewPlace,
+      locale: localeId,
+      watermarkLayout: settings.watermarkLayout,
+      placeDetail: settings.placeDetail,
+      presetName: resolved.name,
+      exposureIndex: exposureCount + 1,
+    });
+  }, [
+    framePreviewVisible,
+    previewLayout,
+    frame,
+    resolved.timestamp,
+    resolved.name,
+    previewClock,
+    previewPlace,
+    localeId,
+    settings.watermarkLayout,
+    settings.placeDetail,
+    exposureCount,
+  ]);
+
   /**
    * 相机权限只在"系统还愿意弹窗"的时候自动问一次。被永久拒绝后再调 `request`
    * 也不会弹，反而会盖掉下面那张带"去设置"按钮的提示卡。
@@ -574,6 +681,43 @@ export function CameraScreen() {
     askedCameraRef.current = true;
     void requestCameraPermission();
   }, [cameraPermission, requestCameraPermission]);
+
+  /**
+   * 相框实时预览的**低频心跳**（v1.7.0 · 模块三）。
+   *
+   * 预览里的日期与地名必须和"按下去会洗出来的那张"是同一行字，所以它们得是真的
+   * 当前时刻与当前位置 —— 但这两样都不能放在渲染路径上：`new Date()` 每帧都会变
+   * （水印就会每帧重排），`resolveForShot()` 是一次 GPS + 反查。
+   *
+   * 折中成一次 30 秒的心跳：
+   *   · 日期只有跨零点才会真的变，30 秒的粒度绰绰有余；
+   *   · 地名是"举着手机在原地构图"期间的东西，30 秒内不会走到另一个城市；
+   *   · 关掉预览、或任何一个面板盖住取景器时**立刻停跳**（`covered` 就是那个条件），
+   *     不给一次都没打开预览的用户平白加一次 GPS 轮询。
+   *
+   * 为什么先 `setPreviewClock` 再取定位：日期是纯本地的、立刻就该更新；地名要等
+   * 网络/卫星，回来再补。两件事都成功才更新会让日期也跟着晚 300ms 跳一下。
+   */
+  useEffect(() => {
+    if (!framePreview || covered) {
+      return;
+    }
+    let alive = true;
+    const tick = () => {
+      setPreviewClock(new Date());
+      void locationStamp.resolveForShot().then((place) => {
+        if (alive) {
+          setPreviewPlace(place);
+        }
+      });
+    };
+    tick();
+    const timer = setInterval(tick, FRAME_PREVIEW_REFRESH_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [framePreview, covered, resolveForShot]);
 
   const handlePreviewLayout = useCallback((event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
@@ -861,11 +1005,50 @@ export function CameraScreen() {
     });
   }, []);
 
+  /**
+   * 顶栏画质档：点一下往后轮一档（标准 → 高清 → 极致 → 标准）。
+   *
+   * 为什么是"轮转"而不是弹一个选择器：顶栏是单手够得着的地方，三档轮一圈最多点三下，
+   * 比"点开 → 选 → 关"少两次操作；而画质是**改一次就长期不动**的东西，不值得为它
+   * 常驻一块选择器。设置页里那排分段按钮仍然是"一眼看到全部三档 + 一句如实说明"的地方。
+   *
+   * 为什么顺序是 low → high → max 而不是反过来：轮转的语义是"越点越清晰"，和设置页
+   * 从左到右的排列一致；点到头回到最省的一档，误触多点的代价只是画质回到默认，不是爆内存。
+   *
+   * `findIndex` 认不出来时返回 -1，`(-1 + 1) % 3 === 0` 正好落回第一档 —— 脏数据不会变成
+   * "点了没反应"。
+   */
+  const handleCycleCaptureQuality = useCallback(() => {
+    void Haptics.selectionAsync();
+    const at = CAPTURE_QUALITIES.findIndex((spec) => spec.id === settings.captureQuality);
+    const next = CAPTURE_QUALITIES[(at + 1) % CAPTURE_QUALITIES.length];
+    if (next !== undefined) {
+      setCaptureQuality(next.id);
+    }
+  }, [settings.captureQuality, setCaptureQuality]);
+
   const handleToggleDouble = useCallback(() => {
     void Haptics.selectionAsync();
     setDoubleExposure((current) => !current);
     // 任何一次切换都把没冲的半成品丢掉：留着它，下次开重曝会莫名其妙叠上一张旧照片
     setPendingExposureUri(null);
+  }, []);
+
+  /**
+   * 相框实时预览开关（v1.7.0 · 模块三）。
+   *
+   * 关掉时**顺手把地名清空**：留着一个上次的位置没有害处，但下次开预览时那一帧会先
+   * 印着旧地名再跳到新地名 —— 清掉之后是"先不出地名、定到了再补上"，读起来是加载，
+   * 而不是闪一下。日期不清：它是纯本地的，心跳那一下就会刷新。
+   */
+  const handleToggleFramePreview = useCallback(() => {
+    void Haptics.selectionAsync();
+    setFramePreview((current) => {
+      if (current) {
+        setPreviewPlace(null);
+      }
+      return !current;
+    });
   }, []);
 
   const handleOpenSystemSettings = useCallback(() => {
@@ -968,7 +1151,18 @@ export function CameraScreen() {
 
       // 定位与拍摄并行：等 GPS 定下来再按快门，手机会多举一秒
       const locationPromise = locationStamp.resolveForShot();
-      const shot = await camera.takePictureAsync({ quality: 1, exif: false });
+      // 走 expo-camera 的**高画质静态拍摄**通道（v1.7.0 · 模块一第 2 条）：
+      //   · `quality: 1`   —— JPEG 压缩质量拉满，不再从实时预览流上截帧；
+      //   · `skipProcessing: false` —— **显式**声明"要完整后处理"。它本来就是 expo-camera
+      //     的默认值（`Options.kt:15 val skipProcessing: Boolean = false`），这里写出来
+      //     是为了让"我们特意走这条路"留在代码里可查：置 true 会跳过后处理，
+      //     换来的是方向不确定（官方文档原话 "Enabling skipProcessing would cause
+      //     orientation uncertainty"）——那正是"画质模糊/马赛克 + 方向乱"的来源。
+      //     注：该开关在 expo-camera 57 里**只有 Android 读**（`ResolveTakenPicture.kt:81`），
+      //     iOS 无论传什么都走后处理；写上它对两端都安全。
+      //   · `exif: false` —— 我们不用相机 EXIF 的时间/地点（日期走 App 自己的时钟、
+      //     地点走 `resolveForShot()`），少解一份 EXIF 省一次内存峰值。
+      const shot = await camera.takePictureAsync({ quality: 1, skipProcessing: false, exif: false });
       if (!shot || !shot.uri) {
         throw new Error(t('error.noPhoto'));
       }
@@ -1012,6 +1206,12 @@ export function CameraScreen() {
         height: result.photo.height,
         frameId: frame.id,
         presetId: effectivePreset.id,
+        /*
+         * 相册副本跟着**画质档**走（v1.7.0 · 模块一）。不传的话它恒被压到 2048px，
+         * 用户选了极致档、回 App 相册里看到的还是一张 2048 的小图。
+         * `planResize` 只缩不放，所以小底片不会因此被拉伸。
+         */
+        maxLongEdge: resolveCaptureLongEdge(settings.captureQuality),
       }).catch((error: unknown) => {
         console.warn('[retro-film-cam] 存进 App 相册失败：', describeError(error));
       });
@@ -1166,6 +1366,18 @@ export function CameraScreen() {
   }, [handleImport]);
 
   const filmCounterText = `[${String(exposureCount).padStart(2, '0')}${filmCounterLetter(facing)}]`;
+  /*
+   * 画质档（v1.7.0 · 模块一）在顶栏的**紧凑读数**。
+   *
+   * ⚠️ 这里刻意**不写 "48MP"**：`captureQuality.ts` 的文件头把话说死了 —— iOS 上
+   * `takePictureAsync` 的输出尺寸由 `AVCaptureSession.sessionPreset` 决定，expo-camera
+   * 57.0.6 没有任何接口能碰它，所以这一档买到的是**成片长边像素**（2048 / 3024 / 4032），
+   * **不是**传感器像素。印 "48MP" 就是撒谎，而撒谎的代价是用户拿成片去跟"48MP"对账。
+   * 档位名（标准 / 高清 / 极致）走 i18n，真数字留给设置页那一句如实说明。
+   */
+  const captureSpec = findCaptureQualitySpec(settings.captureQuality);
+  const captureLabel = t(captureSpec.labelKey);
+  const qualityText = `[${captureLabel}]`;
   const bannerMessage = saveIssue ?? notice;
   const focusHintVisible = !focusSeen && interactive && focusTarget === null;
 
@@ -1211,7 +1423,7 @@ export function CameraScreen() {
   return (
     <View style={[styles.root, { backgroundColor: theme.body }]}>
       {/*
-        ① 顶栏：画幅徽标 + 底片计数 + 设置。闪光灯/翻转/相册都搬去了工具行与核心区。
+        ① 顶栏：画幅徽标 + 底片计数 + 画质档 + 设置。闪光灯/翻转/相册都搬去了工具行与核心区。
 
         皮革底纹那一整块（`UI_ASSETS.leatherTile` 的 `resizeMode="repeat"`）已经删掉。
         理由：这块玻璃材质要能**采到它背后的画面**（`LiquidGlassView` 默认叠 75 强度的
@@ -1237,6 +1449,35 @@ export function CameraScreen() {
           <Text style={[styles.filmCounter, { color: ink.amber }]} allowFontScaling={false}>
             {filmCounterText}
           </Text>
+          {/*
+            画质档（v1.7.0 · 模块一）。用户要的是"顶部工具栏也有一个 [ 12MP / 48MP ] 开关"。
+
+            这里给的是 `[标准] / [高清] / [极致]`，**没有写 12MP / 48MP** —— 原因见
+            `constants/captureQuality.ts` 文件头：纯 JS 拿不到传感器像素，写 "48MP" 就是谎报。
+            真数字（2048 / 3024 / 4032）留给设置页那一句如实说明，这里只放档位名。
+
+            为什么不做成 ToolRow 的第 7 枚按钮：那一行已经是六枚的上限了（见 `ToolRow` 文件头，
+            6×44pt 在 320pt 的老 SE 上只剩 4pt 的缝）。画质不像闪光灯那样"每一张都要看一眼"，
+            它放在顶栏这条**读数带**上更合适 —— 和 `[00K]` 底片计数并排，两个方括号读数
+            属于同一种"这台机器现在的状态"的语言，用户扫一眼就知道。
+          */}
+          <Pressable
+            onPress={handleCycleCaptureQuality}
+            disabled={developing}
+            accessibilityRole="button"
+            accessibilityLabel={t('settings.quality.title')}
+            accessibilityValue={{ text: captureLabel }}
+            hitSlop={8}
+            style={({ pressed }) => [
+              styles.qualityChip,
+              pressed ? styles.qualityChipPressed : null,
+              developing ? styles.qualityChipDisabled : null,
+            ]}
+          >
+            <Text style={[styles.qualityLabel, { color: ink.amber }]} allowFontScaling={false}>
+              {qualityText}
+            </Text>
+          </Pressable>
           <DialButton
             glyph={(color) => <SettingsGlyph size={SETTINGS_GLYPH} color={color} />}
             active={settingsVisible}
@@ -1296,6 +1537,34 @@ export function CameraScreen() {
             window={viewfinderWindow}
             label={GUIDE_LABEL}
             grid={resolved.showGuide}
+          />
+        ) : null}
+
+        {/*
+          相框实时预览（v1.7.0 · 模块三）。
+
+          **它在 `ViewfinderWindow` 之后、`FrameSwitcher` 之前，这个位置是唯一的正解**：
+            · 排在镂空窗**之后** —— 镂空窗那四块玻璃是压暗实时画面的哑光遮罩，相纸必须
+              盖在它上面才看得见，排前面就等于把相框画在遮罩底下；
+            · 排在 `FrameSwitcher` **之前** —— 那一层里装着"点哪对哪"的 `focusCatcher`，
+              预览层排在它后面就会把那一下点击整个吞掉。预览层自己也写了
+              `pointerEvents="none"`，两道保险。
+
+          几何**一个数都不新算**：`previewLayout` 与 `frameOffset` 正是上面用来挖镂空窗
+          的同两个量，所以预览纸面和镂空窗天然逐点重合（推导见 `viewfinderWindow` 的
+          注释）。`previewLayout.window` 是窗口相对**相纸**的位置，正好是 `FrameSkin`
+          要的坐标系。
+        */}
+        {framePreviewVisible && previewBox.width > 1 && previewBox.height > 1 ? (
+          <FramePreviewLayer
+            frame={frame}
+            layout={previewLayout}
+            left={frameOffset.left}
+            top={frameOffset.top}
+            variant={settings.frameVariant}
+            pieces={previewPieces}
+            fontFamily={fonts.fontFamily}
+            glow={resolved.timestamp.glow}
           />
         ) : null}
 
@@ -1464,12 +1733,14 @@ export function CameraScreen() {
           timerSeconds={timerSeconds}
           flashMode={flashMode}
           flashDisabled={facing !== 'back'}
+          framePreview={framePreview}
           busy={developing}
           onImport={handleImportPress}
           onToggleDouble={handleToggleDouble}
           onCycleTimer={handleCycleTimer}
           onCycleFlash={handleCycleFlash}
           onFlip={handleFlipCamera}
+          onToggleFramePreview={handleToggleFramePreview}
         />
         <View style={styles.coreRow}>
           <View style={styles.coreSide}>
@@ -1511,6 +1782,16 @@ export function CameraScreen() {
             onLayout={filmStage.handleStageLayout}
             onImageLoad={filmStage.handleStageImageLoad}
             timestampFontFamily={fonts.fontFamily}
+            /*
+             * 相框风格变体（v1.7.0 · 模块二）**必须**从设置里传下去。
+             *
+             * 漏了这一行的后果不是"少个装饰"，而是**预览与成片对不上**：取景器里的
+             * `FramePreviewLayer` 拿的是 `settings.frameVariant`，而这里默认 `'classic'`，
+             * 用户会看到"取景器里是泛黄的老相纸，洗出来却是干净白卡纸" —— 那正是模块三
+             * 「所见即所得」要消灭的东西。FilmCompositor 的默认值是给老调用方兜底的，
+             * 不是给这里用的。
+             */
+            frameVariant={settings.frameVariant}
           />
         ) : null}
       </DevelopOverlay>
@@ -1518,6 +1799,12 @@ export function CameraScreen() {
       <FilmDrawer
         visible={filmDrawerVisible}
         presetIndex={presetIndex}
+        /*
+         * 相框 id 只用来**显示**抽屉里那一行"现在套的是哪款相框"（v1.7.0 · 模块二）。
+         * 换相框仍然归取景器左右滑 / 顶栏 `FrameBadge` 管 —— 抽屉里那条横向手势
+         * 已经给了 A/B/C 变体，再叠一层"横向换相框"会让同一根手指有两种含义。
+         */
+        frameId={frame.id}
         onSelect={handleFilmDrawerSelect}
         onClose={handleCloseFilmDrawer}
       />
@@ -1565,6 +1852,40 @@ function createStyles(ink: ThemeInk, scheme: 'dark' | 'light') {
       fontFamily: UI_MONO,
       fontSize: 10,
       letterSpacing: 0.8,
+    },
+    /*
+     * 画质档那枚蚀刻标签。刻意长得和 `filmCounter` 是同一族：等宽字体、方括号、
+     * 同一支琥珀。区别只在它有描边和一圈内衬 —— 那是"可以按"的暗示。
+     *
+     * 描边用 `ink.hairline` 而不是琥珀：琥珀在这台机器上是"亮着的东西"（指示灯、
+     * 当前档位），一圈琥珀描边会让它看起来**一直在被选中**，反而看不出"现在只是能按"。
+     * 按下时才换成 `amberDeep`（见 `qualityChipPressed`）。
+     *
+     * 内边距 7×3 是量出来的：`[极致]` 在 10pt UI_MONO 下约 34pt 宽，加内衬与描边约 50pt；
+     * 和 `filmCounter`（minWidth 42 + marginRight 10）、齿轮（38）并排约 140pt，
+     * 375pt 的机型上顶栏还剩约 200pt 给左边的 `FrameBadge`，够。
+     */
+    qualityChip: {
+      marginRight: 10,
+      paddingHorizontal: 7,
+      paddingVertical: 3,
+      borderRadius: 4,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: ink.hairline,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    qualityChipPressed: {
+      borderColor: ink.amberDeep,
+      backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    },
+    qualityChipDisabled: {
+      opacity: 0.4,
+    },
+    qualityLabel: {
+      fontFamily: UI_MONO,
+      fontSize: 10,
+      letterSpacing: 0.6,
     },
     preview: {
       position: 'absolute',

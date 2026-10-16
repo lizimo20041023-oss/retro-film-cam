@@ -31,7 +31,17 @@ export const GALLERY_INDEX_KEY = 'fretrocam.gallery.v1';
 /** 相册目录名，挂在 document 目录下（**不**是 cache —— 系统清缓存不能把用户的照片清掉）。 */
 const GALLERY_DIR_NAME = 'gallery';
 
-/** 成片长边目标（像素）。与预设里 `captureLongEdge` 的默认值保持一致。 */
+/**
+ * 成片长边目标的**兜底值**（像素）。
+ *
+ * v1.7.0 起这里不再是唯一口径：`addShot` 接受可选的 `maxLongEdge`，由调用方传
+ * 用户选的画质档（`resolveCaptureLongEdge(settings.captureQuality)`），
+ * 否则"用户在设置里选了极致档、回 App 相册一看还是 2048px 的小图"——
+ * 档位只在 OS 相册那张生效，等于白选。
+ *
+ * 保留 2048 作兜底：它是标准档的值，也是老调用方（以及未来任何忘了传的调用方）
+ * 得到的行为，和 v1.6.x 逐字一致。
+ */
 const MAIN_LONG_EDGE = 2048;
 
 /** 缩略图长边目标（像素）。够网格清晰，又不至于把内存吃满。 */
@@ -78,6 +88,13 @@ export interface AddShotInput {
   createdAt?: number;
   frameId?: string;
   presetId?: string;
+  /**
+   * App 内相册这份副本的长边上限（像素）。不传用 `MAIN_LONG_EDGE`（2048，标准档）。
+   *
+   * 调用方应传用户选的画质档长边。只会**缩**不会放：源图本来就比它小的时候
+   * `planResize` 返回 `null`，只做一次格式转换，不会凭空上采样。
+   */
+  maxLongEdge?: number;
 }
 
 /** 读相册的结果：列表 + 诊断信息。 */
@@ -415,12 +432,16 @@ export async function addShot(input: AddShotInput): Promise<GalleryShot | null> 
         const mainTarget = new File(dir, `${id}.jpg`);
         const thumbTarget = new File(dir, `${id}_thumb.jpg`);
 
-        // ① 成片：转 jpg + 长边压到 2048
+        /*
+         * ① 成片：转 jpg + 长边压到「用户画质档」以内（不传就是标准档 2048）。
+         * 这里只缩不放 —— 源图比目标小就原样转格式，见 `planResize`。
+         */
+        const mainLongEdge = isPositiveNumber(input.maxLongEdge) ? input.maxLongEdge : MAIN_LONG_EDGE;
         const main = await renderToCache(
           sourceUri,
           input.width,
           input.height,
-          MAIN_LONG_EDGE,
+          mainLongEdge,
           MAIN_QUALITY,
         );
         cacheFiles.push(main.uri);

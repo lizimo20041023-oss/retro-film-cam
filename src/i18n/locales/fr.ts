@@ -55,6 +55,12 @@ export const fr: Messages = {
   'frame.neg135': '135',
   'frame.slideMount': 'DIAPO',
   'frame.badge.a11y': 'Cadre {name}, photo {count}',
+  'frame.variant.classic': 'Classique',
+  'frame.variant.aged': 'Vieilli',
+  'frame.variant.doodle': 'Gribouillage',
+  'frame.variant.a11y': 'Style de cadre {name}',
+  'drawer.frame.title': 'Cadre',
+  'drawer.frame.hint': 'Balayez pour changer de style',
 
   /* ---------------- ② rail de zoom sur le viseur ---------------- */
   'zoom.a11y': 'Zoom {percent} %, touchez une focale pour changer',
@@ -165,6 +171,16 @@ export const fr: Messages = {
   'settings.subtitle': 'RÉGLAGES',
   'settings.title': 'Réglages',
   'settings.watermark.title': 'Disposition du filigrane',
+  'settings.quality.title': "Qualité d'image",
+  'settings.quality.a11y': "Qualité d'image : {label}",
+  'settings.quality.standard': 'Standard',
+  'settings.quality.high': 'Élevée',
+  'settings.quality.max': 'Maximale',
+  'settings.quality.note':
+    'Fixe le grand côté du tirage. Plus grand = plus net, et plus gourmand en mémoire.',
+  'settings.quality.capNote':
+    'Grand côté {longEdge}px. Un vrai 48MP demande un module caméra natif — ce réglage ne fixe que la taille du tirage.',
+
   'settings.watermark.a11y': 'Disposition du filigrane : {label}',
   'settings.watermark.split': 'Lieu à gauche · date à droite',
   'settings.watermark.stacked': 'Lieu au-dessus · date en dessous',
@@ -231,6 +247,10 @@ export const fr: Messages = {
   'camera.tool.timer': 'Retard',
   'camera.tool.flash': 'Flash',
   'camera.tool.flip': 'Pivoter',
+  'camera.tool.preview': 'Aperçu',
+  'camera.tool.preview.on': 'Activé',
+  'camera.tool.preview.off': 'Désactivé',
+  'camera.tool.preview.a11y': 'Aperçu du cadre en direct, {state}',
   'camera.tool.double.on': 'Double exposition active',
   'camera.tool.double.hint': 'Déclenchez encore pour superposer deux vues',
   'camera.tool.timer.off': 'Off',

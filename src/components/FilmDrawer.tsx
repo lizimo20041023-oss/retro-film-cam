@@ -59,6 +59,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   BackHandler,
+  Image,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -67,12 +69,18 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex, frameSkinSeedOf } from '../constants/frames';
+import { FRAME_VARIANTS, findFrameVariantIndex, wrapFrameVariant } from '../constants/frameVariants';
 import { PRESETS } from '../constants/presets';
 import { UI_MONO, useTheme } from '../constants/theme';
 import type { Theme } from '../constants/theme';
+import { useSettings } from '../hooks/useSettings';
 import { useI18n } from '../i18n';
+import { computeFrameLayout, frameSourceOf } from '../utils/geometry';
 import { FilmCard, withAlpha } from './FilmCard';
+import { FrameSkin } from './FrameSkin';
 
 export interface FilmDrawerProps {
   visible: boolean;
@@ -80,6 +88,13 @@ export interface FilmDrawerProps {
   presetIndex: number;
   /** 选中某卷。`CameraScreen` 负责落库、震动和关闭。 */
   onSelect: (presetId: string) => void;
+  /**
+   * 当前相框 id（`'polaroid-600'` 等）。**可选** —— 相框下标至今仍是
+   * `CameraScreen` 的局部 state（v1.7.0 没把它提进全局设置：提了会让"取景器里
+   * 换个框"变成全局副作用）。抽屉只需要 id 来显示"现在套的是哪款相框"，
+   * 不传时退回默认相框，这一行照样能用，只是名字固定。
+   */
+  frameId?: string;
   onClose: () => void;
 }
 
@@ -124,6 +139,47 @@ const SHEET_SHEEN_LIGHT =
   'linear-gradient(to bottom, rgba(255, 255, 255, 0.6) 0%, rgba(255, 255, 255, 0.2) 42%, rgba(255, 255, 255, 0) 100%)';
 
 /**
+ * 「相框风格」那一行的滑动门槛（pt）。**故意用固定值**，不像 `FrameSwitcher`
+ * 那样按宽度比例算：那边是铺满整个取景器的整块手势区（390pt 屏上 0.18 ≈ 70pt），
+ * 而这里只有一行药丸那么高、手指的可用行程本来就短，70pt 的门槛等于划不动。
+ */
+const VARIANT_SWIPE_THRESHOLD = 34;
+/** 接管手势所需的最小水平位移（和 `FrameSwitcher` 用同一组数）。 */
+const VARIANT_SWIPE_MIN = 14;
+/** 水平位移必须是纵向的这么多倍才接管 —— 这一行住在纵向 `ScrollView` 里。 */
+const VARIANT_SWIPE_SLOPE = 1.4;
+/** 拖动时药丸排的跟手系数与最大位移：跟手，但不真的滑出去（下面就是胶卷网格）。 */
+const VARIANT_DRAG_FOLLOW = 0.35;
+const VARIANT_DRAG_CLAMP = 22;
+/**
+ * 迷你成片预览的取景框尺寸（pt）。
+ * 为什么要有这块：抽屉一打开，取景器整个 `opacity: 0`（`CameraScreen` 的 `covered`），
+ * 而抽屉只占屏幕下方 58% —— 用户在抽屉里滑 A/B/C 时**看不到任何变化**，
+ * 得关掉抽屉才知道自己选了什么。这块小窗是"边滑边看"的唯一出口。
+ * 96×72 是能同时看清"相纸留白比例"和"皮肤花纹"的最小尺寸（再小斑点就糊成噪点）。
+ */
+const FRAME_PREVIEW_WIDTH = 96;
+const FRAME_PREVIEW_HEIGHT = 72;
+/** 窄屏（<360pt）上缩到 76×57，免得把左边的相框名挤成省略号。 */
+const FRAME_PREVIEW_NARROW_WIDTH = 76;
+/**
+ * 小窗底色写死深色（不用主题色）：它是"暗房里的观察窗"，浅色主题下用浅底会把
+ * 相纸的白色留白和底色糊在一起，看不出窗口边界。
+ */
+const FRAME_PREVIEW_BACKDROP = '#0B0B0D';
+/**
+ * 无障碍动作：`adjustable` 的标准两个（读屏的"上滑 / 下滑"）。
+ * 不挂 `activate` —— 点按是留给手指的，读屏用这两个就能在三档之间走完。
+ */
+const VARIANT_A11Y_ACTIONS = [{ name: 'increment' as const }, { name: 'decrement' as const }];
+
+/** 拖动位移 → 跟手位移（限幅，避免药丸排真的滑出面板）。 */
+function clampVariantDrag(dx: number): number {
+  const followed = dx * VARIANT_DRAG_FOLLOW;
+  return Math.max(-VARIANT_DRAG_CLAMP, Math.min(VARIANT_DRAG_CLAMP, followed));
+}
+
+/**
  * `memo` 的意义有限（父组件只在开关时重渲染它），保留是为了让"这个组件的 props
  * 全是基本类型"这件事在类型上成立 —— 里面那十张卡才是真正需要 `memo` 的地方。
  */
@@ -131,6 +187,7 @@ export const FilmDrawer = memo(function FilmDrawer({
   visible,
   presetIndex,
   onSelect,
+  frameId,
   onClose,
 }: FilmDrawerProps) {
   const { t } = useI18n();
@@ -140,6 +197,58 @@ export const FilmDrawer = memo(function FilmDrawer({
   const styles = useMemo(() => createStyles(theme), [theme]);
   const window = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  /*
+    相框风格是**全局设置**（`AppSettings.frameVariant`），不是抽屉自己的 state：
+    用户要的是"抽屉里切完，取景器里立刻看到同一个皮肤"（v1.7.0 的相框实时预览），
+    所以两边必须读同一份数据。取景器那侧的接线在 `CameraScreen`，我这边只负责写。
+  */
+  const { settings, setFrameVariant } = useSettings();
+  const variantIndex = findFrameVariantIndex(settings.frameVariant);
+  const variantLabel = t(FRAME_VARIANTS[variantIndex].labelKey);
+  /*
+    当前相框的名字：抽屉只拿得到 id。名字算法照抄 `CameraScreen.tsx:445` ——
+    有 `nameKey` 走语言包（五语言），否则用数据里写死的 `name`。
+  */
+  const frame = FRAMES[findFrameIndex(frameId ?? DEFAULT_FRAME_ID)];
+  const frameName = frame.nameKey !== undefined ? t(frame.nameKey) : frame.name;
+  /*
+    迷你成片预览的几何：**和成片走同一个函数**（`computeFrameLayout`），
+    所以小窗里的相纸长宽比、内窗矩形都和 `FilmCompositor` 那套一致 —— 不自己乘长宽比。
+    照片源同理走 `frameSourceOf(frame, 'portrait')`。
+  */
+  const previewWidth = window.width < 360 ? FRAME_PREVIEW_NARROW_WIDTH : FRAME_PREVIEW_WIDTH;
+  const previewHeight = Math.round((previewWidth * FRAME_PREVIEW_HEIGHT) / FRAME_PREVIEW_WIDTH);
+  const previewLayout = useMemo(
+    () => computeFrameLayout(frame, previewWidth, previewHeight),
+    [frame, previewWidth, previewHeight],
+  );
+  // 两处都做成 memo：样式对象每帧新建会让 `FrameSkin` 的 memo 失效（它有 6 个依赖）。
+  const previewBox = useMemo(
+    () => ({ width: previewWidth, height: previewHeight }),
+    [previewWidth, previewHeight],
+  );
+  const previewPaper = useMemo(
+    () => ({ width: previewLayout.width, height: previewLayout.height }),
+    [previewLayout],
+  );
+  /*
+    「相框」行的手势状态。技法照 `FrameSwitcher`（拖动只 `setValue`、越阈值震一下、
+    松手要么提交要么弹回），但**不复用那个组件**：它的无障碍文案写死了
+    "相框切换 / 左右滑动切换相框"，摆在这里会把读屏用户念到错的东西（这一行切的是
+    风格，不是相框）。
+  */
+  const variantDrag = useRef(new Animated.Value(0)).current;
+  /** 本次手势是否已经震过（越过阈值只震一次）。 */
+  const variantArmedRef = useRef(false);
+  /** 提交动画进行中 → 忽略新手势，避免连划两下切两档。 */
+  const variantBusyRef = useRef(false);
+  /*
+    最新快照：`PanResponder` 只创建一次（重建会把进行中的手势丢掉），所以它只能靠
+    这个 ref 读到当前的档位与 setter。渲染期写 ref 和 `FrameSwitcher.tsx:58-59`
+    是同一个套路。
+  */
+  const variantRef = useRef({ index: variantIndex, onChange: setFrameVariant });
+  variantRef.current = { index: variantIndex, onChange: setFrameVariant };
   // 0 → 1 的开合进度：遮罩的不透明度 + 面板的位移都由它驱动。
   // （v1.6.0 还用它驱动整层的淡出，现在面板是"实心滑上来"，不再跟着淡。）
   const reveal = useRef(new Animated.Value(0)).current;
@@ -219,6 +328,94 @@ export const FilmDrawer = memo(function FilmDrawer({
       onSelect(presetId);
     },
     [onSelect],
+  );
+
+  /**
+   * 提交一次风格切换。`direction` = -1 上一档 / +1 下一档（环回，见 `wrapFrameVariant`）。
+   * 三档共用同一棵皮肤树，换档只是换一个字符串 —— 没有第二套渲染路径。
+   */
+  const commitVariant = useCallback(
+    (direction: -1 | 1): void => {
+      if (variantBusyRef.current) {
+        return;
+      }
+      const current = variantRef.current;
+      const next = wrapFrameVariant(current.index + direction);
+      if (next !== current.index) {
+        current.onChange(FRAME_VARIANTS[next].id);
+      }
+      variantBusyRef.current = true;
+      // 药丸排不是在"翻页"，所以不用 `FrameSwitcher` 那套 140ms 滑出再入场：
+      // 目标档当场就亮（数据已经是新的），位移只负责把手感交代清楚。
+      Animated.spring(variantDrag, {
+        toValue: 0,
+        speed: 18,
+        bounciness: 4,
+        useNativeDriver: false,
+      }).start(() => {
+        variantBusyRef.current = false;
+      });
+    },
+    [variantDrag],
+  );
+
+  /**
+   * 一次性创建的 `PanResponder`（技法照 `FrameSwitcher.tsx:110-160`）。
+   * 它拿到的 `commitVariant` 是首次渲染那一份，但那个 `useCallback` 只依赖
+   * `variantDrag`（一个永不换对象的 ref 值），所以引用永远有效。
+   */
+  const variantResponderRef = useRef(
+    PanResponder.create({
+      // 点按要留给药丸自己（按下不抢），只有明显横划才接管。
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_event, gesture) => {
+        if (variantBusyRef.current) {
+          return false;
+        }
+        const horizontal = Math.abs(gesture.dx);
+        const vertical = Math.abs(gesture.dy);
+        /*
+          明显偏水平才接管：这一行住在一个**纵向** `ScrollView` 里，抢错手势列表就
+          滑不动了，所以斜率判据和 `FrameSwitcher` 用同一组数（14pt / 1.4 倍）。
+        */
+        return horizontal > VARIANT_SWIPE_MIN && horizontal > vertical * VARIANT_SWIPE_SLOPE;
+      },
+      onPanResponderGrant: () => {
+        variantArmedRef.current = false;
+      },
+      onPanResponderMove: (_event, gesture) => {
+        // 关键：只有 `setValue`，没有 `setState` —— 一次拖动最多一次重渲染
+        //（提交那一刻由 context 触发）。
+        variantDrag.setValue(clampVariantDrag(gesture.dx));
+        if (!variantArmedRef.current && Math.abs(gesture.dx) > VARIANT_SWIPE_THRESHOLD) {
+          variantArmedRef.current = true;
+          // 越过"松手就会切"的阈值时震一下：给用户确定性（同 `FrameSwitcher`）。
+          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        }
+      },
+      onPanResponderRelease: (_event, gesture) => {
+        if (Math.abs(gesture.dx) > VARIANT_SWIPE_THRESHOLD) {
+          commitVariant(gesture.dx < 0 ? 1 : -1);
+        } else {
+          Animated.spring(variantDrag, {
+            toValue: 0,
+            speed: 18,
+            bounciness: 5,
+            useNativeDriver: false,
+          }).start();
+        }
+      },
+      onPanResponderTerminate: () => {
+        // 被别的手势抢走（比如列表开始滚动）→ 弹回原位，不切档。
+        Animated.spring(variantDrag, {
+          toValue: 0,
+          speed: 18,
+          bounciness: 5,
+          useNativeDriver: false,
+        }).start();
+      },
+      onPanResponderTerminationRequest: () => false,
+    }),
   );
 
   /**
@@ -336,6 +533,128 @@ export const FilmDrawer = memo(function FilmDrawer({
           accessibilityLabel={t('film.drawer.a11y')}
           showsVerticalScrollIndicator={false}
         >
+          {/*
+            「相框」行（v1.7.0）。放在列表**最上面**而不是钉在标题下方：面板高度是
+            固定的（0.58 × 屏高），钉住等于再从十张卡里吃掉一行；放进滚动内容里，
+            用户往下翻胶卷时它自然让位。
+
+            这里的"三档"是**同一款相框的三套皮肤**（经典 / 复古 / 涂鸦），不是三个
+            相框 —— 换相框仍然是取景器左右滑动 / 顶栏 `FrameBadge` 那件事。
+          */}
+          <View
+            style={styles.framePanel}
+            /*
+              整行对外是**一个** `adjustable`（读屏用"上/下滑动"换档），和 iOS 原生
+              `UISegmentedControl` 的读法一致：`accessibilityLabel` 报当前档
+              （"相框风格 复古"），下面那排药丸在无障碍树里被整个摘掉。
+            */
+            accessible
+            accessibilityRole="adjustable"
+            accessibilityLabel={t('frame.variant.a11y', { name: variantLabel })}
+            accessibilityHint={t('drawer.frame.hint')}
+            accessibilityActions={VARIANT_A11Y_ACTIONS}
+            onAccessibilityAction={(event) => {
+              const { actionName } = event.nativeEvent;
+              if (actionName === 'increment') {
+                commitVariant(1);
+              } else if (actionName === 'decrement') {
+                commitVariant(-1);
+              }
+            }}
+            {...variantResponderRef.current.panHandlers}
+          >
+            <View style={styles.frameHead}>
+              <View style={styles.frameHeadText}>
+                <Text style={styles.frameLabel}>{t('drawer.frame.title')}</Text>
+                <Text style={styles.frameName} numberOfLines={1}>
+                  {frameName}
+                </Text>
+                <Text style={styles.frameHint} numberOfLines={2}>
+                  {t('drawer.frame.hint')}
+                </Text>
+              </View>
+              {/*
+                迷你成片预览（v1.7.0）：相框 PNG 打底 + **同一个 `FrameSkin`** 叠在
+                上面，叠放顺序与 `FilmCompositor` 完全一致（皮肤在 PNG 之上、水印之下）；
+                几何来自同一个 `computeFrameLayout`。所以"小窗里看到的"就是
+                "关掉抽屉后取景器/成片里会有的"。
+                · `pointerEvents="none"`：这块只负责看，不抢药丸行和整行的手势；
+                · 不画水印：96pt 宽下 11pt 的日期字会糊成一团，反而像 bug ——
+                  预览要的是"相纸比例 + 皮肤花纹"；
+                · 尺寸跟着窄屏缩（`previewBox`），跟着 `window.width` 走，不横向溢出。
+              */}
+              <View
+                style={[styles.framePreviewBox, previewBox]}
+                pointerEvents="none"
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
+              >
+                <View style={previewPaper}>
+                  <Image
+                    source={frameSourceOf(frame, 'portrait')}
+                    style={previewPaper}
+                    resizeMode="stretch"
+                    fadeDuration={0}
+                  />
+                  <FrameSkin
+                    width={previewLayout.width}
+                    height={previewLayout.height}
+                    window={previewLayout.window}
+                    variant={settings.frameVariant}
+                    seed={frameSkinSeedOf(frame)}
+                  />
+                </View>
+              </View>
+            </View>
+            <Animated.View
+              style={[styles.framePills, { transform: [{ translateX: variantDrag }] }]}
+              // 触控照旧（这两个 prop 只影响无障碍树），只是读屏看不到这三个药丸。
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+            >
+              {FRAME_VARIANTS.map((spec, index) => {
+                const active = index === variantIndex;
+                return (
+                  <Pressable
+                    key={spec.id}
+                    style={styles.framePill}
+                    // 药丸本体 34pt 高、纵向各补 5pt 凑够 ≥ 44pt 的触控区；
+                    // 横向**不补** —— 相邻两档之间补了就会互相压住。
+                    hitSlop={{ top: 5, bottom: 5, left: 0, right: 0 }}
+                    onPress={() => {
+                      if (!active) {
+                        setFrameVariant(spec.id);
+                        void Haptics.selectionAsync();
+                      }
+                    }}
+                  >
+                    {({ pressed }) => (
+                      <View
+                        style={[
+                          styles.framePillBody,
+                          active ? styles.framePillBodyActive : null,
+                          pressed ? styles.pressed : null,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.framePillText,
+                            active ? styles.framePillTextActive : null,
+                          ]}
+                          numberOfLines={1}
+                          adjustsFontSizeToFit
+                          minimumFontScale={0.75}
+                        >
+                          {t(spec.labelKey)}
+                        </Text>
+                      </View>
+                    )}
+                  </Pressable>
+                );
+              })}
+            </Animated.View>
+          </View>
+
           {grid}
         </ScrollView>
       </Animated.View>
@@ -449,6 +768,95 @@ function createStyles(theme: Theme) {
       paddingTop: 12,
       // 面板自己已经带了下安全区内边距，这里只留一点呼吸空间。
       paddingBottom: 16,
+    },
+    /*
+      「相框」行：一块**没有底色**的面板，只靠一道下边线跟胶卷网格分开 ——
+      抽屉里第二块底色就是第二处接缝的来源（同 `close` 的取舍）。
+    */
+    framePanel: {
+      paddingBottom: 12,
+      marginBottom: 12,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: ink.hairline,
+    },
+    frameHead: {
+      flexDirection: 'row',
+      // 预览窗比文字高，`flex-start` 让标题行和窗顶对齐（居中会显得文字在下沉）。
+      alignItems: 'flex-start',
+      paddingBottom: 8,
+    },
+    /*
+      文字列：`flex: 1` + `minWidth: 0` —— 相框名可能很长（`Polaroid 600`），
+      没有 `minWidth: 0` 的话它会顶开右边的预览窗（RN 的 flex 收缩默认不吃内容尺寸）。
+    */
+    frameHeadText: {
+      flex: 1,
+      minWidth: 0,
+      // 预览窗 72pt 高，文字三行（11 + 12 + 9pt）大约 46pt，靠上摆。
+      paddingRight: 10,
+      paddingTop: 2,
+    },
+    frameLabel: {
+      color: ink.amberSoft,
+      fontSize: 11,
+      letterSpacing: 1.6,
+      fontFamily: UI_MONO,
+    },
+    frameName: {
+      marginTop: 3,
+      color: ink.amber,
+      fontSize: 12,
+      letterSpacing: 0.6,
+      fontFamily: UI_MONO,
+    },
+    /*
+      迷你成片预览窗。**底色写死深色**（不用 `theme`）：它是"暗房观察窗"，
+      浅色主题下用浅底会把相纸的白留白和底色糊在一起，看不出窗口在哪。
+    */
+    framePreviewBox: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: 4,
+      overflow: 'hidden',
+      backgroundColor: FRAME_PREVIEW_BACKDROP,
+      // 一道极细的亮边：把"窗"从抽屉底上抠出来，不需要阴影（阴影在深色下看不见）。
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: ink.hairline,
+    },
+    frameHint: {
+      color: ink.paperDim,
+      fontSize: 9,
+      letterSpacing: 0.4,
+    },
+    framePills: {
+      flexDirection: 'row',
+      gap: GRID_GAP,
+    },
+    framePill: {
+      flex: 1,
+    },
+    framePillBody: {
+      height: 34,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: 8,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: ink.hairline,
+    },
+    // 当前档：琥珀色描边 + 一层很淡的底。两档之间不靠"高亮色块"区分，
+    // 免得和上面那排胶卷卡的选中样式抢眼。
+    framePillBodyActive: {
+      borderColor: withAlpha(ink.amber, 0.65),
+      backgroundColor: withAlpha(ink.amber, 0.14),
+    },
+    framePillText: {
+      color: ink.paperDim,
+      fontSize: 12,
+      letterSpacing: 0.8,
+      fontFamily: UI_MONO,
+    },
+    framePillTextActive: {
+      color: ink.amberSoft,
     },
     grid: {
       flexDirection: 'row',
