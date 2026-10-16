@@ -33,6 +33,18 @@
  *   所以每个叠图都要外面包一层 `<View>` 承载混合模式与透明度。
  * · `<Image blurRadius>` 在 iOS 上是真模糊 UIImage（`RCTImageView.mm:158`），
  *   能被 `captureRef` 截进成片 —— 真泛光/微柔焦靠它。
+ *
+ * ── 为什么平铺不用 `resizeMode="repeat"`（v1.8.2 的根因修正）─────────────
+ * iOS 的 repeat 由 `RCTImageComponentView.mm:148-150` 的
+ * `resizableImageWithMode:UIImageResizingModeTile` 实现，**方格边长 = `image.size`（点）**，
+ * 而 `image.size` 取决于资源被解码成几倍图：Metro 数据路径是 3 倍（`512/3 ≈ 170.7pt`），
+ * 打包路径（`RCTImageFromLocalAssetURL`，assets 里没有 @2x/@3x 变体）是 1 倍
+ * （`512pt`）—— 同一张贴图在真机 IPA 里被放大 3 倍，于是 `grain.png` 里 8–24px 的团簇
+ * 变成屏幕上 8–24pt 的"脏云雾"（用户 2026-10-17 的投诉）。
+ * 现在改成 `planTextureTiles()` 手工铺方格：固定 `TEXTURE_TILE_PT = 512/3`，
+ * **1 贴图像素 = 1 设备像素**（3x 屏），与资源解码倍率、与 RN 的 repeat 语义都无关；
+ * 越界的最后一行/列由根节点的 `overflow: 'hidden'` 裁掉。
+ * 就绪计数口径不变：整层只在**第一块**贴图上报一次 `onPlateLoad`（见上面第 1 条）。
  */
 import { memo, useMemo } from 'react';
 import { Image, StyleSheet, View } from 'react-native';
@@ -119,6 +131,54 @@ export function planDustSpecks(preset: ResolvedFilmPreset, seed: number): DustSp
   return specks;
 }
 
+/**
+ * 贴图的原始边长（= `scripts/generate_grain_clump.py` 里的 `SIZE = 512`）。
+ * 改烤脚本的尺寸时，这里要跟着改，否则"1 贴图像素 = 1 设备像素"就断了。
+ */
+export const TEXTURE_SIZE_PX = 512;
+
+/**
+ * 平铺方格的边长（逻辑点）：`512 / 3 = 170.667pt` ⇒ **3x 屏上 1 贴图像素 = 1 设备像素**。
+ * 取景器镂空窗约 321~373pt ⇒ 2×2 块（最多 3×3 = 9 张 `<Image>`）。
+ */
+export const TEXTURE_TILE_PT = TEXTURE_SIZE_PX / 3;
+
+/** 一块平铺方格：尺寸都是逻辑点，绝对定位在图层容器里（越界部分由根的 overflow 裁掉）。 */
+export interface TextureTile {
+  key: string;
+  left: number;
+  top: number;
+  size: number;
+}
+
+/**
+ * 把一个 `w × h`（逻辑点）的区域切成边长为 `tilePt` 的方格阵列。
+ *
+ * 纯函数，探针直接调用它核对"1 贴图像素 = 1 设备像素"这条口径。
+ * · 极端尺寸保护：块数上限 6×6，超出就把方格等比放大（宁可少铺几块，
+ *   也不要在成片路径上炸出上百个 `<Image>`）。
+ * · `- 1e-9` 是防浮点误差：`341.333… / 170.666…` 必须正好是 2 列，不能多出第 3 列。
+ */
+export function planTextureTiles(
+  w: number,
+  h: number,
+  tilePt: number = TEXTURE_TILE_PT,
+): TextureTile[] {
+  if (w <= 0 || h <= 0 || tilePt <= 0) {
+    return [];
+  }
+  const size = Math.max(tilePt, Math.max(w, h) / 6);
+  const cols = Math.max(1, Math.ceil(w / size - 1e-9));
+  const rows = Math.max(1, Math.ceil(h / size - 1e-9));
+  const tiles: TextureTile[] = [];
+  for (let r = 0; r < rows; r += 1) {
+    for (let c = 0; c < cols; c += 1) {
+      tiles.push({ key: `tile-${r}-${c}`, left: c * size, top: r * size, size });
+    }
+  }
+  return tiles;
+}
+
 /** 一个图层要叠的 View 样式（混合模式 + 透明度 [+ 水平镜像]）。 */
 function overlayStyle(layer: GradeLayer): ViewStyle {
   const style: ViewStyle = { mixBlendMode: layer.blendMode, opacity: layer.opacity };
@@ -193,6 +253,13 @@ function FilmLookLayersImpl({
         }
 
         const flip = layer.flipX === true ? !grainFlipped : grainFlipped;
+        // 只有**颗粒板**走手工 1:1 方格（见文件头）。`dust.png` 是稀疏离散的白点/划痕，
+        // 让它在 170.67pt 的网格里重复 4 次会被一眼看出来；它保持 RN 的 repeat ——
+        // 一屏之内只铺一块，代价是打包路径下斑点的尺度比 Metro 路径大 3 倍
+        // （已在 README 的已知缺口里记档，这一轮不动它，免得一次改两件事）。
+        const tiled = layer.resizeMode === 'repeat' && layer.textureId === 'grain';
+        const tiles = tiled ? planTextureTiles(width, height) : [];
+        const source = textureSource(layer.textureId);
         return (
           <View
             key={layer.key}
@@ -203,13 +270,34 @@ function FilmLookLayersImpl({
               flip ? styles.flipX : null,
             ]}
           >
-            <Image
-              source={textureSource(layer.textureId)}
-              style={StyleSheet.absoluteFill}
-              resizeMode={layer.resizeMode === 'repeat' ? 'repeat' : 'stretch'}
-              onLoad={onPlateLoad}
-              fadeDuration={0}
-            />
+            {tiled
+              ? tiles.map((tile, index) => (
+                  <Image
+                    key={tile.key}
+                    source={source}
+                    style={{
+                      position: 'absolute',
+                      left: tile.left,
+                      top: tile.top,
+                      width: tile.size,
+                      height: tile.size,
+                    }}
+                    resizeMode="stretch"
+                    // 就绪计数口径：整层只在第一块上报一次（见文件头第 1 条）——
+                    // 多报几次会让宿主的"还差几张图"提前归零，截图就可能截到半张。
+                    onLoad={index === 0 ? onPlateLoad : undefined}
+                    fadeDuration={0}
+                  />
+                ))
+              : (
+                  <Image
+                    source={source}
+                    style={StyleSheet.absoluteFill}
+                    resizeMode={layer.resizeMode === 'repeat' ? 'repeat' : 'stretch'}
+                    onLoad={onPlateLoad}
+                    fadeDuration={0}
+                  />
+                )}
           </View>
         );
       })}

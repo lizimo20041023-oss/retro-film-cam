@@ -56,6 +56,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [32. v1.7.0：画幅强锁 + 相框三变体 + 实时预览 + 水印像素锁定](#32-v170画幅强锁--相框三变体--实时预览--水印像素锁定)
 - [33. v1.8.0：去白雾的色彩引擎 + 暗房纸材 + 参数胶囊 + 日期引擎 + 像素级锁定](#33-v180去白雾的色彩引擎--暗房纸材--参数胶囊--日期引擎--像素级锁定)
 - [34. v1.8.1：日期背景 100% 透明 + 颗粒不透明度硬上限 + `00 NO FRAME` 无相框模式](#34-v181日期背景-100-透明--颗粒不透明度硬上限--00-no-frame-无相框模式)
+- [35. v1.8.2：颗粒不再糊成脏云雾（贴图重烤 + 1:1 手工平铺）](#35-v182颗粒不再糊成脏云雾贴图重烤--11-手工平铺)
 
 ---
 
@@ -3903,6 +3904,192 @@ export function grainLayerOpacity(strength: number): number   // clamp01 后线�
 | Release | [`v1.8.1`](https://github.com/lizimo20041023-oss/retro-film-cam/releases/tag/v1.8.1)（release id `415332537`，asset id `648454723`，`target_commitish` = 远端 `373974d5`）· 下载：<https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.8.1/FretroCam-v1.8.1-unsigned.ipa> |
 | bundle `main.jsbundle` | 本地 `expo export --platform ios --no-bytecode` **EXIT=0** ⇒ `_expo/static/js/ios/index-a1be5160fade386027948f1629879ff1.js` **1,339,211 B**；产物 20 个文件 / 2,816,976 B（`grain.png` 211,111 B / `light-leak.png` 18,214 B / `no-frame.png` 68 B，与源文件逐字节同尺寸）；`_verify_ipa_v181.py --local` 在该产物上校准后 **RESULT: OK** |
 | 核验 | `python _verify_ipa_v181.py 12071168466` → **RESULT: OK**：IPA 内 **115** 个条目、`Payload/FretroCam.app/main.jsbundle` **2,040,168 B**、`Info.plist` 版本 `1.8.1` + `com.canyerylee.fretrocam`、相框 PNG 恰好 **10 张**（含 `no-frame.png` 68 B）、四张贴图（grain / light-leak / vignette / dust）都在包、撤掉的素材（`leather` / `half-frame` / `sheet8x10`）全 0 命中、`SHOULD_BE_ABSENT` 清单**全 x0**（含本版删掉的 `DateHaze` / `DateHazeProps`）、v1.8.1 的十七根新针（`NO_FRAME_ID` / `NO_FRAME_ASPECTS` / `DEFAULT_NO_FRAME_ASPECT` / `resolveFrame` / `noFrameAspect` / `fullBleed` / 7 个 `*.noFrame*` i18n 键 / `grainLayerOpacity` / `haloOuterRatio` / `haloInnerRatio` / `lampLayers` / `PunctuationLamp`）**全 x≥1**；内部名 canary `makeRandom` 不在包内 ⇒ 该段按设计跳过（内部名的证据交给源码级探针，不靠字节码） |
+
+---
+
+## 35. v1.8.2：颗粒不再糊成脏云雾（贴图重烤 + 1:1 手工平铺）
+
+这一版只修一件事：**颗粒档打开后整幅画面被 3~20pt 的软斑块盖住**。用户投诉原话是
+「为什么会这样啊 把颗粒关掉又没有了」——同一张取景器截图里，颗粒「輕 LT」开着时满屏云斑，关掉即干净。
+根因有两条，缺一不可；两条都修了才干净。
+
+### 35.1 根因一：贴图本身的能量压在 8~64px 周期上
+
+`assets/textures/grain.png` 的环带能量（FFT 环带占比，周期 = 512/半径）：
+
+| 频带 | `<8px` | `8–24px` | `24–64px` | `64–160px` | `>160px` |
+| --- | --- | --- | --- | --- | --- |
+| v1.8.1 旧贴图 | 25.8% | **55.0%** | **16.2%** | 2.4% | 0.5% |
+
+也就是说 71% 的能量在周期 ≥8px 上。**这不是"对比度被放大"造成的**：归一化只做了一次全局标量
+（除以 0.7406 ⇒ 1.3502×），标量改不了频谱形状。形状来自旧配方
+`0.62·细支(σ≈0.77px) + 0.38·粗支(σ≈2.24px)`，其中 `wrap_resize()` 的 1.4× 上采样单独就把
+`<8px` 带的能量搬走 12.6pp（方差传递 0.445/白噪），`SIGMA_MICRO=0.7` 的微模糊又把细支在
+`<8px` 上的能量削掉 52%。
+
+### 35.2 根因二：打包路径把贴图整体放大 3 倍
+
+iOS 的 `resizeMode="repeat"` 不是 `colorWithPatternImage`，而是
+`node_modules/react-native/Libraries/Image/RCTImageComponentView.mm:148-150` 的
+`resizableImageWithMode:UIImageResizingModeTile`，**方格边长 = `image.size`（单位：点）**。
+`image.size` 取决于这张资源被解码成几倍图：
+
+| 路径 | 解码倍率 | `grain.png` 的 `image.size` | 屏幕上的方格 |
+| --- | --- | --- | --- |
+| Metro / 数据 URL（开发期） | 3× | 512/3 ≈ **170.7pt** | 1 贴图像素 = 1 设备像素 |
+| 打包进 App 的资源（真机 IPA） | 1× | **512pt** | 1 贴图像素 = **3 设备像素** |
+
+打包路径走 `RCTUtils.mm:966-998` 的 `RCTImageFromLocalAssetURL`，而 `assets/textures/` 里没有
+`@2x/@3x` 变体 ⇒ `scale=1`。于是同一张贴图在真机上被放大 3 倍：`8–24px` 的团簇成了屏幕上的
+**8–24pt 斑块**、`24–64px` 的团块成了 24–64pt 的"云"，与用户截图的观感逐条对上。
+这也解释了为什么开发期看着还行、装到手机上就糊。
+
+### 35.3 修法一：重烤 `grain.png`（先定尺 → 再定形 → 最后定对比度）
+
+`scripts/generate_grain_clump.py` 的 `bake_grain()` 重写：直接在最终 `512×512` 网格上取**一支**白噪，
+`fine = wrap_blur(white, 0.60)`、`clump = wrap_blur(white, 1.80)`（各自除以自身 std），
+`pat = 0.78·fine + 0.22·clump`；**删掉 `COARSE=366` + `wrap_resize()` 的 1.4× 上采样，删掉 `SIGMA_MICRO` 微模糊**。
+对比度最后才定：`sigma_pre` 从 0.16 起按 0.002 步进，直到 `clip(0.5 + pat·sp, 0, 1)` 的 std 达到
+`TARGET_SIGMA = 0.2605`（停在 0.280），再用整数偏移把 mean 顶到 127.5。新贴图实测：
+
+| 指标 | v1.8.1 | v1.8.2 |
+| --- | --- | --- |
+| `<8px` | 25.8% | **65.7%** |
+| `8–24px` | 55.0% | 28.5% |
+| `24–64px` | 16.2% | **5.0%** |
+| `64–160px` / `>160px` | 2.4% / 0.5% | 0.7% / 0.1% |
+| σ（0~1） | 0.26049 | 0.2616 |
+| mean | 0.49991 | 0.49987 |
+| 跨接缝 / 图内梯度 | — | x 0.97 / y 1.03 |
+| SHA-256 | `381acc560c0faa21630071e3370d3a562c6ddcbe77ed9394301e008a41f9ff2d` | `2d30d07745e2863d3a2a55bb479d4f5ee9319993b6affa456550d9ce5ae86ad0` |
+
+脚本里加了**频带自检门**：`<8px ≥ 0.60`（`BAND_FINE_MIN`）、`24–64px ≤ 0.06`（`BAND_COARSE_MAX`），
+越界即 `sys.exit(1)`。旧配方在这两条上是 0.258 / 0.162 ⇒ **这道门真能把旧贴图挡回去**。
+
+> 口径出处：本节这些环带数字与 `_plate_stats.json` 里 **v1.8.2 新增**的 `bands` 列，权威定义只有一处 ——
+> `scripts/generate_grain_clump.py:108-123` 的 `band_energy()`（探针里的 JS FFT 实现与它逐位一致）。
+> v1.8.1 及以前 `_plate_stats.py` 只统计均值 / 分位数 / alpha，**环带能量从未被任何脚本记录过**；
+> 这正是这个缺陷能一路 CI 全绿出厂的原因。
+它此前一直没被任何门禁覆盖，所以这个缺陷能在 CI 全绿的情况下出厂 —— 这是这一版最该记住的一件事。
+`light-leak.png` 逐字节未变（`8BCD14BF5EBE…0107B7`），漏光烘焙代码一行未动。
+
+### 35.4 修法二：手工 1:1 平铺（`TEXTURE_TILE_PT = 512/3`）
+
+`src/components/FilmLookLayers.tsx` 里颗粒层不再交给 `resizeMode="repeat"`，改为
+`planTextureTiles(width, height, tilePt = TEXTURE_TILE_PT)` 算出方格，铺绝对定位的
+`<Image resizeMode="stretch">`：
+
+- `TEXTURE_SIZE_PX = 512`、`TEXTURE_TILE_PT = TEXTURE_SIZE_PX / 3`（3× 屏上 **1 贴图像素 = 1 设备像素**），
+  与前面那条解码路径差无关；取景窗 341pt ⇒ **2×2 四块**，越界的最后一行/列由根节点
+  `overflow: 'hidden'` 裁掉；
+- 触发条件是 `layer.resizeMode === 'repeat' && layer.textureId === 'grain'` ⇒ **图层计划没动**
+  （`gradeLayers.ts:291-301` 仍是 `resizeMode:'repeat'`），改的只是"谁来画这张平铺"；
+- 就绪计数口径不变：整层**只上报一次** `onPlateLoad`（平铺分支是
+  `onLoad={index === 0 ? onPlateLoad : undefined}`，多报会让"还差几张图"提前归零）。
+  实测计数：文件里 `<Image` 共 **3 处**（`:238` 照片层 / `:275` 平铺块 / `:293` 非平铺贴图层），
+  `onLoad={onPlateLoad}` **2 处**（`:238` / `:297`），守卫式 **1 处**（`:288`）—— 不变量是
+  "每个贴图层在**运行时**恰好上报一次"，不是"字面出现次数相等"（§35.7 记录了口径订正）；
+- `dust.png` 仍走 RN 的 `repeat`：它是稀疏离散点，每 170.67pt 重复一次会被一眼看出来。
+
+### 35.5 前后对照（离线仿真）
+
+`_sim_grain_v182.py`：341.333pt 见方的取景窗、@3x = 1024 设备像素、overlay + 层 opacity 0.14；
+旧侧 = 旧贴图按 512pt 方格铺，新侧 = 新贴图按 170.667pt 方格铺，比对**调制量**（这一层单独的贡献）：
+
+| 口径 | 修复前 | 修复后 |
+| --- | --- | --- |
+| σ（调制量） | 0.0339 | 0.0352 |
+| `<8px` | 0.4% | **65.7%** |
+| `8–24px` | 22.6% | 28.5% |
+| `24–64px` | **53.1%** | **5.0%** |
+| `64–160px` / `>160px` | 19.5% / 4.5% | 0.7% / 0.1% |
+
+修复前 53.1% 的能量落在 24–64 设备像素上（= 8–21pt 的团块，正是投诉里"3~20pt 斑块"的来源）；
+修复后 65.7% 落到设备像素级，而**总强度几乎不变（0.0339 → 0.0352）** —— 不是靠把颗粒调淡来遮丑。
+对照图 `_grain_sim_v182.png`（左 = 修复前，右 = 修复后）。
+
+### 35.6 文件改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `scripts/generate_grain_clump.py` | `bake_grain()` 重写（一支白噪两个尺度、无上采样、无微模糊）+ `band_energy()` + 两条频带自检门 + 文件头订正 |
+| `src/components/FilmLookLayers.tsx` | 新增 `TEXTURE_SIZE_PX` / `TEXTURE_TILE_PT` / `TextureTile` / `planTextureTiles()`；颗粒层改手工平铺（只有第一块挂 `onPlateLoad`）；文件头补「为什么不再用 repeat」 |
+| `src/constants/textures.ts` | 文件头「尺寸那些事」重写（1 贴图像素 = 1 设备像素）；`grain.note` 换新配方与新频带数字 |
+| `assets/textures/grain.png` | 重烤（249,201 B，SHA-256 `2D30D077…86AD0`） |
+| `app.json` | 版本号 1.8.2 |
+| `README.md` | 本节（目录 + §35） |
+
+### 35.7 验证清单（本地实测）
+
+写手全部停手后，先由门禁侧（写域只有工作区根的 `_plate_stats.py` / `_probe_*`）复跑一轮，
+再由 Lead 在冻结树上重跑一遍，数字逐条一致：
+
+| 门禁 | v1.8.1 基线 | v1.8.2 | EXIT |
+| --- | --- | --- | --- |
+| `_probe_date_engine.cjs` | 1818 / 0 | 1818 / 0 | 0 |
+| `_probe_film_look.cjs` | 1126 / 0 | **1201 / 0** | 0 |
+| `_probe_geo_lock.cjs` | 19336 / 0 | 19336 / 0 | 0 |
+| `_probe_noframe_v181.cjs` | 217 / 0 | 217 / 0 | 0 |
+| `_probe_noframe_watermark.cjs` | 458 / 0 | 458 / 0 | 0 |
+| `_probe_skin_material.cjs` | 859 / 0 | 859 / 0 | 0 |
+| `_probe_v180_seams.mjs` | 1312 / 0 | 1312 / 0 | 0 |
+| `_probe_lead_integration.mjs` | 133 / 0 | 133 / 0 | 0 |
+| `_probe_capture_quality.mjs` | 78 / 0 | 78 / 0 | 0 |
+| `_haze_audit.mjs` | 超预算 0 / 10 | 超预算 0 / 10 | 0 |
+| `_purity_audit.mjs` | 59 / 0 PURE | 59 / 0 PURE | 0 |
+| `npx tsc --noEmit -p tsconfig.json` | 0 诊断 | 0 诊断 | 0 |
+
+合计 **25,412 条断言 / 0 失败**（再加 `_purity_audit` 的 59 条 = 25,471）。除 `film_look` 外
+10 道门禁的条数与 v1.8.1 基线**逐条相同** —— 没有靠放宽哪条门来换绿。
+
+`film_look` 1126 → 1201（+75）是**订正 + 新增**，不是放宽。用插桩副本实测分解：
+`≤⑥ 1116 ｜ ⑦ 15 ｜ ⑧ 27 ｜ ⑨ 43 = 1201`，旧 §⑦ = 1126 − 1116 = 10 ⇒ **+5** 来自 §⑦ 判据重写
+（旧判据把 `<Image>` 字面出现次数钉死成 2、并假设 `onLoad={onPlateLoad}` 出现次数等于 `<Image>` 数；
+平铺后一个贴图层有 N 张 `<Image>`，口径改成"每个贴图层运行时恰好上报一次就绪"，见 §35.4），
+**+27** 来自 §⑧ 平铺契约，**+43** 来自 §⑨ 频带门。**旧断言一条没删**，`:816` 的
+`eq(grain.resizeMode, 'repeat', '⑥ 颗粒平铺')` 继续绿（图层计划没动）。
+
+§⑧ 钉住的新契约（`planTextureTiles`）：`TEXTURE_SIZE_PX = 512`、`TEXTURE_TILE_PT = 512/3`、
+`tile.size × 3 = 512`、`341.333² → 4 块`、`321×373 → 6`、`352×466 → 9`、`4000² → 36`、
+`0 / 负 / tilePt=0 → []`；源码级：颗粒分支调用 `planTextureTiles(`、守卫式 `onLoad` 存在、
+旧的 `resizeMode={… ? 'repeat' : 'stretch'}` 只剩非颗粒分支一处。
+
+§⑨ 频带门 —— 同一段测量喂两张图，**新绿旧红**：
+
+| 环带 | 门线 | 新 `grain.png` | 旧 v1.8.1 贴图 |
+| --- | --- | --- | --- |
+| `<8px` | `≥ 0.60` | **0.6566 绿** | **0.2584 红** |
+| `8–24px` | `≤ 0.35` | 0.2854 绿 | 0.5501 红 |
+| `24–64px` | `≤ 0.06` | **0.0496 绿** | **0.1624 红** |
+| `64–160px` | `≤ 0.02` | 0.0070 绿 | 0.0238 红 |
+
+旧贴图 = `git show HEAD:assets/textures/grain.png`（211,111 B，字节 sha256 钉死）导出的
+`_grain_v181_old.png`，喂进同一段测量后有 6 条 `【红】` 断言全部成立；另有 6 条"冻结值"断言
+（删掉图片也仍然成立，防"删图变绿"）。σ 0.2605 → 0.2616（+0.4%）⇒ 是**频谱搬家**，不是调淡。
+
+四份独立实现互相印证（数字完全一致）：烤图脚本内联 numpy、`_plate_stats.py`、探针里的 radix-2 FFT
+（与 numpy 逐位一致）、`_verify_ipa_v182.py --grain`；并固化成 7 条跨实现断言 + 3 条"改了图不重跑
+统计就会被抓"的过期检测。`_plate_stats.json` 本轮刷新：grain `p05 0.0431→0.0392`、
+`p95Lum 0.9569→0.9608`、`fracScreenNeutral 0.0423→0.0435`、`fracLumGE50 0.4982→0.4990`、
+`mean / meanLum 0.4999` 不变，并新增 `sigma`（0.2616）与 `bands` 两列（**新增维度，不是放宽**）；
+`dust` / `vignette` / `light-leak` 三行逐字段未变，`light-leak.png` 逐字节未变。
+
+打包侧（`expo export` 冒烟 + IPA 核验）见 §35.9。
+
+### 35.8 已知缺口
+
+- **`dust.png` 在打包路径下同样被放大 3 倍**（斑点比开发期大 3 倍）。它是稀疏离散点、不改观感，
+  这版不动它；要修就照 `grain` 的办法给它也做 1:1 平铺。
+- 频带门是**离线**判据（对 PNG 做 FFT 环带分解），不是真机截图判据；"1 贴图像素 = 1 设备像素"
+  是按 `TEXTURE_TILE_PT = 512/3` 在 3× 屏上推出来的，2×/1× 设备上这层仍按 512/3pt 铺，颗粒会略粗。
+- 门禁只证明**三条契约**：贴图频谱（§⑨）、平铺几何（§⑧）、就绪语义（§⑦）。它不模拟系统合成器，
+  也不出真机截图，所以"装到手机上看着是否舒服"仍然只能靠人眼确认（见上一条）。
+- 没有真机验证：本机跑不了 iOS 模拟器/真机，"斑块消失"的结论来自 §35.5 的离线仿真 + §35.2 的
+  RN 源码级路径分析。
+
+### 35.9 产物指纹
+
+（本节在发布后回填：提交 / CI / artifact / IPA / Release / 核验。）
 
 ---
 
