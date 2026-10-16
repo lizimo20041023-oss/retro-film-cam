@@ -54,6 +54,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [30. v1.6.0：四模块重构（胶囊刻度尺 / 相纸正向 / 长卷不再叠合 / 地名与日期）](#30-v160四模块重构胶囊刻度尺--相纸正向--长卷不再叠合--地名与日期)
 - [31. v1.6.1：六模块体检落地 + 闪光灯三档](#31-v161六模块体检落地--闪光灯三档)
 - [32. v1.7.0：画幅强锁 + 相框三变体 + 实时预览 + 水印像素锁定](#32-v170画幅强锁--相框三变体--实时预览--水印像素锁定)
+- [33. v1.8.0：去白雾的色彩引擎 + 暗房纸材 + 参数胶囊 + 日期引擎 + 像素级锁定](#33-v180去白雾的色彩引擎--暗房纸材--参数胶囊--日期引擎--像素级锁定)
 
 ---
 
@@ -3479,6 +3480,238 @@ rulerMarkCount(windowWidth) = Math.ceil((0.86 * windowWidth + 40) / 8) + 1
 > `settings.quality.capNote` 里那句「…真正的 48MP 需要原生相机模块…」在包内是
 > `4\x008\x00M\x00P\x00`，第一版核验器数 ASCII 的 `48MP` 数到 0 就假报了 `missing:48MP`
 > （61 条断言里唯一一条 FAIL，字面量其实一直在）。现在两种编码都数 ⇒ `48MP` 命中 6 次。
+
+---
+
+## 33. v1.8.0：去白雾的色彩引擎 + 暗房纸材 + 参数胶囊 + 日期引擎 + 像素级锁定
+
+这一版的主线是你报的那句"成片被极厚的半透明乳白辉光糊住"。查下来不是"某个参数调大了"，而是**三处结构性加白**：一张 99.9% 像素都在加亮的漏光贴图、一层纯白 `screen` 曝光层、一条把画面拉向中灰的 `contrast<1` 反差层。它们被删掉/重写，胶片感改由**抬起的暗部灰 + 团簇颗粒 + 微尘**承担。同一版里还交付了另外四个模块：三种暗房纸材、参数胶囊自动隐藏、日期引擎、以及水印字号的像素级锁定与画幅强锁复核。
+
+下面每一条结论都附**可复跑的命令**；`_haze_audit.mjs` / `_purity_audit.mjs` / `_probe_*.cjs` 都在工作区根、零依赖、`EXIT 0` 才算绿。
+
+---
+
+### 33.1 白雾的根因与"四刀"
+
+改动前 `node _haze_audit.mjs` 是 **10 / 10 预设全部超预算**（`EXIT=1`）。三个结构性来源，都有量化证据：
+
+| 来源 | 证据（改动前） | 它为什么是"整幅加白" |
+| --- | --- | --- |
+| `assets/textures/light-leak.png` | 768×768 RGBA，`mean=[0.9950, 0.5608, 0.1847]`、`meanLum 0.6260`、`meanAlpha 0.2829`、**`fracScreenNeutral 0.08%`** | 99.9% 的像素都在给画面增亮，却用 `screen` 混合并拉伸到整幅；10 卷里 3 卷开着它（`gold-200` 0.22 / `cinestill-800t` 0.18 / `expired-64` 0.34） |
+| `exposure-up` 层 | 纯白 `#FFFFFF` + `screen`；10 / 10 预设 `whiteLoss` 超 0.02 预算，最差 `ccd-cyber` **0.0805** | `screen(1, cs) = 1`：它在数学上**必然**把成片白点推到 1.0，是构造性加白 |
+| `contrast < 1` 走"中灰 + `normal`" | 关掉混合的对照列里 `tri-x-400` 平坦 **0.4590**、`digicam-2002` `y(0)=0.2854` / `y(1.0)=0.3837` | `normal` 混合把每个像素拉向中灰 ⇒ 得到的是"死灰"，不是"抬黑" |
+
+另外两处助燃：`bloom` 用的 `color-dodge` 会把阴影也一起提亮；`vignette` 用 `multiply` 会把纯白压到 0.91~0.97，制造"白点不是白"。
+
+**四刀（全部落在色彩引擎与贴图里，预算一个数字没改、预设一个没删）：**
+
+1. **删 `exposure-up`** —— 色彩引擎里不再有任何"整幅加白"的层；曝光由 `fade` / `contrast` 承担。
+2. **删 `contrast < 1` 的中灰 `normal`** —— 对比度只许 ≥ 1，软化交给 `fade` 的托黑。
+3. **暗角 `multiply → overlay`** —— `overlay(1, cs) = 1`，对纯白**零影响**，白点不再被压。
+4. **重烤 `light-leak.png`（512×512）** —— `mean=[0.1322, 0.0726, 0.0291]`、`meanLum **0.0821**`（旧 0.6260）、`meanAlpha **0.0755**`（旧 0.2829）、`maxAlpha 0.6196`、**`fracScreenNeutral 80.0%`**（旧 0.08%）、`fracLumGE50 **10.3%**`（旧 99.02%）；图层 `opacity` 再夹 ≤ 0.10 ⇒ 只剩角落一条光斑。
+5. **`bloom` 的 `color-dodge` → 两层 halation** —— `kind:'photo'` 自叠模糊高光 + `blurRadius 8`（真泛光）+ 暖红 `#FF4B2D` `screen` ×0.05；阴影区贡献为 0。
+
+**结果（`node _haze_audit.mjs`，10 卷 × 双模式）：**
+
+| 指标 | 改动前 | 改动后 |
+| --- | --- | --- |
+| 超预算预设 | **10 / 10**（`EXIT=1`） | **0 / 10**（`EXIT=0`，`RESULT: OK`） |
+| `whiteLoss` | 最差 `expired-64` **0.0866**，`ccd-cyber` 0.0805 | 8 卷恰为 **0.0000**；`superia-x` 0.0062 / `velvia` 0.0124 / `ccd-cyber` 0.0182 |
+| `blackLift` | `expired-64` **0.1613** | 0.0017 ~ 0.0275 |
+| `satRatio` | `expired-64` **0.5095** | 0.9517 ~ 1.1288 |
+| `veilHigh` | 多卷超 0.02 | 最大 `cinestill-800t` +0.0170 |
+| `veilMid` | `gold-200` +0.0406 | **只有 `cinestill-800t` 为正** +0.0096（halation 的 `screen` 层） |
+| 白点 `y(1.0)` | 被压到 0.91~0.97 区间 | **1.0000** |
+
+预算原封不动：`{whiteLoss 0.02, veilHigh 0.02, veilMid 0.02, blackLift 0.07, satFloor 0.95, normalMid 0.06}`。
+
+**一个诚实的代价**：`blackLift ≤ 0.07` 等价于"输入 0.02 处最多抬到 0.09"，而设计稿里的暗部色 `#12181C` 需要 0.0702、`#181E24` 需要 0.0943。我选择**保预算**（你这一轮投诉的就是加白），所以暗部是"微灰"而不是设计稿那个更深的青灰。连带的观感变化：`expired-64` 的"过期褪色"味比上一版淡（它的 `satRatio` 从 0.5095 到 0.9517 这个变化本身，就是那张乳白膜消失的证据）。
+
+---
+
+### 33.2 色彩引擎的数学：亮度恰为 0.5 的浓色 + `overlay`
+
+你要的是"保持原图真实对比度与饱和度"。以前的色温/色调/分离色调层是"深色 + `screen`"或"中灰 + `normal`"，两者都会改亮度。现在四条彩色层统一成：
+
+```
+WARM         #FF641A   Y = 0.5004
+COOL         #1393FF   Y = 0.5003
+TINT_GREEN   #1AA81A   Y = 0.5002
+TINT_MAGENTA #E657E6   Y = 0.5009      |Y − 0.5| ≤ 0.002
+```
+
+`overlay` 对源色是**线性**的，偏差正比于 `(Y − 0.5)` ⇒ **`Y = 0.5` 时亮度映射精确恒等**：白点仍是白点、黑场仍是黑场，只有色相/饱和度被动。这就是"只改色不改亮"的数学保证，也是 8 支预设 `whiteLoss = 0.0000` 的原因。
+
+`satRatio` 的机制值得单独记一笔（我一开始猜错了）：门禁里 `BLEND.saturation` 是恒等映射，所以 `satRatio` 与 `color.saturation` 参数**数学上无关**，它就是暗/亮对比度之比 `((y(0.9)+0.05) / (y(0.1)+0.05)) / 12`；唯一能压低它的是"托黑在 0.1 处抬亮度"。⇒ 这是**管道层问题**，不是"某卷本该低饱和"。修法是给 fade 重的卷补 `contrast-boost`（photo soft-light）并收紧 fade（`cinestill-800t` 0.14→0.13、`digicam-2002` 0.34→0.27、`expired-64` 0.42→0.29），另 3 支从低对比改回 1.15~1.20 —— **门槛与断言一个字没改**。
+
+---
+
+### 33.3 团簇颗粒
+
+- 新 `assets/textures/grain.png`：512×512 8 位灰度（三通道恒等），`mean 127.480`（0.4999）、**σ 66.424（归一化 0.2605，旧 0.2314 ⇒ +12.6%）**、`p05 11` / `p95 244`。
+- 新脚本 `retro-film-cam/scripts/generate_grain_clump.py`（numpy + Pillow，`SEED = 20261017`）：FFT **周期**滤波 + 周期双线性重采样 ⇒ 结构上严格可平铺。实测水平内部梯度 24.839 vs 跨接缝 25.150（**+1.3%**）、垂直 24.777 vs 22.158（−10.6%，差异来自接缝处采样噪声，不是断裂）。
+- **影调加权**（不再是一层均匀噪点）：`effAmp(cb) = grain × 2·min(cb, 1−cb) × 0.2605` ⇒ 中调最强、高光暗部最弱。默认档实测 **0.1094 ~ 0.1614**，全落设计窗 `[0.10, 0.22]`；`effAmp(0.9) ≤ 0.0323`、`effAmp(0.02) ≤ 0.0065`。
+- 配方：`PRESET_DEFAULTS.grain` 0.088 → **0.52**，10 卷 0.42~0.62。档位表 `GRAIN_LEVELS`（`off 0 / light 0.45 / std 1 / heavy 1.5 / max 2.2`）**一个字没改**：默认档落窗、heavy 档 0.16~0.21 仍在窗内、max 档 ×2.2 会到 0.24~0.35（这是你主动选"最强颗粒"时的本意，超窗属设计）。
+- 已知取舍：`2·min(cb, 1−cb)` 让暗部的颗粒只有中调的大约 5%。要让暗部"同样明显"只能换成 screen 型贴图，那会抬黑场 —— 与这一版的白雾诉求直接冲突，所以**不做**。
+
+### 33.4 微尘
+
+成片新增 2~4 颗微尘：`count = clamp(2 + round(dust × 2), 2, 4)`，半径 `0.004~0.010 × 短边`，位置在 `0.08~0.92` 之间按种子均匀分布，每颗由 3 层同心白圆组成（halo 3.1r / ring 1.9r / core r）。**只在成片（composite）面渲染**，实时预览里没有 —— 免得取景器里出现"贴纸"。
+
+---
+
+### 33.5 三种暗房纸材
+
+`src/constants/frameVariants.ts` 是配方的唯一产地（画幅只管开窗比例，材质只管纸面）：
+
+| 材质 | 纸面 | 渐变 | 结构纹理 | 元素数 |
+| --- | --- | --- | --- | --- |
+| `archival` | 纯白卡纸 `#F7F6F1`（平色） | 无（Δ=0） | `embossRatio 0.0028` 压凹 | **12** |
+| `baryta` | 岁月暖黄 `#E9DCBF` | `#F2E9D5 → #DFCEAE`，12 级 | 6 级褐晕染（bloom） | **80** |
+| `obsidian` | 暗房雅黑 `#1A1A1D` | `#1E1E22 → #151517`，12 级 | 开窗亮边（cut） | **60** |
+
+元素数只由材质决定，与画幅尺寸/朝向无关（`96×72` 迷你预览与整幅相框的元素数量一致）。
+
+**窗口零侵入（v1.7.0 的做法是错的）**：v1.7.0 的 `buildSkinWash` 会在整幅照片上压一层暖化层 —— 那正是"材质覆盖到画面里"的做法。这一版**删代码**（不是停用）：15 组 / 760 个元素里 758 个严格通过、2 个只差浮点尾巴，**最大侵入面积 2.069e-11 pt²**（容差 1e-6）；再用 12 个代表尺寸做像素级复核，窗口内 **1,358,268 个像素 0 个不同**。
+
+**为什么用"切条 `<View>`"而不是 `expo-linear-gradient`**：统一矩形模型才能断言"没有元素压进窗口"，而且本项目有"只用 View"的硬规则。它需要证据，所以补了色阶测量 —— 同带相邻级 RGB 差 baryta **Δ ≤ 3/255**（常见 (1.2, 1.7, 2.4)）、obsidian **Δ ≤ 1**、archival 0；窗口四角的**跨带接缝** baryta Δ ≤ 2 / obsidian Δ ≤ 1 ⇒ **没有硬色阶**。颜色取**全局 y 中点采样**（`mixHexColor(gradientTop, gradientBottom, 该条中点 y ÷ 相纸高)`），不是带内 `i/(steps−1)` —— 四条边带各自切 12 条，按带内映射会让窗口四角必然出现硬色阶。端点保真：首/末条 vs 配方端点逐通道 **Δ = 0 / 0**（只有 `fp100c`·baryta 的末条 Δ = 1）。
+
+岁月斑点**没有放回来**：几何噪点是"贴上去的图形"而不是材质，baryta 的岁月感由渐变 + 6 级晕染 + 铭文色承担。
+
+抽屉跟着改：材质芯片显示真实材质色，选中态只改描边（不再整块反白），芯片从 34pt 放大到 44pt。
+
+---
+
+### 33.6 参数胶囊自动隐藏
+
+- 3000 ms 无操作后淡出（`translateY 24pt`，退出 220 ms / 进入 160 ms）。
+- 按住滑动期间 `lock()` 计数 +1 并**取消**计时表（不是排队等待）；松手 `unlock()` + `wake()`；任何一个参数真值变化也唤醒。
+- 轻触对焦通过 `wakeSignal` 自增唤醒：`CameraScreen` 里 `setCapsuleWake(n + 1)` → `ParameterScrubBar` 的 `useEffect([wakeSignalValue, wakeCapsules])` → `wake()`。**这条是静态链路确认，没有真机运行时验证**（见 §33.12）。
+- 隐藏时 `pointerEvents='none'` + `accessibilityElementsHidden`，把轻触对焦让给取景器。
+- 证据：`node _probe_capsule_autohide.cjs` → **126 条断言 / 0 失败 / EXIT=0**（假计时器 + 记账 sink，含 `ALL_PROBE_ASSERTIONS_PASSED`）。
+
+---
+
+### 33.7 日期引擎
+
+四组配置进 `AppSettings.dateEngine`：**13 种格式 / 5 种字形 / 8 个机位 / 5 档发光**。默认值 `MM_DD_YY · led_7seg · strip_split · classic_amber` 与 v1.7.0 **逐字相同** —— 老用户升级后看到的还是那一行橙色液晶日期。
+
+设置页新增"⑥ 日期引擎"区：四组共 31 行选择器（`SectionHeading` + `OptionRow`，每行带 a11y），i18n 5 语言 × 37 键 0 缺。
+
+机位分两类：`strip_*`（2 个，排在白边文档流里）与 `in_*`（6 个，**画在照片里**，坐标由 `resolveDateSpot()` 按窗口算绝对盒，不参与文档流）。390×844 视口（成片画布 358×435 pt、窗口 321×321、白边高 96、字号 10.94、文本盒 99.59×9.96、`inset 10`）的实测坐标 —— `box` 是**未旋转**文本盒左上角（RN 绕中心旋转），`bounds` 是旋转后外接矩形：
+
+| 机位 | 旋转 | `box` | `bounds` | 区域 |
+| --- | ---: | --- | --- | --- |
+| `in_bl_v` | 90° | (−16.81, 274.23) | (28.00, 229.41) 9.96×99.59 | photo |
+| `in_bl_h` | 0° | (28.00, 319.04) | — | photo |
+| `in_br_h` | 0° | (229.41, 319.04) | — | photo |
+| `in_br_v` | 90° | (274.23, 274.23) | (319.04, 229.41) 9.96×99.59 | photo |
+| `in_tr_v` | 90° | (274.23, 72.82) | (319.04, 28.00) 9.96×99.59 | photo |
+| `in_cb_h` | 0° | (128.70, 319.04) | — | photo |
+| `strip_split` | 0° | (248.41, 382.02) | — | strip |
+| `strip_center` | 0° | (129.20, 382.02) | — | strip |
+
+规则：竖排三档 = 绕盒中心 90°；**装不下只换落区（photo ↔ strip），绝不动字号**；`degraded` 标记这次 1200 例里 0 次触发。画内机位下白边**只印地名**（不再印第二份日期）。
+
+---
+
+### 33.8 水印字号的像素级锁定（两条口径变更）
+
+唯一换算入口是 `src/constants/canvasBase.ts`：`BASE_CANVAS_W = 1440`、`absoluteFontPx(designPx, canvasWidth) = round2(designPx × canvasWidth ÷ 1440)`、`designPxOf(pointPx, canvasWidth)`。设计像素表：`DATE_DESIGN_PX`（`led_7seg` 44 / `led_dot_matrix` 42 / `ccd_osd` 46 / `lab_inkjet` 44 / `archival_steel` 46）、`PLACE_DESIGN_PX = 32`、`CODE_DESIGN_PX = 29`；字距 8、缝 48 也走设计像素。
+
+**旧机器全部删净**：`MIN_DATE_FONT_PT` / `MAX_DATE_FONT_CANVAS_RATIO` / `DATE_FONT_WEIGHT_BASELINE` / `WATERMARK_RATIOS` / `dateFontRatioOf` / 两处私有 `clamp`；`dateStampWidth` 的两个可选参数改成**必填**（不传就编不过）。
+
+实测"字号 ÷ 画布宽"恒定：`led_7seg` 0.03055~0.03056 / `led_dot_matrix` 0.02917 / `ccd_osd` 0.03194 / `lab_inkjet` 0.03055 / `archival_steel` 0.03194。参考画布 358 pt：日期 10.94 / 地名 7.96 / 代号 7.21 / 字距 1.99 / 缝 11.93。画幅强锁复核 580 条：5 相框 × 14 取景盒 × 4 视口，长宽比相对差**全 < 1%**。
+
+**两条口径变更（如实记，都是"回到 v1.7.0 的意图"）：**
+
+1. **地名比例从这一版中途的 0.909 回到 0.72**（`PLACE_DESIGN_PX` 40 → 32）。理由：你没有要求把地名放大 26%，"无请求的观感变化"是这一版最该避免的东西。
+2. **字形余量统一为常量 0.5 pt**。排版层曾经写 `dateGlyphSlackOf(W) = 2W/1440`（随画布缩放），而渲染层用 `dateEngine.GLYPH_SLACK = 0.5`（绝对点），两者只在参考画布相等；在 956 pt 上差 **62.41%（≈11 pt）** ⇒ 右对齐的日期离白边忽远忽近。裁定：余量是**设备像素取整补偿**、与画布宽无关 ⇒ 常量；字距与缝继续随画布缩放。参考画布上 `dateStampWidth("'26  10  17")` 仍是 **99.5900**（与旧口径同值 —— 旧式 `absoluteFontPx(2, 358) = round2(0.4972) = 0.50` 恰好相等），偏离参考画布才生效：289 pt 80.39 → **81.49**、440 pt 122.25 → **121.04**（±1 pt 量级）。
+3. 代号比例回到 0.9：v1.7.0 的 `codeFontOf(placeFont)` 入参是**地名**字号，`codeFont: 0.9` 是"相对地名"的比 ⇒ `CODE_DESIGN_PX` 取 **29**（`29/32 = 0.9063`，358 pt 实测 `7.21/7.96 = 0.9058`）。
+
+### 33.9 取景窗顶端写死的 `35mm`
+
+你上一版看到的"残字/鬼影"是取景窗顶端那段真焦段标签。真焦段可以切 13 / 26 / 35 / 52 mm，而它永远写着 `35mm`。这一版**整段删除**（`ViewfinderWindow.tsx` 291 → 271 行，`CameraScreen.tsx` 去掉常量与 prop），并加 6 条断言钉住"不许回来"。
+
+---
+
+### 33.10 门槛与证据
+
+| 门槛 | 命令 | 结果 |
+| --- | --- | --- |
+| 类型 | `cd retro-film-cam && npx tsc --noEmit -p tsconfig.json` | **EXIT=0**，零诊断 |
+| 白雾 | `node _haze_audit.mjs` | **0 / 10 超预算**，`RESULT: OK`，EXIT=0 |
+| 纯净度（旧层不许回来） | `node _purity_audit.mjs` | **59 条断言 / 0 失败 / RESULT: PURE** |
+| 色彩引擎 | `node _probe_film_look.cjs` | **972 / 0**（门槛 ≥ 250） |
+| 画幅+水印+八机位 | `node _probe_geo_lock.cjs` | **15843 / 0**（⓪18 ①580 ②188 ③12765 ④2233 ⑤59） |
+| 参数胶囊 | `node _probe_capsule_autohide.cjs` | **126 / 0** |
+| 相框材质 | `node _probe_skin_material.cjs` | **755 / 0** |
+| 日期引擎 | `node _probe_date_engine.cjs` | **1793 / 0** |
+| 画质档位 | `node _probe_capture_quality.mjs` | **78 / 0** |
+| v1.8.0 接缝 | `node _probe_v180_seams.mjs` | **1190 / 0** |
+| 集成接线（Lead） | `node _probe_lead_integration.mjs` | **110 / 0** |
+| 打包 | `npx expo export --platform ios --no-bytecode` | 见 §33.13 |
+
+> 探针全部在工作区根、**不在仓库里**（不污染 `git status`），零新依赖；它们用仓库自带 typescript 的 `transpileModule` + 自写 require 桩加载**真源码**，不复制实现。
+
+### 33.11 改动清单
+
+本次提交 **36 个文件 / +6436 −1907**：其中源码是 **35 个文件**（29 个已跟踪，含 2 张二进制贴图；6 个新文件），文本改动 **+6203 / −1907**（6 个新文件本身占 2566 行），本 README 的 §33 正文与目录行另占 **+233** 行。
+
+| 文件 | +/− | 说明 |
+| --- | --- | --- |
+| `src/components/FilmCompositor.tsx` | +919 / −749 | 整条调色管线交给 `FilmLookLayers`，`GradeLayerView` 整体删除，就绪计数单一来源 |
+| `src/components/FrameSkin.tsx` | +429 / −511 | 按材质重建；删 `buildSkinWash`/`buildAgedElements`/`buildDoodleElements` |
+| `src/utils/geometry.ts` | +292 / −64 | `resolveDateSpot` 八机位 / 竖排 / 内缩 / 退化换落区 |
+| `src/components/FramePreviewLayer.tsx` | +222 / −85 | 四块幕布 + 材质预览 |
+| `src/components/SettingsScreen.tsx` | +196 / −5 | 日期引擎 ⑥ 区（31 行选择器） |
+| `src/constants/frameVariants.ts` | +193 / −54 | 三种纸材配方唯一产地 |
+| `src/utils/gradeLayers.ts` | +185 / −82 | 色彩引擎重写，新增 `planFilmLooks` / `countStageImages` |
+| `src/utils/watermarkTypography.ts` | +180 / −144 | 设计像素换算 + `DATE_GLYPH_SLACK` |
+| `src/components/DateStamp.tsx` | +175 / −73 | 新日期引擎渲染 |
+| `src/components/ParameterScrubBar.tsx` | +121 / −14 | 接自动隐藏 + 唤醒 |
+| `src/types/index.ts` | +119 / −4 | `DateEngineConfig` / 材质 / 胶囊类型 |
+| `src/components/CameraScreen.tsx` | +98 / −8 | 档位并进 `effectivePreset`、唤醒信号、残影清理 |
+| `src/utils/settingsStore.ts` | +89 / −3 | 新字段迁移 |
+| `src/constants/presets.ts` | +60 / −29 | 10 卷配方重调 + 颗粒基准 |
+| `src/i18n/locales/{en,fr,ja,zh-Hans,zh-Hant}.ts` | 各 +43 / −3 | 日期引擎 + 画质档位文案 |
+| `src/components/FilmDrawer.tsx` | +43 / −12 | 材质芯片 44pt |
+| `src/components/ZoomStops.tsx` | +37 / −1 | — |
+| `src/hooks/useSettings.tsx` | +17 / −1 | — |
+| `src/utils/formatTimestamp.ts` | +15 / −14 | 走新格式器 |
+| `src/hooks/useFilmStage.ts` | +12 / −4 | 就绪口径注释 |
+| `src/components/ViewfinderWindow.tsx` | +9 / −29 | **删 `35mm` 丝印** |
+| `src/constants/textures.ts` | +8 / −5 | 注释订正（贴图新数字） |
+| `app.json` | +1 / −1 | 版本号 1.8.0 |
+| `assets/textures/grain.png` · `light-leak.png` | 二进制 | 重烤 |
+
+新文件：`src/components/DateGlyphs.tsx` 958 · `src/constants/dateEngine.ts` 572 · `src/hooks/useCapsuleAutoHide.ts` 393 · `src/components/FilmLookLayers.tsx` 299 · `scripts/generate_grain_clump.py` 259 · `src/constants/canvasBase.ts` 85。
+
+（零新依赖、零 `as any`；`FilmCompositor.tsx` 之外没有任何组件直接读贴图或写混合模式。）
+
+---
+
+### 33.12 已知缺口 / 没能验证的事
+
+1. **这一版没有任何真机或模拟器验证**（本机没有 iOS 运行时）。以下都只有"数学 + 源码形状"级别的证据：白雾是否真的从成片里消失、颗粒与微尘的实际观感、`blurRadius` 是否真的产生模糊、`mixBlendMode` 在 ViewShot 截图路径里是否真的生效、90° 旋转在 RN 里的锚点、胶囊淡出的手感、`pointerEvents` 是否真的把轻触对焦让出来。
+2. **实时预览里没有"荧光晕"**：`glow` 是 photo 类自叠层，`surface='live'` 永远跳过它（否则取景器里会叠一层更亮的自己）。
+3. **取景器预览看不到画内日期**（6 个 `in_*` 机位）：`FramePreviewLayer` 的四块幕布按设计只盖相纸留白、绝不压镂空窗，画内日期没有可画的位置。属结构性缺口，这一版不做。
+4. **字符类字形的墨迹高无法验证**：`led_7seg` / `led_dot_matrix` 是像素画（高度恒定），`ccd_osd` / `lab_inkjet` / `archival_steel` 走 `<Text>`，最终墨迹高由系统字体度量决定。"日期像素高 ÷ 成片长边恒定"对前者结构成立，对后者只到"字号 ∝ 画布宽"这一层。
+5. **48MP 仍然不可能**（见 §32.2）：iOS 的 `pictureSize` 是 `CameraView` 的 prop、只有 9 个硬编码枚举；本版画质档位只决定**成片尺寸**（standard ≈ 3.45MP / high ≈ 7.5MP / max ≈ 13.4MP，按 402×874 pt 舞台实测）。
+6. **颗粒幅度**按"1 贴图像素 = 1 逻辑点、3x 屏"推算；若设备缩放口径不同，σ 约按 0.35 倍衰减（探针会红）。
+7. `expired-64` 的过期褪色味比上一版淡（§33.1 末），`tri-x-400` 的图层数是 9 层而其余 9 支是 10~13 层 —— 这是该卷配方本身（4 个 color 层而不是 6 个），**不是缺层**。
+
+### 33.13 产物指纹
+
+| 项 | 值 |
+| --- | --- |
+| 提交 | `PENDING_COMMIT` |
+| CI | `PENDING_CI` |
+| IPA | `PENDING_IPA` |
+| 体积 / SHA-256 | `PENDING_SIZE` |
+| Release | `PENDING_RELEASE` |
+| bundle `main.jsbundle` | 本地 `expo export --platform ios --no-bytecode` **EXIT=0** ⇒ `_expo/static/js/ios/index-7631b44e6b5afcf4be18cc38f3a1110e.js` **1,331,062 B**；17 个资源（`grain.png` 211111 B / `light-leak.png` 18214 B，与源文件逐字节同尺寸）；`_verify_ipa_v180.py --local` 在该产物上校准后 **RESULT: OK**（`SHOULD_BE_ABSENT` 全 0 命中） |
+| 核验 | `PENDING_VERIFY` |
 
 ---
 

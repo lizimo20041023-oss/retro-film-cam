@@ -1,174 +1,115 @@
 /**
- * 相框皮肤（v1.7.0）—— 画在素材相框**之上**的纯 `<View>` 叠加层（纸面做旧 / 手绘涂鸦）。
+ * 相框材质层（v1.8.0）—— 画在素材相框**之上**的纯 `<View>` 叠加层。
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * 这一版和 v1.7.0 那一版的关系
+ * ─────────────────────────────────────────────────────────────────────────
+ * v1.7.0 这里是"A 不画 / B 泛黄复古 / C 手绘涂鸦（波点 + 空心圈 + 笔触）"。
+ * 用户否掉了 C 档那条路线（**"任何试图用几何图形模拟手绘贴纸感的行为显得极度廉价与割裂"**），
+ * 于是涂鸦机制连同它的全部常量一起**删掉**（不是停用）：本文件里现在搜不到
+ * `DOODLE` / 波点 / 空心圈 / 笔触任何一个标识符 —— 探针第 5 节守着这件事。
+ * 现在三档都是**材质**：A 经典原白 / B 岁月暖黄 / C 暗房雅黑，配方在
+ * `constants/frameVariants.ts`（**唯一配方产地**，本文件只负责把它画出来）。
  *
  * ─────────────────────────────────────────────────────────────────────────
  * 为什么是一个组件，而不是"预览一套 + 成片一套"
  * ─────────────────────────────────────────────────────────────────────────
- * v1.7.0 要求"取景器里就能看见相框风格的实时预览，而且和成片长得一样"。
- * 取巧的做法是预览拿一张近似图、成片另画一套 —— 那两边必然对不上。
- * 这里只有**一个**实现：取景器把它盖在相框上（小尺寸），
- * `FilmCompositor` 把它插在相框 `<Image>` 之后（成片尺寸）。
- * 两处唯一的差别是 `width/height`，而所有几何量都是 0~1 归一化后再乘尺寸的，
- * 所以两边**等比**。探针里有一条断言专门守这件事（同一相框 120pt 与 390pt
- * 渲染出的归一化图案必须一致）。
+ * 三处调用（取景器实时预览 / 抽屉 96×72 迷你预览 / 成片合成）共用**同一个**实现，
+ * 唯一的差别是 `width/height`。所有几何都是"相纸短边的比例"或"留白带的比例"，
+ * 所以三处**逐元素等比**；探针里有一条断言专门守它（同一材质在 96×72 与 390pt
+ * 画幅上渲染出的元素集合必须逐个相等）。
  *
  * ─────────────────────────────────────────────────────────────────────────
  * 硬规则（改这个文件之前先读）
  * ─────────────────────────────────────────────────────────────────────────
- * 1. 只用 `<View>`：不 require 素材、不画 canvas、不用 SVG。皮肤是"几何 + 颜色"，
- *    不是图 —— 加素材图会让包体变差，也会让预览与成片两条路径悄悄分叉。
- * 2. 只吃四种输入：变体、seed、画幅（width/height）、照片窗口（window）。
- *    图案必须**确定性**：同一个 seed 连调两次要逐元素相同；禁止
- *    `Math.random()` / `Date.now()`，否则取景器预览和成片会长得不一样。
- * 3. 波点 / 笔触 / 晕染**只许落在相纸留白里**（`window` 是照片内容区，压进去就等于
- *    改了用户拍的那张照片）。生成时用 `isOutsideWindow` 过滤，探针里拿五款相框的
- *    真实 window 各断言一遍"窗口内 0 命中"。
- * 4. `classic` 档必须 `return null`：它的渲染树要和 v1.6.1（没有这一层时）逐像素一致，
- *    连一个空 View 都不该多出来。
- *
- * ⚠️ 唯一的例外是 `aged` 的整幅暖化层（`buildSkinWash`）：task 的原话是
- *    "整幅 #F4EEDC 暖化层"，而"绝不许画进 window"那条点名的是**波点 / 笔触 / 晕染**。
- *    所以暖化层故意盖住照片（整幅泛黄才叫"泛黄复古"），晕染与斑点则严格躲开窗口。
- *    如果评审认为照片也不该泛黄：只改 `buildSkinWash` 一个函数（改成按四条边带铺）即可。
+ * 1. **材质元素一个像素都不许压进照片窗口**（`FrameSkinProps.window`）。
+ *    v1.7.0 的 B 档是一整幅乘算暖化层、连照片一起泛黄 —— 用户报的"白雾"就是这条的
+ *    同类问题。所以这里连"整幅底色"都不画：底色是**四条边带**（`marginBands()` 把
+ *    "相纸 − 窗口"切成的四块），窗口里干干净净。生成时每个元素都过两道闸：
+ *    `isRectOutsideWindow(box, window)`（盒测，真正保证零像素压入）+ `isOutsideWindow(中心, window)`。
+ * 2. 只吃四种输入：材质配方、画幅（width/height）、照片窗口（window）。（+ 可选 radius）
+ *    **没有随机数、没有 seed**：材质是几何与颜色，不该"每次进来长得不一样"，
+ *    也正因如此三处调用的元素集合能严格相等。
+ * 3. 只用 `<View>`：不 require 素材、不画 canvas、不用 SVG。
+ * 4. 厚度一律写成**相纸短边的比例**（配方里的 `ratio`），不写死 pt：
+ *    写死 pt 会让 96~120pt 的预览与 300~500pt 的成片元素集合分叉（v1.7.0 踩过）。
  *
  * ─────────────────────────────────────────────────────────────────────────
  * 几何约定
  * ─────────────────────────────────────────────────────────────────────────
  * · 原点 = 相纸左上角，单位 pt；调用方传进来的 width/height 就是相纸尺寸。
- * · 比例一律先按 0~1 采样再乘 width/height，所以小预览与大画布严格等比。
- * · 每个元素存的是**旋转后的轴对齐外接盒**（`box`），渲染时按盒心回推 left/top ——
- *    这样"盒子不与窗口相交"才真的等于"像素不会压到照片"。
+ * · 每个元素都是**轴对齐矩形**（材质全是横平竖直的带与线），所以 `SkinElement`
+ *   只存一个 `box`，渲染就是 `position:absolute` 摆上去。
+ * · 相邻元素共用**同一个边界浮点数**（第 i 条的下边就是第 i+1 条的上边）：
+ *   像素取整对同一个数是同一个结果，所以既不漏缝也不叠加 —— 乘算层一旦叠上就会
+ *   在接缝处变成"双倍乘算"的深色细线，那正是用户报过的那种"突兀的线"。
  */
 import { memo, useMemo } from 'react';
 import { StyleSheet, View } from 'react-native';
 import type { ViewStyle } from 'react-native';
 
+import { findFrameMaterial } from '../constants/frameVariants';
+import type { FrameMaterialSpec, MaterialBloom } from '../constants/frameVariants';
 import type { BlendMode, FrameVariant, Rect } from '../types';
 
 /**
  * 调用方要给的四个数（+ 半径）。
  *
- * ⚠️ **接口冻结**：`CameraScreen`（取景器实时预览）和 `FilmCompositor`（成片合成）
- *    都按这个签名调用。要加字段只能加成**可选**的，并且要同步告诉 Lead。
+ * ⚠️ **接口冻结**：`CameraScreen`（取景器实时预览）、`FilmCompositor`（成片合成）、
+ *    `FilmDrawer`（抽屉迷你预览）都按这个签名调用。要加字段只能加成**可选**的，
+ *    并且要同步告诉 Lead。
  */
 export interface FrameSkinProps {
   /** 相纸宽（pt）。取景器里是预览尺寸，成片里是 `layout.width`。 */
   width: number;
   /** 相纸高（pt）。 */
   height: number;
-  /** 照片窗口在相纸里的位置（pt，绝对坐标）—— 皮肤绝不画进这个矩形。 */
+  /** 照片窗口在相纸里的位置（pt，绝对坐标）—— 材质绝不画进这个矩形。 */
   window: Rect;
   /** 相纸圆角（pt）。素材相框是直角就传 0 / 不传。 */
   radius?: number;
-  /** 风格变体。'classic' 时本组件返回 `null`。 */
+  /** 材质。配方见 `constants/frameVariants.ts`。 */
   variant: FrameVariant;
-  /** 图案种子。成片里由 `frameSkinSeedOf(frame)` 给（目前就是相框 id）。 */
+  /**
+   * 图案种子。**v1.8.0 起本层不使用它**（材质是纯几何，没有随机图案），
+   * 但字段保留：三个调用点都还在传，而且接口是冻结的。
+   */
   seed: string;
 }
 
-/** 一档皮肤会画的元素种类。 */
-export type SkinElementKind = 'wash' | 'bloom' | 'speck' | 'dot' | 'hoop' | 'stroke';
+/**
+ * 材质元素的种类。
+ * · `tint`   底色 / 渐变切条（乘算，纸的纹路会透出来）
+ * · `shade`  相纸外沿的接触阴影（贴边的一圈）
+ * · `cut`    外沿的金属高光切边（暗色材质专用）
+ * · `emboss` 窗口内侧的内凹压痕（暗在上/左、亮在下/右）
+ * · `bloom`  暗房晕染（从外沿往里逐级变淡）
+ */
+export type SkinElementKind = 'tint' | 'shade' | 'cut' | 'emboss' | 'bloom';
 
 /** 一个待绘制的元素（纯数据，渲染层只按它摆一个 `<View>`）。 */
 export interface SkinElement {
   key: string;
   kind: SkinElementKind;
-  /** 旋转后的轴对齐外接盒（pt，相对相纸左上角）。 */
+  /** 轴对齐矩形（pt，相对相纸左上角）。 */
   box: Rect;
-  /** 渲染尺寸（未旋转，pt）；圆点 / 斑点就是直径。 */
-  width: number;
-  height: number;
-  /** 圆角半径（pt）：圆点 = 直径/2，笔触 = 高/2，方块 = 0。 */
-  radius: number;
-  /** 旋转角（度），0 = 不旋转。 */
-  rotate: number;
   /**
-   * 颜色。wash / bloom / speck 把 alpha 写在色串里（`rgba(...)`，做旧那几层
-   * 本来就是半透明的"水墨感"）；doodle 用实色 + `opacity`，方便调撞色。
+   * 颜色。`tint`/`shade`/`cut`/`emboss` 用 hex + `opacity`；
+   * `bloom` 把 alpha 写在 `rgba(...)` 色串里、`opacity: 1`（晕染本来就是"墨水的浓淡"）。
    */
   color: string;
   opacity: number;
   blendMode?: BlendMode;
-  /** 空心圈（hoop）的描边宽度；有值时背景走透明。 */
-  borderWidth?: number;
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// 配方常量：想调"有多旧 / 有多花"，只动这一段就够了
-// ─────────────────────────────────────────────────────────────────────────
-
-/** B 档的整幅暖化层。`#F4EEDC` 是 task 点名的相纸底色。 */
-const AGED_WASH = '#F4EEDC';
-/** 暖化层的不透明度。0.6 是在"低不透明度"和"浅色相纸上仍看得出发黄"之间取的折中。 */
-const AGED_WASH_OPACITY = 0.6;
-
-/** 暗房晕染的墨色（RGB）。每级只改 alpha，所以整圈色相统一。 */
-const BLOOM_INK = { r: 120, g: 88, b: 40 } as const;
-/** 从相纸**外沿往里**每一级占该边留白厚度的比例（6 级刚好铺满一条边带）。 */
-const BLOOM_STEPS: readonly number[] = [0.14, 0.16, 0.18, 0.18, 0.18, 0.16];
-/** 对应的 alpha：越靠边越深（0.20 → 0.034），是"暗房药水从边上渗进来"的观感。 */
-const BLOOM_ALPHAS: readonly number[] = [0.2, 0.155, 0.115, 0.082, 0.055, 0.034];
-
-/** 岁月斑点：颜色固定 `rgba(120, 90, 40, α)`，α ∈ [0.05, 0.14]（task 点名）。 */
-const SPECK_INK = { r: 120, g: 90, b: 40 } as const;
-const AGED_SPECK_COUNT = 20;
-const AGED_SPECK_MIN_RATIO = 0.003;
-const AGED_SPECK_MAX_RATIO = 0.013;
-const AGED_SPECK_MIN_ALPHA = 0.05;
-const AGED_SPECK_MAX_ALPHA = 0.14;
-
-/** C 档的撞色盘：荧光粉 / 柠檬黄 / 天蓝 为主，薄荷偶尔点缀。 */
-const DOODLE_INKS: readonly string[] = ['#FF5FA2', '#FFD34D', '#3FB6F0', '#7BE3C0'];
-const DOODLE_DOT_COUNT = 16;
-const DOODLE_DOT_MIN_RATIO = 0.015;
-const DOODLE_DOT_MAX_RATIO = 0.05;
-const DOODLE_DOT_MIN_ALPHA = 0.5;
-const DOODLE_DOT_MAX_ALPHA = 0.9;
-const DOODLE_HOOP_COUNT = 4;
-const DOODLE_HOOP_MIN_RATIO = 0.025;
-const DOODLE_HOOP_MAX_RATIO = 0.06;
-const DOODLE_HOOP_MIN_STROKE_RATIO = 0.004;
-const DOODLE_HOOP_MAX_STROKE_RATIO = 0.008;
-const DOODLE_STROKE_COUNT = 3;
-/**
- * 每条笔触最多重抽几次。
- * 为什么需要：笔触只放上/下两条横带，窄相框（`fp100c`）的带只有几个百分点深，
- * 一次抽签"放不下"就少一条 —— 原来一次抽不中就作废，实测 `fp100c` 的 C 档只剩
- * 1 条笔触，和"2~3 条"对不上。重抽不引入新随机源（同一条 rng 序列继续走），
- * 只是把"放不下"这个理由多试几次；真的放不下依然少画（见下面那个 `continue`）。
- */
-const DOODLE_STROKE_RETRY = 8;
-const DOODLE_STROKE_MIN_LENGTH_RATIO = 0.18;
-const DOODLE_STROKE_MAX_LENGTH_RATIO = 0.34;
-const DOODLE_STROKE_MIN_THICK_RATIO = 0.008;
-const DOODLE_STROKE_MAX_THICK_RATIO = 0.018;
-/** 笔触最大倾角（度）。再大就不像随手一笔，像 UI 里的斜线了。 */
-const DOODLE_STROKE_MAX_TILT = 14;
-const DOODLE_STROKE_MIN_ALPHA = 0.22;
-const DOODLE_STROKE_MAX_ALPHA = 0.4;
-/** 笔触在带内最多占几成厚度 —— 留点空气，别顶到窗口边上。 */
-const STROKE_BAND_FILL = 0.62;
-
-/**
- * 元素最小可见尺寸：**相纸短边的比例**，而不是固定 pt。
- *
- * 为什么必须按比例：取景器里的实时预览只有 120pt 宽、成片是 300~500pt 宽，两边要
- * 是共用同一个绝对阈值，小预览会悄悄丢掉最细的几层晕染 —— 用户看到的预览和拍出来
- * 的成片就不是同一张图案了（task 里"预览与成片比例完全一致"这条硬要求）。
- * 0.004 在 120pt 预览上 ≈ 0.48pt，和原来的固定 0.5pt 基本重合。
- */
-const MIN_VISIBLE_RATIO = 0.004;
-/**
- * 过滤窗口时额外让开的安全边：**相纸短边的比例**（同上的等比理由）。
- * 为什么需要：`computeFrameLayout` 把归一化窗口乘尺寸后**取整**（±0.5pt），
- * 让开 0.6% 短边（120pt 预览上 ≈0.72pt、390pt 成片上 ≈2.3pt）之后，
- * 任何取整方向都不会有点压进照片，预览/成片也仍然逐元素等比。
- */
-const SKIN_WINDOW_PADDING_RATIO = 0.006;
-/** 均匀抽点 vs "先挑一条边带" 的概率。窄侧边靠它才分得到图案。 */
-const BAND_PROPOSAL_CHANCE = 0.55;
-/** 下带（拍立得的宽下巴）加权：涂鸦与做旧最常出现在那片留白上。 */
-const BOTTOM_BAND_BIAS = 1.6;
+/** 四条边带之一（相纸留白的一部分）。 */
+export interface SkinBand {
+  side: 'top' | 'bottom' | 'left' | 'right';
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // 纯几何
@@ -191,10 +132,37 @@ function rgba(r: number, g: number, b: number, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${Math.round(alpha * 1000) / 1000})`;
 }
 
+/** `#RRGGBB` → `{r,g,b}`；认不出来返回 null（探针断言配方色值格式用得到）。 */
+export function parseHexColor(color: string): { r: number; g: number; b: number } | null {
+  const match = /^#([0-9a-fA-F]{6})$/.exec(color);
+  if (match === null) {
+    return null;
+  }
+  const value = Number.parseInt(match[1], 16);
+  return { r: (value >> 16) & 0xff, g: (value >> 8) & 0xff, b: value & 0xff };
+}
+
+/** 两个 `#RRGGBB` 之间线性插值（`t` 已夹到 0~1）；解析失败时返回 `from`。 */
+export function mixHexColor(from: string, to: string, t: number): string {
+  const a = parseHexColor(from);
+  const b = parseHexColor(to);
+  if (a === null || b === null) {
+    return from;
+  }
+  const ratio = clamp(t, 0, 1);
+  // 输出统一大写：配方表里写的是 `#F2E9D5`，渐变中途大小写跳变会让调试和设备端色串对不上号。
+  const channel = (x: number, y: number): string =>
+    Math.round(x + (y - x) * ratio)
+      .toString(16)
+      .padStart(2, '0')
+      .toUpperCase();
+  return `#${channel(a.r, b.r)}${channel(a.g, b.g)}${channel(a.b, b.b)}`;
+}
+
 /**
  * 点 `(x, y)` 是否落在照片窗口**之外**。
  *
- * ⚠️ 贴边算"没出去"（返回 `false`）—— 宁可少画一颗点，也不赌那半个像素。
+ * ⚠️ 贴边算"没出去"（返回 `false`）—— 宁可少画一条，也不赌那半个像素。
  */
 export function isOutsideWindow(x: number, y: number, window: Rect): boolean {
   return (
@@ -206,11 +174,10 @@ export function isOutsideWindow(x: number, y: number, window: Rect): boolean {
 }
 
 /**
- * 矩形 `box` 是否与照片窗口**完全不相交**（贴边算不相交）。
+ * 矩形 `box` 是否与照片窗口**完全不相交**（贴边算不相交 —— 交集面积为 0）。
  *
- * 为什么点测之外还要这个：一个大盒子可以四个角都在窗口外、中间却把窗口整个吞掉
- * （极端例子：整幅相纸）。生成时两个都跑 —— 点测是 task 点名要的，
- * 盒测才真正保证"一个像素都不压进照片"。
+ * 这是"一个像素都不许压进照片"的**硬闸**：点测只能证明四个角在外面，
+ * 一个横贯整幅的大盒子可以四角都在外面、中间却把窗口整个吞掉。
  */
 export function isRectOutsideWindow(box: Rect, window: Rect): boolean {
   return (
@@ -221,35 +188,75 @@ export function isRectOutsideWindow(box: Rect, window: Rect): boolean {
   );
 }
 
-/** 把窗口往外撑 `by` pt，用于过滤（见 `SKIN_WINDOW_PADDING_RATIO`）。 */
-function inflateRect(rect: Rect, by: number): Rect {
-  return {
-    left: rect.left - by,
-    top: rect.top - by,
-    width: rect.width + by * 2,
-    height: rect.height + by * 2,
-  };
+/** 两个矩形的交集面积（探针用来断言"零侵入"，渲染层不用）。 */
+export function intersectionArea(a: Rect, b: Rect): number {
+  const width = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left);
+  const height = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top);
+  if (!(width > 0) || !(height > 0)) {
+    return 0;
+  }
+  return width * height;
 }
 
-/** 四条边带之一（相纸留白的一部分）。 */
-interface SkinBand {
-  side: 'top' | 'bottom' | 'left' | 'right';
-  left: number;
-  top: number;
-  width: number;
-  height: number;
+/**
+ * 浮点边缘容差（1e-9 pt，远小于一个像素，也远小于任何可见误差）。
+ *
+ * 为什么需要它：晕染的最外那一级是**贴着相纸边**画的，它的上下边由
+ * `depth - thickness` 与 `+ thickness` 两次浮点运算凑出来，`(d - t) + t` 有大约
+ * 1e-15 的概率比 `d` 大一个 ulp。若边界判定用严格的 `>`，这一级会因为"超出相纸
+ * 1e-15 pt"被整条丢掉 —— 于是同样的材质在 11pt 与 36pt 的带深上画出不同的元素集合，
+ * 迷你预览与成片的元素数就对不上了（探针抓出来的就是这一类）。
+ * 注意：这条容差**只放宽相纸边界**，与照片窗口的相交判定始终是严格的。
+ */
+const EDGE_EPSILON = 1e-9;
+
+/**
+ * 与照片窗口的相交判定用同量级的容差（1e-9 pt）。
+ *
+ * 理由和上面一样：压痕的下沿与晕染最内侧那一级的边**就是**窗口的边，它们是
+ * "窗口边 − 一个厚度，再加回这个厚度"算出来的，浮点尾巴大约 1e-14 pt。
+ * 真正的侵入最小也在 1e-3 pt 量级（55pt 相纸上最细的一条），容差跟它差六个数量级，
+ * 所以放宽这一下不会放过任何看得见的压盖 —— 但能让元素集合在
+ * 96×72 预览与整幅成片上严格一致（否则同一份材质会在两个画幅上少画一条边）。
+ */
+const WINDOW_EPSILON = 1e-9;
+
+/** 盒子是否真的压到了照片窗口（重叠宽高都超过容差才算）。 */
+function overlapsWindow(box: Rect, window: Rect): boolean {
+  const overlapWidth = Math.min(box.left + box.width, window.left + window.width) - Math.max(box.left, window.left);
+  const overlapHeight = Math.min(box.top + box.height, window.top + window.height) - Math.max(box.top, window.top);
+  return overlapWidth > WINDOW_EPSILON && overlapHeight > WINDOW_EPSILON;
 }
 
-/** 病态输入（窗口把相纸铺满）时的零面积带，调用方会自然放弃。 */
-const EMPTY_BAND: SkinBand = { side: 'bottom', left: 0, top: 0, width: 0, height: 0 };
+/** 元素在相纸内、且不与照片窗口相交。生成器每一步都过这一遍。 */
+function isUsable(box: Rect, width: number, height: number, window: Rect): boolean {
+  if (!(box.width > 0) || !(box.height > 0)) {
+    return false;
+  }
+  if (
+    box.left < -EDGE_EPSILON ||
+    box.top < -EDGE_EPSILON ||
+    box.left + box.width > width + EDGE_EPSILON ||
+    box.top + box.height > height + EDGE_EPSILON
+  ) {
+    return false;
+  }
+  if (overlapsWindow(box, window)) {
+    return false;
+  }
+  return isOutsideWindow(box.left + box.width / 2, box.top + box.height / 2, window);
+}
 
 /**
  * 把"相纸留白"切成**四条互不重叠**的边带：上、下两条横贯整幅，
  * 左、右两条只占窗口所在的那一段 —— 四条带拼起来正好是"相纸 − 窗口"，
  * 不多不少、不互相重叠（重叠会让半透明层在接缝处叠出更深的边）。
  * 窗口贴边（留白为 0）的那条带不生成。
+ *
+ * 这是材质**唯一**允许落笔的地方：底色、渐变、贴边阴影、晕染全在这四块里，
+ * 所以"材质不覆盖照片"是几何上的必然，而不是靠事后过滤。
  */
-function marginBands(width: number, height: number, window: Rect): SkinBand[] {
+export function marginBands(width: number, height: number, window: Rect): SkinBand[] {
   const left = clamp(window.left, 0, width);
   const top = clamp(window.top, 0, height);
   const right = clamp(window.left + window.width, left, width);
@@ -271,137 +278,313 @@ function marginBands(width: number, height: number, window: Rect): SkinBand[] {
   return bands;
 }
 
-/**
- * 按面积加权抽一条边带；下带（下巴）额外乘 `BOTTOM_BAND_BIAS`。
- * 权重是"面积"，所以大留白自然被抽中更多次。
- */
-function pickBand(rng: () => number, bands: readonly SkinBand[]): SkinBand {
-  let total = 0;
-  for (const band of bands) {
-    total += band.width * band.height * (band.side === 'bottom' ? BOTTOM_BAND_BIAS : 1);
+// ─────────────────────────────────────────────────────────────────────────
+// 生成（纯函数：同一份输入一定给出同一串元素）
+// ─────────────────────────────────────────────────────────────────────────
+
+/** 往元素表里放一个矩形；几何不合法就丢掉（返回是否放进去）。 */
+function pushBox(
+  elements: SkinElement[],
+  kind: SkinElementKind,
+  key: string,
+  box: Rect,
+  color: string,
+  opacity: number,
+  width: number,
+  height: number,
+  window: Rect,
+  blendMode?: BlendMode,
+): boolean {
+  if (!isUsable(box, width, height, window)) {
+    return false;
   }
-  if (total <= 0) {
-    return EMPTY_BAND;
+  const element: SkinElement = { key, kind, box, color, opacity };
+  if (blendMode !== undefined) {
+    element.blendMode = blendMode;
   }
-  let ticket = rng() * total;
-  for (const band of bands) {
-    ticket -= band.width * band.height * (band.side === 'bottom' ? BOTTOM_BAND_BIAS : 1);
-    if (ticket <= 0) {
-      return band;
-    }
-  }
-  const last = bands[bands.length - 1];
-  return last !== undefined ? last : EMPTY_BAND;
+  elements.push(element);
+  return true;
 }
 
 /**
- * 给一个 `boxWidth × boxHeight` 的足迹抽位置：
- * 一半概率"整幅均匀"，一半概率"先挑一条边带、再带内均匀"。
- * 前者让图案自然聚在大块留白上（拍立得的宽下巴），后者保证很窄的侧边也分得到几颗 ——
- * 只按面积均匀抽的话，5% 宽的侧带几乎永远抽不到，那一侧就全空了。
+ * ① 底色 / 竖向渐变。
  *
- * 返回 `null` = 这次抽签放不下（带比足迹还窄），调用方继续重抽。
+ * 每条边带沿纵轴切成 `gradientSteps` 条（平色材质就是 1 条），条的**颜色按它在整块
+ * 相纸上的高度**取 —— 不是按它在带里的相对位置。这一点很关键：带与带之间
+ * （上带 ↔ 左带）接着的地方，颜色必须接得上，否则窗口四角会出现"上下两块色"的硬边。
+ *
+ * 切条的边界用**同一个浮点数**（第 i 条的下边 = 第 i+1 条的上边），所以像素取整后
+ * 既不漏缝也不重叠；乘算层重叠会在接缝处变成双倍乘算的深色线。
  */
-function sampleBox(
-  rng: () => number,
-  width: number,
-  height: number,
-  boxWidth: number,
-  boxHeight: number,
+function buildTintLines(
+  material: FrameMaterialSpec,
   bands: readonly SkinBand[],
-): Rect | null {
-  if (bands.length > 0 && rng() < BAND_PROPOSAL_CHANCE) {
-    const band = pickBand(rng, bands);
-    const spanX = band.width - boxWidth;
-    const spanY = band.height - boxHeight;
-    if (spanX < 0 || spanY < 0) {
-      return null;
-    }
-    return {
-      left: band.left + rng() * spanX,
-      top: band.top + rng() * spanY,
-      width: boxWidth,
-      height: boxHeight,
-    };
-  }
-  const spanX = width - boxWidth;
-  const spanY = height - boxHeight;
-  if (spanX < 0 || spanY < 0) {
-    return null;
-  }
-  return { left: rng() * spanX, top: rng() * spanY, width: boxWidth, height: boxHeight };
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// 确定性随机
-// ─────────────────────────────────────────────────────────────────────────
-
-/**
- * 字符串 seed → 32 位整数（FNV-1a）。
- * seed 是相框 id（`'polaroid-600'` 这种）或设置页给的串，不能直接当状态用。
- */
-function hashSeed(seed: string): number {
-  let hash = 2166136261;
-  for (let index = 0; index < seed.length; index += 1) {
-    hash ^= seed.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-/** mulberry32：32 位状态、分布够均匀、5 行实现、零依赖。 */
-function mulberry32(state: number): () => number {
-  let next = state >>> 0;
-  return () => {
-    next = (next + 0x6d2b79f5) >>> 0;
-    let t = next;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// 生成
-// ─────────────────────────────────────────────────────────────────────────
-
-/**
- * B 档的整幅暖化层；别的档 / 尺寸非法时返回 `null`。
- *
- * ⚠️ 它**故意**盖住照片窗口 —— 见文件头那条"唯一的例外"。
- * 返回值是元素而不是布尔值，是为了让调用方（和探针）能直接看见它的几何与混合模式。
- */
-export function buildSkinWash(
-  variant: FrameVariant,
   width: number,
   height: number,
-): SkinElement | null {
-  if (variant !== 'aged' || !(width > 0) || !(height > 0)) {
-    return null;
+  window: Rect,
+  elements: SkinElement[],
+): void {
+  const flat = material.gradientSteps <= 1 || material.gradientTop === material.gradientBottom;
+  const steps = flat ? 1 : material.gradientSteps;
+  for (const band of bands) {
+    for (let index = 0; index < steps; index += 1) {
+      const top = band.top + (band.height * index) / steps;
+      const bottom = band.top + (band.height * (index + 1)) / steps;
+      const midRatio = height > 0 ? (top + bottom) / 2 / height : 0;
+      const color = flat
+        ? material.gradientTop
+        : mixHexColor(material.gradientTop, material.gradientBottom, midRatio);
+      pushBox(
+        elements,
+        'tint',
+        `tint-${band.side}-${index}`,
+        { left: band.left, top, width: band.width, height: bottom - top },
+        color,
+        1,
+        width,
+        height,
+        window,
+        'multiply',
+      );
+    }
   }
-  return {
-    key: 'wash',
-    kind: 'wash',
-    box: { left: 0, top: 0, width, height },
+}
+
+/**
+ * ② 相纸外沿的接触阴影：相纸**内侧**贴边的一圈。
+ *
+ * 为什么画在里面：`FrameSkin` 的根容器是 `overflow: hidden` 的（圆角要裁），
+ * 画到纸外面会被裁掉；真实的相纸边缘阴影本来也就是"贴着纸沿那一圈变暗"。
+ * 素材 PNG 四边都是不透明的纸面，所以这一圈落在纸上，不会盖到别的层。
+ */
+function buildShadeLines(
+  material: FrameMaterialSpec,
+  width: number,
+  height: number,
+  window: Rect,
+  elements: SkinElement[],
+): void {
+  const thickness = material.shade.ratio * Math.min(width, height);
+  if (!(thickness > 0)) {
+    return;
+  }
+  const ink = material.shade.color;
+  const alpha = material.shade.alpha;
+  pushBox(elements, 'shade', 'shade-top', { left: 0, top: 0, width, height: thickness }, ink, alpha, width, height, window);
+  pushBox(
+    elements,
+    'shade',
+    'shade-bottom',
+    { left: 0, top: height - thickness, width, height: thickness },
+    ink,
+    alpha,
     width,
     height,
-    radius: 0,
-    rotate: 0,
-    color: AGED_WASH,
-    opacity: AGED_WASH_OPACITY,
-    blendMode: 'multiply',
-  };
+    window,
+  );
+  pushBox(elements, 'shade', 'shade-left', { left: 0, top: 0, width: thickness, height }, ink, alpha, width, height, window);
+  pushBox(
+    elements,
+    'shade',
+    'shade-right',
+    { left: width - thickness, top: 0, width: thickness, height },
+    ink,
+    alpha,
+    width,
+    height,
+    window,
+  );
 }
 
 /**
- * 一档皮肤在**相纸留白**里要画的所有元素（`classic` 恒为空数组）。
+ * ③ 边缘切边：外沿一道极细的线，四边明暗不同（顶最亮、底最暗）——
+ * 光从上面打下来，金属边就是"上亮下暗"的一条。只有配方里有 `cut` 的材质才画。
+ */
+function buildCutLines(
+  material: FrameMaterialSpec,
+  width: number,
+  height: number,
+  window: Rect,
+  elements: SkinElement[],
+): void {
+  const cut = material.cut;
+  if (cut === null) {
+    return;
+  }
+  const thickness = cut.ink.ratio * Math.min(width, height);
+  if (!(thickness > 0)) {
+    return;
+  }
+  const ink = cut.ink.color;
+  const alpha = cut.ink.alpha;
+  pushBox(
+    elements,
+    'cut',
+    'cut-top',
+    { left: 0, top: 0, width, height: thickness },
+    cut.topHighlight.color,
+    cut.topHighlight.alpha,
+    width,
+    height,
+    window,
+  );
+  pushBox(
+    elements,
+    'cut',
+    'cut-bottom',
+    { left: 0, top: height - thickness, width, height: thickness },
+    cut.bottomShadow.color,
+    cut.bottomShadow.alpha,
+    width,
+    height,
+    window,
+  );
+  pushBox(elements, 'cut', 'cut-left', { left: 0, top: 0, width: thickness, height }, ink, alpha, width, height, window);
+  pushBox(
+    elements,
+    'cut',
+    'cut-right',
+    { left: width - thickness, top: 0, width: thickness, height },
+    ink,
+    alpha,
+    width,
+    height,
+    window,
+  );
+}
+
+/**
+ * ④ 窗口内侧的内凹压痕：一圈极细的明暗对比 —— 暗在上/左、亮在下/右，
+ * 读出来就是"这块纸被压进去了一档"（光从上方来，凹口的上沿背光、下沿迎光）。
  *
- * 纯函数：同一个 (variant, seed, width, height, window) 一定给出同一串元素。
- * 探针直接拿它跑断言（窗口内 0 命中、逐元素可复现、小预览与大画布等比）。
+ * 四条线各自向两端各多伸出一个厚度，把四个角接上（不留缺口）；伸出量再夹回相纸内。
+ * 它们贴着窗口边、但**不与窗口相交**（交集面积为 0）—— 这正是"压痕"该在的位置。
+ */
+function buildEmbossLines(
+  material: FrameMaterialSpec,
+  width: number,
+  height: number,
+  window: Rect,
+  elements: SkinElement[],
+): void {
+  const thickness = material.emboss.ratio * Math.min(width, height);
+  if (!(thickness > 0)) {
+    return;
+  }
+  const { light, dark } = material.emboss;
+  const frame = window;
+  const left = clamp(frame.left, 0, width);
+  const top = clamp(frame.top, 0, height);
+  const right = clamp(frame.left + frame.width, left, width);
+  const bottom = clamp(frame.top + frame.height, top, height);
+  const spanX = Math.min(thickness, left);
+  const spanY = Math.min(thickness, top);
+
+  // 上（暗）：横贯窗口宽度，再向左右各伸出一个厚度
+  pushBox(
+    elements,
+    'emboss',
+    'emboss-top',
+    { left: left - spanX, top: top - thickness, width: right - left + spanX * 2, height: thickness },
+    dark.color,
+    dark.alpha,
+    width,
+    height,
+    window,
+  );
+  // 左（暗）：竖贯窗口高度，再向上下各伸出一个厚度
+  pushBox(
+    elements,
+    'emboss',
+    'emboss-left',
+    { left: left - thickness, top: top - spanY, width: thickness, height: bottom - top + spanY * 2 },
+    dark.color,
+    dark.alpha,
+    width,
+    height,
+    window,
+  );
+  // 下（亮）
+  pushBox(
+    elements,
+    'emboss',
+    'emboss-bottom',
+    { left: left - spanX, top: bottom, width: right - left + spanX * 2, height: thickness },
+    light.color,
+    light.alpha,
+    width,
+    height,
+    window,
+  );
+  // 右（亮）
+  pushBox(
+    elements,
+    'emboss',
+    'emboss-right',
+    { left: right, top: top - spanY, width: thickness, height: bottom - top + spanY * 2 },
+    light.color,
+    light.alpha,
+    width,
+    height,
+    window,
+  );
+}
+
+/**
+ * ⑤ 暗房晕染：每条边带由外向内逐级铺，越靠边越深（药水从边上渗进来）。
+ *
+ * `steps` 之和恒为 1（配方保证），所以每一级刚好占满带深；**不设最小可见尺寸过滤** ——
+ * 材质是确定性几何，滤掉细条会让 96×72 的迷你预览与整幅成片的元素集合分叉，
+ * 那正是 v1.7.0 探针抓出来的那类失败。极细的条子在小预览上等价于"更柔的过渡"。
+ */
+function buildBloomLines(
+  bloom: MaterialBloom | null,
+  bands: readonly SkinBand[],
+  width: number,
+  height: number,
+  window: Rect,
+  elements: SkinElement[],
+): void {
+  if (bloom === null) {
+    return;
+  }
+  for (const band of bands) {
+    const horizontal = band.side === 'top' || band.side === 'bottom';
+    const depth = horizontal ? band.height : band.width;
+    const outerFirst = band.side === 'top' || band.side === 'left';
+    let cursor = 0;
+    for (let step = 0; step < bloom.steps.length; step += 1) {
+      const thickness = depth * bloom.steps[step];
+      // 外沿起算；下/右两条边带的"外沿"在另一头，所以要反过来摆。
+      const offset = outerFirst ? cursor : depth - cursor - thickness;
+      cursor += thickness;
+      const box: Rect = horizontal
+        ? { left: band.left, top: band.top + offset, width: band.width, height: thickness }
+        : { left: band.left + offset, top: band.top, width: thickness, height: band.height };
+      pushBox(
+        elements,
+        'bloom',
+        `bloom-${band.side}-${step}`,
+        box,
+        rgba(bloom.ink.r, bloom.ink.g, bloom.ink.b, bloom.alphas[step]),
+        1,
+        width,
+        height,
+        window,
+      );
+    }
+  }
+}
+
+/**
+ * 一份材质配方在**相纸留白**里要画的所有元素。
+ *
+ * 纯函数：同一个 (配方, width, height, window) 一定给出同一串元素（没有随机数，
+ * 也不吃 seed）。探针直接拿它跑断言（窗口内 0 命中、逐元素可复现、
+ * 96×72 迷你预览与整幅成片逐元素相等）。
  */
 export function buildSkinElements(
-  variant: FrameVariant,
-  seed: string,
+  material: FrameMaterialSpec,
   width: number,
   height: number,
   window: Rect,
@@ -409,257 +592,13 @@ export function buildSkinElements(
   if (!(width > 0) || !(height > 0)) {
     return [];
   }
-  if (variant === 'classic') {
-    return [];
-  }
-  // seed 里再拌上变体名：同一款相框的 aged 与 doodle 各拿一条独立的随机序列，
-  // 免得"换风格后斑点和波点排成同一串位置"。
-  const rng = mulberry32(hashSeed(`${variant}\u00b7${seed}`));
-  if (variant === 'aged') {
-    return buildAgedElements(rng, width, height, window);
-  }
-  if (variant === 'doodle') {
-    return buildDoodleElements(rng, width, height, window);
-  }
-  return [];
-}
-
-/** B 档：四周暗房晕染（只有留白）+ 岁月斑点。整幅暖化层走 `buildSkinWash`。 */
-function buildAgedElements(
-  rng: () => number,
-  width: number,
-  height: number,
-  window: Rect,
-): SkinElement[] {
   const elements: SkinElement[] = [];
-  /*
-    安全边与最小可见尺寸都按**相纸短边**取比例，不写死 pt：
-    取景器里的实时预览只有约 120pt 宽、成片是 300~500pt 宽，写死 pt 会让两边的
-    元素集合不一致（预览里被过滤掉的碎片，成片里还在），那就不是"同一张图案"了。
-  */
-  const shortSide = Math.min(width, height);
-  const safe = inflateRect(window, SKIN_WINDOW_PADDING_RATIO * shortSide);
-  const minVisible = MIN_VISIBLE_RATIO * shortSide;
   const bands = marginBands(width, height, window);
-
-  // ① 暗房晕染：每条边带由外向内 6 级，越靠边越深。
-  for (const band of bands) {
-    const horizontal = band.side === 'top' || band.side === 'bottom';
-    const depth = horizontal ? band.height : band.width;
-    const outerFirst = band.side === 'top' || band.side === 'left';
-    let cursor = 0;
-    for (let step = 0; step < BLOOM_STEPS.length; step += 1) {
-      const thickness = depth * BLOOM_STEPS[step];
-      // 外沿起算；下/右两条边带的"外沿"在另一头，所以要反过来摆。
-      const offset = outerFirst ? cursor : depth - cursor - thickness;
-      cursor += thickness;
-      if (thickness < minVisible) {
-        continue;
-      }
-      const box: Rect = horizontal
-        ? { left: band.left, top: band.top + offset, width: band.width, height: thickness }
-        : { left: band.left + offset, top: band.top, width: thickness, height: band.height };
-      if (!isRectOutsideWindow(box, safe)) {
-        continue;
-      }
-      elements.push({
-        key: `bloom-${band.side}-${step}`,
-        kind: 'bloom',
-        box,
-        width: box.width,
-        height: box.height,
-        radius: 0,
-        rotate: 0,
-        color: rgba(BLOOM_INK.r, BLOOM_INK.g, BLOOM_INK.b, BLOOM_ALPHAS[step]),
-        opacity: 1,
-      });
-    }
-  }
-
-  // ② 岁月斑点：整幅均匀撒，靠 isOutsideWindow 把落进照片的那些拒掉。
-  let placed = 0;
-  for (let attempt = 0; attempt < AGED_SPECK_COUNT * 8 && placed < AGED_SPECK_COUNT; attempt += 1) {
-    const diameter =
-      (AGED_SPECK_MIN_RATIO + rng() * (AGED_SPECK_MAX_RATIO - AGED_SPECK_MIN_RATIO)) * width;
-    const box = sampleBox(rng, width, height, diameter, diameter, bands);
-    if (box === null) {
-      continue;
-    }
-    if (!isOutsideWindow(box.left + box.width / 2, box.top + box.height / 2, window)) {
-      continue;
-    }
-    if (!isRectOutsideWindow(box, safe)) {
-      continue;
-    }
-    const alpha = AGED_SPECK_MIN_ALPHA + rng() * (AGED_SPECK_MAX_ALPHA - AGED_SPECK_MIN_ALPHA);
-    elements.push({
-      key: `speck-${placed}`,
-      kind: 'speck',
-      box,
-      width: box.width,
-      height: box.height,
-      radius: box.width / 2,
-      rotate: 0,
-      color: rgba(SPECK_INK.r, SPECK_INK.g, SPECK_INK.b, alpha),
-      opacity: 1,
-    });
-    placed += 1;
-  }
-
-  return elements;
-}
-
-/** C 档：撞色波点 + 空心圈 + 手绘笔触，全部落在留白里。 */
-function buildDoodleElements(
-  rng: () => number,
-  width: number,
-  height: number,
-  window: Rect,
-): SkinElement[] {
-  const elements: SkinElement[] = [];
-  const shortSide = Math.min(width, height);
-  const safe = inflateRect(window, SKIN_WINDOW_PADDING_RATIO * shortSide);
-  const minVisible = MIN_VISIBLE_RATIO * shortSide;
-  const bands = marginBands(width, height, window);
-  let counter = 0;
-
-  // ① 撞色波点：口径 1.5%~5% 相纸宽，大小不一 —— "不规则"正是手绘感的来源。
-  let dots = 0;
-  for (let attempt = 0; attempt < DOODLE_DOT_COUNT * 10 && dots < DOODLE_DOT_COUNT; attempt += 1) {
-    const diameter =
-      (DOODLE_DOT_MIN_RATIO + rng() * (DOODLE_DOT_MAX_RATIO - DOODLE_DOT_MIN_RATIO)) * width;
-    const box = sampleBox(rng, width, height, diameter, diameter, bands);
-    if (box === null) {
-      continue;
-    }
-    if (!isOutsideWindow(box.left + box.width / 2, box.top + box.height / 2, window)) {
-      continue;
-    }
-    if (!isRectOutsideWindow(box, safe)) {
-      continue;
-    }
-    elements.push({
-      key: `dot-${counter}`,
-      kind: 'dot',
-      box,
-      width: box.width,
-      height: box.height,
-      radius: box.width / 2,
-      rotate: 0,
-      color: DOODLE_INKS[Math.floor(rng() * DOODLE_INKS.length)],
-      opacity: DOODLE_DOT_MIN_ALPHA + rng() * (DOODLE_DOT_MAX_ALPHA - DOODLE_DOT_MIN_ALPHA),
-    });
-    counter += 1;
-    dots += 1;
-  }
-
-  // ② 空心圈：同样撞色，但只有描边 —— 破掉"全是实心圆"的呆板。
-  let hoops = 0;
-  for (let attempt = 0; attempt < DOODLE_HOOP_COUNT * 10 && hoops < DOODLE_HOOP_COUNT; attempt += 1) {
-    const diameter =
-      (DOODLE_HOOP_MIN_RATIO + rng() * (DOODLE_HOOP_MAX_RATIO - DOODLE_HOOP_MIN_RATIO)) * width;
-    const borderWidth =
-      (DOODLE_HOOP_MIN_STROKE_RATIO +
-        rng() * (DOODLE_HOOP_MAX_STROKE_RATIO - DOODLE_HOOP_MIN_STROKE_RATIO)) *
-      width;
-    /*
-      描边太细就别画（0.18pt 的圈在小预览上等于没有）。
-      **必须用 `minVisible`（相纸短边的比例）而不是写死的 0.4pt**：
-      写死之后 `96×72` 的抽屉预览里相纸只有 45~72pt 宽，描边 0.18~0.36pt 全部
-      小于 0.4 → 4 个空心圈**一个不剩**，而成片里 4 个都在 ——
-      "预览里少一整类元素"正是探针抓出来的那 9 条失败。
-    */
-    if (borderWidth < minVisible) {
-      continue;
-    }
-    const box = sampleBox(rng, width, height, diameter, diameter, bands);
-    if (box === null) {
-      continue;
-    }
-    if (!isOutsideWindow(box.left + box.width / 2, box.top + box.height / 2, window)) {
-      continue;
-    }
-    if (!isRectOutsideWindow(box, safe)) {
-      continue;
-    }
-    elements.push({
-      key: `hoop-${counter}`,
-      kind: 'hoop',
-      box,
-      width: box.width,
-      height: box.height,
-      radius: box.width / 2,
-      rotate: 0,
-      color: DOODLE_INKS[Math.floor(rng() * DOODLE_INKS.length)],
-      opacity: DOODLE_DOT_MIN_ALPHA + rng() * (DOODLE_DOT_MAX_ALPHA - DOODLE_DOT_MIN_ALPHA),
-      borderWidth,
-    });
-    counter += 1;
-    hoops += 1;
-  }
-
-  // ③ 手绘笔触：2~3 条圆角长条，只放上/下两条横带（侧带太窄，塞不下一条像样的笔触）。
-  const horizontal = bands.filter((band) => band.side === 'top' || band.side === 'bottom');
-  let strokes = 0;
-  let strokeAttempt = 0;
-  while (
-    strokes < DOODLE_STROKE_COUNT &&
-    horizontal.length > 0 &&
-    strokeAttempt < DOODLE_STROKE_COUNT * DOODLE_STROKE_RETRY
-  ) {
-    const band = horizontal[strokeAttempt % horizontal.length];
-    strokeAttempt += 1;
-    const rotate = (rng() * 2 - 1) * DOODLE_STROKE_MAX_TILT;
-    const radian = (Math.abs(rotate) * Math.PI) / 180;
-    const cos = Math.cos(radian);
-    const sin = Math.sin(radian);
-    let thickness =
-      (DOODLE_STROKE_MIN_THICK_RATIO +
-        rng() * (DOODLE_STROKE_MAX_THICK_RATIO - DOODLE_STROKE_MIN_THICK_RATIO)) *
-      width;
-    let length =
-      (DOODLE_STROKE_MIN_LENGTH_RATIO +
-        rng() * (DOODLE_STROKE_MAX_LENGTH_RATIO - DOODLE_STROKE_MIN_LENGTH_RATIO)) *
-      width;
-    // 旋转后的外接盒：W = |L·cosθ| + |t·sinθ|，H = |L·sinθ| + |t·cosθ|。
-    // 先把长度收进带宽里：H 必须放得下，其次 W 不能超过带长。
-    const maxHeight = band.height * STROKE_BAND_FILL;
-    thickness = Math.min(thickness, maxHeight);
-    if (thickness < minVisible) {
-      continue;
-    }
-    const maxByHeight =
-      sin > 0.001 ? (maxHeight - thickness * cos) / sin : Number.POSITIVE_INFINITY;
-    length = Math.min(length, maxByHeight, band.width * STROKE_BAND_FILL);
-    if (!(length > 0) || length < width * DOODLE_STROKE_MIN_LENGTH_RATIO * 0.5) {
-      continue; // 放不下就不画 —— 宁可少一条，也别画根面条贴在边上。
-    }
-    const boxWidth = length * cos + thickness * sin;
-    const boxHeight = length * sin + thickness * cos;
-    const box: Rect = {
-      left: band.left + rng() * Math.max(0, band.width - boxWidth),
-      top: band.top + rng() * Math.max(0, band.height - boxHeight),
-      width: boxWidth,
-      height: boxHeight,
-    };
-    if (!isRectOutsideWindow(box, safe)) {
-      continue;
-    }
-    elements.push({
-      key: `stroke-${strokes}`,
-      kind: 'stroke',
-      box,
-      width: length,
-      height: thickness,
-      radius: thickness / 2,
-      rotate,
-      color: DOODLE_INKS[Math.floor(rng() * DOODLE_INKS.length)],
-      opacity:
-        DOODLE_STROKE_MIN_ALPHA + rng() * (DOODLE_STROKE_MAX_ALPHA - DOODLE_STROKE_MIN_ALPHA),
-    });
-    strokes += 1;
-  }
-
+  buildTintLines(material, bands, width, height, window, elements);
+  buildShadeLines(material, width, height, window, elements);
+  buildCutLines(material, width, height, window, elements);
+  buildEmbossLines(material, width, height, window, elements);
+  buildBloomLines(material.bloom, bands, width, height, window, elements);
   return elements;
 }
 
@@ -667,53 +606,34 @@ function buildDoodleElements(
 // 渲染
 // ─────────────────────────────────────────────────────────────────────────
 
-/**
- * 一个元素 → 一个 `<View>` 的样式。
- * `box` 是**旋转后**的外接盒，所以按盒心回推 left/top（旋转以元素中心为轴）。
- */
+/** 一个元素 → 一个 `<View>` 的样式（材质元素全是轴对齐矩形）。 */
 function elementStyle(element: SkinElement): ViewStyle {
   const style: ViewStyle = {
     position: 'absolute',
-    left: element.box.left + element.box.width / 2 - element.width / 2,
-    top: element.box.top + element.box.height / 2 - element.height / 2,
-    width: element.width,
-    height: element.height,
-    opacity: element.opacity,
-    backgroundColor: element.kind === 'hoop' ? 'transparent' : element.color,
+    left: element.box.left,
+    top: element.box.top,
+    width: element.box.width,
+    height: element.box.height,
+    backgroundColor: element.color,
   };
-  if (element.radius > 0) {
-    style.borderRadius = element.radius;
-  }
-  if (element.rotate !== 0) {
-    style.transform = [{ rotate: `${element.rotate}deg` }];
+  if (element.opacity !== 1) {
+    style.opacity = element.opacity;
   }
   if (element.blendMode !== undefined) {
     style.mixBlendMode = element.blendMode;
   }
-  if (element.borderWidth !== undefined) {
-    style.borderWidth = element.borderWidth;
-    style.borderColor = element.color;
-  }
   return style;
 }
 
-function FrameSkinInner({
-  width,
-  height,
-  window: photoWindow,
-  radius = 0,
-  variant,
-  seed,
-}: FrameSkinProps) {
-  const wash = useMemo(() => buildSkinWash(variant, width, height), [variant, width, height]);
+function FrameSkinInner({ width, height, window: photoWindow, radius = 0, variant }: FrameSkinProps) {
+  const material = findFrameMaterial(variant);
   const elements = useMemo(
-    () => buildSkinElements(variant, seed, width, height, photoWindow),
-    // ⚠️ 依赖里除了 [variant, seed] 还必须有 width/height/window：
-    //   换相框、转屏都会换画幅，只认 seed 的话会留着上一套几何（错位）。
+    () => buildSkinElements(material, width, height, photoWindow),
+    // ⚠️ 依赖里除了 material 还必须有 width/height/window：
+    //   换相框、转屏都会换画幅，只认 material 的话会留着上一套几何（错位）。
     //   写成四个标量而不是 window 对象，是为了不要求调用方把 window 缓存起来。
     [
-      variant,
-      seed,
+      material,
       width,
       height,
       photoWindow.left,
@@ -723,15 +643,13 @@ function FrameSkinInner({
     ],
   );
 
-  // classic 档（以及尺寸还没量出来的那一帧）**必须**什么都不渲染：
-  // 那档的渲染树要和 v1.6.1 逐像素一致。
-  if (variant === 'classic' || !(width > 0) || !(height > 0)) {
+  // 尺寸还没量出来的那一帧什么都不渲染（否则会在左上角贴一个点）。
+  if (!(width > 0) || !(height > 0)) {
     return null;
   }
 
   return (
     <View pointerEvents="none" style={[styles.root, { width, height, borderRadius: radius }]}>
-      {wash !== null ? <View style={elementStyle(wash)} /> : null}
       {elements.map((element) => (
         <View key={element.key} style={elementStyle(element)} />
       ))}
@@ -740,8 +658,8 @@ function FrameSkinInner({
 }
 
 /**
- * 相框皮肤。`memo` 是必要的：取景器每次重排（拖动、对焦、状态变化）都会重建整棵树，
- * 而皮肤只跟 (variant, seed, 画幅, 窗口) 有关 —— 没变就不该重画。
+ * 相框材质层。`memo` 是必要的：取景器每次重排（拖动、对焦、状态变化）都会重建整棵树，
+ * 而材质只跟 (variant, 画幅, 窗口) 有关 —— 没变就不该重画。
  */
 export const FrameSkin = memo(FrameSkinInner);
 

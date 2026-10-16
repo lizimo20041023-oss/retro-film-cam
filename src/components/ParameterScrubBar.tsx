@@ -30,6 +30,7 @@ import { Animated, PanResponder, StyleSheet, View, useWindowDimensions } from 'r
 import type { GestureResponderEvent, PanResponderGestureState } from 'react-native';
 
 import { ASSUMED_LENS_NATIVE_MM, ZOOM_STOPS } from '../constants/lenses';
+import { useCapsuleAutoHide } from '../hooks/useCapsuleAutoHide';
 import type { ZoomLensRole } from '../constants/lenses';
 import { useI18n } from '../i18n';
 import {
@@ -283,6 +284,16 @@ export interface ParameterScrubBarProps {
   onExposure: (value: number) => void;
   /** VoiceOver 的"上一档/下一档"（也是键盘/无障碍的换档路径）。 */
   onCycleFocal: () => void;
+  /**
+   * 父级的「用户刚轻触取景器对焦」信号：**单调递增整数**，每变一次唤醒一次胶囊
+   * 并重新计时。
+   *
+   * 为什么用计数器而不是传一个 `wake()` 函数进来：胶囊行是**本组件**渲染的，
+   * 父级手上没有这个 hook 的实例；传函数会让父级每帧重建回调（依赖数组写不干净），
+   * 而"值一变就唤醒"用 `useEffect(..., [wakeSignal])` 就能表达，探针也好驱动。
+   * 缺省（父级没接）时行为退化为"只按参数变化唤醒"，不会报错。
+   */
+  wakeSignal?: number;
 }
 
 function ParameterScrubBarInner({
@@ -296,12 +307,31 @@ function ParameterScrubBarInner({
   onFocal,
   onExposure,
   onCycleFocal,
+  wakeSignal,
 }: ParameterScrubBarProps) {
   const { t } = useI18n();
   const { width: windowWidth } = useWindowDimensions();
   const [active, setActive] = useState<ScrubbableParameter | null>(null);
   const [focalPreview, setFocalPreview] = useState<number | null>(null);
   const scroll = useRef(new Animated.Value(0)).current;
+
+  /**
+   * 胶囊的自动隐藏（v1.8.0 · 模块三）。
+   *
+   * `locked: active !== null` 是**声明式**的那把锁：只要有色温/曝光尺子或焦段分段条
+   * 处于展开态，胶囊就常亮 —— 用户明说了"操作中途不许隐藏"，而展开态本来就意味着
+   * 用户正在调它（滑选、核对档位）。拖动那把锁是**命令式**的 `lock()/unlock()`，
+   * 两者独立，谁在场都算锁住。
+   */
+  const {
+    opacity: capsulesOpacity,
+    translateY: capsulesTranslateY,
+    hidden: capsulesHidden,
+    pointerEvents: capsulesPointerEvents,
+    wake: wakeCapsules,
+    lock: lockCapsules,
+    unlock: unlockCapsules,
+  } = useCapsuleAutoHide({ locked: active !== null });
   const gesture = useRef<GestureState>({
     dial: null,
     mode: 'tap',
@@ -369,6 +399,26 @@ function ParameterScrubBarInner({
       words: { wb: t('camera.bar.temp'), zoom: t('camera.bar.focal'), ev: t('camera.bar.ev') },
     };
   });
+
+  /**
+   * 唤醒的两条外部通路。
+   *
+   * ① `wakeSignal`：父级在"轻触取景器对焦"时自增，用户抬手前胶囊就该亮回来 ——
+   *    对焦那一下说明用户在看画面，而参数行是画面的一部分。
+   * ② 参数值本身变化：`temperature / focalMm / exposure` 是**权威真值**，它变了就说明
+   *    有人在动参数（本组件拖的，或父级自己改的 —— 例如对焦滑条同步 EV、换卷归零、
+   *    翻转相机重置）。与其在每个调用点各写一次 `wake()`，不如盯着真值：
+   *    漏掉任何一条新通路都不会让胶囊在使用中溜走。
+   *
+   * 两者都走 `wake()`：它清旧表、起新表，所以连续触发也只会有一张表在跑。
+   */
+  const wakeSignalValue = wakeSignal ?? 0;
+  useEffect(() => {
+    wakeCapsules();
+  }, [wakeSignalValue, wakeCapsules]);
+  useEffect(() => {
+    wakeCapsules();
+  }, [temperature, focalMm, exposure, wakeCapsules]);
 
   const clearHold = useCallback(() => {
     const state = gesture.current;
@@ -605,6 +655,15 @@ function ParameterScrubBarInner({
           if (dial === null) {
             return false;
           }
+          /**
+           * 从按下的这一刻起**锁住**胶囊：手指还在屏幕上，参数行就不能自己淡走。
+           *
+           * 为什么锁在这里而不是长按展开那一刻：轻点也会改参数（归零/循环焦段），
+           * 而且用户按下时就已经在"用"这一行了。锁是引用计数，配套的 `unlock()` 只写在
+           * `onPanResponderRelease` / `onPanResponderTerminate` 两处 —— 一旦被授予响应者
+           * 身份，这两个回调里必有一个会跑，所以计数不会漏。
+           */
+          lockCapsules();
           clearCollapse();
           state.dial = dial;
           state.mode = 'tap';
@@ -670,6 +729,15 @@ function ParameterScrubBarInner({
         onPanResponderRelease: (event) => {
           handleRelease(event);
           gesture.current.dial = null;
+          /**
+           * 松手 = 解锁 + 从这一刻**重新计时**。
+           *
+           * 为什么先解后唤：`unlock()` 在还有别的锁时会保持可见，只有全部解开才起表；
+           * 紧接着的 `wake()` 保证"刚调完参数"的这 3 秒一定从头算，而不是接着按下的
+           * 那一刻算 —— 否则快速调完再松手，胶囊可能瞬间就淡走了。
+           */
+          unlockCapsules();
+          wakeCapsules();
         },
         /**
          * 手势被系统抢走（来电、多任务手势、别的手势识别器赢了）。**焦段绝不在这里
@@ -689,6 +757,9 @@ function ParameterScrubBarInner({
             setFocalPreview(null);
           }
           state.dial = null;
+          // 手势被抢走也要解锁并重新计时：用户没有放手，但这一轮交互已经结束了。
+          unlockCapsules();
+          wakeCapsules();
         },
       }),
     [
@@ -701,9 +772,12 @@ function ParameterScrubBarInner({
       emit,
       focalIndexAtPageX,
       handleRelease,
+      lockCapsules,
       openDial,
       previewFocal,
       scheduleCollapse,
+      unlockCapsules,
+      wakeCapsules,
     ],
   );
 
@@ -754,20 +828,43 @@ function ParameterScrubBarInner({
         : `${Math.round(focalMm)}mm`;
 
   return (
-    <View style={styles.root} {...responder.panHandlers}>
-      <ViewfinderBar
-        active={active}
-        reading={reading}
-        temperature={temperature}
-        focalMm={focalMm}
-        exposure={exposure}
-        scroll={scroll}
-        focalOptions={focalOptions}
-        focalActiveIndex={focalActiveIndex}
-        previewIndex={focalPreview}
-        onActivate={handleActivate}
-        onAdjust={handleAdjust}
-      />
+    /**
+     * 最外层只做三件事：挂手势、在隐藏时把触摸**整体**放行、把无障碍元素一起摘掉。
+     *
+     * `pointerEvents` 换成 `'none'`（而不是只把 `opacity` 调到 0）的理由：透明但仍在
+     * 命中的视图会把取景器上的"轻触对焦"吃掉 —— 那时用户看到的是空画面，点哪儿都不该
+     * 有反应，但实际会落在三颗看不见的胶囊上，去开底片抽屉或把参数归零。
+     *
+     * `accessibilityElementsHidden` / `importantForAccessibility` 同理：VoiceOver 的
+     * 焦点不该落在一行已经淡走的控件上（可见性靠 `opacity`，无障碍树不会自己跟着变）。
+     */
+    <View
+      style={styles.root}
+      pointerEvents={capsulesPointerEvents}
+      accessibilityElementsHidden={capsulesHidden}
+      importantForAccessibility={capsulesHidden ? 'no-hide-descendants' : 'auto'}
+      {...responder.panHandlers}
+    >
+      <Animated.View
+        style={[
+          styles.hideLayer,
+          { opacity: capsulesOpacity, transform: [{ translateY: capsulesTranslateY }] },
+        ]}
+      >
+        <ViewfinderBar
+          active={active}
+          reading={reading}
+          temperature={temperature}
+          focalMm={focalMm}
+          exposure={exposure}
+          scroll={scroll}
+          focalOptions={focalOptions}
+          focalActiveIndex={focalActiveIndex}
+          previewIndex={focalPreview}
+          onActivate={handleActivate}
+          onAdjust={handleAdjust}
+        />
+      </Animated.View>
     </View>
   );
 }
@@ -785,4 +882,14 @@ const styles = StyleSheet.create({
    * `alignSelf: 'stretch'` 同时给内层的 86% 宽度一个确定的父宽。
    */
   root: { alignSelf: 'stretch', alignItems: 'center' },
+  /**
+   * 淡出/位移挂在**内层**，不挂 `root`。
+   *
+   * 为什么：`root` 是手势带，它自己的边界就是"触摸会不会被交给我"的判据（按在视图
+   * 边界外的手势根本不会派发到它的捕获回调）。把 `translateY` 加在 `root` 上，退场那
+   * 200ms 里边界会跟着往下走 —— 手指正好在这一刻落下就会落在一个正在挪的框外。让手势带
+   * 永远待在原位、只让里面的内容动，命中区域就是稳定的。
+   * 两层都是 `alignSelf: 'stretch'`，宽度链没变，内层 86% 的参照仍然是满屏的 `barLayer`。
+   */
+  hideLayer: { alignSelf: 'stretch', alignItems: 'center' },
 });

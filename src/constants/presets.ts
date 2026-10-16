@@ -7,16 +7,30 @@
  *  iOS 上 RN 的 `filter` 只支持 brightness / opacity，做不了对比度、饱和度、色温。
  *  所以这里所有调色都是「图层 + mixBlendMode 混合」，Expo Go（新架构）原生支持：
  *
- *   temperature  -1..1  暖橙/冷蓝纯色层，mixBlendMode:'soft-light'，opacity = |v| × 0.9
- *   tint         -1..1  绿/品红纯色层，'soft-light'，opacity = |v| × 0.55
+ *   temperature  -1..1  暖橙/冷蓝纯色层，'overlay'，opacity = |v| × 0.38（色亮度恰好 0.5）
+ *   tint         -1..1  绿/品红纯色层，'overlay'，opacity = |v| × 0.24（同上）
  *   saturation    0..2  < 1：中灰层 'saturation'（去色）；> 1：高饱和色层 'saturation'（加饱和）
- *   contrast      0..2  > 1：**同一个画面再叠一层** 'overlay'（自叠即提对比度）
- *                        < 1：中灰层 'normal'（把画面往灰里压）
- *   fade          0..1  深灰 '#1C1C1C' + 'lighten'：只抬黑场、不糊高光（模拟过期胶片）
- *   exposure     -1..1  > 0 白 'screen' 提亮 / < 0 黑 'multiply' 压暗
+ *   contrast      0..2  > 1：**同一个画面再叠一层** 'soft-light'（自叠即提对比度）
+ *                        opacity 硬夹 0.20 —— `_haze_audit.mjs` 的 veilHigh 预算只允许这么多
+ *                        < 1：v1.8.0 起**不再产生图层**（中灰 normal 层在暗部平铺一层灰，
+ *                        是"白雾/灰雾"最典型的来源；低对比性格改由 fade 托黑 + 低饱和体现）
+ *   fade          0..1  深板岩灰 '#545A61' + 'lighten'：只抬**比它更暗**的像素（托黑），
+ *                        opacity = min(0.13, fade × 0.30)，0.35 以上一个像素都不动
+ *   exposure     -1..1  > 0：v1.8.0 起**不再产生图层**（原来是纯白 'screen'，白雾的第二来源）
+ *                        < 0：黑 'multiply' 压暗，opacity = |v| × 0.30
+ *   bloom         0..1  两层：模糊 8pt 的原图 'screen'（真泛光，× 0.14）+ 暖红 '#FF4B2D'
+ *                        'screen'（光晕色偏，× 0.05）。screen 在纯白上恒等 ⇒ 永不压白
  *   grain         0..1  grain.png 平铺 + 'overlay'（单色亮度颗粒，无任何色度噪声）
- *   vignette      0..1  vignette.png 拉伸 + 'multiply'
- *   lightLeak     0..1  light-leak.png 拉伸 + 'screen'（lightLeakFlip: true 换到左边）
+ *   vignette      0..1  vignette.png 拉伸 + 'overlay'（'multiply' 会把纯白压暗 ⇒ 白变形）
+ *   lightLeak     0..1  light-leak.png 拉伸 + 'screen'，opacity = min(0.10, × 0.29)
+ *                        （lightLeakFlip: true 换到左边）
+ *
+ *  ── 为什么 grain 的数值看起来这么大（0.42 ~ 0.62）─────────────────────────
+ *  v1.8.0 的颗粒幅度是**可算**的：`effAmp(cb) = grain × 2·min(cb,1−cb) × σ_贴图`，
+ *  其中 σ_贴图 = 0.2605（`scripts/generate_grain_clump.py` 烘出来的对比度）。
+ *  要落进验收窗 `effAmp(0.5) ∈ [0.10, 0.22]`，就得 `grain ∈ [0.384, 0.672]`：
+ *  老值 0.08~0.15 在 3x 屏上被插值稀释后几乎看不见（这就是"颗粒像数码噪点"的由来）。
+ *  ⚠️ 这组数值和 `grain.png` 的对比度是**绑死**的：重烤贴图必须回来重算这一列。
  *
  *  中性值不产生图层：temperature/tint/fade/lightLeak = 0、saturation/contrast = 1、
  *  exposure = 0、grain/vignette 不写就有一点点默认值（见 PRESET_DEFAULTS）。
@@ -51,7 +65,11 @@ export const PRESET_DEFAULTS = {
   splitTone: 0,
   /** 光晕：高光变暖发亮。0 = 关。 */
   bloom: 0,
-  grain: 0.088,
+  /**
+   * 颗粒幅度（默认值 = 标准档：`effAmp(0.5) ≈ 0.135`，验收窗 [0.10, 0.22]）。
+   * 与 `grain.png` 的对比度绑死，见文件头"为什么 grain 的数值看起来这么大"。
+   */
+  grain: 0.52,
   /** 灰尘与划痕。0 = 关。 */
   dust: 0,
   vignette: 0.18,
@@ -108,7 +126,7 @@ export const PRESETS: FilmPreset[] = [
       exposure: 0.02,
       splitTone: 0.22,
     },
-    grain: 0.12,
+    grain: 0.52,
     vignette: 0.28,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
     showGuide: true,
@@ -121,12 +139,14 @@ export const PRESETS: FilmPreset[] = [
       temperature: 0.2,
       tint: 0.06,
       saturation: 0.94,
-      contrast: 0.96,
+      // 0.96 → 1.08（v1.8.0）：托黑在 0.1 处抬亮度会直接压低 satRatio，
+      // 必须由这一层 photo soft-light 提对比把 `(y(0.1)+0.05)` 分母挣回来。
+      contrast: 1.08,
       fade: 0.2,
       exposure: 0.06,
       splitTone: 0.16,
     },
-    grain: 0.08,
+    grain: 0.44,
     vignette: 0.14,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
   },
@@ -143,7 +163,7 @@ export const PRESETS: FilmPreset[] = [
       exposure: 0.06,
       splitTone: 0.18,
     },
-    grain: 0.1,
+    grain: 0.46,
     vignette: 0.16,
     lightLeak: 0.22,
     lightLeakFlip: false,
@@ -162,7 +182,7 @@ export const PRESETS: FilmPreset[] = [
       exposure: -0.02,
       splitTone: 0.24,
     },
-    grain: 0.1,
+    grain: 0.48,
     vignette: 0.2,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
   },
@@ -174,12 +194,14 @@ export const PRESETS: FilmPreset[] = [
       temperature: 0.06,
       tint: 0.08,
       saturation: 1.34,
-      contrast: 1.24,
+      // 1.24 → 1.2：引擎在 opacity 0.20 夹平（= veilHigh 预算 ÷ 每单位 0.0893），
+      // 写回夹平点，避免"数值写了 1.24 却没有更多效果"的误导。
+      contrast: 1.2,
       fade: 0,
       exposure: -0.04,
       splitTone: 0.12,
     },
-    grain: 0.08,
+    grain: 0.42,
     vignette: 0.22,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
   },
@@ -191,13 +213,14 @@ export const PRESETS: FilmPreset[] = [
       temperature: -0.12,
       tint: -0.08,
       saturation: 1.18,
-      contrast: 1.26,
+      // 1.26 → 1.2：同上，夹平点。CCD 的"重色噪"靠 grain 0.56 表现。
+      contrast: 1.2,
       fade: 0.08,
       exposure: -0.06,
       splitTone: 0.52,
       bloom: 0.2,
     },
-    grain: 0.12,
+    grain: 0.56,
     vignette: 0.34,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
   },
@@ -209,13 +232,15 @@ export const PRESETS: FilmPreset[] = [
       temperature: -0.34,
       tint: 0.04,
       saturation: 1.06,
-      contrast: 1.12,
-      fade: 0.14,
+      // 1.12 → 1.2、fade 0.14 → 0.13（v1.8.0）：halation 的 screen 层会抬暗部，
+      // 得由更硬的对比层支付 satRatio（本卷自身 saturation ≥ 1，低饱和不是设计意图）。
+      contrast: 1.2,
+      fade: 0.13,
       exposure: 0.04,
       splitTone: 0.34,
       bloom: 0.52,
     },
-    grain: 0.12,
+    grain: 0.52,
     vignette: 0.22,
     lightLeak: 0.18,
     lightLeakFlip: true,
@@ -229,13 +254,15 @@ export const PRESETS: FilmPreset[] = [
       temperature: 0.12,
       tint: 0.22,
       saturation: 0.82,
-      contrast: 1.1,
-      fade: 0.34,
+      // 1.1 → 1.2、fade 0.34 → 0.27（v1.8.0）：本卷本来就该发灰（saturation 0.82 是设计意图），
+      // 但"灰"要靠低饱和 + 托黑表达，不能靠压平对比度 —— 那在门槛里就是白雾。
+      contrast: 1.2,
+      fade: 0.27,
       exposure: 0.02,
       splitTone: 0.4,
       bloom: 0.24,
     },
-    grain: 0.15,
+    grain: 0.62,
     dust: 0.16,
     vignette: 0.44,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
@@ -248,12 +275,13 @@ export const PRESETS: FilmPreset[] = [
       temperature: 0,
       tint: 0,
       saturation: 0,
-      contrast: 1.3,
+      // 1.3 → 1.2：夹平点（引擎最多给 0.20）。黑白卷的对比靠 saturation 0 + 重颗粒。
+      contrast: 1.2,
       fade: 0.06,
       exposure: 0.02,
       splitTone: 0.14,
     },
-    grain: 0.15,
+    grain: 0.62,
     dust: 0.12,
     vignette: 0.4,
     timestamp: { enabled: true, format: 'YY MM DD', color: '#E6E6E6' },
@@ -267,12 +295,15 @@ export const PRESETS: FilmPreset[] = [
       temperature: 0.15,
       tint: -0.12,
       saturation: 0.78,
-      contrast: 0.92,
-      fade: 0.42,
+      // 0.92 → 1.15、fade 0.42 → 0.29（v1.8.0，本卷改动最大的一处）：原来的写法是
+      // "低对比 + 重托黑"，两条叠起来 satRatio 只有 0.847 —— 这正是用户报的"白雾"观感。
+      // 现在改成"托黑 + 等量提对比"：黑场照样抬起来，中间调反而更结实，净观感仍是褪色卷。
+      contrast: 1.15,
+      fade: 0.29,
       exposure: 0.1,
       splitTone: 0.3,
     },
-    grain: 0.14,
+    grain: 0.58,
     dust: 0.2,
     vignette: 0.36,
     lightLeak: 0.34,

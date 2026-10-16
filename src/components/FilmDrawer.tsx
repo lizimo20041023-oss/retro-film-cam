@@ -156,7 +156,8 @@ const VARIANT_DRAG_CLAMP = 22;
  * 为什么要有这块：抽屉一打开，取景器整个 `opacity: 0`（`CameraScreen` 的 `covered`），
  * 而抽屉只占屏幕下方 58% —— 用户在抽屉里滑 A/B/C 时**看不到任何变化**，
  * 得关掉抽屉才知道自己选了什么。这块小窗是"边滑边看"的唯一出口。
- * 96×72 是能同时看清"相纸留白比例"和"皮肤花纹"的最小尺寸（再小斑点就糊成噪点）。
+ * 96×72 是能同时看清"相纸留白比例"和"材质色"的最小尺寸（材质是平色/渐变与极细的
+ * 压痕、切边，再小就只剩一块灰）。
  */
 const FRAME_PREVIEW_WIDTH = 96;
 const FRAME_PREVIEW_HEIGHT = 72;
@@ -165,8 +166,10 @@ const FRAME_PREVIEW_NARROW_WIDTH = 76;
 /**
  * 小窗底色写死深色（不用主题色）：它是"暗房里的观察窗"，浅色主题下用浅底会把
  * 相纸的白色留白和底色糊在一起，看不出窗口边界。
+ * ⚠️ 取值必须与 `FramePreviewLayer.CURTAIN_COLOR` 一致：抽屉小窗与取景器幕布
+ * 是同一块黑，两处差一点点在切换时会看出一跳。
  */
-const FRAME_PREVIEW_BACKDROP = '#0B0B0D';
+const FRAME_PREVIEW_BACKDROP = '#0A0A0C';
 /**
  * 无障碍动作：`adjustable` 的标准两个（读屏的"上滑 / 下滑"）。
  * 不挂 `activate` —— 点按是留给手指的，读屏用这两个就能在三档之间走完。
@@ -618,7 +621,7 @@ export const FilmDrawer = memo(function FilmDrawer({
                   <Pressable
                     key={spec.id}
                     style={styles.framePill}
-                    // 药丸本体 34pt 高、纵向各补 5pt 凑够 ≥ 44pt 的触控区；
+                    // 药丸本体 44pt 高（色板 + 名字），纵向各补 5pt 只会更好按；
                     // 横向**不补** —— 相邻两档之间补了就会互相压住。
                     hitSlop={{ top: 5, bottom: 5, left: 0, right: 0 }}
                     onPress={() => {
@@ -636,6 +639,23 @@ export const FilmDrawer = memo(function FilmDrawer({
                           pressed ? styles.pressed : null,
                         ]}
                       >
+                        {/*
+                          芯片显示**材质本来的颜色**（v1.8.0 的要求）：色板直接取配方的
+                          `base`，底边一道极细的"边缘墨色"（暗色材质用它自己的金属切边色，
+                          其余用压痕的暗色）。这样三档在抽屉里一眼就是三种纸/三种暗房卡纸，
+                          而不是三个文字标签。
+                          ⚠️ 选中态**不许**染在色板上（染了就不是"真实材质色"了）：
+                          它只改外框与名字的颜色。
+                        */}
+                        <View
+                          style={[
+                            styles.frameSwatch,
+                            {
+                              backgroundColor: spec.base,
+                              borderBottomColor: spec.cut?.ink.color ?? spec.emboss.dark.color,
+                            },
+                          ]}
+                        />
                         <Text
                           style={[
                             styles.framePillText,
@@ -643,7 +663,7 @@ export const FilmDrawer = memo(function FilmDrawer({
                           ]}
                           numberOfLines={1}
                           adjustsFontSizeToFit
-                          minimumFontScale={0.75}
+                          minimumFontScale={0.7}
                         >
                           {t(spec.labelKey)}
                         </Text>
@@ -835,25 +855,36 @@ function createStyles(theme: Theme) {
     framePill: {
       flex: 1,
     },
+    /*
+      材质芯片：上面一块**材质色板**（真实颜色，见渲染处注释）、下面一行名字。
+      `overflow: 'hidden'` 是必须的 —— 色板要贴着圆角被裁，否则四个角会露出直角。
+    */
     framePillBody: {
-      height: 34,
-      alignItems: 'center',
-      justifyContent: 'center',
+      height: 44,
       borderRadius: 8,
+      overflow: 'hidden',
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: ink.hairline,
     },
-    // 当前档：琥珀色描边 + 一层很淡的底。两档之间不靠"高亮色块"区分，
-    // 免得和上面那排胶卷卡的选中样式抢眼。
+    // 当前档：琥珀色描边（**不动色板** —— 色板必须是材质本来的颜色）。
     framePillBodyActive: {
-      borderColor: withAlpha(ink.amber, 0.65),
-      backgroundColor: withAlpha(ink.amber, 0.14),
+      borderColor: withAlpha(ink.amber, 0.85),
+    },
+    /*
+      材质色板。底边那道极细的线由渲染处按材质给（暗色材质给它的金属切边色，
+      其余给压痕的暗色）—— 写在样式里的话三档就只能是同一个颜色了。
+    */
+    frameSwatch: {
+      flex: 1,
+      borderBottomWidth: StyleSheet.hairlineWidth,
     },
     framePillText: {
       color: ink.paperDim,
-      fontSize: 12,
+      fontSize: 11,
       letterSpacing: 0.8,
       fontFamily: UI_MONO,
+      textAlign: 'center',
+      paddingVertical: 3,
     },
     framePillTextActive: {
       color: ink.amberSoft,

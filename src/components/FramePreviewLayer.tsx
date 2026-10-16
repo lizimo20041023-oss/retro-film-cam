@@ -34,6 +34,22 @@
  *
  * ⚠️ 改 `FilmCompositor` 的水印渲染时，这里必须一起改。抽成共用组件是更干净的做法，
  * 但那个文件当时正在被另一个写者改（模块二往里加 `FrameSkin`），同时动它会撞车。
+ *
+ * ── v1.8.0：相框外围的**不透明幕布**（修"取景器顶部黑线断层"）────────────────────
+ * 用户报的现象是取景器顶部有一条黑线断掉/错位。根因是这一层原本只有"相纸"一块，
+ * 相纸之外（取景器剩下的那一圈）什么都没有：黑边来自下面别的层，一旦相纸的取整位置
+ * 比那些层多出半个点，就露出一条与周围黑不一样的缝，看起来就是"黑线断了"。
+ *
+ * 修法不是去对缝，而是**把"取景器 − 相纸"整块用 100% 不透明的 `#0A0A0C` 铺满**：
+ * 相框于是变成一块干净的镂空遮罩，缝不存在了（没有"缝"这一说，只有两种颜色）。
+ *
+ * ⚠️ 三条不许动的约束（探针 `_probe_skin_material.cjs` 第 4 节守着）：
+ *   · 幕布**必须在这层 0.82 的不透明度之外** —— 否则黑是半透明的，实时画面从黑里透出来，
+ *     比原来那条缝更难看。所以根节点不再带 opacity，opacity 移到里面的"相纸层"。
+ *   · 四块幕布**一个像素都不许压进相纸盒**（相纸自己就是相框，压上去会切掉纸边），
+ *     但相邻两块必须互相多压 `CURTAIN_SEAM`(1pt)——**防的是幕布之间的缝**，不是幕布与相纸的缝。
+ *   · 容器尺寸由已给的量反推：`container = layout + 2×(left, top)`（`frameOffset` 就是居中偏移）。
+ *     这是本层唯一的假设：调用方给的 `left/top` 必须是在**同一块容器**里量出来的。
  */
 import { memo } from 'react';
 import type { ReactElement } from 'react';
@@ -45,13 +61,97 @@ import { frameOrientationOfLayout, frameSourceOf } from '../utils/geometry';
 import { DateStamp } from './DateStamp';
 import { FrameSkin } from './FrameSkin';
 import type { WatermarkPiece } from './FilmCompositor';
-import type { FrameLayout, FrameSpec, FrameVariant } from '../types';
+import type { FrameLayout, FrameSpec, FrameVariant, Rect } from '../types';
 
 /**
  * 预览层整体不透明度。取 0.82 的理由见文件头 —— 它是"看得清相框"与"看得见实时画
  * 面"之间的折中值，不是随手写的。要调就调到能同时满足这两条为止。
  */
 export const FRAME_PREVIEW_OPACITY = 0.82;
+
+/**
+ * 相框外围幕布的颜色。**不透明**（`opacity: 1`，没有任何 alpha）。
+ *
+ * 比纯黑亮一点点：取景器上下就是机身黑，`#0A0A0C` 能同时压住"比机身更黑"的突兀感，
+ * 又不至于把相纸的暖白边衬得发灰。抽屉里的迷你预览用的 `FilmDrawer.FRAME_PREVIEW_BACKDROP`
+ * 是同一个色 —— 两处看起来必须是同一块黑。
+ */
+export const CURTAIN_COLOR = '#0A0A0C';
+
+/**
+ * 相邻幕布互相多压的宽度（pt）。
+ *
+ * ⚠️ 这一条**不是**"往相纸里多压 1pt"：幕布只在自己那侧的空白里，相纸一个像素都不碰。
+ * 它是左/右两块向上下各伸 1pt，伸进上/下两块的地盘 —— 防的是**幕布之间**的缝
+ * （四块严丝合缝时，亚像素取整有可能在两个矩形的公共边上留出半像素的亮线）。
+ */
+export const CURTAIN_SEAM = 1;
+
+/** 幕布的四块。 */
+export type CurtainSide = 'top' | 'bottom' | 'left' | 'right';
+
+export interface CurtainRect {
+  side: CurtainSide;
+  /** 在**取景器容器**坐标系里的矩形（pt）。 */
+  rect: Rect;
+}
+
+/**
+ * 把"取景器容器 − 相纸盒"切成四块幕布（纯函数，探针直接跑它，不经过渲染）。
+ *
+ * 几何（`paper` = 相纸盒，`container` = `paper + 2×(left, top)`）：
+ *
+ *   ┌─────────────────────────────────┐  ← container 顶上（= 取景器容器）
+ *   │            top                  │
+ *   ├──────┬───────────────────┬──────┤  ← paper 顶
+ *   │ left │   paper（相框）    │ right│      left/right 向上下各多压 SEAM
+ *   ├──────┴───────────────────┴──────┤  ← paper 底
+ *   │            bottom               │
+ *   └─────────────────────────────────┘
+ *
+ * · 四块的**并集恰好是"容器 − 相纸"**：left/right 多压的那 1pt 落在 top/bottom 里，
+ *   不改变并集，也不碰相纸（它们的 x 区间本来就在相纸两侧）。
+ * · 相纸贴着某条边（留白为 0）时那一块不生成 —— 那一条边本来就没有"外围"。
+ * · 容器尺寸从 `layout + 2×(left, top)` 反推（`left/top` 就是居中偏移，见文件头）。
+ *   反推不出来（负数 / 尺寸非正）就返回空数组：宁可不铺，也不铺错位。
+ */
+export function previewCurtainRects(layout: FrameLayout, left: number, top: number): CurtainRect[] {
+  const paperWidth = layout.width;
+  const paperHeight = layout.height;
+  if (!(paperWidth > 0) || !(paperHeight > 0) || !(left >= 0) || !(top >= 0)) {
+    return [];
+  }
+  const containerWidth = paperWidth + left * 2;
+  const containerHeight = paperHeight + top * 2;
+  const paperRight = left + paperWidth;
+  const paperBottom = top + paperHeight;
+  const rects: CurtainRect[] = [];
+
+  if (top > 0) {
+    rects.push({ side: 'top', rect: { left: 0, top: 0, width: containerWidth, height: top } });
+  }
+  if (containerHeight - paperBottom > 0) {
+    rects.push({
+      side: 'bottom',
+      rect: { left: 0, top: paperBottom, width: containerWidth, height: containerHeight - paperBottom },
+    });
+  }
+
+  // 左/右两块向上下各多压一个 CURTAIN_SEAM（只压进上/下幕布，不压进相纸）。
+  const sideTop = Math.max(0, top - CURTAIN_SEAM);
+  const sideBottom = Math.min(containerHeight, paperBottom + CURTAIN_SEAM);
+  const sideHeight = sideBottom - sideTop;
+  if (left > 0 && sideHeight > 0) {
+    rects.push({ side: 'left', rect: { left: 0, top: sideTop, width: left, height: sideHeight } });
+  }
+  if (containerWidth - paperRight > 0 && sideHeight > 0) {
+    rects.push({
+      side: 'right',
+      rect: { left: paperRight, top: sideTop, width: containerWidth - paperRight, height: sideHeight },
+    });
+  }
+  return rects;
+}
 
 export interface FramePreviewLayerProps {
   /** 当前相框。横版 PNG 的分支由 `frameOrientationOfLayout` 反推，和成片同一套逻辑。 */
@@ -62,7 +162,10 @@ export interface FramePreviewLayerProps {
   left: number;
   /** 同上，纵向。 */
   top: number;
-  /** A/B/C 风格变体。`classic` 时 `FrameSkin` 返回 `null`，外观与 v1.6.1 逐像素相同。 */
+  /**
+   * 材质（A 经典原白 / B 岁月暖黄 / C 暗房雅黑）。三档都会画材质，没有"不画"的那一档：
+   * 配方在 `constants/frameVariants.ts`，`FrameSkin` 只负责画出来。
+   */
   variant: FrameVariant;
   /** 水印片段，**必须**是 `planWatermark(...)` 的输出（和成片同一份）。 */
   pieces: WatermarkPiece[];
@@ -90,6 +193,10 @@ function FramePreviewLayerImpl({
     return null;
   }
 
+  const curtains = previewCurtainRects(layout, left, top);
+  const containerWidth = layout.width + left * 2;
+  const containerHeight = layout.height + top * 2;
+
   return (
     <View
       /*
@@ -97,111 +204,129 @@ function FramePreviewLayerImpl({
        * 不关掉命中测试，它会把下面那层 `focusCatcher` 的"点哪对哪"整个吞掉。
        */
       pointerEvents="none"
-      style={[
-        styles.root,
-        { left, top, width: layout.width, height: layout.height, opacity: FRAME_PREVIEW_OPACITY },
-      ]}
+      style={[styles.root, { width: containerWidth, height: containerHeight }]}
     >
       {/*
-        ① 相纸：与 `FilmCompositor` 同一句 `frameSourceOf(frame, frameOrientationOfLayout(...))`。
-        朝向**从 layout 反推**、不在这里重判一次 —— 判两次就会出现"布局按竖版算、PNG 铺了
-        横版"的错位，合成器那段注释里记着这个坑。
+        ⓪ 相框外围的不透明幕布（v1.8.0）。**在 0.82 那一层之外** —— 见文件头。
+        渲染顺序上它们在最底下：相纸压在它们上面，于是相纸的四条边是"纸压黑"
+        而不是"黑压纸"，边缘那半个像素的过渡也是正常的抗锯齿，不会切掉纸边。
       */}
-      <Image
-        source={frameSourceOf(frame, frameOrientationOfLayout(frame, layout))}
-        style={[styles.frame, { width: layout.width, height: layout.height }]}
-        resizeMode="stretch"
-        fadeDuration={0}
-      />
+      {curtains.map(({ side, rect }) => (
+        <View
+          key={side}
+          style={[
+            styles.curtain,
+            { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+          ]}
+        />
+      ))}
 
-      {/*
-        ② A/B/C 风格皮肤。`classic` 返回 `null`，于是这一层对老用户是**零像素变化**。
-        `seed` 走 `frameSkinSeedOf(frame)`（现已返 `frame.id`）：种子只许有一个产地，
-        免得将来三处调用点各写一遍、其中一处写成别的东西，预览与成片就长得不一样了。
-        涂鸦波点必须确定性（同一款相框每次进来长得一样），禁 `Math.random()`
-        —— 否则预览每帧都在抖。
-      */}
-      <FrameSkin
-        width={layout.width}
-        height={layout.height}
-        window={layout.window}
-        variant={variant}
-        seed={frameSkinSeedOf(frame)}
-      />
+      <View
+        style={[
+          styles.paper,
+          { left, top, width: layout.width, height: layout.height, opacity: FRAME_PREVIEW_OPACITY },
+        ]}
+      >
+        {/*
+          ① 相纸：与 `FilmCompositor` 同一句 `frameSourceOf(frame, frameOrientationOfLayout(...))`。
+          朝向**从 layout 反推**、不在这里重判一次 —— 判两次就会出现"布局按竖版算、PNG 铺了
+          横版"的错位，合成器那段注释里记着这个坑。
+        */}
+        <Image
+          source={frameSourceOf(frame, frameOrientationOfLayout(frame, layout))}
+          style={[styles.frame, { width: layout.width, height: layout.height }]}
+          resizeMode="stretch"
+          fadeDuration={0}
+        />
 
-      {/* ③ 水印：三条分支与 `FilmCompositor` 的 ③ 段一一对应 */}
-      {pieces.map((piece) => {
-        const text = previewStampTextStyle(piece, fontFamily, glow);
+        {/*
+          ② 材质层（A/B/C 三档全在画）。`seed` 走 `frameSkinSeedOf(frame)`（现已返 `frame.id`）：
+          种子只许有一个产地，免得将来三处调用点各写一遍、其中一处写成别的东西。
+          ⚠️ v1.8.0 起 `FrameSkin` **不用**这个种子了（材质是纯几何，没有随机图案），
+          但字段是冻结接口的一部分、且三个调用点都还在传，所以留在这里别删。
+        */}
+        <FrameSkin
+          width={layout.width}
+          height={layout.height}
+          window={layout.window}
+          variant={variant}
+          seed={frameSkinSeedOf(frame)}
+        />
 
-        // 纯文字行（地名 / 摄影代号 / 日期关掉时的纯文字）
-        if (piece.quartz === undefined) {
-          return (
-            <Text
-              key={piece.key}
-              allowFontScaling={false}
-              numberOfLines={1}
-              ellipsizeMode="tail"
-              style={[
-                styles.stamp,
-                {
-                  left: piece.left,
-                  right: piece.right,
-                  bottom: piece.bottom,
-                  maxWidth: piece.maxWidth,
-                  textAlign: piece.textAlign,
-                },
-                text,
-              ]}
-            >
-              {piece.text}
-            </Text>
-          );
-        }
+        {/* ③ 水印：三条分支与 `FilmCompositor` 的 ③ 段一一对应 */}
+        {pieces.map((piece) => {
+          const text = previewStampTextStyle(piece, fontFamily, glow);
 
-        // 独立日期块（`text` 为空）：宽度来自排版层，这里只负责摆位置
-        if (piece.text.length === 0) {
+          // 纯文字行（地名 / 摄影代号 / 日期关掉时的纯文字）
+          if (piece.quartz === undefined) {
+            return (
+              <Text
+                key={piece.key}
+                allowFontScaling={false}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                style={[
+                  styles.stamp,
+                  {
+                    left: piece.left,
+                    right: piece.right,
+                    bottom: piece.bottom,
+                    maxWidth: piece.maxWidth,
+                    textAlign: piece.textAlign,
+                  },
+                  text,
+                ]}
+              >
+                {piece.text}
+              </Text>
+            );
+          }
+
+          // 独立日期块（`text` 为空）：宽度来自排版层，这里只负责摆位置
+          if (piece.text.length === 0) {
+            return (
+              <View
+                key={piece.key}
+                style={[
+                  styles.stamp,
+                  {
+                    left: piece.left,
+                    right: piece.right,
+                    bottom: piece.bottom,
+                    width: piece.quartz.width,
+                    flexShrink: 0,
+                  },
+                ]}
+              >
+                <DateStamp quartz={piece.quartz} color={piece.color} fontFamily={fontFamily} />
+              </View>
+            );
+          }
+
+          // 居中版式：「地名 + 数码管」一行，文字可省，管子整块让位
           return (
             <View
               key={piece.key}
               style={[
                 styles.stamp,
+                styles.centeredRow,
                 {
                   left: piece.left,
                   right: piece.right,
                   bottom: piece.bottom,
-                  width: piece.quartz.width,
-                  flexShrink: 0,
+                  maxWidth: piece.maxWidth,
+                  width: piece.textAlign === 'center' ? piece.maxWidth : undefined,
                 },
               ]}
             >
+              <Text allowFontScaling={false} numberOfLines={1} ellipsizeMode="tail" style={[styles.centeredText, text]}>
+                {piece.text}
+              </Text>
               <DateStamp quartz={piece.quartz} color={piece.color} fontFamily={fontFamily} />
             </View>
           );
-        }
-
-        // 居中版式：「地名 + 数码管」一行，文字可省，管子整块让位
-        return (
-          <View
-            key={piece.key}
-            style={[
-              styles.stamp,
-              styles.centeredRow,
-              {
-                left: piece.left,
-                right: piece.right,
-                bottom: piece.bottom,
-                maxWidth: piece.maxWidth,
-                width: piece.textAlign === 'center' ? piece.maxWidth : undefined,
-              },
-            ]}
-          >
-            <Text allowFontScaling={false} numberOfLines={1} ellipsizeMode="tail" style={[styles.centeredText, text]}>
-              {piece.text}
-            </Text>
-            <DateStamp quartz={piece.quartz} color={piece.color} fontFamily={fontFamily} />
-          </View>
-        );
-      })}
+        })}
+      </View>
     </View>
   );
 }
@@ -237,7 +362,19 @@ function previewStampTextStyle(piece: WatermarkPiece, fontFamily: string, glowEn
 export const FramePreviewLayer = memo(FramePreviewLayerImpl);
 
 const styles = StyleSheet.create({
+  /** 覆盖整个取景器容器（尺寸由 `layout + 2×(left, top)` 反推，见文件头）。 */
   root: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+  },
+  /** 相框外围的不透明幕布（一块一块，四块拼成"容器 − 相纸"）。 */
+  curtain: {
+    position: 'absolute',
+    backgroundColor: CURTAIN_COLOR,
+  },
+  /** 相纸层。`FRAME_PREVIEW_OPACITY` 挂在这一层，幕布在它外面所以是实心的。 */
+  paper: {
     position: 'absolute',
   },
   frame: {

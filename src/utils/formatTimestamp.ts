@@ -3,6 +3,7 @@
  *
  * 支持的 token：
  *   `YYYY` 四位年 · `YY` 两位年 · `MM` 两位月 · `M` 不补零月 · `DD` 两位日 · `D` 不补零日
+ *   · `MMM` 英文月份缩写 · `W` 英文星期缩写 · `HH` 时 · `mm` 分 · `ss` 秒
  *
  * 示例（2026-10-10）：
  *   'YY MM DD'    → '26 10 10'   ← 经典傻瓜相机液晶（默认）
@@ -11,9 +12,14 @@
  *   'YY M D'      → '26 10 10'
  *
  * 替换顺序很重要：先长后短，否则 'YY' 会把 'YYYY' 的前两个字符吃掉。
+ *
+ * ⚠️ v1.8.0 起 token 替换**只有一套实现**，在 `constants/dateEngine.ts` 的
+ * `renderDateTemplate()` 里（它有 13 档预设、要覆盖 `MMM`/`W`/`HH:mm:ss`，
+ * 长 token 优先的排序表 `DATE_TOKEN_ORDER` 也放在那儿）。这里保留同名导出
+ * 是为了不破坏调用点，**不再各写一份替换链**——两份实现迟早会在某个 token 上分叉。
  */
 import type { LocaleId } from '../i18n/types';
-
+import { renderDateTemplate } from '../constants/dateEngine';
 /**
  * 合成一行用的「中点 + 窄空格」。
  *
@@ -137,18 +143,13 @@ export function formatQuartzDate(date: Date): string {
   return formatTimestamp(date, QUARTZ_DATE_FORMAT);
 }
 
-/** 日期文字。`format` 为空串时返回空串（调用方据此决定"这次不烧日期"）。 */
+/**
+ * 日期文字。`format` 为空串时返回空串（调用方据此决定"这次不烧日期"）。
+ *
+ * v1.8.0 起转调 `renderDateTemplate()`：token 表从 6 个扩到 11 个
+ * （多了 `MMM` / `W` / `HH` / `mm` / `ss`），替换链只有一份，
+ * 长 token 优先的规则也由它保证。对外行为对旧掩码逐字不变。
+ */
 export function formatTimestamp(date: Date, format: string): string {
-  const year = date.getFullYear();
-  const month = date.getMonth() + 1;
-  const day = date.getDate();
-
-  return format
-    .replace(/YYYY/g, String(year))
-    .replace(/YY/g, pad2(year % 100))
-    .replace(/MM/g, pad2(month))
-    .replace(/DD/g, pad2(day))
-    // 剩下的单字符 token（不补零）
-    .replace(/M/g, String(month))
-    .replace(/D/g, String(day));
+  return renderDateTemplate(date, format);
 }

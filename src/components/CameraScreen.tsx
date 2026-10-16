@@ -83,6 +83,7 @@ import { AlbumThumb } from './AlbumThumb';
 import { DevelopOverlay, computeDevelopStageBox } from './DevelopOverlay';
 import { DialButton } from './DialButton';
 import { FilmCompositor, planWatermark } from './FilmCompositor';
+import { FilmLookLayers } from './FilmLookLayers';
 import { FilmDrawer } from './FilmDrawer';
 import { FocusExposure } from './FocusExposure';
 import { FrameBadge } from './FrameBadge';
@@ -106,18 +107,22 @@ import type { CapturedPhoto, DevelopStatus, ResolvedPlace, Size } from '../types
 const PREVIEW_PADDING = 10;
 
 /**
+ * 胶片外观（颗粒 / 微尘 / 漏光）的随机种子（v1.8.0 · 模块一）。
+ *
+ * **取景器实时预览与成片合成必须用同一个值**，否则颗粒与微尘的位置对不上，
+ * 用户按快门前后会看到两张不同分布的颗粒图 —— 那正好是"所见即所得"的反面。
+ * 代价是分布不随张次变化；要"每张都不一样"就得把种子绑到曝光序号并一路穿透
+ * `FilmStage`（v1.8.0 没做，如实记在 README 里）。
+ */
+const LOOK_SEED = 1;
+
+/**
  * 相框实时预览的心跳间隔（v1.7.0 · 模块三）。
  *
  * 30 秒是"日期/地名都对得上"与"别白白耗电"之间的折中，理由写在那个 effect 的注释里。
  * 调小它没有收益：跨零点最多晚 30 秒翻页，而用户不会举着手机盯到零点。
  */
 const FRAME_PREVIEW_REFRESH_MS = 30_000;
-
-/**
- * 镂空取景窗顶部那行标签。写的是**参照画幅**（这块机器按 35mm 的视场标定），
- * 不是当前焦段 —— 当前焦段是变焦档位，读数在胶囊上，而且它每一档都在变。
- */
-const GUIDE_LABEL = '35mm';
 
 /**
  * 闪光灯的三档循环顺序：关 → 开 → 自动 → 关。
@@ -414,6 +419,15 @@ export function CameraScreen() {
    */
   const [previewClock, setPreviewClock] = useState<Date>(() => new Date());
   const [previewPlace, setPreviewPlace] = useState<ResolvedPlace | null>(null);
+  /**
+   * 底部胶囊的"唤醒信号"（v1.8.0 · 模块三）。
+   *
+   * 胶囊的自动隐藏由 `useCapsuleAutoHide` 在 `ParameterScrubBar` **内部**管，
+   * 而"用户刚点了取景器对焦"这件事只有这里知道。传一个单调递增的整数过去，
+   * 组件用 `useEffect(..., [wakeSignal])` 重新计时 —— 这是唯一不需要把 ref
+   * 从外往里塞的通道（也方便探针直接驱动）。
+   */
+  const [capsuleWake, setCapsuleWake] = useState(0);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraKey, setCameraKey] = useState(0);
   const [mountError, setMountError] = useState<string | null>(null);
@@ -652,6 +666,12 @@ export function CameraScreen() {
       placeDetail: settings.placeDetail,
       presetName: resolved.name,
       exposureIndex: exposureCount + 1,
+      /*
+       * 日期引擎（v1.8.0 · 模块四）与成片**同源**：预览里印的日期格式 / 字形 /
+       * 机位 / 荧光色，必须与洗出来那张逐字相同，否则「所见即所得」在这一行上
+       * 就是假的。它是全局设置而不是预设字段（理由见 FilmCompositor 调用点那段）。
+       */
+      dateEngine: settings.dateEngine,
     });
   }, [
     framePreviewVisible,
@@ -664,6 +684,7 @@ export function CameraScreen() {
     localeId,
     settings.watermarkLayout,
     settings.placeDetail,
+    settings.dateEngine,
     exposureCount,
   ]);
 
@@ -960,6 +981,9 @@ export function CameraScreen() {
         at: Date.now(),
       });
       setFocusSeen(true);
+      // 用户刚点了对焦：叫醒底部胶囊并重新计时（v1.8.0 · 模块三）。
+      // 放在两个 early return **之后** —— 取景器还没量出尺寸时那一击不该算数。
+      setCapsuleWake((current) => current + 1);
     },
     [interactive, previewBox.width, previewBox.height],
   );
@@ -1180,7 +1204,13 @@ export function CameraScreen() {
       const result = await processAndSaveFilmPhoto({
         photo: captured,
         frame,
-        preset: effectivePreset,
+        /*
+         * 必须是 `gradedPreset`（= `effectivePreset` + 用户拖过的色温），不是
+         * `effectivePreset`：取景器的实时滤镜与底部胶囊读数都读 `resolved`
+         * （`resolvePreset(gradedPreset)`），相册导入那条路也已经用 `gradedPreset`，
+         * 只有这里少一层色温覆盖 ⇒ 拖完色温"取景器暖了、成片没暖"。
+         */
+        preset: gradedPreset,
         stage: stageBox,
         host: filmStage.host,
         place,
@@ -1524,6 +1554,53 @@ export function CameraScreen() {
         ) : null}
 
         {/*
+          胶片色彩实时预览（v1.8.0 · 模块一）。
+
+          **位置是唯一的正解**：排在 `CameraView` 之后（排前面会被原生画面盖住），
+          排在 `ViewfinderWindow` **之前**（九宫格与四块哑光玻璃要压在滤镜之上；
+          反过来就会把构图辅助线一起染色）。
+
+          几何**一个新数都不算**：`viewfinderWindow` 就是上面挖镂空窗用的那个矩形，
+          所以滤镜层与镂空窗逐点重合。`overflow: 'hidden'` 是关键 —— 滤镜层内部是
+          绝对定位的整块叠图，不裁的话会溢出到取景器四角的控制栏上。
+
+          成片与实时预览共用 `FilmLookLayers`（`surface` 只决定要不要渲染"需要静帧
+          位图"的自叠层），两边**同一份渲染代码**，所以不会再出现"取景器里是一个
+          色调、洗出来是另一个色调"。种子也用同一个 `LOOK_SEED`：微尘与颗粒分布
+          必须与成片逐点一致，"所见即所得"优先于"每张随机换个心情"。
+        */}
+        {previewBox.width > 1 && previewBox.height > 1 ? (
+          <View
+            style={[
+              styles.liveLook,
+              {
+                left: viewfinderWindow.left,
+                top: viewfinderWindow.top,
+                width: viewfinderWindow.width,
+                height: viewfinderWindow.height,
+              },
+            ]}
+            pointerEvents="none"
+          >
+            {/*
+              实时胶片滤镜（v1.8.0 · 模块一）。
+            
+              `preset` 必须与**按快门那次**用的是同一份解析结果：拍摄走 `gradedPreset`
+              （含用户拖过的色温），而 `resolved` 就是 `resolvePreset(gradedPreset)`。
+              传 `effectivePreset` 会少一层色温覆盖 —— 用户拖完色温看到"取景器暖了、
+              洗出来还是原色"，正是这一轮要消灭的那种对不上。
+            */}
+            <FilmLookLayers
+              preset={resolved}
+              width={viewfinderWindow.width}
+              height={viewfinderWindow.height}
+              surface="live"
+              seed={LOOK_SEED}
+            />
+          </View>
+        ) : null}
+
+        {/*
           镂空取景窗是**取景器的直接子层**，故意不放进下面 `FrameSwitcher` 里。
           理由：`FrameSwitcher` 是个左右滑动的容器，镂空窗跟着它跑的话，滑到一半时
           四块玻璃的边界只盖住画幅宽度的一半，屏幕两侧会露出没被玻璃压住的实时画面 ——
@@ -1535,7 +1612,6 @@ export function CameraScreen() {
         {previewBox.width > 1 && previewBox.height > 1 ? (
           <ViewfinderWindow
             window={viewfinderWindow}
-            label={GUIDE_LABEL}
             grid={resolved.showGuide}
           />
         ) : null}
@@ -1711,6 +1787,7 @@ export function CameraScreen() {
             onFocal={handleFocalScrub}
             onExposure={handleExposureChange}
             onCycleFocal={handleCycleFocal}
+            wakeSignal={capsuleWake}
           />
         </View>
       </View>
@@ -1792,6 +1869,18 @@ export function CameraScreen() {
              * 不是给这里用的。
              */
             frameVariant={settings.frameVariant}
+            /*
+             * 日期引擎（v1.8.0 · 模块四）与胶片外观种子（v1.8.0 · 模块一）。
+             *
+             * `dateEngine` 是**全局设置**而不是预设字段：日期长得像什么与"这卷胶片
+             * 是什么性格"是两件事，混进 `presets.ts` 会让同一支卷在不同地区印出
+             * 不同格式的日期。取景器预览、成片合成、设置页三处都读它。
+             *
+             * `lookSeed` 与取景器实时预览用**同一个常量** —— 颗粒与微尘的分布要
+             * 逐点重合，否则"所见即所得"就是假的。
+             */
+            dateEngine={settings.dateEngine}
+            lookSeed={LOOK_SEED}
           />
         ) : null}
       </DevelopOverlay>
@@ -1917,6 +2006,7 @@ function createStyles(ink: ThemeInk, scheme: 'dark' | 'light') {
      * 真机实测报的"抽屉被快门栏挡住"就是 `FilmDrawer` 漏了这一格。
      */
     overlayChrome: { zIndex: 2 },
+    liveLook: { position: 'absolute', overflow: 'hidden' },
     canvas: { position: 'absolute' },
     focusCatcher: { ...fill },
     focusHint: { position: 'absolute', left: 0, right: 0, bottom: 68, alignItems: 'center' },

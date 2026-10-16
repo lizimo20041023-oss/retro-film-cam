@@ -91,8 +91,15 @@ export type PlaceDetail = 'archive' | 'full';
  */
 export type CaptureQuality = 'standard' | 'high' | 'max';
 
-/** 相框风格变体（v1.7.0）：A 经典纯净 / B 泛黄复古 / C 手绘涂鸦。 */
-export type FrameVariant = 'classic' | 'aged' | 'doodle';
+/**
+ * 相框材质变体（v1.8.0）：A 经典原白 / B 岁月暖黄 / C 暗房雅黑。
+ *
+ * v1.7.0 的 `'classic' | 'aged' | 'doodle'` 已**作废**：`'doodle'`（手绘几何贴纸）
+ * 被用户点名删除，取而代之的是三种**真实暗房卡纸材质**（配方见
+ * `constants/frameVariants.ts`）。老存储里残留的 `'classic'` / `'aged'` / `'doodle'`
+ * 由 `settingsStore` 的白名单兜底成 `'archival'` —— 白名单之外的字符串一律回默认值。
+ */
+export type FrameVariant = 'archival' | 'baryta' | 'obsidian';
 
 /**
  * 相框自带的水印偏好。
@@ -427,6 +434,20 @@ export type GradeLayer =
       /** 用原照片自身再叠一层（自叠 = 提对比度）。 */
       blendMode: BlendMode;
       opacity: number;
+      /**
+       * 高斯模糊半径（逻辑点）。RN 的 `<Image blurRadius>` 在 iOS 上是**真的**把
+       * UIImage 模糊掉（`node_modules/react-native/Libraries/Image/RCTImageView.mm:158`
+       * 的 `setBlurRadius:` → `RCTBlurredImageWithRadius`），不是即时滤镜、
+       * 也不是 `UIVisualEffectView` 那种背景采样 —— 所以它**能被 captureRef 截进成片**，
+       * 这正是微柔焦（去数码锐化）需要的那一层。
+       *
+       * ⚠️ v1.6.0 时代 `gradeLayers.ts` 顶部写着"RN 的 Image 没有 blurRadius"，
+       * 那句是错的（v1.8.0 核实并订正），别再照着它绕路。
+       */
+      blurRadius?: number;
+      /** 叠图偏移（逻辑点）。微柔焦要的"向右下 0.5px"就靠它。 */
+      offsetX?: number;
+      offsetY?: number;
     }
   | {
       kind: 'texture';
@@ -637,6 +658,95 @@ export type GeoLocale = 'zh-Hans' | 'zh-Hant' | 'en';
  */
 export type LocationMode = 'off' | 'place' | 'coords';
 
+/* ==========================================================================
+ * 4.5 全能复古日期/时间烙印引擎（v1.8.0，模块四）
+ * ========================================================================== */
+
+/**
+ * 日期格式化档（13 档，最后一个是"不烧日期"）。
+ *
+ * 每一档对应 `utils/formatTimestamp.ts` 里一条**模板串**，由那套 token 引擎渲染：
+ * 支持 `YYYY YY MM M DD D HH mm ss MMM W`，模板里可以出现任意字面量
+ * （`年` `月` `日` `.` `/` `:` 空格 `'`）并逐字输出。
+ *
+ * `MMM`（英文月份三字母）与 `W`（英文星期三字母）**刻意不跟界面语言走**：
+ * 真石英机背/点阵后背印的就是英文缩写，而且这样 13 档格式化不需要 13 组 i18n 词条。
+ */
+export type DateFormatId =
+  | 'MM_DD_YY'
+  | 'YY_MM_DD'
+  | 'DD_MM_YY'
+  | 'DAY_HH_MM'
+  | 'YY_MM_DD_TIME'
+  | 'YYYY_DOT_MM_DD'
+  | 'YYYY_SLASH_TIME'
+  | 'ENG_MMM_DD_YY'
+  | 'YYYY_MM_DD_WEEK'
+  | 'CJK_KANJI'
+  | 'EXIF_TECH'
+  | 'FRAME_DATE'
+  | 'OFF';
+
+/**
+ * 硬件视觉渲染风格（5 档）。
+ *
+ * 前两档是**手绘几何字形**：`led_7seg` 用 7 段数码管笔画、`led_dot_matrix` 用 5×7
+ * 针式圆点矩阵，两者都由纯 `View` 摆出来（不依赖任何字体、不依赖 react-native-svg），
+ * 所以任何机型、任何语言下字形都逐像素一致。后三档是文本 + 不同的机器外观。
+ */
+export type DateGlyphStyleId =
+  | 'led_7seg'
+  | 'led_dot_matrix'
+  | 'ccd_osd'
+  | 'lab_inkjet'
+  | 'archival_steel';
+
+/**
+ * 烙印机位（8 档）：画内 6 + 相纸白边 2。
+ *
+ * - `in_*` 六个机位把日期烧在**照片画面内部**，后缀是"贴哪一角 + 竖排还是横排"：
+ *   `in_bl_v` 左下竖排（90°，Dazz 经典同款）/ `in_bl_h` 左下横排 /
+ *   `in_br_h` 右下横排 / `in_br_v` 右下竖排 / `in_tr_v` 右上竖排 /
+ *   `in_cb_h` 画面底部居中横排。
+ * - `strip_*` 两个机位把日期放在**相纸白边**：`strip_split` 下巴左右分列
+ *   （左地名·右日期）、`strip_center` 居中一体式。
+ *
+ * **协同规则**（由 `FilmCompositor.planWatermark` 执行）：日期一旦印在画内，
+ * 白边下巴就**只印地名**，绝不重复印日期。
+ */
+export type DateStampSpot =
+  | 'in_bl_v'
+  | 'in_bl_h'
+  | 'in_br_h'
+  | 'in_br_v'
+  | 'in_tr_v'
+  | 'in_cb_h'
+  | 'strip_split'
+  | 'strip_center';
+
+/** 发光色（5 档）：珊瑚暖红 / 钨丝琥珀橙 / 香槟金 / 千禧绿 / 赛博青。 */
+export type DateGlowId =
+  | 'coral_red'
+  | 'classic_amber'
+  | 'warm_gold'
+  | 'ccd_green'
+  | 'cyber_cyan';
+
+/**
+ * 日期引擎的四个轴。**是全局设置，不挂在预设上** ——
+ * 它回答的是"我这台机器装了什么后背"，和装什么胶卷无关。
+ */
+export interface DateEngineConfig {
+  /** 格式化档，默认 `'MM_DD_YY'`（美式 `10  17  '26`）。 */
+  format: DateFormatId;
+  /** 字形风格，默认 `'led_7seg'`。 */
+  glyphStyle: DateGlyphStyleId;
+  /** 烙印机位，默认 `'strip_split'`（= v1.7.0 的白边下巴左右分列，升级上来视觉不变）。 */
+  spot: DateStampSpot;
+  /** 发光色，默认 `'classic_amber'`（钨丝琥珀橙 = `#FF8A00`，与 v1.6.1 同色）。 */
+  glow: DateGlowId;
+}
+
 /** 全部用户设置。**加字段必须同步改 `settingsStore.ts` 的默认值**。 */
 export interface AppSettings {
   locale: LocalePreference;
@@ -659,10 +769,15 @@ export interface AppSettings {
    */
   captureQuality: CaptureQuality;
   /**
-   * 相框风格变体（v1.7.0），默认 `'classic'`。**全局一份**，不是"每款相框各记一份"：
-   * 用户滑到"复古"是想看所有相框复古起来的样子，而不是给五款相框维护五份记忆。
+   * 相框材质变体，默认 `'archival'`。**全局一份**，不是"每款相框各记一份"：
+   * 用户滑到"暖黄"是想看所有相框暖黄起来的样子，而不是给五款相框维护五份记忆。
    */
   frameVariant: FrameVariant;
+  /**
+   * 日期烙印引擎（v1.8.0）：格式 / 字形 / 机位 / 发光色四个轴，默认值见
+   * `DateEngineConfig` 的字段注释与 `settingsStore.DEFAULT_SETTINGS`。
+   */
+  dateEngine: DateEngineConfig;
 }
 
 /** 写字机里定位这一格的状态（只影响 LCD 显示，不影响能否拍照）。 */

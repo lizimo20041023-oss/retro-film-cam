@@ -38,6 +38,14 @@
  * 引用它。文件保留是因为 `constants/zoom.ts`、`constants/lenses.ts`、
  * `hooks/usePinchZoom.ts` 的文件头都指向这里，删掉会让那几段解释失去落点。
  * 颜色已按 `useTheme()` 迁移过一次，将来要重新挂载时不用再补一遍。
+ *
+ * ─────────────────────────────────────────────────────────────────────
+ * 交互期常亮（`pointerEvents` / `onInteractionStart` / `onInteractionEnd`）
+ * ─────────────────────────────────────────────────────────────────────
+ * 参数胶囊整行会在闲置 3 秒后淡走，而"操作期间不许隐藏"的锁（引用计数）统一由
+ * `ParameterScrubBar` 持有（见 `hooks/useCapsuleAutoHide.ts`）。本组件**不持有任何
+ * 状态**，只把"手指按下/抬起"与"触摸是否穿透"报出去。将来把轨道挂进展开壳里时，
+ * 不必再往这里塞一份计时逻辑 —— 也就不会出现"两处各自计时、一处忘了清表"的泄漏。
  */
 import { memo, useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
@@ -70,6 +78,25 @@ export interface ZoomStopsProps {
   /** 整体是否可交互（没有权限 / 正在显影时为 false）。 */
   enabled?: boolean;
   onSelect: (id: string) => void;
+  /**
+   * 触摸是否穿透（默认 `'auto'`）。
+   *
+   * 为什么需要这个：档位条将来会挂在参数胶囊的展开壳里，而那一行会在闲置后淡走。
+   * 淡走时如果只把 `opacity` 调到 0，档位条仍然会吃下取景器上的"轻触对焦" ——
+   * 用户看到的是空画面，点哪儿都不该有反应，却偏偏点在了看不见的档位上。所以
+   * 可见性由 `ParameterScrubBar` 决定，**穿透与否必须能从外面传进来**。
+   */
+  pointerEvents?: 'auto' | 'none';
+  /**
+   * 手指按在档位条上 / 抬起。
+   *
+   * 为什么不用 `onPress` 代替：`onPress` 只在"真的选中了某一档"时触发（而且禁用的格子
+   * 不触发），可"手指还停在档位上"这段时间本来就不该让这一行淡走 —— 哪怕用户最后滑走
+   * 取消了。所以这里报的是**按下/抬起**这一对原始事件，刻意不掺选择语义。
+   * 锁的引用计数与超时重算由 `ParameterScrubBar` 统一负责，本组件不持有任何状态。
+   */
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
 }
 
 /** 轨道的最大宽度，以及它占屏幕宽度的比例（取小者）。 */
@@ -87,6 +114,9 @@ export const ZoomStops = memo(function ZoomStops({
   activeStopId,
   enabled = true,
   onSelect,
+  pointerEvents = 'auto',
+  onInteractionStart,
+  onInteractionEnd,
 }: ZoomStopsProps) {
   const window = useWindowDimensions();
   const theme = useTheme();
@@ -95,7 +125,7 @@ export const ZoomStops = memo(function ZoomStops({
   const trackWidth = Math.min(TRACK_MAX_WIDTH, Math.round(window.width * TRACK_WIDTH_RATIO));
 
   return (
-    <View style={styles.row}>
+    <View style={styles.row} pointerEvents={pointerEvents}>
       <View style={[styles.track, { width: trackWidth }]}>
         {stops.map((stop, index) => {
           const active = stop.id === activeStopId;
@@ -107,6 +137,12 @@ export const ZoomStops = memo(function ZoomStops({
               accessibilityLabel={stop.a11y}
               accessibilityState={{ disabled, selected: active }}
               disabled={disabled}
+              onPressIn={() => {
+                onInteractionStart?.();
+              }}
+              onPressOut={() => {
+                onInteractionEnd?.();
+              }}
               onPress={() => {
                 onSelect(stop.id);
               }}

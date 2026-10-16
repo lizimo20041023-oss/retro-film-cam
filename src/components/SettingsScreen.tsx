@@ -10,7 +10,9 @@
  *
  * 用整屏 `ScrollView` 而不是 `View`：iPhone SE 上"语言 6 行 + 定位 4 行 + 页脚"
  * 会超出一屏，而设置界面**绝不能有滚不动的选项**。本次加了三个分区之后更长了，
- * v1.7.0 的画质分区又添了 3 行 —— 这也是那个 `ScrollView` 至今没被换成 `View` 的原因。
+ * v1.7.0 的画质分区又添了 3 行，v1.8.0 的日期引擎区一次添了 31 行
+ * （13 格式 + 5 字形 + 8 机位 + 5 发光）—— 这也是那个 `ScrollView` 至今
+ * 没被换成 `View` 的原因。它是本屏最长的一段，"能滚"在这里不是方便而是必需。
  *
  * ── 为什么所有"拍之前要定好"的参数都收到这里 ──────────────────────────────
  * 颗粒原本是取景器底部的一条横向滑轨。取景时最不该做的事就是分心去调颗粒：
@@ -20,7 +22,14 @@
  * ── 排序说明 ──────────────────────────────────────────────────────────────
  * 顺序 = 「越常改的越靠上」+「有从属关系的必须相邻」：
  * 语言 → 定位水印 → 地名详细度（只在"地名"档下起作用，所以紧贴其后）
- * → 水印版式（水印长什么样）→ 画质（成片有多大 · v1.7.0）→ 颗粒（成像质感）→ 页脚。
+ * → 水印版式（水印长什么样）→ 日期引擎（日期自己长什么样 · v1.8.0）
+ * → 画质（成片有多大 · v1.7.0）→ 颗粒（成像质感）→ 页脚。
+ *
+ * 日期引擎为什么紧跟水印版式、而不是另起一段更靠下：这两段说的是同一件事的两半
+ * —— 版式决定"地名与日期怎么排"，日期引擎决定"日期本身的格式/字形/机位/发光"。
+ * 更要紧的是机位会**反作用**于版式：一旦选画内机位，日期就从版式里被摘出去，
+ * 那条白边只剩地名（规则落在 `FilmCompositor.planWatermark`）。隔开摆会让
+ * "我只换了机位、版式怎么跟着变了"变成一道要用户自己拼的谜。
  */
 import { useCallback, useMemo } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -31,11 +40,16 @@ import type { Theme } from '../constants/theme';
 import { CAPTURE_QUALITIES, captureQualityCapNote } from '../constants/captureQuality';
 import { GRAIN_LEVELS } from '../constants/grain';
 import { useI18n } from '../i18n';
+import type { MessageKey } from '../i18n';
 import { LOCALES } from '../i18n/locales';
 import { useSettings } from '../hooks/useSettings';
 import { LOCATION_FAILURE_COPY } from '../utils/locationStamp';
 import type {
   CaptureQuality,
+  DateFormatId,
+  DateGlowId,
+  DateGlyphStyleId,
+  DateStampSpot,
   GeoLocale,
   GrainLevelId,
   LocalePreference,
@@ -93,6 +107,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
     setGrainLevel,
     setGeoLocale,
     setCaptureQuality,
+    setDateEngine,
   } = useSettings();
 
   /**
@@ -128,7 +143,18 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   const placeDetailDisabled = settings.locationMode !== 'place';
 
   /**
-   * 下面七个 handler 都只做两件事：一次选择触感 + 落设置。
+   * 日期引擎的当前整份配置。
+   *
+   * 为什么整份取出来：`setDateEngine` 只收**完整的** `DateEngineConfig`，
+   * 不接受部分更新（见 `useSettings` 的注释）—— 单轴改动一律写成
+   * `setDateEngine({ ...dateEngine, format: next })`。抽一个局部变量，
+   * 四个 handler 的依赖数组也就只有 `[dateEngine, setDateEngine]` 这一种写法，
+   * 不会出现"有人忘了把新轴加进依赖"的漏。
+   */
+  const dateEngine = settings.dateEngine;
+
+  /**
+   * 下面十一个 handler 都只做两件事：一次选择触感 + 落设置。
    *
    * 为什么都走 `useCallback`：`OptionRow` 是纯展示组件，但它在 `map` 里被创建，
    * handler 每次渲染换新会让每一行都白重渲染一次；也顺便让依赖关系显式可见。
@@ -174,6 +200,39 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
       setWatermarkLayout(next);
     },
     [setWatermarkLayout],
+  );
+
+  const handleDateFormat = useCallback(
+    (next: DateFormatId): void => {
+      void Haptics.selectionAsync();
+      // 整份传：四轴共用一条存储记录，部分更新会让"没动的那三轴"落回缺省值
+      setDateEngine({ ...dateEngine, format: next });
+    },
+    [dateEngine, setDateEngine],
+  );
+
+  const handleDateGlyph = useCallback(
+    (next: DateGlyphStyleId): void => {
+      void Haptics.selectionAsync();
+      setDateEngine({ ...dateEngine, glyphStyle: next });
+    },
+    [dateEngine, setDateEngine],
+  );
+
+  const handleDateSpot = useCallback(
+    (next: DateStampSpot): void => {
+      void Haptics.selectionAsync();
+      setDateEngine({ ...dateEngine, spot: next });
+    },
+    [dateEngine, setDateEngine],
+  );
+
+  const handleDateGlow = useCallback(
+    (next: DateGlowId): void => {
+      void Haptics.selectionAsync();
+      setDateEngine({ ...dateEngine, glow: next });
+    },
+    [dateEngine, setDateEngine],
   );
 
   const handleCaptureQuality = useCallback(
@@ -339,7 +398,79 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
           ))}
         </View>
 
-        {/* ⑥ 画质（v1.7.0 · 模块一）：成片长边像素。 */}
+        {/* ⑥ 日期引擎（v1.8.0 · 模块五）。四个选择器 = 日期的四个轴，顺序按
+            「先决定印什么 → 再决定怎么长 → 最后决定印在哪、发什么光」：
+            格式 → 字形 → 机位 → 发光色。
+            不把这四组拆成带小标题的四段：小标题要新增四条 i18n 文案，而这四组
+            的标签本身已经自解释（格式行直接显示样例串、机位行写"画内左下 · 竖排"、
+            发光行写颜色名），再多一层标题只是把这一屏拉得更长。 */}
+        <SectionHeading label={t('settings.dateEngine.title')} />
+
+        {/* 轴一 · 格式：决定日期**印什么**（13 档，最后一档是"关闭"）。
+            每一行的标签就是这一档的样例串（`settings.dateEngine.format.*` 里
+            存的是样例而不是名字）—— 日期烙印这种东西，看样例比看"年月日"这种
+            档位名快得多，而且样例本身就是模板渲染出来的真实结果。 */}
+        <View style={styles.group}>
+          {DATE_FORMAT_ROWS.map((row) => (
+            <OptionRow
+              key={row.format}
+              label={t(row.labelKey)}
+              selected={dateEngine.format === row.format}
+              onPress={() => handleDateFormat(row.format)}
+              a11yLabel={t('settings.dateEngine.a11y.format', { label: t(row.labelKey) })}
+            />
+          ))}
+        </View>
+
+        {/* 轴二 · 字形：决定日期**怎么长**（5 档点阵/数码管/印刷体）。
+            这一档是"整个日期引擎"里唯一会改变**字号设计像素**的轴
+            （`DATE_DESIGN_PX`，见 `constants/canvasBase.ts`）—— 不过它只改字形档，
+            不改"字号跟着画布宽等比锁死"这条不变式。 */}
+        <View style={styles.group}>
+          {DATE_GLYPH_ROWS.map((row) => (
+            <OptionRow
+              key={row.glyphStyle}
+              label={t(row.labelKey)}
+              selected={dateEngine.glyphStyle === row.glyphStyle}
+              onPress={() => handleDateGlyph(row.glyphStyle)}
+              a11yLabel={t('settings.dateEngine.a11y.glyph', { label: t(row.labelKey) })}
+            />
+          ))}
+        </View>
+
+        {/* 轴三 · 机位：决定日期**印在哪**（画内 6 档 + 白边 2 档）。
+            顺序 = 先画内、后白边；画内那 6 档按"左下 → 右下 → 右上 → 底部居中"排，
+            与 `DateStampSpot` 的枚举顺序一致。标签里那句"竖排"是真的 90° 旋转，
+            不是换行 —— 所以这一档的选项文字本身也是唯一需要带方向的标签。 */}
+        <View style={styles.group}>
+          {DATE_SPOT_ROWS.map((row) => (
+            <OptionRow
+              key={row.spot}
+              label={t(row.labelKey)}
+              selected={dateEngine.spot === row.spot}
+              onPress={() => handleDateSpot(row.spot)}
+              a11yLabel={t('settings.dateEngine.a11y.spot', { label: t(row.labelKey) })}
+            />
+          ))}
+        </View>
+
+        {/* 轴四 · 发光色：决定日期的灯丝发什么颜色的光（5 档）。
+            放在机位之后，因为这四轴里只有它和"印在哪"无关、纯粹是观感，
+            顺序上排最后也就最不容易和"我要它印在哪儿"混起来。 */}
+        <View style={styles.group}>
+          {DATE_GLOW_ROWS.map((row) => (
+            <OptionRow
+              key={row.glow}
+              label={t(row.labelKey)}
+              selected={dateEngine.glow === row.glow}
+              onPress={() => handleDateGlow(row.glow)}
+              a11yLabel={t('settings.dateEngine.a11y.glow', { label: t(row.labelKey) })}
+            />
+          ))}
+        </View>
+        <Text style={styles.hint}>{t('settings.dateEngine.hint')}</Text>
+
+        {/* ⑦ 画质（v1.7.0 · 模块一）：成片长边像素。 */}
         <SectionHeading label={t('settings.quality.title')} />
         <View style={styles.group}>
           {CAPTURE_QUALITIES.map((spec) => (
@@ -364,7 +495,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
         */}
         <Text style={styles.hint}>{captureQualityCapNote(settings.captureQuality, t)}</Text>
 
-        {/* ⑦ 颗粒。从取景器底部那条横向滑轨搬过来的（见文件头）。 */}
+        {/* ⑧ 颗粒。从取景器底部那条横向滑轨搬过来的（见文件头）。 */}
         <SectionHeading label={t('settings.grain.title')} />
         <View style={styles.group}>
           {GRAIN_LEVELS.map((level) => (
@@ -438,6 +569,66 @@ const WATERMARK_ROWS: readonly {
   { layout: 'stacked', labelKey: 'settings.watermark.stacked' },
   { layout: 'centered', labelKey: 'settings.watermark.centered' },
   { layout: 'dateOnly', labelKey: 'settings.watermark.dateOnly' },
+];
+
+/**
+ * 日期引擎四张行的表（v1.8.0 · 模块五）。
+ *
+ * 为什么这四张表的 `labelKey` 写成 `MessageKey` 而不是像上面几张表那样逐条列出
+ * 字面量联合：格式一档就有 13 行，四张表加起来 31 行，逐条写等于把同一份枚举
+ * 抄第二遍 —— 抄漏一条编译器不会报，而是让那一行在界面上变成空白。
+ * `MessageKey` 本身就是"所有键的字面量联合"，写错键名照样过不了编译，
+ * 保护一点没少。
+ *
+ * 顺序一律 = `types/index.ts` 里那个枚举的声明顺序，不另排一套：
+ * 界面顺序与枚举顺序一致，改档位时只需要看一个地方。
+ */
+const DATE_FORMAT_ROWS: readonly { format: DateFormatId; labelKey: MessageKey }[] = [
+  { format: 'MM_DD_YY', labelKey: 'settings.dateEngine.format.MM_DD_YY' },
+  { format: 'YY_MM_DD', labelKey: 'settings.dateEngine.format.YY_MM_DD' },
+  { format: 'DD_MM_YY', labelKey: 'settings.dateEngine.format.DD_MM_YY' },
+  { format: 'DAY_HH_MM', labelKey: 'settings.dateEngine.format.DAY_HH_MM' },
+  { format: 'YY_MM_DD_TIME', labelKey: 'settings.dateEngine.format.YY_MM_DD_TIME' },
+  { format: 'YYYY_DOT_MM_DD', labelKey: 'settings.dateEngine.format.YYYY_DOT_MM_DD' },
+  { format: 'YYYY_SLASH_TIME', labelKey: 'settings.dateEngine.format.YYYY_SLASH_TIME' },
+  { format: 'ENG_MMM_DD_YY', labelKey: 'settings.dateEngine.format.ENG_MMM_DD_YY' },
+  { format: 'YYYY_MM_DD_WEEK', labelKey: 'settings.dateEngine.format.YYYY_MM_DD_WEEK' },
+  { format: 'CJK_KANJI', labelKey: 'settings.dateEngine.format.CJK_KANJI' },
+  { format: 'EXIF_TECH', labelKey: 'settings.dateEngine.format.EXIF_TECH' },
+  { format: 'FRAME_DATE', labelKey: 'settings.dateEngine.format.FRAME_DATE' },
+  // 关掉排在最后：它不是一个"日期长相"，而是让上面十二档全部失效的开关，
+  // 混在中间会让用户误以为它也是一种格式。
+  { format: 'OFF', labelKey: 'settings.dateEngine.format.OFF' },
+];
+
+/** 字形五档：从最"电子的"到最"印刷的"。 */
+const DATE_GLYPH_ROWS: readonly { glyphStyle: DateGlyphStyleId; labelKey: MessageKey }[] = [
+  { glyphStyle: 'led_7seg', labelKey: 'settings.dateEngine.glyph.led_7seg' },
+  { glyphStyle: 'led_dot_matrix', labelKey: 'settings.dateEngine.glyph.led_dot_matrix' },
+  { glyphStyle: 'ccd_osd', labelKey: 'settings.dateEngine.glyph.ccd_osd' },
+  { glyphStyle: 'lab_inkjet', labelKey: 'settings.dateEngine.glyph.lab_inkjet' },
+  { glyphStyle: 'archival_steel', labelKey: 'settings.dateEngine.glyph.archival_steel' },
+];
+
+/** 机位八档：画内六档在前（左下 → 右下 → 右上 → 底部居中），白边两档在后。 */
+const DATE_SPOT_ROWS: readonly { spot: DateStampSpot; labelKey: MessageKey }[] = [
+  { spot: 'in_bl_v', labelKey: 'settings.dateEngine.spot.in_bl_v' },
+  { spot: 'in_bl_h', labelKey: 'settings.dateEngine.spot.in_bl_h' },
+  { spot: 'in_br_h', labelKey: 'settings.dateEngine.spot.in_br_h' },
+  { spot: 'in_br_v', labelKey: 'settings.dateEngine.spot.in_br_v' },
+  { spot: 'in_tr_v', labelKey: 'settings.dateEngine.spot.in_tr_v' },
+  { spot: 'in_cb_h', labelKey: 'settings.dateEngine.spot.in_cb_h' },
+  { spot: 'strip_split', labelKey: 'settings.dateEngine.spot.strip_split' },
+  { spot: 'strip_center', labelKey: 'settings.dateEngine.spot.strip_center' },
+];
+
+/** 发光五色：枚举顺序（珊瑚红 → 钨丝琥珀 → 香槟金 → 千禧绿 → 赛博青）。 */
+const DATE_GLOW_ROWS: readonly { glow: DateGlowId; labelKey: MessageKey }[] = [
+  { glow: 'coral_red', labelKey: 'settings.dateEngine.glow.coral_red' },
+  { glow: 'classic_amber', labelKey: 'settings.dateEngine.glow.classic_amber' },
+  { glow: 'warm_gold', labelKey: 'settings.dateEngine.glow.warm_gold' },
+  { glow: 'ccd_green', labelKey: 'settings.dateEngine.glow.ccd_green' },
+  { glow: 'cyber_cyan', labelKey: 'settings.dateEngine.glow.cyber_cyan' },
 ];
 
 function SectionHeading({ label }: { label: string }) {

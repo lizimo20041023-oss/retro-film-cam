@@ -21,8 +21,11 @@
  *   1. tile 必须**大于照片窗口**（窗口最大约 352×466 pt）才不会露出重复花纹 → 512 起步；
  *   2. 想得到可见的颗粒，脚本里的 σ 和预设里的 opacity 都要按"放大后掉 65%"来补偿；
  *   3. 别指望 1 像素级的细颗粒 —— 那在这个架构下必然被插值抹平（要更细只能换渲染技术栈）；
- *   4. 正因为 1 像素高频会被抹平，`grain.png` 才做成**多尺度团簇**（细颗粒 + 2×2 + 4×4
- *      盒平均叠加）：结块的那部分在插值后留得下来，看起来才是银盐团簇而不是电子沙沙声。
+ *   4. 正因为 1 像素高频会被抹平，`grain.png` 才做成**双尺度团簇**（细颗粒 σ≈0.55 +
+ *      结块 σ≈1.6 两条带限噪声叠加，整体再上采样 1.4× 并 0.7px 高斯微模糊）：
+ *      结块的那部分在插值后留得下来，看起来才是银盐团簇而不是电子沙沙声。
+ *      v1.8.0 之前那版是 2×2 / 4×4 盒平均叠加，对比度只有 σ≈0.23，
+ *      叠出来的颗粒幅度约为 0.02~0.035，肉眼几乎看不见 —— 这就是这一轮重烤的原因。
  */
 import type { TextureId, TextureSpec } from '../types';
 
@@ -33,7 +36,7 @@ export const TEXTURES: Record<TextureId, TextureSpec> = {
     // 512×512：比照片窗口（最大约 352×466 pt）大 → 完全不重复
     source: require('../../assets/textures/grain.png'),
     defaultResizeMode: 'repeat',
-    note: '单色颗粒 tile（512×512 8 位灰度）：多尺度团簇噪声，围绕中灰 128、σ≈59，且三通道恒等 → 只改亮度、绝不出彩噪。平铺铺满画面，用 overlay 混合。tile 越大越不会看出重复。',
+    note: '单色颗粒 tile（512×512 8 位灰度）：双尺度团簇噪声（细颗粒 σ≈0.55 + 结块 σ≈1.6 两条带限噪声叠加），围绕中灰 128、σ≈66（归一化 0.26），且三通道恒等 → 只改亮度、绝不出彩噪。烘焙期已做完 1.4× 上采样 + 0.7px 高斯微模糊（RN 的 Image 没有逐像素滤镜，颗粒的"放大 + 微糊"只能在贴图里做），并且用 FFT + 周期重采样保证无缝可平铺。用 overlay 混合，平铺铺满画面；tile 越大越不会看出重复。',
   },
   dust: {
     id: 'dust',
@@ -47,14 +50,14 @@ export const TEXTURES: Record<TextureId, TextureSpec> = {
     name: '暗角',
     source: require('../../assets/textures/vignette.png'),
     defaultResizeMode: 'stretch',
-    note: '从中心透明 → 边缘纯黑的径向渐变，拉伸铺满，用 multiply 压暗四角。',
+    note: '从中心透明 → 边缘纯黑的径向渐变，拉伸铺满，用 overlay 压暗四角。v1.8.0 从 multiply 改过来：multiply 会把纯白压成灰（白雾来源之一），而 overlay(1, cs) = 1 对纯白一个像素都不动。',
   },
   lightLeak: {
     id: 'lightLeak',
     name: '漏光',
     source: require('../../assets/textures/light-leak.png'),
     defaultResizeMode: 'stretch',
-    note: '右上角暖色光晕，拉伸铺满，用 screen 提亮。preset 的 lightLeakFlip 可左右翻转换边。',
+    note: '右上角暖色光晕，拉伸铺满，用 screen 提亮。v1.8.0 重烤：80% 像素三通道全 ≤0.02（= screen 中性）、meanLum 0.082，只有角部一条暖橙光；层 opacity 由引擎夹在 ≤0.10，以免整幅被提亮。preset 的 lightLeakFlip 可左右翻转换边。',
   },
 };
 

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 合成视图 —— 整个 App 的"显影"画面，同时也是 `captureRef` 的截图目标。
  *
  * 绘制顺序（也就是最终成片的图层顺序）：
@@ -34,20 +34,25 @@ import type { StyleProp, TextStyle, ViewStyle } from 'react-native';
 import ViewShot from 'react-native-view-shot';
 import type { ViewShotRef } from 'react-native-view-shot';
 import { frameSkinSeedOf } from '../constants/frames';
-import { textureSource } from '../constants/textures';
+import {
+  dateEngineFontPx,
+  dateEngineTextWidth,
+  formatWithDateEngine,
+  shouldStampDate,
+  stampsInsidePhoto,
+} from '../constants/dateEngine';
 import type { LocaleId } from '../i18n/types';
 import type {
+  DateEngineConfig,
   FilmStageInput,
   FrameLayout,
   FrameSpec,
   FrameVariant,
-  GradeLayer,
   PlaceDetail,
   ResolvedPlace,
   ResolvedTimestampConfig,
   WatermarkLayout,
 } from '../types';
-import { formatQuartzDate } from '../utils/formatTimestamp';
 import { compactPlace, formatResolvedPlace } from '../utils/placeNames';
 import { planCapture } from '../utils/captureOptions';
 import {
@@ -55,12 +60,16 @@ import {
   formatExposureCode,
   frameOrientationOfLayout,
   frameSourceOf,
+  resolveDateSpot,
   shouldCompactPlaceText,
+  splitGutterOf,
   splitPlaceAvailableWidth,
 } from '../utils/geometry';
-import type { WatermarkQuartz } from '../utils/geometry';
-import { buildGradeLayers } from '../utils/gradeLayers';
+import type { DateSpotPlacement, WatermarkQuartz } from '../utils/geometry';
+import { DEFAULT_SETTINGS } from '../utils/settingsStore';
 import { DateStamp } from './DateStamp';
+import { glyphHeight } from './DateGlyphs';
+import { FilmLookLayers } from './FilmLookLayers';
 import { FrameSkin } from './FrameSkin';
 
 export interface FilmCompositorProps {
@@ -80,6 +89,27 @@ export interface FilmCompositorProps {
    * 取景器预览与成片共用同一个 `FrameSkin`，所以两边长得一样。
    */
   frameVariant?: FrameVariant;
+  /**
+   * 日期引擎（v1.8.0 · 模块四）：格式 / 字形 / 机位 / 发光色。
+   *
+   * **不传 = `DEFAULT_SETTINGS.dateEngine`**（`MM_DD_YY` · `led_7seg` · `strip_split` ·
+   * `classic_amber` = v1.7.0 观感），老调用方（`GalleryScreen` 的导入链路、
+   * 探针里的裸调用）因此一行不用改。
+   *
+   * ⚠️ 缺省**必须**取 `DEFAULT_SETTINGS.dateEngine` 而不是在这里再写一份字面量：
+   * 设置页写进去的是那一个对象，两处各写一份迟早会漂（漂了的表现是"设置里选了
+   * 新机位、洗出来还是老位置"，而且只有真机点一遍才发现）。`CameraScreen` 是
+   * 正常管线，它一直显式传，缺省只服务老调用方。
+   */
+  dateEngine?: DateEngineConfig;
+  /**
+   * 胶片外观种子（v1.8.0 · 模块一）：颗粒 / 微尘的分布。
+   *
+   * 取景器实时预览与成片**必须**用同一个值（`CameraScreen` 的 `LOOK_SEED`），
+   * 否则"所见即所得"就是假的 —— 用户会看到取景器里的颗粒和洗出来的对不上。
+   * 不传 = `0`（老调用方的确定性兜底：同一支卷永远同一套纹理，不用 `Math.random()`）。
+   */
+  lookSeed?: number;
   style?: StyleProp<ViewStyle>;
 }
 
@@ -141,6 +171,15 @@ export interface WatermarkPlanInput {
   presetName: string;
   /** 这一卷拍到第几张（1 起数）。没有就只印到 `· 35MM` 为止。 */
   exposureIndex?: number;
+  /**
+   * 日期引擎（v1.8.0 · 模块四）：决定日期的**文字**（`format`）、**字号**（`glyphStyle`）、
+   * **落点**（`spot`）与**发光色**（`glow`）。
+   *
+   * 为什么日期串也归它管：v1.7.0 用的是写死的石英字模 `'YY  MM  DD`，
+   * 而引擎的 13 档格式里有 `YYYY.MM.DD` / `YYYY年M月D日` 这种七段管画不出来的串 ——
+   * "格式"与"字形"必须同进同退，否则会出现"选了汉字格式、画出来还是一串数字"。
+   */
+  dateEngine: DateEngineConfig;
 }
 
 /*
@@ -158,15 +197,33 @@ export interface WatermarkPlanInput {
  * 地名比日期小一档（几何那边已经算好 0.62 倍），墨色也更淡。
  */
 export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
-  const { layout, frame, timestamp, capturedAt, locationText, place, locale } = input;
+  const { layout, frame, timestamp, capturedAt, locationText, place, locale, dateEngine } = input;
 
   /*
-    日期走**石英字模** `'YY  MM  DD`。
+    日期走**日期引擎**（v1.8.0 · 模块四）。
+
     ⚠️ 行为变更：`preset.timestamp.format` 不再参与**成片水印** ——
     七段数码管只能画 0-9 和引号 / 空格 / 小数点这几个窄格，`'YYYY.MM.DD'` 那种掩码画不出来。
     相机页 LCD 上的日期预览仍然用 `formatTimestamp(date, preset.timestamp.format)`，两者互不影响。
+    现在这条格式来自 `settings.dateEngine.format`（13 档，见 `constants/dateEngine.ts`），
+    它在取景器预览、成片、设置页三处是**同一个值**，所以才不会再出现"设置里换了格式、
+    洗出来还是老的"。
   */
-  const dateText = timestamp.enabled ? formatQuartzDate(capturedAt) : '';
+  const engineText = timestamp.enabled ? formatWithDateEngine(capturedAt, dateEngine.format) : '';
+  const hasDate = shouldStampDate(engineText);
+  /*
+   * 画内机位（`in_*` 六档）：日期**不属于白边那一行**了 —— 合成层把它画进照片窗口，
+   * 落点由 `resolveDateSpot()` 算（见下面的 `planInPhotoDate`）。
+   *
+   * 所以这里把日期**从版式里摘掉**，而不是"照排然后不画"：`split` 版式里日期那一栏
+   * 的宽度（`dateStampWidth` 算出来的整块）本来是要从地名嘴里扣掉的，
+   * 摘掉之后地名才能拿回整条宽度 —— 否则用户把日期挪进画内，地名反而被精简了一档，
+   * 而它旁边根本没有东西再跟它抢位置。
+   *
+   * 这也正是"白边下巴只印地名"那条规则的落点：画内机位下，白边这一层只排地名 / 代号。
+   */
+  const dateInPhoto = hasDate && stampsInsidePhoto(dateEngine.spot);
+  const dateText = dateInPhoto ? '' : engineText;
   /*
     有结构就用结构按**当前界面语言**重排（切语言后旧照片也能重排）。
     `locationText` 只是向后兼容的兜底：相机页现在一律传 `place`
@@ -208,6 +265,7 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
     locale,
     input.watermarkLayout,
     codeText,
+    dateEngine.glyphStyle,
   );
 
   /*
@@ -240,7 +298,11 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
     const placeLine = plan.lines.find((line) => line.kind === 'place');
     const dateQuartzWidth = plan.lines.find((line) => line.kind === 'date')?.quartz?.width;
     if (placeLine !== undefined && dateQuartzWidth !== undefined) {
-      const available = splitPlaceAvailableWidth(plan.region.width, dateQuartzWidth);
+      const available = splitPlaceAvailableWidth(
+        plan.region.width,
+        dateQuartzWidth,
+        splitGutterOf(layout.width),
+      );
       if (
         shouldCompactPlaceText(
           placeLine.text,
@@ -265,6 +327,7 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
             locale,
             input.watermarkLayout,
             codeText,
+            dateEngine.glyphStyle,
           );
         }
       }
@@ -301,6 +364,79 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
 }
 
 /* ==========================================================================
+ * 一之二、画内机位（日期印进照片里）
+ * ========================================================================== */
+
+/** 画内日期的落点结果。 */
+export interface InPhotoDatePlan {
+  /** 日期块参数：与白边路径**同一份**算术算出来的（见下面的注释）。 */
+  quartz: WatermarkQuartz;
+  /** 墨色（已按锚点 / 墨色解析好，直接用）。 */
+  color: string;
+  /** `geometry.resolveDateSpot()` 算好的盒子与内缩后的外接矩形。 */
+  placement: DateSpotPlacement;
+}
+
+/**
+ * 画内机位（`in_bl_v` / `in_bl_h` / `in_br_h` / `in_br_v` / `in_tr_v` / `in_cb_h`）
+ * 的日期落点。白边两档（`strip_*`）或这次不烧日期时返回 `null`。
+ *
+ * 为什么要单独一个函数、而不是塞进 `planWatermark` 的返回值：
+ * `planWatermark` 返回的是"白边那一行要画的字"（`WatermarkPiece[]`），而画内日期
+ * **不排在文档流里** —— 它的坐标是 `resolveDateSpot` 按照片窗口算出来的绝对盒子。
+ * 两者的坐标空间不同，混进同一个数组会让渲染层必须靠"有没有 quartz"去猜用哪套坐标。
+ *
+ * ⚠️ 画内日期**不缩字号**：贴边机位放不下时由 `resolveDateSpot` 负责换位置 / 退到白边
+ * （`placement.degraded === true`），"塞不下就缩小"会让日期像素高不再恒定 ——
+ * 那正是 v1.8.0 模块四要消灭的东西。
+ */
+export function planInPhotoDate(input: WatermarkPlanInput): InPhotoDatePlan | null {
+  const { layout, frame, timestamp, capturedAt, locale, dateEngine } = input;
+  const text = timestamp.enabled ? formatWithDateEngine(capturedAt, dateEngine.format) : '';
+  if (!shouldStampDate(text) || !stampsInsidePhoto(dateEngine.spot)) {
+    return null;
+  }
+
+  /*
+   * 日期块的宽度 / 字号 / 字距 / 阴影**不在这里另算**，而是借道整版排版的 `dateOnly`
+   * 版式取那一行 —— 与白边路径同一份 `dateStampWidth` 算术，
+   * 所以"同一个日期换个机位就换个大小 / 换个字距"在结构上不可能发生。
+   */
+  const plan = computeWatermarkPlan(
+    layout,
+    timestamp,
+    frame,
+    '',
+    text,
+    locale,
+    'dateOnly',
+    '',
+    dateEngine.glyphStyle,
+  );
+  const line = plan.lines.find((entry) => entry.kind === 'date');
+  if (line?.quartz === undefined) {
+    return null;
+  }
+
+  /*
+   * 盒高必须与 `DateStamp` 真正渲染出来的高度**逐点相等** —— `glyphHeight` 是字形层
+   * 唯一的高度来源，这里跟着它取，竖排机位旋转 90° 之后的外接矩形才不会差一截
+   * （差一截的表现是"贴边的竖排日期压出了照片窗口"，而 `resolveDateSpot` 会以为还放得下）。
+   */
+  const fontPx = dateEngineFontPx(dateEngine.glyphStyle, layout.width);
+  const boxHeight = glyphHeight(dateEngine.glyphStyle, fontPx);
+  const inset = Math.max(2, Math.round(layout.width * timestamp.insetRatio));
+  const placement = resolveDateSpot(
+    dateEngine.spot,
+    layout,
+    { width: line.quartz.width, height: boxHeight },
+    inset,
+  );
+
+  return { quartz: line.quartz, color: line.color, placement };
+}
+
+/* ==========================================================================
  * 二、渲染
  * ========================================================================== */
 
@@ -331,7 +467,17 @@ export function FilmCompositor({
   onLayout,
   onImageLoad,
   timestampFontFamily,
-  frameVariant = 'classic',
+  frameVariant = 'archival',
+  /*
+   * 日期引擎缺省 = 设置层那一份（**不是**再写一遍字面量）：老调用方（导入链路、
+   * 探针）一行不改就和 v1.7.0 逐像素一致，而设置页与成片永远是同一个对象。
+   */
+  dateEngine = DEFAULT_SETTINGS.dateEngine,
+  /*
+   * 外观种子缺省 0：老调用方拿到的仍然是一套**确定**的颗粒 / 微尘分布
+   * （绝不用 `Math.random()` 兜底 —— 那会让同一张照片每次显影都不一样）。
+   */
+  lookSeed = 0,
   style,
 }: FilmCompositorProps) {
   const { layout, preset, frame, rawUri, capturedAt } = stage;
@@ -346,9 +492,6 @@ export function FilmCompositor({
   const overlayOpacity = overlayOpacityOf(stage.overlayOpacity);
   const windowRect = layout.window;
 
-  // 调色层：纯函数算出来的声明式图层，渲染层只按 kind 分发
-  const layers = useMemo(() => buildGradeLayers(preset), [preset]);
-
   // 截图尺寸：预设的 captureLongEdge 决定成片长边有多少像素
   const captureOptions = useMemo(
     () =>
@@ -360,24 +503,30 @@ export function FilmCompositor({
     [layout.width, layout.height, preset.captureLongEdge],
   );
 
-  const pieces = useMemo(
-    () =>
-      planWatermark({
-        layout,
-        frame,
-        timestamp: preset.timestamp,
-        capturedAt,
-        locationText: typeof stage.locationText === 'string' ? stage.locationText : '',
-        place: stage.place ?? null,
-        // 宿主没给语言时按简体中文渲染。宁可有一个确定的行为，
-        // 也不要出现"英文界面下地名是中文"这种半对的状态。
-        locale: stage.locale ?? 'zh-Hans',
-        watermarkLayout: stage.watermarkLayout ?? 'split',
-        placeDetail: stage.placeDetail ?? 'archive',
-        // 关闭定位时印摄影代号：代号取预设名，第几张取 `exposureIndex`（1 起数）
-        presetName: preset.name,
-        exposureIndex: stage.exposureIndex,
-      }),
+  /*
+   * 排版的输入先收成一个对象，再由**两个**纯函数消费：
+   * - `planWatermark` → 白边那一行的字（地名 / 代号，画内机位下日期已被摘掉）；
+   * - `planInPhotoDate` → 画内机位的日期盒子（白边机位下返回 `null`）。
+   * 两者共用同一份输入与同一份算术，所以"日期字号 / 字距在两处对不上"不可能发生。
+   */
+  const watermarkInput = useMemo<WatermarkPlanInput>(
+    () => ({
+      layout,
+      frame,
+      timestamp: preset.timestamp,
+      capturedAt,
+      locationText: typeof stage.locationText === 'string' ? stage.locationText : '',
+      place: stage.place ?? null,
+      // 宿主没给语言时按简体中文渲染。宁可有一个确定的行为，
+      // 也不要出现"英文界面下地名是中文"这种半对的状态。
+      locale: stage.locale ?? 'zh-Hans',
+      watermarkLayout: stage.watermarkLayout ?? 'split',
+      placeDetail: stage.placeDetail ?? 'archive',
+      // 关闭定位时印摄影代号：代号取预设名，第几张取 `exposureIndex`（1 起数）
+      presetName: preset.name,
+      exposureIndex: stage.exposureIndex,
+      dateEngine,
+    }),
     [
       layout,
       frame,
@@ -393,8 +542,12 @@ export function FilmCompositor({
       // `exposureIndex`"，那是因为当时 `planWatermark` 既不读它、依赖表里也没有它 ——
       // 少了这一项，连拍第二张起代号里的 `EXP.xx` 就不会重算。
       stage.exposureIndex,
+      dateEngine,
     ],
   );
+
+  const pieces = useMemo(() => planWatermark(watermarkInput), [watermarkInput]);
+  const inPhotoDate = useMemo(() => planInPhotoDate(watermarkInput), [watermarkInput]);
 
   return (
     <ViewShot
@@ -440,15 +593,33 @@ export function FilmCompositor({
             fadeDuration={0}
           />
         ) : null}
-        {layers.map((layer) => (
-          <GradeLayerView
-            key={layer.key}
-            layer={layer}
-            rawUri={rawUri}
-            photoFit={frame.photoFit === 'contain' ? 'contain' : 'cover'}
-            onImageLoad={onImageLoad}
-          />
-        ))}
+        {/*
+          调色 / 质感 / 光学管线（v1.8.0）：**整条交给 `FilmLookLayers`**。
+
+          以前这里是自己 `layers.map(GradeLayerView)`，那条分支只认 `kind`，画不出
+          `blurRadius`（微柔焦）与 `offsetX/offsetY`（真泛光），`photo` 层也不挂 `onLoad`。
+          结果是"预设里配了柔焦 / 泛光，成片上一点变化都没有"，而且
+          `countStageImages()` 按 `2 + texture + photo` 开的等待门会少一张图。
+          现在渲染只有一个主人：`planFilmLooks(preset, 'composite')` 与
+          `buildGradeLayers(preset)` 是同一份图层（见 `utils/gradeLayers.ts`），
+          所以色层 / 质感层的画面与之前逐点相同，而 photo 层终于按参数生效。
+
+          `surface="composite"` 才包含 `kind:'photo'` 层与微尘；取景器那边传的是 `'live'`。
+          `seed={lookSeed}` 必须与取景器实时预览传同一个值（`CameraScreen` 的 `LOOK_SEED`），
+          否则颗粒相位与微尘位置对不上 —— "取景器里看到的和洗出来的不是同一张"。
+          `onPlateLoad` 接到宿主同一个就绪计数器上：每一张叠图恰好报一次，
+          绝不能出现第二个计数源（口径见 `countStageImages()` 的注释）。
+        */}
+        <FilmLookLayers
+          preset={preset}
+          width={windowRect.width}
+          height={windowRect.height}
+          surface="composite"
+          seed={lookSeed}
+          photoUri={rawUri}
+          photoFit={frame.photoFit === 'contain' ? 'contain' : 'cover'}
+          onPlateLoad={onImageLoad}
+        />
       </View>
 
       {/*
@@ -497,6 +668,12 @@ export function FilmCompositor({
       {/* ③ 水印（日期 + 定位，一次画完） */}
       {pieces.map((piece) => {
         const fontFamily = preset.timestamp.fontFamily ?? timestampFontFamily;
+        /*
+         * 文字行的辉光仍看预设那一栏（`preset.timestamp.glow`）：它管的是**地名 / 代号**
+         * 压照片时要不要发同色光。日期的发光色**不在这里** —— 那是日期引擎的 `glow`
+         * （`dateEngine.glow`，5 档灯丝配方），由 `<DateStamp/>` 自己读，
+         * 两种"发光"是两件事：一个是文字投影，一个是像素字形的灯丝 / 晕染层。
+         */
         const text = stampTextStyle(piece, fontFamily, preset.timestamp.glow);
 
         // 纯文字行（地名 / 摄影代号 / 日期关掉时的纯文字）
@@ -546,7 +723,12 @@ export function FilmCompositor({
                 },
               ]}
             >
-              <QuartzPiece piece={piece} fontFamily={fontFamily} />
+              <QuartzPiece
+                piece={piece}
+                fontFamily={fontFamily}
+                dateEngine={dateEngine}
+                canvasWidth={layout.width}
+              />
             </View>
           );
         }
@@ -588,85 +770,48 @@ export function FilmCompositor({
               管子、没有降部，直接对齐下沿会显得往下掉。现在日期就是一行 `<Text>`，
               降部本来就在行盒里 —— 再补一次反而会把它抬高一截。
             */}
-            <QuartzPiece piece={piece} fontFamily={fontFamily} />
+            <QuartzPiece
+              piece={piece}
+              fontFamily={fontFamily}
+              dateEngine={dateEngine}
+              canvasWidth={layout.width}
+            />
           </View>
         );
       })}
+
+      {/*
+        ③b 画内机位的日期（v1.8.0 · 模块四）。
+
+        它**不进** `pieces` 数组：那个数组里的每一块都是"贴着白边 / 水印区边缘摆的字"，
+        而画内日期的坐标是 `resolveDateSpot()` 按照片窗口算出来的绝对盒子
+        （含竖排档的 90° 旋转），两套坐标空间不同。
+
+        为什么画在**舞台层**而不是塞进 ① 的窗口容器里：窗口容器是 `overflow: hidden`
+        的，塞进去要多做一次坐标减法，而且一旦 `resolveDateSpot` 把日期放到窗口外
+        （只有"退化到白边"那一档，那时 `region === 'strip'`），裁剪会把它整个吃掉。
+        画在舞台层 + `resolveDateSpot` 的边界内缩保证 = 它永远落在照片窗口内。
+
+        `box` 给的是**未旋转**文本盒的左上角，旋转角由 `<DateStamp/>` 自己按 `spot` 转
+        （绕中心），所以"竖排日期贴左下角"的几何与 `resolveDateSpot` 算出的
+        `placement.bounds` 是同一份数据算出来的两个视角。
+      */}
+      {inPhotoDate !== null ? (
+        <DateStamp
+          key="date-in-photo"
+          quartz={inPhotoDate.quartz}
+          color={inPhotoDate.color}
+          fontFamily={preset.timestamp.fontFamily ?? timestampFontFamily}
+          glyphStyle={dateEngine.glyphStyle}
+          glow={dateEngine.glow}
+          spot={dateEngine.spot}
+          canvasWidth={layout.width}
+          box={{ left: inPhotoDate.placement.box.left, top: inPhotoDate.placement.box.top }}
+        />
+      ) : null}
     </ViewShot>
   );
 }
-
-interface GradeLayerViewProps {
-  layer: GradeLayer;
-  rawUri: string;
-  photoFit: 'cover' | 'contain';
-  onImageLoad: () => void;
-}
-
-/** 单个调色图层：只按 `kind` 分发，不认识"预设"这个概念。 */
-function GradeLayerView({ layer, rawUri, photoFit, onImageLoad }: GradeLayerViewProps) {
-  if (layer.kind === 'color') {
-    return (
-      <View
-        pointerEvents="none"
-        style={[
-          styles.fill,
-          {
-            backgroundColor: layer.color,
-            mixBlendMode: layer.blendMode,
-            opacity: layer.opacity,
-          },
-        ]}
-      />
-    );
-  }
-
-  if (layer.kind === 'photo') {
-    // 同图自叠：提对比度。（**不挂 onImageLoad**：它和底图是同一张，不参与就绪计数）
-    //
-    // 为什么用 View 包一层而不是把 mixBlendMode 写在 Image 上：
-    // RN 0.86 把 mixBlendMode 只声明在 ViewStyle 里，ImageStyle 没有这个属性。
-    // 而混合的语义是"这一层跟底下已有的东西怎么合"，外面套一个同尺寸的容器，
-    // 容器把自己那一层整体合下去，单张不透明子图的结果是完全一样的。
-    return (
-      <View
-        pointerEvents="none"
-        style={[styles.fill, { mixBlendMode: layer.blendMode, opacity: layer.opacity }]}
-      >
-        <Image
-          source={{ uri: rawUri }}
-          style={styles.fill}
-          resizeMode={photoFit}
-          fadeDuration={0}
-        />
-      </View>
-    );
-  }
-
-  return (
-    <View
-      pointerEvents="none"
-      style={[
-        styles.fill,
-        {
-          mixBlendMode: layer.blendMode,
-          opacity: layer.opacity,
-          transform: layer.flipX ? FLIP_X : undefined,
-        },
-      ]}
-    >
-      <Image
-        source={textureSource(layer.textureId)}
-        style={styles.fill}
-        resizeMode={layer.resizeMode === 'repeat' ? 'repeat' : 'stretch'}
-        onLoad={onImageLoad}
-        fadeDuration={0}
-      />
-    </View>
-  );
-}
-
-const FLIP_X = [{ scaleX: -1 }];
 
 /*
  * v1.4.1 删掉了 `TEXT_DESCENT_RATIO`（0.21）。
@@ -705,13 +850,38 @@ function stampTextStyle(piece: WatermarkPiece, fontFamily: string, glowEnabled: 
  * 字体族是单独的参数、不塞进 `quartz`：`quartz` 装的是"排版算出来的数"，
  * 字体是"这台机器上装了哪个族" —— 混在一起会让 `geometry.ts` 那个纯函数
  * 不得不认识 `Platform`。
+ *
+ * 日期引擎的三个字段（`glyphStyle` / `glow` / `spot`）在这里**原样透传**：
+ * 它们不参与排版（字号与机位坐标已经算进 `quartz` 和 `placement`），
+ * 只决定"用哪套字形画、发什么颜色的光、要不要转 90°"。
  */
-function QuartzPiece({ piece, fontFamily }: { piece: WatermarkPiece; fontFamily: string }) {
+function QuartzPiece({
+  piece,
+  fontFamily,
+  dateEngine,
+  canvasWidth,
+}: {
+  piece: WatermarkPiece;
+  fontFamily: string;
+  dateEngine: DateEngineConfig;
+  /** 画布宽度（逻辑点）：新路径的字号唯一来源就是它（`dateEngineFontPx`）。 */
+  canvasWidth: number;
+}) {
   const quartz = piece.quartz;
   if (quartz === undefined) {
     return null;
   }
-  return <DateStamp quartz={quartz} color={piece.color} fontFamily={fontFamily} />;
+  return (
+    <DateStamp
+      quartz={quartz}
+      color={piece.color}
+      fontFamily={fontFamily}
+      glyphStyle={dateEngine.glyphStyle}
+      glow={dateEngine.glow}
+      spot={dateEngine.spot}
+      canvasWidth={canvasWidth}
+    />
+  );
 }
 
 const styles = StyleSheet.create({

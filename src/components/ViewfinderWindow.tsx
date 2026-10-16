@@ -54,12 +54,8 @@
  * 看起来像框线在遮罩上滑动。上一版就是这样。
  */
 import { useEffect, useRef } from 'react';
-import { Animated, StyleSheet, Text, View } from 'react-native';
+import { Animated, StyleSheet, View } from 'react-native';
 import type { Rect } from '../types';
-import { UI_MONO } from '../constants/theme';
-
-/** 顶端标记离取景器上沿的距离：够近才像机身刻印，又不至于被刘海/状态栏压住。 */
-const LABEL_TOP = 10;
 
 /**
  * 四周哑光遮罩的底色。**刻意不跟随机身深浅色**（理由见文件头）。
@@ -100,8 +96,6 @@ const RESIZE_BOUNCINESS = 5;
 export interface ViewfinderWindowProps {
   /** 画幅窗口在取景器坐标系里的绝对位置。 */
   window: Rect;
-  /** 顶端居中的标记文字（规格里是固定的 `35mm`）。 */
-  label: string;
   /** 关掉九宫格。占满整屏的构图辅助线在窄画幅下会把画面切得很碎。 */
   grid?: boolean;
 }
@@ -143,7 +137,7 @@ function useSpringRect(target: Rect) {
   return { left, top, width, height };
 }
 
-export function ViewfinderWindow({ window: box, label, grid = true }: ViewfinderWindowProps) {
+export function ViewfinderWindow({ window: box, grid = true }: ViewfinderWindowProps) {
   const animated = useSpringRect(box);
 
   /*
@@ -199,11 +193,13 @@ export function ViewfinderWindow({ window: box, label, grid = true }: Viewfinder
         <View style={[styles.centreBar, styles.centreV]} />
       </Animated.View>
 
-      <View style={styles.labelRow}>
-        <Text style={styles.label} allowFontScaling={false}>
-          {label}
-        </Text>
-      </View>
+      {/*
+        这里曾有一行写死的 `35mm` 丝印（旧版规格：这台机器的视场恒按 35mm 参照标定）。
+
+        v1.8.0 起真实焦段在 13/26/35/52mm 之间可切，而这行字永远说 `35mm` ——
+        它就是用户报告的『旧版残留的鬼影/残字』：与其留一个会说谎的刻印，不如删掉。
+        当前焦段读数在底部胶囊上（可切的那一处），那里才是它该在的地方。
+      */}
     </View>
   );
 }
@@ -271,21 +267,5 @@ const styles = StyleSheet.create({
     height: CENTRE_ARM,
     marginLeft: -GRID_THICK / 2,
     marginTop: -CENTRE_ARM / 2,
-  },
-  labelRow: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: LABEL_TOP,
-    alignItems: 'center',
-  },
-  label: {
-    fontFamily: UI_MONO,
-    fontSize: 9,
-    letterSpacing: 2.4,
-    color: 'rgba(255, 255, 255, 0.9)',
-    textShadowColor: 'rgba(0, 0, 0, 0.65)',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 2,
   },
 });

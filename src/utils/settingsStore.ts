@@ -12,6 +12,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type {
   AppSettings,
   CaptureQuality,
+  DateEngineConfig,
+  DateFormatId,
+  DateGlowId,
+  DateGlyphStyleId,
+  DateStampSpot,
   FrameVariant,
   GeoLocale,
   GrainLevelId,
@@ -50,8 +55,21 @@ export const DEFAULT_SETTINGS: AppSettings = {
    * （`captureOptions.ts` 头注释里有实测口径）。老用户升级上来不该被悄悄加内存。
    */
   captureQuality: 'standard',
-  /* 相框风格默认 A 档：和 v1.6.1 的相纸外观逐像素相同，升级上来视觉不变。 */
-  frameVariant: 'classic',
+  /* 相框材质默认 A 档（经典原白）：升级上来的第一眼不发黄、不压暗。 */
+  frameVariant: 'archival',
+  /*
+   * 日期引擎出厂设置：美式日期 + 7 段数码管 + 白边下巴左右分列 + 钨丝琥珀橙。
+   *
+   * `spot: 'strip_split'` 与 `glow: 'classic_amber'` 是刻意选的 —— 它们合起来
+   * 和 v1.7.0 的成片（下巴左地名右日期、#FF8A00 点阵）**视觉等价**，
+   * 老用户升级上来不会发现自己照片上的日期换了地方。
+   */
+  dateEngine: {
+    format: 'MM_DD_YY',
+    glyphStyle: 'led_7seg',
+    spot: 'strip_split',
+    glow: 'classic_amber',
+  },
 };
 
 const LOCALE_IDS: readonly LocalePreference[] = ['auto', ...LOCALES.map((l) => l.id)];
@@ -75,7 +93,74 @@ const GEO_LOCALES: readonly (GeoLocale | 'auto')[] = ['auto', 'zh-Hans', 'zh-Han
  * 两边不同步时 `tsc` 会先在 `pick<T>` 的泛型上炸掉，不会静默跑偏。
  */
 const CAPTURE_QUALITIES: readonly CaptureQuality[] = ['standard', 'high', 'max'];
-const FRAME_VARIANTS: readonly FrameVariant[] = ['classic', 'aged', 'doodle'];
+/**
+ * 相框材质白名单。
+ *
+ * ⚠️ 这里**故意不含** v1.7.0 的 `'classic'` / `'aged'` / `'doodle'`：
+ * 涂鸦变体已被用户点名删除，三档材质全部换新。老存储里的那三个字符串
+ * 落在白名单之外 → `pick` 自动回落到 `DEFAULT_SETTINGS.frameVariant`（`'archival'`）。
+ * 这是"读永远不抛、认不出就用默认值"那条设计的直接收益，不需要写迁移代码。
+ */
+const FRAME_VARIANTS: readonly FrameVariant[] = ['archival', 'baryta', 'obsidian'];
+const DATE_FORMATS: readonly DateFormatId[] = [
+  'MM_DD_YY',
+  'YY_MM_DD',
+  'DD_MM_YY',
+  'DAY_HH_MM',
+  'YY_MM_DD_TIME',
+  'YYYY_DOT_MM_DD',
+  'YYYY_SLASH_TIME',
+  'ENG_MMM_DD_YY',
+  'YYYY_MM_DD_WEEK',
+  'CJK_KANJI',
+  'EXIF_TECH',
+  'FRAME_DATE',
+  'OFF',
+];
+const DATE_GLYPH_STYLES: readonly DateGlyphStyleId[] = [
+  'led_7seg',
+  'led_dot_matrix',
+  'ccd_osd',
+  'lab_inkjet',
+  'archival_steel',
+];
+const DATE_SPOTS: readonly DateStampSpot[] = [
+  'in_bl_v',
+  'in_bl_h',
+  'in_br_h',
+  'in_br_v',
+  'in_tr_v',
+  'in_cb_h',
+  'strip_split',
+  'strip_center',
+];
+const DATE_GLOWS: readonly DateGlowId[] = [
+  'coral_red',
+  'classic_amber',
+  'warm_gold',
+  'ccd_green',
+  'cyber_cyan',
+];
+
+/**
+ * 日期引擎是**四个字段一起认**：只要有一项不认识，整个对象退回出厂设置。
+ *
+ * 为什么不像别的字段那样逐项兜底：这四个轴是配套的（比如"画内竖排"配"5×7 点阵"
+ * 才有那台机器的味道），混搭一个默认值会让 UI 显示的档位和实际渲染的档位对不上 ——
+ * 那比整组回默认更难排查。
+ */
+function pickDateEngine(raw: unknown): DateEngineConfig {
+  const fallback = DEFAULT_SETTINGS.dateEngine;
+  if (!isRecord(raw)) {
+    return { ...fallback };
+  }
+  return {
+    format: pick(raw.format, DATE_FORMATS, fallback.format),
+    glyphStyle: pick(raw.glyphStyle, DATE_GLYPH_STYLES, fallback.glyphStyle),
+    spot: pick(raw.spot, DATE_SPOTS, fallback.spot),
+    glow: pick(raw.glow, DATE_GLOWS, fallback.glow),
+  };
+}
 
 /**
  * 白名单里挑一个，挑不到就用默认值。
@@ -119,6 +204,7 @@ function sanitize(raw: unknown): AppSettings {
       DEFAULT_SETTINGS.captureQuality,
     ),
     frameVariant: pick(raw.frameVariant, FRAME_VARIANTS, DEFAULT_SETTINGS.frameVariant),
+    dateEngine: pickDateEngine(raw.dateEngine),
   };
 }
 
