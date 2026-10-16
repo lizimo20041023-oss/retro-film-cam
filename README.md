@@ -3268,6 +3268,9 @@ rulerMarkCount(windowWidth) = Math.ceil((0.86 * windowWidth + 40) / 8) + 1
 
 ## 32. v1.7.0：画幅强锁 + 相框三变体 + 实时预览 + 水印像素锁定
 
+> **已发布**：[FretroCam-v1.7.0-unsigned.ipa](https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.7.0/FretroCam-v1.7.0-unsigned.ipa)
+> （未签名 IPA，需自签/sideload；sha256 与整条证据链见 §32.9）
+
 四大模块。原则和上一版一样：**症状一律采信，随症状附上的"病因推断"逐条用真代码核实** ——
 这一轮三条推断是错的，逐条记在下面（§32.1 的"视差"、§32.2 的"48MP 能接"、
 §32.5 的"字号随画布缩放"的真机制），三条都被改成了实测结论而不是照着改。
@@ -3425,12 +3428,16 @@ rulerMarkCount(windowWidth) = Math.ceil((0.86 * windowWidth + 40) / 8) + 1
 
 | 探针 | 断言 | 覆盖 |
 | --- | --- | --- |
-| `_probe_capture_quality.mjs` | **77 / 0** | 三档表、`planCapture` 夹取、预设通道、端到端像素 |
+| `_probe_capture_quality.mjs` | **78 / 0** | 三档表、`planCapture` 夹取、预设通道、端到端像素、`capNote` 本地化与兜底两条路 |
 | `_probe_typo_invariant.cjs` | **464 / 0** | 不变量、MIN/MAX 从未触发、旧接口逐位同源、split 分栏 80 例、结构断言 |
 | `_probe_frameskin.cjs` | **347 / 0** | 确定性、绝不画进窗口、预览与成片元素集合、空心圈 bug 回归 |
 | `_probe_lead_integration.mjs` | **85 / 0** | 画幅锁、预览层对齐、皮肤、水印不变量、档位接线（源码级）、三档成片长边 |
 
-合计 **973 条断言 / 0 失败**。另加冻结版本后跑的最终门槛：`npx tsc --noEmit -p tsconfig.json` → **EXIT 0 零诊断**；
+合计 **974 条断言 / 0 失败** —— 四支探针都在**冻结提交 `74ebd99`（远端 `78f6bd3`）的树上复跑过**
+（`_probe_capture_quality.mjs` 从 77 涨到 78：`captureQualityCapNote` 的契约在 v1.7.0 收尾时从
+"本地化前缀 + 英文事实尾巴"改成"优先整句本地化的 `settings.quality.capNote`"，探针原来那条期望
+编码的是旧契约 —— 复跑时它当场失败，于是补了一条"键缺失时退回英文事实尾巴"的断言，两条路都钉住）。
+另加冻结版本后跑的最终门槛：`npx tsc --noEmit -p tsconfig.json` → **EXIT 0 零诊断**；
 `npx expo export --platform ios --no-bytecode` → **EXIT 0**，bundle `index-fec6a7d4d51ab5447a94b88b2b3a8226.js` = **1,283,975 B**，
 产物 19 个文件 / 2,981,584 B，其中素材仍是 **17 个**（9 张相框 PNG + 4 张纹理 + 4 张 UI）——
 **`FrameSkin` 一个素材都没新增**，变体全是 `<View>` 画出来的。
@@ -3447,18 +3454,31 @@ rulerMarkCount(windowWidth) = Math.ceil((0.86 * windowWidth + 40) / 8) + 1
 - `fp100c / aged` 的 17 vs 18 条晕染差异（原因见 §32.3）。
 - 320pt 档与 graphite 档的字号变化是否是你想要的最终观感（见 §32.5 末）。
 
-### 32.9 v1.7.0 产物指纹（发布后回填）
+### 32.9 v1.7.0 产物指纹
 
 | 项目 | 值 |
 | --- | --- |
-| 本地提交 | 待回填 |
-| 远端提交 | 待回填 |
-| CI | 待回填 |
-| artifact | 待回填 |
-| Release | 待回填 |
-| asset | 待回填 |
-| sha256 | 待回填 |
-| 下载地址 | 待回填 |
+| 本地提交 | `74ebd9976839f7c6791b55313468e3e9faea8b5c`（30 文件 +4324/−1523） |
+| 远端提交 | `78f6bd3d72a652bbd924396a142294b4dcf171ae`（树与本地逐条相同；父提交是 `7cf27bf` 而本地父提交是 `65f892b`，所以两者 SHA 不同名） |
+| CI | run `38936043880` — 全绿：prebuild / CocoaPods / Release 编译 / 打 ipa / 上传产物（10 步全 success） |
+| artifact | `12061566898`（`FretroCam-unsigned-ipa`，10,545,628 B） |
+| Release | `415201107` — https://github.com/lizimo20041023-oss/retro-film-cam/releases/tag/v1.7.0 |
+| asset | `648035272`（`FretroCam-v1.7.0-unsigned.ipa`，10,659,162 B） |
+| sha256 | `e9bce8afa3330e58f2b2ab68187673e63332b3bff21d66ccc63703d88525ccba`（上传后回读 digest 逐字相同） |
+| 下载地址 | https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.7.0/FretroCam-v1.7.0-unsigned.ipa |
+
+`_verify_ipa_v170.py <artifact_id>` 对**真实 IPA**（不是本地导出）逐条核过：`Payload/FretroCam.app/main.jsbundle`
+= 1,987,127 B（Release 走 Hermes 字节码，比本地 `--no-bytecode` 的 1,283,975 B 大是正常的）、
+`Info.plist` 里 `1.7.0` 与 `com.canyerylee.fretrocam` 都在且没有残留 `1.6.1`、
+`assets/frames/` 恰好 **9 张** PNG、撤掉的纹理（`leather` / `half-frame` / `sheet8x10`）一张都没进包、
+`FrameOverlay` 与四条被废掉的旧字号常量 / 旧函数名一个都搜不到，而 `FrameSkin` / `FramePreviewLayer` /
+`dateFontOf` / `planCapture` / `settings.quality.capNote` / `frame.variant.*` / `camera.tool.preview*`
+全部在包内 ⇒ `RESULT: OK`。
+
+> 核验器本身修过一次：Hermes 把**含非 ASCII 的字符串按 UTF-16 存**，所以设置在
+> `settings.quality.capNote` 里那句「…真正的 48MP 需要原生相机模块…」在包内是
+> `4\x008\x00M\x00P\x00`，第一版核验器数 ASCII 的 `48MP` 数到 0 就假报了 `missing:48MP`
+> （61 条断言里唯一一条 FAIL，字面量其实一直在）。现在两种编码都数 ⇒ `48MP` 命中 6 次。
 
 ---
 
