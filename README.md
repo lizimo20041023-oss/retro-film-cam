@@ -5358,11 +5358,32 @@ alpha 剖面实测 `ρ=0.65 → 0`、`0.70 → 3`、`0.75 → 31`、`0.80 → 81
 - 四档字形的差异在 `12pt` 设置页样例上靠字体族 + 阴影已可分辨；再细小的差异（例如
   `letterSpacing` 的 ±0.1pt）不做承诺 —— 那是系统字体渲染的舍入范围。
 
-### 40.8 产物指纹（发布后回填）
+### 40.8 产物指纹
 
-- 本地提交 `<待回填>` → 远端 `<待回填>`（经 `_push_v180_api.py` 建树提交）。
-- CI run / job / artifact / IPA 体积与 sha256 / Release id 与 asset id / 下载地址 / 核验结果：
-  发布完成后在本节回填（格式同 §39.9）。
+- 本地提交 `caacdaab68c6c65db2735ad70145c529c247d682`（16 files changed，1170 insertions / 158 deletions）→ 远端
+  `a2dd8c7ee717bde7d7b75dd91f2635e2bac2f436`（经 `_push_v180_api.py` 建树提交，16 blobs，本地/远端 tree 一致）。
+- CI run `39051441240`（job `117450678403`，`build-ipa` 全绿；queued 00:54:34 → completed 01:02:38）；
+  artifact `12107822191`（`FretroCam-unsigned-ipa`，10,481,563 B zip）。
+- IPA：**10,595,953 B**，sha256 `baeacd27c14cec74570af97ea34a16b67facdafd3acd3ed72eaad0f7e2f93c16`
+  （Release 回读 digest 与本地一致）。
+- Release `v1.8.7` id `415949834`，asset id `651056201`（`FretroCam-v1.8.7-unsigned.ipa`）；
+  下载 <https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.8.7/FretroCam-v1.8.7-unsigned.ipa>。
+- 核验：
+  - `python _verify_ipa_v187.py --local dist/_expo/static/js/ios/index-f22b0f86b99df58a4b838fde35a2dd2c.js`
+    → `RESULT(local): OK`；
+  - `python _verify_ipa_v187.py 12107822191` → `RESULT: OK`（原始输出 `_verify_v187_artifact.out.txt`）：
+    包内 bundle 2,066,810 B；v1.8.7 新增串 `dateGlyphLayers` / `Courier-Bold` / `AmericanTypewriter` /
+    `Copperplate` / `#F8F9FA` / `halo-around` / `halo-drop` / `steel-highlight` / `ccd-hard` / `lab-ink` /
+    `sCurveIntensity` / `curveBlendMode` / `s-curve` / `shadow-tint` / `highlight-tint` / `ISO 200` / `800T` /
+    `B&W` 全部命中（各 x2，Hermes ASCII + UTF-16 两种计数）；v1.8.5/v1.8.6 旧串 0 命中，`swatchZoneTop` 0；
+    `makeRandom` canary 不在 ⇒ 内部名段（`DateGlyphSample` / `stockBadgeOf` 等）按设计跳过，不判失败；
+    暗角 sha256 `e02d6c6b…8e6561` / 117,094 B / 中心 alpha 0 / 四角 255 全对；颗粒仍 v1.8.2 指纹与频谱；
+    Info.plist 版本 `1.8.7`、bundle id 在、旧版本号 `1.8.6` 不在；10 张相框与 `no-frame.png` 齐全。
+- export 冒烟：`npx expo export --platform ios --no-bytecode` EXIT 0 →
+  `index-f22b0f86b99df58a4b838fde35a2dd2c.js` 1,358,721 B。
+- 本地 IPA 副本：workspace 根 `FretroCam-v1.8.7-unsigned.ipa`（10,595,953 B，sha256 同 Release）。
+- 本节为 docs-only 回填，`.github/workflows/build-ios-ipa.yml` 的 `paths-ignore: '**.md'` 会跳过 CI（与 v1.8.6 §39.9 同口径）。
+- 环境：node v24.18.0；日期 2026-10-18。
 
 ### 40.9 文件改动
 
