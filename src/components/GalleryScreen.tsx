@@ -291,7 +291,7 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
      * 这一句和 `CameraScreen` 的 `effectivePreset` 是同一个算法，刻意重复 ——
      * 两边共用就得把 `settings` 也塞进 `constants/presets.ts`，那个文件不该知道设置的存在。
      */
-    return applyGrainLevel(base, grainLevelAt(findGrainLevelIndex(settings.grainLevel)).scale);
+    return applyGrainLevel(base, grainLevelAt(findGrainLevelIndex(settings.grainLevel)).opacity);
   }, [settings.grainLevel, shots]);
 
   /**

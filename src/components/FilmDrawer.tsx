@@ -569,8 +569,8 @@ export const FilmDrawer = memo(function FilmDrawer({
             固定的（0.58 × 屏高），钉住等于再从十张卡里吃掉一行；放进滚动内容里，
             用户往下翻胶卷时它自然让位。
 
-            这里的"三档"是**同一款相框的三套皮肤**（经典 / 复古 / 涂鸦），不是三个
-            相框 —— 换相框仍然是取景器左右滑动 / 顶栏 `FrameBadge` 那件事。
+            这里的"三档"是**同一款相框的三套卡纸材质**（经典原白 / 岁月暖黄 / 暗房雅黑），
+            不是三个相框 —— 换相框仍然是取景器左右滑动 / 顶栏 `FrameBadge` 那件事。
           */}
           <View
             style={styles.framePanel}
@@ -700,8 +700,8 @@ export const FilmDrawer = memo(function FilmDrawer({
                       >
                         {/*
                           芯片显示**材质本来的颜色**（v1.8.0 的要求）：色板直接取配方的
-                          `base`，底边一道极细的"边缘墨色"（暗色材质用它自己的金属切边色，
-                          其余用压痕的暗色）。这样三档在抽屉里一眼就是三种纸/三种暗房卡纸，
+                          `base`；底边一道极细的**内框线**（v1.8.3 起取 `borderColor`，
+                          与相纸上那条 1pt 压痕线同色）。这样三档在抽屉里一眼就是三种纸，
                           而不是三个文字标签。
                           ⚠️ 选中态**不许**染在色板上（染了就不是"真实材质色"了）：
                           它只改外框与名字的颜色。
@@ -711,7 +711,7 @@ export const FilmDrawer = memo(function FilmDrawer({
                             styles.frameSwatch,
                             {
                               backgroundColor: spec.base,
-                              borderBottomColor: spec.cut?.ink.color ?? spec.emboss.dark.color,
+                              borderBottomColor: spec.borderColor,
                             },
                           ]}
                         />
@@ -743,8 +743,10 @@ export const FilmDrawer = memo(function FilmDrawer({
 
 function createStyles(theme: Theme) {
   const { ink } = theme;
-  // 深色用用户点名的 `#141416`；浅色跟主题走 —— 浅色里塞一块近黑面板会跟浅色
-  // 遮罩、玻璃控制台打架，取舍写在交付报告的"拿不准的"那一节。微光强度同理。
+  // 深色用用户点名的 `#141416`；浅色分支按主题走。v1.8.3 起相机整树被
+  // `<ThemeScope value={DARK_THEME}>` 包住（见 CameraScreen），而本抽屉只挂在相机树里，
+  // 所以 `theme.scheme === 'light'` 这一支**实际不可达** —— 保留只为让样式函数对主题收敛，
+  // 也方便将来把抽屉单独挪出去复用时不用再改。
   const sheetSurface = theme.scheme === 'dark' ? SHEET_SURFACE_DARK : theme.panel;
   const sheetSheen = theme.scheme === 'dark' ? SHEET_SHEEN_DARK : SHEET_SHEEN_LIGHT;
   return StyleSheet.create({

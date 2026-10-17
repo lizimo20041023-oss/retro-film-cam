@@ -405,8 +405,12 @@ export type GrainLevelId = 'off' | 'light' | 'std' | 'heavy' | 'max';
 /**
  * 一档颗粒强度 —— 设置页里那排分段按钮的一项。
  *
- * 注意它**不覆盖**预设的 grain，而是**乘上去**（见 `constants/grain.ts` 顶部说明），
- * 这样每个预设的颗粒性格都还在，只是整体浓淡可拧。
+ * ⚠️ v1.8.3（用户 m01534 · 模块 C1）起，档位**不再乘在预设上**，而是直接给出
+ * 颗粒层的**绝对不透明度**（0 / 0.022 / 0.045 / 0.075 / 0.110）。
+ * 用户实测"颗粒开起来像脏云雾、整幅画面被灰网盖住"，要求"颗粒整体下调两档、
+ * 按这张表锁死、最高封顶 0.11"。所以旧字段 `scale`（0 / 0.45 / 1 / 1.5 / 2.2 的乘积系数）
+ * 已被 `opacity` 取代 —— 预设里那点 0.42~0.62 的"底味"不再参与计算，
+ * 否则"预设 0.62 × 档位"必然又顶到上限。见 `constants/grain.ts` 顶部说明。
  */
 export interface GrainLevel {
   id: GrainLevelId;
@@ -416,8 +420,11 @@ export interface GrainLevel {
   labelKey?: MessageKey;
   /** LCD 状态条里的机器打印缩写。 */
   code: string;
-  /** 乘在预设 `grain` 上的系数。0 = 关，1 = 预设原本的量。 */
-  scale: number;
+  /**
+   * 颗粒层**总不透明度**（绝对值，0~0.11）。0 = 关档，整层不渲染。
+   * 这是 v1.8.3 用户强制表：0 / 0.022 / 0.045 / 0.075 / 0.110。
+   */
+  opacity: number;
   /** 一句话说明，写在配置里方便日后改。 */
   description: string;
 }
@@ -715,15 +722,17 @@ export type DateFormatId =
   | 'OFF';
 
 /**
- * 硬件视觉渲染风格（5 档）。
+ * 光学日期字形档（4 档）。
  *
- * 前两档是**手绘几何字形**：`led_7seg` 用 7 段数码管笔画、`led_dot_matrix` 用 5×7
- * 针式圆点矩阵，两者都由纯 `View` 摆出来（不依赖任何字体、不依赖 react-native-svg），
- * 所以任何机型、任何语言下字形都逐像素一致。后三档是文本 + 不同的机器外观。
+ * 四档走**同一套 iOS 原生等宽字体 + 三层绝对对齐叠影**（见
+ * `components/DateGlyphs.tsx` 的 `OpticalDateText`），v1.8.2 里那两支逐格手绘的
+ * 像素字形（7 段 / 点阵）已合并进 `quartz_led`。四档的差别只在**字重、字距、
+ * 发光强度**（`constants/dateEngine.DATE_GLYPH_STYLES` 是唯一参数表）：
+ * `quartz_led` 石英液晶 / `ccd_osd` CCD 錄製字幕 / `lab_inkjet` 暗房噴墨 /
+ * `archival_steel` 檔案鋼印。
  */
 export type DateGlyphStyleId =
-  | 'led_7seg'
-  | 'led_dot_matrix'
+  | 'quartz_led'
   | 'ccd_osd'
   | 'lab_inkjet'
   | 'archival_steel';
@@ -766,7 +775,7 @@ export type DateGlowId =
 export interface DateEngineConfig {
   /** 格式化档，默认 `'MM_DD_YY'`（美式 `10  17  '26`）。 */
   format: DateFormatId;
-  /** 字形风格，默认 `'led_7seg'`。 */
+  /** 字形风格，默认 `'quartz_led'`（石英液晶，v1.8.2 两支像素字形的合并继承者）。 */
   glyphStyle: DateGlyphStyleId;
   /** 烙印机位，默认 `'strip_split'`（= v1.7.0 的白边下巴左右分列，升级上来视觉不变）。 */
   spot: DateStampSpot;

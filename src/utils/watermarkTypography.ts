@@ -62,7 +62,13 @@ import type { DateGlyphStyleId } from '../types';
  */
 export const WATERMARK_DESIGN_PX = {
   /**
-   * 日期串的字距（10 个字形 = 89 设计像素 ≈ 6.2% 的日期行宽）。
+   * 日期串的**基准**字距（10 个字形 = 89 设计像素 ≈ 6.2% 的日期行宽）。
+   *
+   * ⚠️ 这是"所有档位共用"的基准值；每一档的实际字距还要乘
+   * `dateEngine.DATE_GLYPH_STYLES[style].trackingScale`（石英液晶 ×1.25 ≈ 2.5pt@358，
+   * 其余三档 ≤1）。乘法在 `geometry.computeWatermarkPlan` 里做一次并写进
+   * `quartz.letterSpacing`，渲染层直接照抄那个数 —— 宽度公式必须用**乘完**的字距，
+   * 否则三层叠影的日期会比容器宽、尾字被裁。
    *
    * ⚠️ 与 `DATE_GLYPH_SLACK` 的分工：字距是**排版意图**（用户直接指定的"等宽粗体 + 字距"），
    * 字形余量是**渲染误差的保险**。两者不能合并 —— 合并后想单独调疏密就会同时改变容器宽度，
@@ -83,7 +89,7 @@ export const WATERMARK_DESIGN_PX = {
    *
    * 为什么这条是**有量纲的长度**而不是字号比例：缝是两段文字之间的**留白**，它随画布缩放
    * 是对的（大画布上留白也该大），但它不该随"日期字号档位"变（换个字形档就让地名与日期
-   * 贴在一起是荒谬的）。所以它锚在画布宽度上，与 `DATE_DESIGN_PX` 那五档无关。
+   * 贴在一起是荒谬的）。所以它锚在画布宽度上，与 `DATE_DESIGN_PX` 那四档无关。
    */
   splitGutter: 48,
 } as const;
@@ -91,16 +97,17 @@ export const WATERMARK_DESIGN_PX = {
 /**
  * 等宽字体一个字符的 advance ÷ 字号。
  *
- * **0.6 是两平台能共用同一个数的原因**：iOS 的 `CourierNewPS-BoldMT`（Courier New）
- * 与 Android 的 `monospace`（Roboto Mono / Droid Sans Mono）都是 600/1000 em 的等宽字，
- * 所以这条宽度公式不需要 `Platform.select`，算出来的宽度在两个平台上逐点相同。
+ * **0.6 是两平台能共用同一个数的原因**：v1.8.3 起 iOS 用系统预装的 `Menlo-Bold`
+ * （advance ≈ 1233/2048 em ≈ 0.602），Android 用 `monospace`（Roboto Mono 等宽字
+ * 也是 600/1000 em）。两边都落在 0.60 附近，公式仍统一用 **0.60**：Menlo 那 0.2%
+ * 的差由每个字形 0.5pt 的余量吸收，容器宽度依然恒 ≥ 真实墨迹。
  *
- * ⚠️ 它与 `utils/dateEngine.ts` 的 `MONO_ADVANCE` 是**同一个物理量**，两处必须逐字相同：
- * 排版层（本文件）算容器宽度、字形层（`dateEngine.ts`）算笔画占位，一旦分叉，
- * 表现是"日期被右边界裁掉半个字"，而不是报错。
+ * ⚠️ 它与 `constants/dateEngine.ts` 的 `MONO_ADVANCE` 是**同一个物理量**，两处必须逐字相同：
+ * 排版层（本文件）算容器宽度、渲染层（`DATE_GLYPH_STYLES` 驱动）按同一个字距排字，
+ * 一旦分叉，表现是"日期被右边界裁掉半个字"，而不是报错。
  *
- * ⚠️ **换字体之前先把这一条重新量一遍**（Windows 的 `courbd.ttf` 就是 iOS 那个同族，
- * 用 PIL 读 advance 即可）。
+ * ⚠️ **换字体之前先把这一条重新量一遍**（Menlo 是 macOS/iOS 预装字体，Windows 上可用
+ * 等宽度量近似的字体做交叉验证）。
  */
 export const MONO_ADVANCE_RATIO = 0.6;
 
@@ -122,20 +129,20 @@ export function round2(value: number): number {
 /**
  * 日期字号的**唯一**算法：字形档的设计像素 → 绝对像素。
  *
- * 为什么按 `DateGlyphStyleId` 分档，而不是留一个比例系数：五档字形的**墨迹粗细不同**
- * （7 段数码管笔画细、CCD OSD 像点阵），要让它们在成片上有相同的视觉重量，字号就必须
+ * 为什么按 `DateGlyphStyleId` 分档，而不是留一个比例系数：四档字形的**墨迹粗细不同**
+ * （石英液晶像粗体数码管、鋼印像压深的钢字），要让它们在成片上有相同的视觉重量，字号就必须
  * 分别调 —— 这是"设计像素"该表达的东西（人眼在 1440 宽的基准画布上调到顺眼），
- * 而不是让五个调用方各自乘一个魔数。档位表在 `constants/canvasBase.ts` 的 `DATE_DESIGN_PX`。
+ * 而不是让四个调用方各自乘一个魔数。档位表在 `constants/canvasBase.ts` 的 `DATE_DESIGN_PX`。
  *
- * `glyphStyle` 的默认值 `'led_7seg'` = `DEFAULT_SETTINGS.dateEngine.glyphStyle`，
- * 也是 v1.7.0 的观感。**新代码请显式传档位**；给默认值是为了不破坏
+ * `glyphStyle` 的默认值 `'quartz_led'` = `DEFAULT_SETTINGS.dateEngine.glyphStyle`，
+ * 也是 v1.7.0 的观感（继承自旧 7 段数码管）。**新代码请显式传档位**；给默认值是为了不破坏
  * `computeTimestampLayout` 那类"只要一个日期行尺寸"的旧调用。
  *
  * 没有上下限：探针会在实测的全部画布宽上断言旧版的 clamp 一次都没生效
  * （最窄 229pt 画布 → 7.0pt；最宽 1162pt → 35.5pt，都远远在旧限 11 / 96 之外）。
  * 留着 clamp 只会再造一个"按设备分叉"的入口。
  */
-export function dateFontOf(canvasWidth: number, glyphStyle: DateGlyphStyleId = 'led_7seg'): number {
+export function dateFontOf(canvasWidth: number, glyphStyle: DateGlyphStyleId = 'quartz_led'): number {
   return absoluteFontPx(DATE_DESIGN_PX[glyphStyle], canvasWidth);
 }
 
@@ -147,9 +154,9 @@ export function dateLetterSpacingOf(canvasWidth: number): number {
 /**
  * 每个字形后面留的渲染余量（逻辑点）—— **绝对点，不随画布缩放**。
  *
- * 与 `src/constants/dateEngine.ts` 的 `GLYPH_SLACK` **同值**（探针断言两者逐位相等），
- * 也是 `DateGlyphs.tsx` 逐字排字时用的那个数：排版层算容器宽度、渲染层量真实墨迹，
- * 两边差一个余量就会让"盒子 ≥ 墨迹"不成立。
+ * 与 `constants/dateEngine.ts` 的 `GLYPH_SLACK` **同值**（探针断言两者逐位相等），
+ * 也是 `DateGlyphs.tsx` 的 `OpticalDateText` 排字时用的那个数：排版层算容器宽度、
+ * 渲染层用真实字体排字，两边差一个余量就会让"盒子 ≥ 墨迹"不成立。
  *
  * 为什么它是全链路里唯一**不**随画布缩放的度量：它的用途不是观感，而是**设备像素取整
  * 补偿** —— CoreText 逐字形取整发生在设备像素上，需要的冗余≈半个点，与画布宽无关。
@@ -297,11 +304,11 @@ export function splitPlaceAvailableWidth(
  *
  * 放在这里（而不是探针脚本里）是因为它也是**人读文档时最需要的那个数**：
  * "44 设计像素到底多大"只有换算成 pt 才有意义。返回顺序固定为
- * `[日期(led_7seg), 地名, 代号, 字距, 余量, 缝]`。
+ * `[日期(quartz_led), 地名, 代号, 字距, 余量, 缝]`。
  */
 export function referenceCanvasMetrics(): number[] {
   return [
-    absoluteFontPx(DATE_DESIGN_PX.led_7seg, REFERENCE_CANVAS_W),
+    absoluteFontPx(DATE_DESIGN_PX.quartz_led, REFERENCE_CANVAS_W),
     absoluteFontPx(PLACE_DESIGN_PX, REFERENCE_CANVAS_W),
     absoluteFontPx(CODE_DESIGN_PX, REFERENCE_CANVAS_W),
     absoluteFontPx(WATERMARK_DESIGN_PX.dateLetterSpacing, REFERENCE_CANVAS_W),

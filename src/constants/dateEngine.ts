@@ -1,12 +1,13 @@
 /**
- * 日期烙印引擎（v1.8.0 模块四）—— 13 格式 × 5 硬件字形 × 5 发光色，
- * 加上"双层荧光晕染"的**层配方**。纯数据 + 纯函数，`import` 里没有 `react-native`，
+ * 日期烙印引擎（v1.8.0 模块四）—— 13 格式 × 4 光学字形 × 5 发光色，
+ * 加上"三层绝对对齐叠影"的**层配方**。纯数据 + 纯函数，`import` 里没有 `react-native`，
  * 也没有 React：探针脚本可以 `transpileModule` 之后直接跑（和 `watermarkTypography.ts` 同规矩）。
  *
  * ── 这个文件回答三个问题 ──────────────────────────────────────────────────────
  * 1. **印什么**：`DATE_FORMAT_TEMPLATES`（13 档模板串）+ `formatWithDateEngine()` 的 token 引擎；
  * 2. **怎么发光**：`DATE_GLOW_PALETTE`（5 档四层色）+ `hazeSpread()/hazeLayers()` 的**有界**扩散；
- * 3. **多宽多高**：`dateEngineTextWidth()` —— 5 种字形的像素度量接口在 `DateGlyphs.tsx` 里，
+ * 3. **每一档长什么样 / 多宽**：`DATE_GLYPH_STYLES`（4 档字重·字距·发光强度）+
+ *    `dateEngineTextWidth()`；三层叠影的实际绘制在 `DateGlyphs.tsx` 的 `OpticalDateText`，
  *    但"字号从哪来"唯一地从 `canvasBase.absoluteFontPx()` 换算，这里只负责把两侧接上。
  *
  * ── 为什么不在这里算坐标 ──────────────────────────────────────────────────────
@@ -363,7 +364,7 @@ export const DATE_GLOW_PALETTE: Record<DateGlowId, DateGlowRecipe> = {
 /**
  * 外层扩散相对字号的基准比例。
  *
- * 0.18 是照着"一条 44 设计像素高的数码管"排出来的：44 × 0.18 ≈ 7.9 设计像素的扩散，
+ * 0.18 是照着"一行 44 设计像素高的日期"排出来的：44 × 0.18 ≈ 7.9 设计像素的扩散，
  * 在 1440 宽的标准画布上是 0.55% 的宽度 —— 看得见一圈光，但绝不可能连成一片白雾。
  */
 export const HAZE_RATIO = 0.18;
@@ -396,11 +397,11 @@ export function hazeSpread(fontPx: number, glow: DateGlowId): number {
 export interface HazeLayer {
   /** 层标识（React key、调试标识）。 */
   kind: 'outer' | 'inner';
-  /** 相对文字框外扩的像素（逻辑点）。 */
+  /** 相对文字框外扩的像素（逻辑点）。v1.8.3 的 `OpticalDateText` 把它当 `textShadowRadius` 用。 */
   spread: number;
   /** 颜色（`rgba()` 串）。 */
   color: string;
-  /** 圆角半径（逻辑点）：等于该层的扩散量，让它是一圈光而不是一个方框。 */
+  /** 圆角半径（逻辑点）：等于该层的扩散量，让它是一圈光而不是一个方框（v1.8.2 的矩形晕染层用的）。 */
   radius: number;
 }
 
@@ -410,6 +411,10 @@ export interface HazeLayer {
  * 返回的每一层都以"文字框"为基准：`spread` 是它比文字框每边大出多少 pt，
  * 所以 `width = textWidth + 2*spread`、`height = textHeight + 2*spread`。
  * 渲染层照抄这两个数即可，不需要自己算 —— 这是"排版层算、渲染层画"那条老规矩。
+ *
+ * v1.8.3 起不再有实心矩形晕染层（用户强制规范：日期背景必须 100% 透明）；
+ * `OpticalDateText` 改为把这份配方读成三层叠影的**颜色 + `textShadowRadius`**：
+ * `spread` 仍然是扩散量，只是载体从矩形换成了字形自身的阴影。
  *
  * 为什么只有两层：用户要的就是"双层"（外层扩散 + 中层暖光）。第三层是笔画本体色，
  * 由 `DATE_GLOW_PALETTE.filament` 画在字形自己身上，不属于晕染层。
@@ -446,7 +451,56 @@ export function hazeLimit(fontPx: number): number {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 三、字号：唯一从 canvasBase 换算
+// 三、4 种光学字形：渲染参数的唯一参数表
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 一档光学字形的渲染参数（v1.8.3）。
+ *
+ * v1.8.2 的 `DateGlyphs.tsx` 把"字形"拆成两套完全不同的实现（7 段/点阵逐格画
+ * `View`，另三档排 `<Text>`），字重/字距/发光强度散在渲染层。v1.8.3 起四档统一走
+ * `OpticalDateText` 的「一行等宽文本 × 三层绝对对齐叠影」，这些参数就成了排版层与
+ * 渲染层都要读的数据 —— 放在这个纯数据文件里，两边 `import` 同一张表，不可能分叉。
+ *
+ * ⚠️ **字号不在这里**：字号是"画布宽度 × 设计像素"的换算结果（`DATE_DESIGN_PX` +
+ * `dateEngineFontPx()`），属于排版层；本表只管"同一字号下这一档长什么样"。
+ */
+export interface DateGlyphStyleSpec {
+  /** 字重。iOS 预装的等宽字只提供这几档可选字面。 */
+  fontWeight: '600' | '700' | '800';
+  /**
+   * 字距倍数（相对 `watermarkTypography.dateLetterSpacingOf()` 的基准 8 设计像素）。
+   *
+   * `quartz_led` 取 1.25：基准字距在参考画布 358pt 上是 2.0pt，×1.25 ≈ 2.5pt ——
+   * 就是用户给的液晶日期字距。其余三档按旧 `TextGlyph` 的 trackingScale 折算，
+   * 保证"换档 = 换字面"；宽度仍由排版层按同一倍数算进 `quartz.width`，不会裁字。
+   */
+  trackingScale: number;
+  /** 三层叠影的强度倍数：`1` = 满强度石英液晶，越小越收敛（喷墨/钢印只有极淡一圈）。 */
+  glowScale: number;
+  /** 行盒高 ÷ 字号。四档统一 1.16：三层叠影共用同一条基线，行盒必须逐点一致。 */
+  heightRatio: number;
+}
+
+/**
+ * 4 档字形的参数表（唯一产地）。
+ *
+ * 数值口径：
+ * - `quartz_led`：7 段数码管的继承者 —— 700 字重、2.5pt 级字距、满强度三层光；
+ * - `ccd_osd`：CCD 錄製字幕 —— 700 字重、基准字距、0.8 强度（录像 OSD 的荧光比
+ *   石英液晶收敛一点，但仍要"亮"）；
+ * - `lab_inkjet`：暗房噴墨 —— 600 字重、略紧字距、0.4 强度（墨点扩散小）；
+ * - `archival_steel`：檔案鋼印 —— 800 字重、最紧字距、0.35 强度（钢印只有边缘反光）。
+ */
+export const DATE_GLYPH_STYLES: Record<DateGlyphStyleId, DateGlyphStyleSpec> = {
+  quartz_led: { fontWeight: '700', trackingScale: 1.25, glowScale: 1, heightRatio: 1.16 },
+  ccd_osd: { fontWeight: '700', trackingScale: 1, glowScale: 0.8, heightRatio: 1.16 },
+  lab_inkjet: { fontWeight: '600', trackingScale: 0.92, glowScale: 0.4, heightRatio: 1.16 },
+  archival_steel: { fontWeight: '800', trackingScale: 0.84, glowScale: 0.35, heightRatio: 1.16 },
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 四、字号：唯一从 canvasBase 换算
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -474,11 +528,11 @@ export function dateEngineFontPx(style: DateGlyphStyleId, canvasWidth: number): 
  * 三项分别是等宽字形的 advance（`MONO_ADVANCE_RATIO`）、字距、
  * 以及每个字形 0.5pt 的余量（`DATE_GLYPH_SLACK`，防 CoreText 逐字形取整把尾字挤掉）。
  *
- * ⚠️ **为什么像素字形也走这个公式、而不是"每个字形的真实宽度"**：
- * 排版层（`geometry.computeWatermarkPlan`）已经用 `dateStampWidth()` 把宽度算死并写进
- * `quartz.width` 了，渲染层照抄。如果这里改用"像素字形真实宽度"，同一张图上
- * 排版按 A 算、渲染按 B 画，靠右那一行立刻会偏 —— 而偏差的表现是"日期离白边忽远忽近"，
- * 极难回溯（v1.5.1 的 `26 10...` 就是这一类）。所以两个公式必须**逐项同源**。
+ * ⚠️ **为什么渲染层不用"真实墨迹宽"**：排版层（`geometry.computeWatermarkPlan`）已经用
+ * `dateStampWidth()` 把宽度算死并写进 `quartz.width` 了，渲染层照抄。三层叠影是同一行
+ * 文本的三份拷贝，只要有一层按 CoreText 真实 advance 排字，宽度就会随字号取整漂移，
+ * 而偏差的表现是"日期离白边忽远忽近"—— 极难回溯（v1.5.1 的 `26 10...` 就是这一类）。
+ * 所以两个公式必须**逐项同源**。
  */
 export function dateEngineTextWidth(
   text: string,
@@ -520,7 +574,7 @@ export function shouldStampDate(text: string): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 四、8 机位：只有"角度"和"画内 / 白边"归属，坐标不在这里
+// 五、8 机位：只有"角度"和"画内 / 白边"归属，坐标不在这里
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**

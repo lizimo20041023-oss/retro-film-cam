@@ -57,6 +57,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [33. v1.8.0：去白雾的色彩引擎 + 暗房纸材 + 参数胶囊 + 日期引擎 + 像素级锁定](#33-v180去白雾的色彩引擎--暗房纸材--参数胶囊--日期引擎--像素级锁定)
 - [34. v1.8.1：日期背景 100% 透明 + 颗粒不透明度硬上限 + `00 NO FRAME` 无相框模式](#34-v181日期背景-100-透明--颗粒不透明度硬上限--00-no-frame-无相框模式)
 - [35. v1.8.2：颗粒不再糊成脏云雾（贴图重烤 + 1:1 手工平铺）](#35-v182颗粒不再糊成脏云雾贴图重烤--11-手工平铺)
+- [36. v1.8.3：四模块军规改造（手风琴设置页 / 原生等宽三层发光日期 / 原图零柔焦 / 实色卡纸与暗色相机壳）](#36-v183四模块军规改造手风琴设置页--原生等宽三层发光日期--原图零柔焦--实色卡纸与暗色相机壳)
 
 ---
 
@@ -4102,6 +4103,321 @@ iOS 的 `resizeMode="repeat"` 不是 `colorWithPatternImage`，而是
 | Release | id `415371815`，tag `v1.8.2`，asset id `648592311`，`SIZE MATCH = True` / `DIGEST MATCH = True` |
 | 打包前 export 冒烟 | `npx expo export --platform ios --no-bytecode` ⇒ EXIT=0；bundle `index-d4e1b8f6aebafebdb42f7c62aaf5d2e8.js` 1,339,980 B；导出目录 20 文件 / 2,855,835 B；`python _verify_ipa_v182.py --local …` ⇒ `RESULT(local): OK`；导出资产 `assets/5ebf6a817cd386ced4e993fe322baa5f` 与源 `grain.png` 逐字节一致 |
 | 下载 | <https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.8.2/FretroCam-v1.8.2-unsigned.ipa> |
+
+---
+
+## 36. v1.8.3：四模块军规改造（手风琴设置页 / 原生等宽三层发光日期 / 原图零柔焦 / 实色卡纸与暗色相机壳）
+
+这一版不加工能，是把四个"一直在将就"的地方按用户给的军规重做。用户 m01534 定了四条红线，
+直接当验收口径写在这里：
+
+1. **严禁省略代码 / 用 TODO 占位** —— 每个分支都真写出来，不留"以后补"。
+2. **严禁用多色块拼接模拟渐变** —— 相框纸面、遮罩、光晕都算。
+3. **严禁在照片上方叠 `blurRadius` 模糊副本** —— 旧实现里那层"微柔焦"被点名删除。
+4. **100% 恢复原生锐度** —— 照片以 `opacity 1.0` 直接呈现，不许再压半透明色罩。
+
+四个模块分四节，每节先写"旧实现为什么错"，再写新实现的关键数字。
+
+### 36.1 模块一 A1：设置页从"五组滚动"改成"12 栏手风琴"
+
+**旧实现的问题**：`SettingsScreen.tsx` 原来把全部选项纵向平铺（语言 7 行 + 定位 4 行 + 详细度 2 行 +
+地名语言 4 行 + 水印版式 4 行 + 日期引擎 31 行 + 画质 3 + 颗粒 5 + 无相框 3 ≈ 60 行），
+手机上要滑三四屏；而日期引擎那 31 行把格式/字形/机位/颜色四条**正交的轴**混成一栏 ——
+用户想改"日期颜色"要在一堆日期样例里找。
+
+**新实现**：`src/components/SettingsScreen.tsx` 整文件重写（969 → 1345 行）。12 个单行折叠栏，
+一行一个设置大类，默认全收：12 行 × 54pt = **648pt**，iPhone 13 可用高度约 760pt，
+加标题栏正好一屏看完 —— 这就是 54pt 这个数字的算术依据。
+
+| key | 标题 | 收起态右侧摘要示例 | 展开体 |
+| --- | --- | --- | --- |
+| `lang` | 語言 LANGUAGE | `繁體中文` | 5 种界面语言 |
+| `loc_mode` | 定位浮水印 LOCATION | `地名` | 關閉 / 地名 / 座標 |
+| `loc_detail` | 地名詳細度 | `精簡` | 精簡 / 完整 |
+| `loc_lang` | 地名語言 | `跟隨介面` | 跟隨介面 / 簡 / 繁 / EN |
+| `watermark_layout` | 水印版式 | `地名在左 · 日期在右` | 4 种版式 |
+| `date_format` | 日期格式 DATE FORMAT | `10 17 '26`（按当前格式实时生成预览） | 12 格式 + 關閉 |
+| `date_style` | 日期字形 STAMP FONT | `石英機背發光` | 4 档（见 §36.2） |
+| `date_pos` | 日期位置 STAMP POSITION | `畫內左下 · 直排` | 8 种机位 |
+| `date_color` | 日期色彩 LED COLOR | 琥珀圆点 + `琥珀` | 5 色（圆点取该色 `filament`） |
+| `quality` | 畫質 RESOLUTION | `極致 4032px` | 標準 / 高清 / 極致 |
+| `grain` | 顆粒 FILM GRAIN | `輕 LT` | 5 档（见 §36.3） |
+| `frameless_ratio` | 無相框畫幅 | `3:4` | 1:1 / 3:4 / 3:2 |
+
+关键实现点（都在 `SettingsScreen.tsx`，探针可断）：
+
+- 状态机：`const [expandedKey, setExpandedKey] = useState<SectionKey | null>(null)` —— **只允许一栏展开**，
+  默认 `null`（全收）。同栏再点即收起：`setExpandedKey(prev => prev === key ? null : key)`。
+- 触感与动画：`LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut)` +
+  `Haptics.selectionAsync()`，选中后 `scheduleCollapse()` 延迟 **180ms** 自动收起
+  （`pickAfter(apply)` 保证先落值、再排定时器；`useEffect` 卸载时 `clearCollapseTimer`）。
+- 竖条与摘要：左侧 2×14pt 竖条用 `ink.amberDeep`；标题 14/600；摘要 14pt、颜色 `SUMMARY_GOLD='#C86418'`、
+  `maxWidth: 170`；`date_color` 的摘要前多一枚 8pt 圆点（`SectionMeta.dotColor`）。
+  箭头是 `⌄`，展开时 `transform: [{ rotate: '180deg' }]`。
+- **旧档位兜底**：摘要用 `findOrFirst(rows, match)`（`rows.find(...) ?? rows[0]`）计算 ——
+  持久化里若还是个已删除的旧档位（比如 1.8.2 的 `glyphStyle: 'led_7seg'`），摘要不会变成 `undefined`，
+  真正的迁移在 `settingsStore` 里做（§36.2）。
+- 展开体用 `renderBody(key)` 的 `switch` 穷尽 12 栏，`default` 分支是
+  `const _exhaustive: never = key; return null;` —— 以后加栏忘写展开体会直接编译红。
+- 无障碍：`AccordionHeader` 是 `Pressable` + `accessibilityRole="button"` +
+  `accessibilityState={{ expanded }}`。
+- i18n（Lead 独占写域）：5 个 locale 全加 6 个 `settings.section.*` 标题键
+  （`dateFormat`/`dateFont`/`datePos`/`dateColor`/`quality`/`grain`）；
+  `settings.dateEngine.glyph.led_7seg` 与 `.led_dot_matrix` 两个键删除，换成
+  `settings.dateEngine.glyph.quartz_led`（石英機背發光 / 石英机背发光 / クオーツLED / LED quartz / Quartz LED）。
+
+### 36.2 模块二 B1：日期戳从"逐格拼线段"改成"原生等宽字体 + 三层发光"
+
+**旧实现的问题**：`DateGlyphs.tsx` 用 1047 行手写几何在 `<View>` 里一根根画 LED 线段 / 点阵圆点
+（`CHAR_TO_7SEG`、`CHAR_TO_DOTS`、`ledSegmentGeometry`、`dotMatrixGeometry`…），
+每个字形都是一个 React 元素树。后果：① 笔画边缘没有字体的抗锯齿，亮部是"塑料块"；
+② 每个字符单独摆位，竖排时逐字符 rotate 会累积基线误差；③ 两档字形（7 段 / 5×7 点阵）是同一种
+"拼积木"思路的两种分辨率，属于一个问题的两个版本。
+
+**新实现**：`DateGlyphs.tsx` 整文件重写（1047 → 222 行），导出 `OpticalDateText`。
+三层 `<Text>` 用 `position:'absolute'` + 四边 0 叠满同一块区域，**共用同一份 TextStyle**
+（`fontFamily`/`fontSize`/`lineHeight`/`letterSpacing`/`fontWeight` 完全一致），
+只有 `color` 与 `textShadow*` 不同 ⇒ 三层是同一行字的三个光晕层，绝对对齐：
+
+| 层 | kind | 颜色来源 | 阴影 | 阴影半径 |
+| --- | --- | --- | --- | --- |
+| 外层外晕 | `outer` | `DATE_GLOW_PALETTE[glow].outer` | 同色 | `hazeSpread(fontPx, glow) * glowScale`（≈ 8 × fontPx/44） |
+| 中层近晕 | `mid` | `DATE_GLOW_PALETTE[glow].filament` | `palette.inner` | 0.5 × 外层半径 × `glowScale`（≈ 3.5 × fontPx/44） |
+| 顶层灯丝 | `core` | `DATE_GLOW_PALETTE[glow].core` | **无** | 0 |
+
+- 字体：`OPTICAL_FONT_FAMILY = Platform.OS === 'ios' ? 'Menlo-Bold' : 'monospace'`，
+  `fontVariant: ['tabular-nums']`（数字等宽，日期不会跳格），`allowFontScaling={false}`，
+  `letterSpacing = dateLetterSpacingOf(canvasWidth) * DATE_GLYPH_STYLES[style].trackingScale`
+  （`quartz_led` 在 358pt 画布上 ≈ 2.49pt）。
+- **没有任何矩形/View 光晕层**：背景 100% 透明，亮度全部来自 `textShadow`。
+- 字族/字距/字重的唯一真源拆成三张表，避免"改一处漏一处"：
+  `DateGlyphStyleId`（`src/types/index.ts:734-738`，4 值）、
+  `DATE_GLYPH_STYLES`（`src/constants/dateEngine.ts:491-496`）、
+  `DATE_DESIGN_PX`（`src/constants/canvasBase.ts:32-37`）。
+
+| id | 中文名 | fontWeight | trackingScale | glowScale | heightRatio | 设计字号 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `quartz_led` | 石英機背發光 QUARTZ LED（默认） | 700 | 1.25 | 1 | 1.16 | 44 |
+| `ccd_osd` | CCD 錄製字幕 | 700 | 1 | 0.8 | 1.16 | 46 |
+| `lab_inkjet` | 暗房噴墨 | 600 | 0.92 | 0.4 | 1.16 | 44 |
+| `archival_steel` | 檔案鋼印 | 800 | 0.84 | 0.35 | 1.16 | 46 |
+
+- **竖排**：整行日期先作为**单个水平 `<View>`** 渲染，再对整层容器
+  `transform: [{ rotate: '90deg' }]`（或 0）—— 严禁 `text.split('')` 逐字符 rotate，
+  同一条基线一次旋转，没有累积误差。
+- **旧值迁移**：`settingsStore.ts` 的 `LEGACY_DATE_GLYPH_STYLES = { led_7seg: 'quartz_led',
+  led_dot_matrix: 'quartz_led' }` 在 `pickGlyphStyle()` 里先迁移再白名单校验；
+  这两条字符串**必须留在源码里**（旧存档还要能读），别整仓 grep 当残留删掉。
+- **两处偏离规范原文的取舍（有意为之）**：
+  1. 规范给的示例色 `rgba(255,45,20,0.45)` / `#FF5232` / `#FFB8A8` **没有硬编码**，
+     全部改从既有 `DATE_GLOW_PALETTE` 派生（用户原文写的是"如"= 举例）。所以 `classic_amber`
+     的外晕实际是 `rgba(255,138,0,0.22)`、灯丝是调色板里的 filament 色 —— 好处是"日期色彩"
+     那 5 档选项和三层发光自动同步，改一处全变。
+  2. 规范说"移除 7 段/点阵两档、合并为王牌档"，落地时**沿用了后 3 个旧 id**
+     （`ccd_osd`/`lab_inkjet`/`archival_steel`）而不是任务示例里的 `ccd_caption`/`darkroom_ink`/`archive_stamp`：
+     这 3 个 id 已经写进持久化数据，改名要再铺一层迁移表，收益为零。
+
+### 36.3 模块三 C1：原图零柔焦 + 颗粒 5 档绝对不透明度 + 取景器去颗粒
+
+**旧实现的三宗罪**（全在 `src/utils/gradeLayers.ts` 的图层栈里）：
+
+1. **`micro-soft-focus`**：一张与照片同尺寸的 `<Image>`，`blurRadius: 1.2`、
+   `opacity: 0.16`、`offsetX/offsetY: 0.5` —— 这就是用户说的"在照片上盖了一张模糊副本"。
+   它同时吃掉了锐度：1.2pt 的高斯在 3× 屏上等于 3.6 设备像素。
+2. **`fade` 褪色托黑**：`blendMode:'lighten'`、纯色 `#545A61`、`opacity ≤ 0.13` ——
+   把全画幅的暗部抬向灰蓝。用户说的"全画幅半透明青灰遮罩 / 发灰"就是它 + 上一层的叠加效果。
+3. **颗粒层的不透明度是乘出来的**：旧 `grainLayerOpacity()` 把预设强度 `0.52` 乘 2.2 再
+   `clamp01` 到 `1.0`，靠 v1.8.1 的 `[0.12, 0.22]` 夹紧兜底 —— 关掉颗粒整幅画面立刻"干净"，
+   正是因为颗粒层同时是第二层灰罩。
+
+**新实现**：
+
+| 删除的东西 | 原来的参数 | 删除理由 |
+| --- | --- | --- |
+| `micro-soft-focus` 层 | `blurRadius: 1.2`、`opacity: 0.16`、offset 0.5 | 用户红线 3：不许叠模糊副本 |
+| `fade` 层 | `lighten`、`#545A61`、`opacity ≤ 0.13` | 用户红线 4：全画幅灰罩，压对比度 |
+| `dust` 纹理层（`assets/textures/dust.png` 平铺） | `screen`、随机撒点 | 太密、随机，换成成片上 1~2 颗"白尘 specks" |
+
+`planFilmLooks(preset, 'live')`（取景器实时预览）现在**同时滤掉 `kind:'photo'` 与
+`textureId === 'grain'` 的层** —— 取景器里一格颗粒都不画，只有成片合成阶段才上颗粒。
+`dust.png` 资源本身保留（没删文件），只是不再作为图层渲染。
+
+**颗粒 5 档改成绝对不透明度**（`src/constants/grain.ts`）：
+
+| 档位 | id | code | opacity（绝对值，写死） |
+| --- | --- | --- | --- |
+| 關 | `off` | `OFF` | 0 |
+| 輕 | `light` | `LT` | 0.022 |
+| 標準 | `std` | `STD` | 0.045 |
+| 重 | `heavy` | `HV` | 0.075 |
+| 極重 | `max` | `MAX` | 0.110 |
+
+- `GRAIN_OPACITY_MAX = 0.11` 是唯一硬顶：`grainLayerOpacity(s) = round(min(clamp01(s), 0.11), 3)`，
+  0 直接返回 0。v1.8.1 那套 `[0.12, 0.22]` 夹紧连同 `GRAIN_OPACITY_MIN` 一起删了。
+- `applyGrainLevel(preset, opacity)` 从"乘预设原值"改成**绝对覆盖** `{...preset, grain: clamp01(opacity)}`，
+  三处调用点（`CameraScreen.tsx`、`GalleryScreen.tsx`、`importPhoto.ts`）的字段名从
+  `grainLevelAt(...).scale` 改为 `.opacity`。
+- **白尘 specks 只在最重两档**：`dustSpecCountForGrain(grain)` → `0 / 0 / 0 / 1 / 2`（OFF/LT/STD/HV/MAX）；
+  `dustSpecAlpha(i) = min(0.18, 0.1 + 0.08 * i)` ⇒ 0.10 / 0.18（硬顶 `DUST_SPEC_ALPHA_MAX = 0.18`）；
+  位置 x/y ∈ [0.14, 0.86]，半径 = 0.0022~0.005 × 短边（同心三层圆，`FilmLookLayers.tsx` 的 `planDustSpecks`）。
+- 数据字段 `FilmPreset.dust` / `FilmPreset.color.fade` **保留不删**（预设数据与旧存档还在），
+  只是不再参与渲染。
+
+### 36.4 模块四 D1：实色卡纸 + 暗黑相机壳
+
+**D1① 相框：从"多色块拼渐变"改成"4 块实色卡纸 + 4 条 1px 压痕线"**
+
+旧 `FrameSkin.tsx`（674 行）用循环把相纸边带切成多段色带、叠 emboss/shade/cut/bloom 去模拟渐变和
+做旧纹理，导出图上下边带能看到 5~6 道百叶窗横纹。新实现（312 行）把皮肤收敛成一个纯函数
+`buildSkinElements(material, width, height, window)`，**每帧恒 8 个元素**：
+
+| # | key | kind | 颜色 | 几何 |
+| --- | --- | --- | --- | --- |
+| 1 | `base:top` | tint | `material.base` | 纸宽 × `window.top` 高 |
+| 2 | `base:bottom` | tint | `material.base` | 纸宽 × (纸高 − 窗口底) |
+| 3 | `base:left` | tint | `material.base` | `window.left` 宽 × 窗口高 |
+| 4 | `base:right` | tint | `material.base` | (纸宽 − 窗口右) 宽 × 窗口高 |
+| 5 | `border:top` | border | `material.borderColor` | 窗口左 −1、上 −1，宽 +2，高 1 |
+| 6 | `border:bottom` | border | 同上 | 窗口底边，宽 +2，高 1 |
+| 7 | `border:left` | border | 同上 | 窗口左 −1，宽 1，窗口高 |
+| 8 | `border:right` | border | 同上 | 窗口右边，宽 1，窗口高 |
+
+- 8 个元素 `opacity` 恒 1（alpha 写进颜色的 rgba）、无 `blendMode`、无随机数、无渐变；
+  每块都过 `isUsableBox`（正面积 / 在纸内 / 与窗口相交面积为 0）再 `clampToPaper`。
+- 数量与材质/画幅/朝向/缩放无关，**只由几何决定**：341.333² 相纸 × 9 个实际窗口 × 3 材质实测
+  8/8/8；缩到 85.333² 仍 8/8/8；`fullBleed`（窗口 = 整张纸）三材质 **0/0/0**（`fullBleed` 下
+  `FilmCompositor.tsx:660` 与 `FramePreviewLayer.tsx:253` 直接不渲染皮肤）。
+- **防百叶窗的最硬断言**：每款材质、任意尺寸下，所有 tint 元素颜色去重后 = 1、所有 border 元素颜色去重后 = 1。
+- 三款材质（`src/constants/frameVariants.ts`，`FrameMaterialSpec`）：
+
+| id | 中文 | base | borderColor（1px 内窗压痕线） |
+| --- | --- | --- | --- |
+| `archival` | 經典 | `#F6F5F0` | `rgba(0, 0, 0, 0.12)` |
+| `baryta` | 復古 | `#EDE3CE` | `rgba(80, 60, 40, 0.18)` |
+| `obsidian` | 暗房 | `#141416` | `rgba(255, 255, 255, 0.14)` |
+
+  旧字段 `gradientTop`/`gradientBottom`/`gradientSteps`/`emboss`/`shade`/`cut`/`bloom` 与
+  `MaterialInk`/`MaterialBloom`/`MaterialLine`/`MaterialCut` 类型全删；旧色
+  `#F7F6F1`/`#E9DCBF`/`#F2E9D5`/`#DFCEAE`/`#1A1A1D`/`#1E1E22`/`#151517` 全仓 0 命中。
+- `FilmDrawer` 的材质芯片直接取 `spec.base` + `spec.borderColor`；`FramePreviewLayer`/`FrameSwitcher`
+  本轮 0 改动（调用点本来就对）。
+
+**D1② 相机壳：系统浅色也不许变米白**
+
+根因：`useTheme()` 在系统浅色时返回 `LIGHT_THEME`，而 `LiquidGlassView` 的浅色分支用
+`systemUltraThinMaterialLight` + `rgba(255,255,255,0.52)` 覆盖层 ⇒ 控制台/顶栏变成米白玻璃。
+
+修法不是逐处 `if (dark)`，而是在 `src/constants/theme.ts` 加一层主题作用域：
+
+- `const ThemeScopeOverride = createContext<Theme | null>(null)`；`<ThemeScope value={DARK_THEME}>…</ThemeScope>`；
+  `useTheme()` 改成 `context ?? (scheme === 'light' ? LIGHT_THEME : DARK_THEME)`。其余导出签名不变。
+- `CameraScreen` 整树用 `<ThemeScope value={DARK_THEME}>` 包住（`:1520`–`:1988`），根 View 背景锁
+  `CAMERA_ROOT_BACKGROUND = '#09090C'`（`:212` 常量）。嵌套的 `ToolRow`/`DialButton`/`ViewfinderBar`/
+  `LiquidGlassView` 全部自动落到深色玻璃（overlay `rgba(18,18,22,0.42)`）。
+- 5 枚圆形功能钮（`ToolRow.tsx`）：底 `DISC_FILL = 'rgba(32, 32, 38, 0.78)'`、
+  边框 `DISC_BORDER = 'rgba(255, 255, 255, 0.28)'` + `DISC_BORDER_WIDTH = 1`、图标纯白 `#FFFFFF`、
+  激活态琥珀 `FLASH_AMBER = '#E5A93C'`；禁用的 `INACTIVE_FILL`/`INACTIVE_INK` 不变。
+  旧的白色 `accentRing` 删了（会盖住琥珀描边），激活态改为"图标变琥珀 + 圆点"。
+- `LiquidGlassView` 的浅色分支**保留**（非相机树仍然支持浅色主题），只是相机树里永远走不到；
+  另外新增 `borderColor`/`borderWidth` 两个描边 props，描边画在 children 之后。
+- 副作用（有意的）：设置页、相册页都渲染在相机树里，所以一起变深色 —— 用户要的就是相机 App
+  永远暗房底，这与系统外观设置解耦。
+
+### 36.5 联动但不显眼的五处改动
+
+1. **NaN 静默丢地名（顺带修的真 bug）**：`geometry.ts:955` / `:1319` 的 `glyphStyle` 默认形参
+   原本是 `'led_7seg'`（已从 `DATE_DESIGN_PX` 删除）⇒ `DATE_DESIGN_PX[undefined]` 变 `NaN` ⇒
+   日期宽度算成 NaN ⇒ 整行地名被静默丢弃。现在默认 `'quartz_led'`，链路已断。
+2. **颗粒档数据契约**：`GrainLevel` 类型里 `scale: number` 换成 `opacity: number`（语义变了，
+   不是改名 —— 旧值 `scale 0.45~2.2` 与新值 `opacity 0.022~0.11` 不可互换）。
+3. **日期基线口径**：`DateStamp` 高度改为 `glyphHeight(style, dateEngineFontPx(style, canvasWidth))`
+   与 `FilmCompositor` 的 `boxHeight` 逐点相等；`watermarkTypography.dateFontOf(canvasWidth, glyphStyle)`
+   按档位取设计字号。旧探针里"字距与字形档无关"的断言作废。
+4. **`FilmCompositor` 的图层注释**：删 `micro-soft-focus`/`fade`/`dust` 后图层序号重排
+   （①色温 ②色调 ③分离色调 ④饱和度 ⑤对比度 ⑥曝光 ⑦光晕 ⑧颗粒 ⑨暗角 ⑩漏光），
+   `countStageImages` 的"photo 层 3→2"自动跟着变。
+5. **`frames.ts` 的 `frameSkinSeedOf`**：皮肤不再有随机花纹，`FrameSkin` 也不再读 `seed`
+   （prop 保留只为不动调用契约）；函数本身保留，将来加回花纹时种子仍只在这一处算。
+
+### 36.6 文件改动
+
+`git diff --stat`：**29 files changed, 1985 insertions(+), 2515 deletions(-)**（净 −530 行，删掉的比加上的多）。
+
+| 模块 | 文件 | 改动 |
+| --- | --- | --- |
+| A1 | `src/components/SettingsScreen.tsx` | 整文件重写，12 栏手风琴（969 → 1345 行） |
+| A1 | `src/i18n/locales/{zh-Hant,zh-Hans,ja,fr,en}.ts` | 新增 6 个 `settings.section.*` 键；`led_7seg`/`led_dot_matrix` 换 `quartz_led` |
+| B1 | `src/components/DateGlyphs.tsx` | 整文件重写：逐格几何 → `OpticalDateText` 三层发光（1047 → 222 行） |
+| B1 | `src/components/DateStamp.tsx` | 新路径改走 `OpticalDateText`，高度公式对齐 |
+| B1 | `src/constants/dateEngine.ts` | 新增 `DATE_GLYPH_STYLES`（四档字重/字距/光强） |
+| B1 | `src/constants/canvasBase.ts` | `DATE_DESIGN_PX` 四键（删 `led_7seg`/`led_dot_matrix`） |
+| B1 | `src/types/index.ts` | `DateGlyphStyleId` 四值；`GrainLevel.scale` → `.opacity` |
+| B1 | `src/utils/settingsStore.ts` | 旧字形 id 迁移表 + 白名单 |
+| B1 | `src/utils/geometry.ts` | 默认 `quartz_led`；字距 × `trackingScale`；NaN bug 修复 |
+| B1 | `src/utils/watermarkTypography.ts` | `dateFontOf(canvasWidth, glyphStyle)` 按档取字号 |
+| C1 | `src/utils/gradeLayers.ts` | 删 soft-focus / fade / dust 三处图层；live 滤掉颗粒 |
+| C1 | `src/constants/grain.ts` | 5 档绝对 opacity + 硬顶 0.11；`applyGrainLevel` 绝对覆盖；白尘配额 |
+| C1 | `src/components/FilmLookLayers.tsx` | `planDustSpecks` 改用它俩（0/0/0/1/2 颗） |
+| C1 | `src/components/CameraScreen.tsx` / `GalleryScreen.tsx` / `src/utils/importPhoto.ts` | `.scale` → `.opacity` 三处调用点 |
+| D1 | `src/components/FrameSkin.tsx` | 整文件重写：多色块渐变 → 8 元素实色带（674 → 312 行） |
+| D1 | `src/constants/frameVariants.ts` | 三款材质实色 + 1px 框线（254 → 128 行） |
+| D1 | `src/constants/theme.ts` | `ThemeScope` context + `useTheme()` override |
+| D1 | `src/components/CameraScreen.tsx` | 整树 `ThemeScope(DARK_THEME)` + 根背景 `#09090C` |
+| D1 | `src/components/ToolRow.tsx` | 圆钮暗底/白描边/琥珀激活（654 → 572 行） |
+| D1 | `src/components/LiquidGlassView.tsx` | 新增 `borderColor`/`borderWidth` props |
+| D1 | `src/components/FilmDrawer.tsx` | 材质芯片取 `spec.base`/`spec.borderColor` |
+| 杂 | `src/components/FilmCompositor.tsx` / `src/constants/frames.ts` | 注释修正（图层语义、seed 语义） |
+| 版本 | `app.json` | `version: 1.8.3` |
+
+### 36.7 验证清单（本地实测，全部真实跑过）
+
+> 本节数字由发布流程回填（见 docs-only 提交）。
+
+| 门禁 | 结果 |
+| --- | --- |
+| `npx tsc --noEmit -p tsconfig.json` | **EXIT=0**（全仓 0 错） |
+| `_probe_date_engine.cjs` | 待回填 |
+| `_probe_film_look.cjs` | 待回填 |
+| `_probe_geo_lock.cjs` | 待回填 |
+| `_probe_noframe_v181.cjs` | 待回填 |
+| `_probe_noframe_watermark.cjs` | 待回填 |
+| `_probe_skin_material.cjs` | 待回填（已按新 8 元素契约重写） |
+| `_probe_v180_seams.mjs` | 待回填 |
+| `_probe_lead_integration.mjs` | 待回填 |
+| `_probe_capture_quality.mjs` | 待回填 |
+| `_haze_audit.mjs` | 待回填 |
+| `_purity_audit.mjs` | 待回填 |
+| `npx expo export --platform ios --no-bytecode` | **EXIT=0**（bundle `index-53a7ba4cba5e97274d57856a1ec5b03d.js`，1.3MB） |
+
+### 36.8 已知缺口
+
+- **没有真机验证**：本机跑不了 iOS 模拟器/真机。A1 的 54pt 一屏算术是按 iPhone 13 可用高度估的，
+  iPhone SE / Pro Max 上会多出或差一点；B1 的 `Menlo-Bold` 在真机上的实际字宽/字距只能在真机看。
+- **相机预览层还是旧日期路径**：`FramePreviewLayer.tsx` 的两处 `DateStamp` 不传 `dateEngine`，
+  取景器/画框预览里的日期走默认档（`quartz_led` + `classic_amber`），不跟用户在设置里选的
+  格式/颜色/机位同步 —— 成片是对的（`FilmCompositor` 传了），只有预览不同步。未在本版修。
+- **发光色是派生值而非规范字面值**：见 §36.2 的偏离说明；如果哪天要"规范字面色"，
+  得改成第三张表而不是从 palette 派生。
+- **`dust.png` 成了未使用的资源**：文件还在 `assets/textures/`（会进包，5.4KB），
+  只是不再渲染；删掉要动 `constants/textures.ts` 的纹理目录契约，收益太小，留着。
+- **门禁只覆盖结构与数值契约**，不模拟 GPU 合成器，也不出真机截图 —— "三层发光在真实屏幕上
+  够不够亮/会不会糊"仍然只能靠人眼。
+
+### 36.9 产物指纹（发布后回填）
+
+> 本节数字由发布流程回填（见 docs-only 提交）。
+
+| 项目 | 实测值 |
+| --- | --- |
+| 本地提交 | 待回填 |
+| 推送 | 待回填 |
+| CI | 待回填 |
+| artifact | 待回填 |
+| IPA | 待回填 |
+| 核验（CI 产物） | 待回填 |
+| Release | 待回填 |
+| 打包前 export 冒烟 | 待回填 |
+| 下载 | 待回填 |
 
 ---
 

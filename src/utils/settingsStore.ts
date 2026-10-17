@@ -68,15 +68,16 @@ export const DEFAULT_SETTINGS: AppSettings = {
    */
   noFrameAspect: '3:4',
   /*
-   * 日期引擎出厂设置：美式日期 + 7 段数码管 + 白边下巴左右分列 + 钨丝琥珀橙。
+   * 日期引擎出厂设置：美式日期 + 石英液晶 + 白边下巴左右分列 + 钨丝琥珀橙。
    *
-   * `spot: 'strip_split'` 与 `glow: 'classic_amber'` 是刻意选的 —— 它们合起来
+   * `quartz_led` 是 v1.8.3 的新默认档，继承 v1.7.0 那行橙色液晶日期的观感；
+   * `spot: 'strip_split'` 与 `glow: 'classic_amber'` 也是刻意选的 —— 它们合起来
    * 和 v1.7.0 的成片（下巴左地名右日期、#FF8A00 点阵）**视觉等价**，
    * 老用户升级上来不会发现自己照片上的日期换了地方。
    */
   dateEngine: {
     format: 'MM_DD_YY',
-    glyphStyle: 'led_7seg',
+    glyphStyle: 'quartz_led',
     spot: 'strip_split',
     glow: 'classic_amber',
   },
@@ -137,12 +138,23 @@ const DATE_FORMATS: readonly DateFormatId[] = [
   'OFF',
 ];
 const DATE_GLYPH_STYLES: readonly DateGlyphStyleId[] = [
-  'led_7seg',
-  'led_dot_matrix',
+  'quartz_led',
   'ccd_osd',
   'lab_inkjet',
   'archival_steel',
 ];
+/**
+ * v1.8.2 及更早持久化的两支像素字形 id → `quartz_led` 的**读时迁移表**。
+ *
+ * v1.8.3 把 7 段（`led_7seg`）与 5×7 点阵（`led_dot_matrix`）合并成石英液晶
+ * 一支新档 `quartz_led`：两者原本就是同一台石英机背的两种笔画。老存档里若还是
+ * 旧 id，读设置时在这里就地映射，用户不改设置也永远不会看到档位"消失"；
+ * 映射目标是新默认档，也是旧观感最接近的一支。
+ */
+const LEGACY_DATE_GLYPH_STYLES: Readonly<Record<string, DateGlyphStyleId | undefined>> = {
+  led_7seg: 'quartz_led',
+  led_dot_matrix: 'quartz_led',
+};
 const DATE_SPOTS: readonly DateStampSpot[] = [
   'in_bl_v',
   'in_bl_h',
@@ -164,7 +176,7 @@ const DATE_GLOWS: readonly DateGlowId[] = [
 /**
  * 日期引擎是**四个字段一起认**：只要有一项不认识，整个对象退回出厂设置。
  *
- * 为什么不像别的字段那样逐项兜底：这四个轴是配套的（比如"画内竖排"配"5×7 点阵"
+ * 为什么不像别的字段那样逐项兜底：这四个轴是配套的（比如"画内竖排"配"石英液晶"
  * 才有那台机器的味道），混搭一个默认值会让 UI 显示的档位和实际渲染的档位对不上 ——
  * 那比整组回默认更难排查。
  */
@@ -175,10 +187,24 @@ function pickDateEngine(raw: unknown): DateEngineConfig {
   }
   return {
     format: pick(raw.format, DATE_FORMATS, fallback.format),
-    glyphStyle: pick(raw.glyphStyle, DATE_GLYPH_STYLES, fallback.glyphStyle),
+    glyphStyle: pickGlyphStyle(raw.glyphStyle, fallback.glyphStyle),
     spot: pick(raw.spot, DATE_SPOTS, fallback.spot),
     glow: pick(raw.glow, DATE_GLOWS, fallback.glow),
   };
+}
+
+/** 字形档：先过旧 id 迁移表，再走通用白名单（其余字段仍只有白名单一条路）。 */
+function pickGlyphStyle(
+  raw: unknown,
+  fallback: DateGlyphStyleId,
+): DateGlyphStyleId {
+  if (typeof raw === 'string') {
+    const migrated = LEGACY_DATE_GLYPH_STYLES[raw];
+    if (migrated !== undefined) {
+      return migrated;
+    }
+  }
+  return pick(raw, DATE_GLYPH_STYLES, fallback);
 }
 
 /**

@@ -19,6 +19,8 @@
  * - 深色 = **暗夜黑钛**：机身 #151518、琥珀 #E5A93C 指示；
  * - 浅色 = **经典徕卡银**：机身 #E5E5E2、炭黑蚀刻刻度、朱红 #D32F2F 指示灯。
  */
+import { createContext, createElement, useContext } from 'react';
+import type { ReactNode } from 'react';
 import { Platform, useColorScheme } from 'react-native';
 
 /**
@@ -116,13 +118,53 @@ export const LIGHT_THEME: Theme = {
 };
 
 /**
+ * 主题覆盖 context（v1.8.3 · 模块四 D1）。
+ *
+ * 为什么需要它：相机主界面**必须永远是暗的**。系统切到浅色时，
+ * `useColorScheme()` 返回 `'light'` → `LIGHT_THEME` → 底部工具栏的
+ * `LiquidGlassView` 换成 `...MaterialLight` + `rgba(255,255,255,0.52)` 覆盖层，
+ * 白图标落在米白底上直接消失（用户实测）。这一屏的取景器、快门、工具栏
+ * 全都是"暗房"语境，不该跟随系统变浅。
+ *
+ * 用法：`<ThemeScope value={DARK_THEME}>…整棵相机树…</ThemeScope>`。
+ * `useTheme()` 先读这个 context，命中就返回覆盖值；没命中才回落到
+ * `useColorScheme()` —— 设置页 / 相册这些挂在相机树下的面板会一起锁暗
+ * （这是可接受的副作用：暗房 App 的主场景本来就是深色）。
+ */
+const ThemeScopeOverride = createContext<Theme | null>(null);
+
+/** `ThemeScope` 的 props：一个完整的 `Theme`，不做局部覆盖（避免出现半暗半亮的树）。 */
+export interface ThemeScopeProps {
+  value: Theme;
+  children: ReactNode;
+}
+
+/**
+ * 把一棵 React 子树锁进指定机身。
+ *
+ * ⚠️ 本文件是 `.ts` 不是 `.tsx`，所以这里用 `createElement` 而不是 JSX ——
+ * 不动文件扩展名是为了让全仓三十几处 `from '../constants/theme'` 一个都不用改。
+ */
+export function ThemeScope({ value, children }: ThemeScopeProps) {
+  return createElement(ThemeScopeOverride.Provider, { value }, children);
+}
+
+/**
  * 当前机身。
  *
  * `useColorScheme()` 在 iOS 上返回 `'light' | 'dark' | null`；`null`（取值失败 /
  * 老系统）按深色处理 —— 这个 App 的主场景本来就是暗房，深色是安全的那一侧。
+ *
+ * v1.8.3 起先看 `ThemeScope` 覆盖：相机主界面整树锁 `DARK_THEME`。
+ * 两个 hook 都必须在条件返回之前调用（Rules of Hooks），所以顺序固定为
+ * `useContext` → `useColorScheme` → 再决定返回哪一套。
  */
 export function useTheme(): Theme {
+  const override = useContext(ThemeScopeOverride);
   const scheme = useColorScheme();
+  if (override !== null) {
+    return override;
+  }
   return scheme === 'light' ? LIGHT_THEME : DARK_THEME;
 }
 

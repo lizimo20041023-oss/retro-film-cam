@@ -1,43 +1,53 @@
 /**
- * 设置界面 —— 一块"翻过来的机身背板"。
+ * 设置界面 —— v1.8.3「手风琴折叠」重构（用户 m01534 · 模块一 A1）。
  *
- * 视觉上和取景屏幕共用同一套墨色 —— 深/浅两套配色由 `useTheme()` 现取
- * （`src/constants/theme.ts`），字体共用 `UI_MONO`：
- * 同一台机器上不该出现两种字体气质，也不该在系统切成浅色时只有这一屏不跟。
- * 刻意不引 react-navigation ——
- * 全 App 就两个界面，一个绝对定位的整屏覆盖层足够了，
- * 引了导航库反而要给取景器套一层 navigator，得不偿失。
+ * ── 为什么推倒重来 ────────────────────────────────────────────────────────
+ * v1.8.2 之前这一屏是**全部展开**的：语言 7 行 + 定位 4 行 + 详细度 2 行 +
+ * 地名语言 4 行 + 水印版式 4 行 + 日期引擎 31 行（13 格式 + 5 字形 + 8 机位 +
+ * 5 发光）+ 画质 3 行 + 颗粒 5 行 + 无相框 3 行 ≈ 60+ 行。
+ * 手机上要滑三四屏，而用户看到的其实只有 12 个"大类"。
+ * 更糟的是 31 个日期选项平铺在同一栏里，格式/字形/机位/颜色这四条**正交的轴**
+ * 混成一片 —— 用户想改"日期颜色"要在一堆日期样例里找，找不到是正常的。
  *
- * 用整屏 `ScrollView` 而不是 `View`：iPhone SE 上"语言 6 行 + 定位 4 行 + 页脚"
- * 会超出一屏，而设置界面**绝不能有滚不动的选项**。本次加了三个分区之后更长了，
- * v1.7.0 的画质分区又添了 3 行，v1.8.0 的日期引擎区一次添了 31 行
- * （13 格式 + 5 字形 + 8 机位 + 5 发光）—— 这也是那个 `ScrollView` 至今
- * 没被换成 `View` 的原因。它是本屏最长的一段，"能滚"在这里不是方便而是必需。
+ * 所以改成 **12 个单行折叠栏**（Accordion）：
+ *   lang / loc_mode / loc_detail / loc_lang / watermark_layout /
+ *   date_format / date_style / date_pos / date_color /
+ *   quality / grain / frameless_ratio
+ * 默认全部收起 ⇒ 一屏就能看全 12 行，每行右侧是"当前选中的那一档"。
  *
- * ── 为什么所有"拍之前要定好"的参数都收到这里 ──────────────────────────────
- * 颗粒原本是取景器底部的一条横向滑轨。取景时最不该做的事就是分心去调颗粒：
- * 它是**一卷胶卷的属性**，不是每一张的即时决定。收进设置之后取景器只剩
- * "构图、对焦、按快门"三件事。水印版式和地名详细度同理。
+ * ── 状态机（只有一条真源）────────────────────────────────────────────────
+ * `const [expandedKey, setExpandedKey] = useState<SectionKey | null>(null)`
+ * 单开：点开 B 时 A 自动收起 —— 手风琴的语义就是"一次只展开一个"，
+ * 同时展开多个等于把原来那面 60 行的墙拆成几块再拼回去。
+ * 展开时 `LayoutAnimation.easeInEaseOut` + selection 触感；选中某一档之后
+ * **延迟 180ms 自动收起**（给用户看见"右侧摘要变了"的那一下，再收屏）。
  *
- * ── 排序说明 ──────────────────────────────────────────────────────────────
- * 顺序 = 「越常改的越靠上」+「有从属关系的必须相邻」：
- * 语言 → 定位水印 → 地名详细度（只在"地名"档下起作用，所以紧贴其后）
- * → 水印版式（水印长什么样）→ 日期引擎（日期自己长什么样 · v1.8.0）
- * → 画质（成片有多大 · v1.7.0）→ 颗粒（成像质感）→ 无相框画幅（只在 00 下生效 · v1.8.1）→ 页脚。
+ * ── 为什么标题/摘要这样排 ────────────────────────────────────────────────
+ * 左侧一根 2pt 的琥珀/朱红竖条 = 这是"一栏"而不是普通列表行；
+ * 中间是栏目标题（14pt/600），右侧是同色系的暗金摘要（`SUMMARY_GOLD`）；
+ * 摘要永远只有一个值 —— "现在这一栏是什么档"，不解释、不换行。
+ * 展开后的选项列表沿用旧版的 `OptionRow`（文字 → 代号 → 对勾），
+ * 对勾槽位恒定占宽，选中瞬间长标签不会被挤成省略号。
  *
- * 日期引擎为什么紧跟水印版式、而不是另起一段更靠下：这两段说的是同一件事的两半
- * —— 版式决定"地名与日期怎么排"，日期引擎决定"日期本身的格式/字形/机位/发光"。
- * 更要紧的是机位会**反作用**于版式：一旦选画内机位，日期就从版式里被摘出去，
- * 那条白边只剩地名（规则落在 `FilmCompositor.planWatermark`）。隔开摆会让
- * "我只换了机位、版式怎么跟着变了"变成一道要用户自己拼的谜。
+ * ── 视觉与配色 ────────────────────────────────────────────────────────────
+ * 颜色一律从 `useTheme()` 现取（`src/constants/theme.ts`），字号/间距走
+ * `createStyles(theme)`：模块级 `StyleSheet.create` 会把颜色烧死在加载那一刻，
+ * 系统换深/浅色时本屏一行都不会变 —— 这个坑 v1.7.x 踩过一次。
+ * 唯一的写死色是 `SUMMARY_GOLD = '#C86418'`（用户 m01534 逐字指定的暗金色，
+ * 用于收起态的右侧摘要）；v1.8.3 起相机整棵树锁暗（见 `CameraScreen` 的
+ * `ThemeScope`），所以这个暗金色在任何模式下都有足够对比度。
+ *
+ * 刻意不引 react-navigation —— 全 App 就两个界面，一个绝对定位的整屏覆盖层
+ * 足够了；引了导航库反而要给取景器套一层 navigator，得不偿失。
  */
-import { useCallback, useMemo } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { LayoutAnimation, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { useTheme, UI_MONO } from '../constants/theme';
 import type { Theme } from '../constants/theme';
 import { CAPTURE_QUALITIES, captureQualityCapNote } from '../constants/captureQuality';
+import { DATE_GLOW_PALETTE } from '../constants/dateEngine';
 import { NO_FRAME_ASPECTS } from '../constants/frames';
 import { GRAIN_LEVELS } from '../constants/grain';
 import { useI18n } from '../i18n';
@@ -62,34 +72,59 @@ import type {
 } from '../types';
 
 /**
- * 覆盖层遮罩的**可读性底线**：不透明度 0.985。
+ * 收起态右侧摘要的暗金色（用户 m01534 逐字给定的 `#C86418`）。
  *
- * 为什么必须**几乎不透明**：本屏是挂在相机屏上的整屏覆盖层，取景器一直在后面跑。
- * 更早的版本用的是 `rgba(12, 12, 11, 0.97)`，那 3% 的透明足够让实时预览透出来
- * —— 用户报的就是这个"看着像渲染故障"。
- *
- * 颜色本身现在来自 `useTheme().scrim`（深机身 `rgba(14,15,17,0.985)`、
- * 浅机身 `rgba(237,236,232,0.985)`）。**浅色机身下遮罩跟着一起变浅**：
- * 遮罩底下压着的是本屏的面板文字，而浅机身的墨色是炭黑
- * （`ink.paper` = `rgba(28,28,30,0.92)`）—— 深遮罩配炭黑字就是"深底黑字"，
- * 比透明穿透更难读。挡住取景器靠的是 0.985 这个不透明度，不是颜色的深浅。
- *
- * ⚠️ `src/components/GalleryScreen.tsx` 的相册面板共用同一个 `scrim` token。
- * 两处以前各留一份写死的 `'rgba(18, 18, 18, 0.98)'`，注释还互相指路；
- * 现在都从配色表取，就是为了消灭"改一处忘另一处"这个失败模式。
- *
- * 真正兜住穿透的是两层保险：① 这里 0.985 的遮罩；② `CameraScreen` 在 `covered`
- * 时把整个取景容器压成 `opacity: 0`（见那份注释）。**两层都要在。**
+ * 为什么不从 `theme.ink` 取：这是"档位值"专用的一个色，语义上既不是正文
+ * （`ink.paper`）也不是提示（`ink.paperFaint`）。深机身下它和琥珀强调色
+ * 是同族但更暗，不会抢走标题；浅机身理论上用不到 —— v1.8.3 起相机整棵树
+ * 用 `DARK_THEME` 锁死（`CameraScreen` 的 `ThemeScope`）。
  */
+const SUMMARY_GOLD = '#C86418';
 
 /**
- * 选中项对勾的颜色 —— 现在直接用墨色表里的 `ink.amber`。
+ * 12 个折叠栏的稳定 key（顺序 = 界面顺序）。
  *
- * 以前这里写死 `#E5A93C`，理由是"`✓` 只有 15pt、笔画细，标准琥珀在深色底上发闷"。
- * 那个理由只在深机身下成立：浅机身的 `ink.amber` 是朱红 `#D32F2F`，
- * 它在浅底上本来就够重，再提亮反而会飘。所以交给配色表决定，
- * 深机身拿到琥珀、浅机身拿到朱红，一处都不用再判断。
+ * 单独列一个联合类型而不是 `string`：
+ * ① `expandedKey` 只允许装这 12 个值，写错立刻编译报错；
+ * ② 展开体用 `switch (key)` 渲染，联合类型能让 tsc 检查"每一栏都有实现"。
  */
+type SectionKey =
+  | 'lang'
+  | 'loc_mode'
+  | 'loc_detail'
+  | 'loc_lang'
+  | 'watermark_layout'
+  | 'date_format'
+  | 'date_style'
+  | 'date_pos'
+  | 'date_color'
+  | 'quality'
+  | 'grain'
+  | 'frameless_ratio';
+
+/**
+ * 界面顺序 = 「越常改的越靠上」+「有从属关系的必须相邻」：
+ * 语言 → 定位 → 地名详细度（只在"地名"档生效，紧跟定位）→ 地名语言（只影响地名那行）
+ * → 水印版式（地名与日期怎么排）→ 日期四轴（格式 → 字形 → 机位 → 颜色，
+ * 先决定印什么、再决定怎么长、印在哪、发什么光）→ 画质 → 颗粒 → 无相框画幅。
+ *
+ * 日期四轴为什么各自独立成栏：用户明确要求"严禁把格式、字形、位置、颜色混在一起"。
+ * 四者两两正交 —— 换颜色不该看见格式列表，换格式也不该看见机位。
+ */
+const SECTION_ORDER: readonly SectionKey[] = [
+  'lang',
+  'loc_mode',
+  'loc_detail',
+  'loc_lang',
+  'watermark_layout',
+  'date_format',
+  'date_style',
+  'date_pos',
+  'date_color',
+  'quality',
+  'grain',
+  'frameless_ratio',
+];
 
 export interface SettingsScreenProps {
   visible: boolean;
@@ -113,16 +148,95 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
     setDateEngine,
   } = useSettings();
 
-  /**
-   * 配色表 + 样式表都从"当前机身配色"现算。
-   *
-   * 为什么样式表不能留在模块作用域：`StyleSheet.create` 在模块加载那一刻就把颜色
-   * 烧死了，系统切深/浅色时本屏一行都不会变 —— 这正是这次要修的病。
-   * 用 `useMemo` 缓存而不是每次渲染重建：换肤时才重算一次，
-   * 平时滚动/选档都复用同一个对象，`StyleSheet` 的引用比较也才稳定。
-   */
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+
+  /**
+   * 唯一展开状态：`null` = 12 栏全部收起（打开设置页时的默认视图）。
+   *
+   * 为什么不是 `Record<SectionKey, boolean>`：手风琴只允许同时展开一栏，
+   * 一个 `SectionKey | null` 就把"哪一栏开着"这件事表达完了；用 12 个布尔
+   * 就得在每次 toggle 时手写"把其它 11 个置 false"，那是最容易漏的地方。
+   */
+  const [expandedKey, setExpandedKey] = useState<SectionKey | null>(null);
+
+  /**
+   * 选中后延迟收起的定时器。
+   *
+   * 为什么需要 ref 而不是 state：它不参与渲染，只是"过 180ms 来收一下"。
+   * 存 ref 才能在同一栏里连续点两档时取消上一个定时器，不会出现
+   * "前一次收起把后一次展开的栏也收掉"这种时序错乱。
+   */
+  const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** 清掉挂起的收起定时器（卸载/关页/连续选择时都要清）。 */
+  const clearCollapseTimer = useCallback((): void => {
+    if (collapseTimer.current !== null) {
+      clearTimeout(collapseTimer.current);
+      collapseTimer.current = null;
+    }
+  }, []);
+
+  /**
+   * 切换某一栏的展开状态。
+   *
+   * 逐字按用户 m01534 给的实现：
+   *   `LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut)`
+   *   `Haptics.selectionAsync()`
+   *   `setExpandedKey(prev => (prev === key ? null : key))`
+   * 这里只多清了挂起的收起定时器（否则"点开 B"可能在 180ms 后被
+   * 上一栏 A 的旧定时器连坐收起）。
+   */
+  const toggleSection = useCallback(
+    (key: SectionKey): void => {
+      clearCollapseTimer();
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      void Haptics.selectionAsync();
+      setExpandedKey((prev) => (prev === key ? null : key));
+    },
+    [clearCollapseTimer],
+  );
+
+  /**
+   * 选完一档后延迟 180ms 收起。
+   *
+   * 180ms 是"能看见右侧摘要翻成新值、又不至于让人等"的长度：动画一帧 16ms，
+   * 用户读完一个 4 字摘要大约 120~160ms。
+   */
+  const scheduleCollapse = useCallback((): void => {
+    clearCollapseTimer();
+    collapseTimer.current = setTimeout(() => {
+      collapseTimer.current = null;
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setExpandedKey(null);
+    }, 180);
+  }, [clearCollapseTimer]);
+
+  /** 先落设置、再排收起 —— 顺序反了会先收屏、后落值，摘要会闪一下旧值。 */
+  const pickAfter = useCallback(
+    (apply: () => void): void => {
+      apply();
+      scheduleCollapse();
+    },
+    [scheduleCollapse],
+  );
+
+  /** 卸载时清定时器：组件卸载后 setState 是 RN 里最常见的警告来源之一。 */
+  useEffect(() => clearCollapseTimer, [clearCollapseTimer]);
+
+  /**
+   * 每次"打开"设置页都回到全收起。
+   *
+   * 为什么不是"记住上次展开哪一栏"：这一屏的定位是"一眼看全 12 类"，
+   * 记住展开态等于下次打开直接跳到半屏列表，反而丢了设计意图。
+   * 在 `visible` 变 true 时复位，也顺带清掉上次关页时挂起的定时器。
+   */
+  useEffect(() => {
+    if (visible) {
+      clearCollapseTimer();
+      setExpandedKey(null);
+    }
+  }, [clearCollapseTimer, visible]);
 
   /** 定位状态 → 一行说明（就地算，免得在 JSX 里塞三元）。 */
   const locationStatus = useMemo(() => {
@@ -161,6 +275,8 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
    *
    * 为什么都走 `useCallback`：`OptionRow` 是纯展示组件，但它在 `map` 里被创建，
    * handler 每次渲染换新会让每一行都白重渲染一次；也顺便让依赖关系显式可见。
+   * 收起动作统一由外层的 `pickAfter()` 负责，handler 本身不管界面，
+   * 这样"选中后要不要收起"就只有一个决策点。
    */
   const handleLocalePreference = useCallback(
     (next: LocalePreference): void => {
@@ -280,13 +396,368 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
     return null;
   }
 
+  /**
+   * 12 栏的标题与摘要。
+   *
+   * 摘要口径 = 「当前选中的那一档，用和展开列表里**一模一样**的文字」——
+   * 收起时看到的是"標準"，展开后对勾就在"標準"那一行，两者不会对不上。
+   * 数字类（画质 4032px、无相框 3:4）不翻译：它们不随界面语言变。
+   */
+  const localeRow = LOCALES.find((row) => row.id === preference);
+  const locationRow = findOrFirst(LOCATION_ROWS, (row) => row.mode === settings.locationMode);
+  const placeDetailRow = findOrFirst(PLACE_DETAIL_ROWS, (row) => row.detail === settings.placeDetail);
+  const geoLocaleRow = findOrFirst(GEO_LOCALE_ROWS, (row) => row.geoLocale === settings.geoLocale);
+  const watermarkRow = findOrFirst(WATERMARK_ROWS, (row) => row.layout === settings.watermarkLayout);
+  const formatRow = findOrFirst(DATE_FORMAT_ROWS, (row) => row.format === dateEngine.format);
+  const glyphRow = findOrFirst(DATE_GLYPH_ROWS, (row) => row.glyphStyle === dateEngine.glyphStyle);
+  const spotRow = findOrFirst(DATE_SPOT_ROWS, (row) => row.spot === dateEngine.spot);
+  const glowRow = findOrFirst(DATE_GLOW_ROWS, (row) => row.glow === dateEngine.glow);
+  const qualitySpec = findOrFirst(CAPTURE_QUALITIES, (spec) => spec.id === settings.captureQuality);
+  const grainLevel = findOrFirst(GRAIN_LEVELS, (level) => level.id === settings.grainLevel);
+  const noFrameSpec = findOrFirst(NO_FRAME_ASPECTS, (spec) => spec.id === settings.noFrameAspect);
+
+  const sections: Record<SectionKey, SectionMeta> = {
+    lang: {
+      title: t('settings.language.head'),
+      summary:
+        preference === 'auto'
+          ? t('settings.language.system')
+          : (localeRow?.label ?? localeId),
+    },
+    loc_mode: { title: t('settings.location.head'), summary: t(locationRow.labelKey) },
+    loc_detail: {
+      title: t('settings.placeDetail.title'),
+      summary: t(placeDetailRow.labelKey),
+    },
+    loc_lang: { title: t('settings.geoLocale.title'), summary: t(geoLocaleRow.labelKey) },
+    watermark_layout: {
+      title: t('settings.watermark.title'),
+      summary: t(watermarkRow.labelKey),
+    },
+    date_format: {
+      title: t('settings.section.dateFormat'),
+      summary: t(formatRow.labelKey),
+    },
+    date_style: {
+      title: t('settings.section.dateFont'),
+      summary: t(glyphRow.labelKey),
+    },
+    date_pos: {
+      title: t('settings.section.datePos'),
+      summary: t(spotRow.labelKey),
+    },
+    date_color: {
+      title: t('settings.section.dateColor'),
+      summary: t(glowRow.labelKey),
+      // 圆点直接用该档光色的灯丝色（`DATE_GLOW_PALETTE.filament`）——
+      // 和成片上日期笔画里那圈颜色是同一份数据，不会"选的和看到的不一样"。
+      dotColor: DATE_GLOW_PALETTE[glowRow.glow].filament,
+    },
+    quality: {
+      title: t('settings.section.quality'),
+      summary: `${t(qualitySpec.labelKey)} ${qualitySpec.longEdge}px`,
+    },
+    grain: {
+      title: t('settings.section.grain'),
+      // 档位名走 i18n（`grain.level.*`），代号（LT/STD/…）不翻译 —— 与展开列表一致。
+      summary: `${t(grainLevel.labelKey ?? 'grain.label')} ${grainLevel.code}`,
+    },
+    frameless_ratio: {
+      title: t('settings.noFrame.title'),
+      // `NoFrameAspect` 的字面量本身就是比例串（'1:1' / '3:4' / '3:2'），不翻译。
+      summary: noFrameSpec.id,
+    },
+  };
+
+  /**
+   * 展开体：`switch` 保证 12 栏都有实现（`SectionKey` 是联合类型，
+   * 少写一栏 tsc 会报"函数缺少返回"）。
+   *
+   * 每台选项列表都复用旧的 `OptionRow`；提示句（hint）放在**展开后**的
+   * 列表下方，不再常驻 —— 收起态每栏只有一行，正是"一屏看清 12 大类"的前提。
+   */
+  const renderBody = (key: SectionKey) => {
+    switch (key) {
+      case 'lang':
+        return (
+          <View style={styles.group}>
+            <OptionRow
+              label={t('settings.language.system')}
+              note={localeId}
+              selected={preference === 'auto'}
+              onPress={() => pickAfter(() => handleLocalePreference('auto'))}
+              a11yLabel={t('settings.locale.a11y', { label: t('settings.language.system') })}
+            />
+            {LOCALES.map((locale) => (
+              <OptionRow
+                key={locale.id}
+                // 语言名永远用自己的语言写，绝不翻译（否则找不到中文界面的人会迷路）
+                label={locale.label}
+                selected={preference === (locale.id as LocalePreference)}
+                // `LOCALES` 是常量表，它的 `id` 声明成 `string` 而不是那个联合类型，
+                // 所以这里必须断言一次（沿用本文件原有的那处写法，没有新增）。
+                onPress={() => pickAfter(() => handleLocalePreference(locale.id as LocalePreference))}
+                a11yLabel={t('settings.locale.a11y', { label: locale.label })}
+              />
+            ))}
+          </View>
+        );
+
+      case 'loc_mode':
+        return (
+          <>
+            <View style={styles.group}>
+              {LOCATION_ROWS.map((row) => (
+                <OptionRow
+                  key={row.mode}
+                  label={t(row.labelKey)}
+                  selected={settings.locationMode === row.mode}
+                  onPress={() => pickAfter(() => handleLocationMode(row.mode))}
+                  a11yLabel={t('settings.locationMode.a11y', { label: t(row.labelKey) })}
+                />
+              ))}
+            </View>
+            <Text style={styles.hint}>{t('settings.location.hint')}</Text>
+            <View style={styles.statusLine}>
+              <View
+                style={[
+                  styles.statusDot,
+                  locationState.kind === 'ready' && styles.statusDotOn,
+                  locationState.kind === 'error' && styles.statusDotError,
+                ]}
+              />
+              <Text style={styles.statusText} numberOfLines={2}>
+                {locationStatus}
+              </Text>
+            </View>
+          </>
+        );
+
+      case 'loc_detail':
+        return (
+          <>
+            <View style={styles.group}>
+              {PLACE_DETAIL_ROWS.map((row) => (
+                <OptionRow
+                  key={row.detail}
+                  label={t(row.labelKey)}
+                  selected={settings.placeDetail === row.detail}
+                  // 灰掉而不是藏起来（理由见 placeDetailDisabled 上面的注释）
+                  disabled={placeDetailDisabled}
+                  onPress={() => pickAfter(() => handlePlaceDetail(row.detail))}
+                  a11yLabel={t('settings.placeDetail.a11y', { label: t(row.labelKey) })}
+                />
+              ))}
+            </View>
+            {/* 港澳台前缀那条规则**必须原样出现**，不折叠也不改写 ——
+                它描述的是一条用户看不见实现、却会出现在成片上的行为差异。 */}
+            <Text style={styles.hint}>{t('settings.placeDetail.note')}</Text>
+          </>
+        );
+
+      case 'loc_lang':
+        return (
+          <>
+            <View style={styles.group}>
+              {GEO_LOCALE_ROWS.map((row) => (
+                <OptionRow
+                  key={row.geoLocale}
+                  label={t(row.labelKey)}
+                  selected={settings.geoLocale === row.geoLocale}
+                  onPress={() => pickAfter(() => handleGeoLocale(row.geoLocale))}
+                  a11yLabel={t('settings.geoLocale.a11y', { label: t(row.labelKey) })}
+                />
+              ))}
+            </View>
+            {/* 这一档**只改地名的书写语言**，不动界面语言 —— 界面语言在 lang，
+                用户完全可能想要"界面中文、地名英文"（发到国外平台时很常见）。 */}
+            <Text style={styles.hint}>{t('settings.geoLocale.note')}</Text>
+          </>
+        );
+
+      case 'watermark_layout':
+        return (
+          <View style={styles.group}>
+            {WATERMARK_ROWS.map((row) => (
+              <OptionRow
+                key={row.layout}
+                label={t(row.labelKey)}
+                selected={settings.watermarkLayout === row.layout}
+                onPress={() => pickAfter(() => handleWatermarkLayout(row.layout))}
+                a11yLabel={t('settings.watermark.a11y', { label: t(row.labelKey) })}
+              />
+            ))}
+          </View>
+        );
+
+      case 'date_format':
+        // 格式：决定日期**印什么**（12 档 + "关闭"）。
+        // 每一行的标签就是这一档的样例串（`settings.dateEngine.format.*` 里
+        // 存的是样例而不是名字）—— 日期烙印这种东西，看样例比看"年月日"这种
+        // 档位名快得多，而且样例本身就是模板渲染出来的真实结果。
+        return (
+          <View style={styles.group}>
+            {DATE_FORMAT_ROWS.map((row) => (
+              <OptionRow
+                key={row.format}
+                label={t(row.labelKey)}
+                selected={dateEngine.format === row.format}
+                onPress={() => pickAfter(() => handleDateFormat(row.format))}
+                a11yLabel={t('settings.dateEngine.a11y.format', { label: t(row.labelKey) })}
+              />
+            ))}
+          </View>
+        );
+
+      case 'date_style':
+        // 字形：决定日期**怎么长**。v1.8.3 起只剩 4 档，全部是原生等宽字体
+        // + 三层叠加发光（或印刷观感），不再有 7 段数码管/点阵这种逐格几何。
+        return (
+          <>
+            <View style={styles.group}>
+              {DATE_GLYPH_ROWS.map((row) => (
+                <OptionRow
+                  key={row.glyphStyle}
+                  label={t(row.labelKey)}
+                  selected={dateEngine.glyphStyle === row.glyphStyle}
+                  onPress={() => pickAfter(() => handleDateGlyph(row.glyphStyle))}
+                  a11yLabel={t('settings.dateEngine.a11y.glyph', { label: t(row.labelKey) })}
+                />
+              ))}
+            </View>
+            <Text style={styles.hint}>{t('settings.dateEngine.hint')}</Text>
+          </>
+        );
+
+      case 'date_pos':
+        // 机位：决定日期**印在哪**（画内 6 档 + 白边 2 档）。
+        // 顺序 = 先画内、后白边；画内那 6 档按"左下 → 右下 → 右上 → 底部居中"排，
+        // 与 `DateStampSpot` 的枚举顺序一致。标签里那句"竖排"是真的 90° 旋转。
+        return (
+          <View style={styles.group}>
+            {DATE_SPOT_ROWS.map((row) => (
+              <OptionRow
+                key={row.spot}
+                label={t(row.labelKey)}
+                selected={dateEngine.spot === row.spot}
+                onPress={() => pickAfter(() => handleDateSpot(row.spot))}
+                a11yLabel={t('settings.dateEngine.a11y.spot', { label: t(row.labelKey) })}
+              />
+            ))}
+          </View>
+        );
+
+      case 'date_color':
+        // 发光色：决定日期的灯丝发什么颜色的光（5 档）。
+        // 这一栏的每一行右侧都带一枚圆点，颜色取自 `DATE_GLOW_PALETTE.filament`
+        // —— 圆点与成片笔画同源，选完立刻能在收起态摘要上再看到一次。
+        return (
+          <View style={styles.group}>
+            {DATE_GLOW_ROWS.map((row) => (
+              <OptionRow
+                key={row.glow}
+                label={t(row.labelKey)}
+                swatch={DATE_GLOW_PALETTE[row.glow].filament}
+                selected={dateEngine.glow === row.glow}
+                onPress={() => pickAfter(() => handleDateGlow(row.glow))}
+                a11yLabel={t('settings.dateEngine.a11y.glow', { label: t(row.labelKey) })}
+              />
+            ))}
+          </View>
+        );
+
+      case 'quality':
+        return (
+          <>
+            <View style={styles.group}>
+              {CAPTURE_QUALITIES.map((spec) => (
+                <OptionRow
+                  key={spec.id}
+                  // 档位名走 i18n（`settings.quality.*`）。`spec.note` 是常量表里给开发者
+                  // 看的中文说明，**不进 UI**；这一列的"代号"位显示真实的长边像素，
+                  // 与颗粒行的 `STD` 同类：数字不随语言变，也不该被翻译。
+                  label={t(spec.labelKey)}
+                  note={`${spec.longEdge}px`}
+                  selected={settings.captureQuality === spec.id}
+                  onPress={() => pickAfter(() => handleCaptureQuality(spec.id))}
+                  a11yLabel={t('settings.quality.a11y', { label: t(spec.labelKey) })}
+                />
+              ))}
+            </View>
+            {/*
+              如实说明这一档**买不到什么**：真 48MP 要原生相机模块，纯 JS 侧没有这条路。
+              第一句是本地化的（`settings.quality.note`），后半句是语言中立的事实标注
+              —— 详见 `captureQuality.ts` 里 `captureQualityCapNote` 的注释。
+              刻意写在**行下方**而不是塞进某一行：它不是某一档的属性，是三档共同的前提。
+            */}
+            <Text style={styles.hint}>{captureQualityCapNote(settings.captureQuality, t)}</Text>
+          </>
+        );
+
+      case 'grain':
+        return (
+          <>
+            <View style={styles.group}>
+              {GRAIN_LEVELS.map((level) => (
+                <OptionRow
+                  key={level.id}
+                  // 档位名走 i18n（`grain.level.*`），绝不直接显示 `level.label`
+                  // —— 那是常量表里的中文原文，只适合当开发期兜底。
+                  label={t(level.labelKey ?? 'grain.label')}
+                  note={level.code}
+                  selected={settings.grainLevel === level.id}
+                  onPress={() => pickAfter(() => handleGrainLevel(level.id))}
+                  a11yLabel={t('settings.grain.a11y', { label: t(level.labelKey ?? 'grain.label') })}
+                />
+              ))}
+            </View>
+            <Text style={styles.hint}>{t('grain.note')}</Text>
+          </>
+        );
+
+      case 'frameless_ratio':
+        return (
+          <>
+            <View style={styles.group}>
+              {NO_FRAME_ASPECTS.map((spec) => (
+                <OptionRow
+                  key={spec.id}
+                  // 档位名走 i18n（`frame.noFrame.aspect*`）；`note` 位显示真实比例数字，
+                  // 与画质行的 `2048px` 同类 —— 数字不随语言变，也不该被翻译。
+                  label={t(NO_FRAME_ASPECT_LABEL_KEYS[spec.id])}
+                  note={`${spec.ratio.toFixed(2)}`}
+                  selected={settings.noFrameAspect === spec.id}
+                  onPress={() => pickAfter(() => handleNoFrameAspect(spec.id))}
+                  a11yLabel={t('settings.noFrame.a11y', {
+                    label: t(NO_FRAME_ASPECT_LABEL_KEYS[spec.id]),
+                  })}
+                />
+              ))}
+            </View>
+            <Text style={styles.hint}>{t('settings.noFrame.hint')}</Text>
+          </>
+        );
+
+      default: {
+        // 联合类型穷尽性兜底：真出现第 13 个 key 时，这里返回 null 而不是崩。
+        // 用 `_exhaustive: never` 让 tsc 在漏写分支时直接报错。
+        const _exhaustive: never = key;
+        void _exhaustive;
+        return null;
+      }
+    }
+  };
+
   return (
     <View style={styles.root}>
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[
           styles.content,
-          { paddingTop: Math.max(insets.top, 16) + 8, paddingBottom: Math.max(insets.bottom, 16) + 24 },
+          {
+            paddingTop: Math.max(insets.top, 16) + 8,
+            paddingBottom: Math.max(insets.bottom, 16) + 24,
+          },
         ]}
         showsVerticalScrollIndicator={false}
       >
@@ -311,248 +782,23 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
           </Pressable>
         </View>
 
-        {/* ① 语言。用户只点了四种语言，但日语/法语在仓库里已经是**完整**翻译
-            （不是占位），砍掉等于把已经做好的工作藏起来，所以六种全留。 */}
-        <SectionHeading label={t('settings.language.head')} />
-        <View style={styles.group}>
-          <OptionRow
-            label={t('settings.language.system')}
-            note={localeId}
-            selected={preference === 'auto'}
-            onPress={() => handleLocalePreference('auto')}
-            a11yLabel={t('settings.locale.a11y', { label: t('settings.language.system') })}
-          />
-          {LOCALES.map((locale) => (
-            <OptionRow
-              key={locale.id}
-              // 语言名永远用自己的语言写，绝不翻译（否则找不到中文界面的人会迷路）
-              label={locale.label}
-              selected={preference === (locale.id as LocalePreference)}
-              // `LOCALES` 是常量表，它的 `id` 声明成 `string` 而不是那个联合类型，
-              // 所以这里必须断言一次（沿用本文件原有的那处写法，没有新增）。
-              onPress={() => handleLocalePreference(locale.id as LocalePreference)}
-              a11yLabel={t('settings.locale.a11y', { label: locale.label })}
-            />
-          ))}
-        </View>
-
-        {/* ② 定位 */}
-        <SectionHeading label={t('settings.location.head')} />
-        <View style={styles.group}>
-          {LOCATION_ROWS.map((row) => (
-            <OptionRow
-              key={row.mode}
-              label={t(row.labelKey)}
-              selected={settings.locationMode === row.mode}
-              onPress={() => handleLocationMode(row.mode)}
-              a11yLabel={t('settings.locationMode.a11y', { label: t(row.labelKey) })}
-            />
-          ))}
-        </View>
-        <Text style={styles.hint}>{t('settings.location.hint')}</Text>
-        <View style={styles.statusLine}>
-          <View
-            style={[
-              styles.statusDot,
-              locationState.kind === 'ready' && styles.statusDotOn,
-              locationState.kind === 'error' && styles.statusDotError,
-            ]}
-          />
-          <Text style={styles.statusText} numberOfLines={2}>
-            {locationStatus}
-          </Text>
-        </View>
-
-        {/* ③ 地名详细度。必须紧跟定位：它只在"地名"那一档下才起作用，
-            两段相邻才看得出从属关系。 */}
-        <SectionHeading label={t('settings.placeDetail.title')} />
-        <View style={styles.group}>
-          {PLACE_DETAIL_ROWS.map((row) => (
-            <OptionRow
-              key={row.detail}
-              label={t(row.labelKey)}
-              selected={settings.placeDetail === row.detail}
-              // 灰掉而不是藏起来（理由见 placeDetailDisabled 上面的注释）
-              disabled={placeDetailDisabled}
-              onPress={() => handlePlaceDetail(row.detail)}
-              a11yLabel={t('settings.placeDetail.a11y', { label: t(row.labelKey) })}
-            />
-          ))}
-        </View>
-        {/* 港澳台前缀那条规则**必须原样出现**，不折叠也不改写 ——
-            它描述的是一条用户看不见实现、却会出现在成片上的行为差异。 */}
-        <Text style={styles.hint}>{t('settings.placeDetail.note')}</Text>
-
-        {/* ④ 地名语言。紧贴地名详细度：两段都只影响成片上那一行地名，
-            分开摆会让用户以为是两件互不相干的事。
-            这一档**只改地名的书写语言**，不动界面语言 —— 界面语言在①，
-            用户完全可能想要"界面中文、地名英文"（发到国外平台时很常见）。 */}
-        <SectionHeading label={t('settings.geoLocale.title')} />
-        <View style={styles.group}>
-          {GEO_LOCALE_ROWS.map((row) => (
-            <OptionRow
-              key={row.geoLocale}
-              label={t(row.labelKey)}
-              selected={settings.geoLocale === row.geoLocale}
-              onPress={() => handleGeoLocale(row.geoLocale)}
-              a11yLabel={t('settings.geoLocale.a11y', { label: t(row.labelKey) })}
-            />
-          ))}
-        </View>
-        <Text style={styles.hint}>{t('settings.geoLocale.note')}</Text>
-
-        {/* ⑤ 水印版式 */}
-        <SectionHeading label={t('settings.watermark.title')} />
-        <View style={styles.group}>
-          {WATERMARK_ROWS.map((row) => (
-            <OptionRow
-              key={row.layout}
-              label={t(row.labelKey)}
-              selected={settings.watermarkLayout === row.layout}
-              onPress={() => handleWatermarkLayout(row.layout)}
-              a11yLabel={t('settings.watermark.a11y', { label: t(row.labelKey) })}
-            />
-          ))}
-        </View>
-
-        {/* ⑥ 日期引擎（v1.8.0 · 模块五）。四个选择器 = 日期的四个轴，顺序按
-            「先决定印什么 → 再决定怎么长 → 最后决定印在哪、发什么光」：
-            格式 → 字形 → 机位 → 发光色。
-            不把这四组拆成带小标题的四段：小标题要新增四条 i18n 文案，而这四组
-            的标签本身已经自解释（格式行直接显示样例串、机位行写"画内左下 · 竖排"、
-            发光行写颜色名），再多一层标题只是把这一屏拉得更长。 */}
-        <SectionHeading label={t('settings.dateEngine.title')} />
-
-        {/* 轴一 · 格式：决定日期**印什么**（13 档，最后一档是"关闭"）。
-            每一行的标签就是这一档的样例串（`settings.dateEngine.format.*` 里
-            存的是样例而不是名字）—— 日期烙印这种东西，看样例比看"年月日"这种
-            档位名快得多，而且样例本身就是模板渲染出来的真实结果。 */}
-        <View style={styles.group}>
-          {DATE_FORMAT_ROWS.map((row) => (
-            <OptionRow
-              key={row.format}
-              label={t(row.labelKey)}
-              selected={dateEngine.format === row.format}
-              onPress={() => handleDateFormat(row.format)}
-              a11yLabel={t('settings.dateEngine.a11y.format', { label: t(row.labelKey) })}
-            />
-          ))}
-        </View>
-
-        {/* 轴二 · 字形：决定日期**怎么长**（5 档点阵/数码管/印刷体）。
-            这一档是"整个日期引擎"里唯一会改变**字号设计像素**的轴
-            （`DATE_DESIGN_PX`，见 `constants/canvasBase.ts`）—— 不过它只改字形档，
-            不改"字号跟着画布宽等比锁死"这条不变式。 */}
-        <View style={styles.group}>
-          {DATE_GLYPH_ROWS.map((row) => (
-            <OptionRow
-              key={row.glyphStyle}
-              label={t(row.labelKey)}
-              selected={dateEngine.glyphStyle === row.glyphStyle}
-              onPress={() => handleDateGlyph(row.glyphStyle)}
-              a11yLabel={t('settings.dateEngine.a11y.glyph', { label: t(row.labelKey) })}
-            />
-          ))}
-        </View>
-
-        {/* 轴三 · 机位：决定日期**印在哪**（画内 6 档 + 白边 2 档）。
-            顺序 = 先画内、后白边；画内那 6 档按"左下 → 右下 → 右上 → 底部居中"排，
-            与 `DateStampSpot` 的枚举顺序一致。标签里那句"竖排"是真的 90° 旋转，
-            不是换行 —— 所以这一档的选项文字本身也是唯一需要带方向的标签。 */}
-        <View style={styles.group}>
-          {DATE_SPOT_ROWS.map((row) => (
-            <OptionRow
-              key={row.spot}
-              label={t(row.labelKey)}
-              selected={dateEngine.spot === row.spot}
-              onPress={() => handleDateSpot(row.spot)}
-              a11yLabel={t('settings.dateEngine.a11y.spot', { label: t(row.labelKey) })}
-            />
-          ))}
-        </View>
-
-        {/* 轴四 · 发光色：决定日期的灯丝发什么颜色的光（5 档）。
-            放在机位之后，因为这四轴里只有它和"印在哪"无关、纯粹是观感，
-            顺序上排最后也就最不容易和"我要它印在哪儿"混起来。 */}
-        <View style={styles.group}>
-          {DATE_GLOW_ROWS.map((row) => (
-            <OptionRow
-              key={row.glow}
-              label={t(row.labelKey)}
-              selected={dateEngine.glow === row.glow}
-              onPress={() => handleDateGlow(row.glow)}
-              a11yLabel={t('settings.dateEngine.a11y.glow', { label: t(row.labelKey) })}
-            />
-          ))}
-        </View>
-        <Text style={styles.hint}>{t('settings.dateEngine.hint')}</Text>
-
-        {/* ⑦ 画质（v1.7.0 · 模块一）：成片长边像素。 */}
-        <SectionHeading label={t('settings.quality.title')} />
-        <View style={styles.group}>
-          {CAPTURE_QUALITIES.map((spec) => (
-            <OptionRow
-              key={spec.id}
-              // 档位名走 i18n（`settings.quality.*`）。`spec.note` 是常量表里给开发者
-              // 看的中文说明，**不进 UI**；这一列的"代号"位显示真实的长边像素，
-              // 与颗粒行的 `STD` 同类：数字不随语言变，也不该被翻译。
-              label={t(spec.labelKey)}
-              note={`${spec.longEdge}px`}
-              selected={settings.captureQuality === spec.id}
-              onPress={() => handleCaptureQuality(spec.id)}
-              a11yLabel={t('settings.quality.a11y', { label: t(spec.labelKey) })}
-            />
-          ))}
-        </View>
-        {/*
-          如实说明这一档**买不到什么**：真 48MP 要原生相机模块，纯 JS 侧没有这条路。
-          第一句是本地化的（`settings.quality.note`），后半句是语言中立的事实标注
-          —— 详见 `captureQuality.ts` 里 `captureQualityCapNote` 的注释。
-          刻意写在**行下方**而不是塞进某一行：它不是某一档的属性，是三档共同的前提。
-        */}
-        <Text style={styles.hint}>{captureQualityCapNote(settings.captureQuality, t)}</Text>
-
-        {/* ⑧ 颗粒。从取景器底部那条横向滑轨搬过来的（见文件头）。 */}
-        <SectionHeading label={t('settings.grain.title')} />
-        <View style={styles.group}>
-          {GRAIN_LEVELS.map((level) => (
-            <OptionRow
-              key={level.id}
-              // 档位名走 i18n（`grain.level.*`），绝不直接显示 `level.label`
-              // —— 那是常量表里的中文原文，只适合当开发期兜底。
-              label={t(level.labelKey ?? 'grain.label')}
-              note={level.code}
-              selected={settings.grainLevel === level.id}
-              onPress={() => handleGrainLevel(level.id)}
-              a11yLabel={t('settings.grain.a11y', { label: t(level.labelKey ?? 'grain.label') })}
-            />
-          ))}
-        </View>
-        <Text style={styles.hint}>{t('grain.note')}</Text>
-
-        {/*
-          ⑨ 无相框画幅（v1.8.1 · 00 NO FRAME）。
-          为什么排在最后：它只在"相框 = 00"时改变成片，别的相框下点了没有任何
-          视觉反馈。塞在画质/颗粒中间会让它看起来是一个"总是生效"的选项。
-        */}
-        <SectionHeading label={t('settings.noFrame.title')} />
-        <View style={styles.group}>
-          {NO_FRAME_ASPECTS.map((spec) => (
-            <OptionRow
-              key={spec.id}
-              // 档位名走 i18n（`frame.noFrame.aspect*`）；`note` 位显示真实比例数字，
-              // 与画质行的 `2048px` 同类 —— 数字不随语言变，也不该被翻译。
-              label={t(NO_FRAME_ASPECT_LABEL_KEYS[spec.id])}
-              note={`${spec.ratio.toFixed(2)}`}
-              selected={settings.noFrameAspect === spec.id}
-              onPress={() => handleNoFrameAspect(spec.id)}
-              a11yLabel={t('settings.noFrame.a11y', {
-                label: t(NO_FRAME_ASPECT_LABEL_KEYS[spec.id]),
-              })}
-            />
-          ))}
-        </View>
-        <Text style={styles.hint}>{t('settings.noFrame.hint')}</Text>
+        {/* 12 个折叠栏：每次只开一个，默认全收。 */}
+        {SECTION_ORDER.map((key) => {
+          const meta = sections[key];
+          const expanded = expandedKey === key;
+          return (
+            <View key={key} style={styles.section}>
+              <AccordionHeader
+                title={meta.title}
+                summary={meta.summary}
+                dotColor={meta.dotColor}
+                expanded={expanded}
+                onToggle={() => toggleSection(key)}
+              />
+              {expanded ? <View style={styles.accBody}>{renderBody(key)}</View> : null}
+            </View>
+          );
+        })}
 
         <Text style={styles.footer}>{t('settings.footer')}</Text>
       </ScrollView>
@@ -560,8 +806,88 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   );
 }
 
+/** 12 栏标题 + 收起态摘要（摘要里只有 `date_color` 带一枚圆点）。 */
+interface SectionMeta {
+  title: string;
+  summary: string;
+  dotColor?: string;
+}
+
+/**
+ * 在常量表里找当前档位，找不到就退回第一档。
+ *
+ * 为什么不用 `find(...)!`：设置值来自持久化存储，理论上可能是一个已经
+ * 被删掉的旧档位（比如从 1.8.2 升级上来时 `glyphStyle` 还是 `led_7seg`）。
+ * 这时摘要不能是 `undefined` —— 退回第一档至少能显示出一个合理值，
+ * 真正的迁移在 `settingsStore` 里做。
+ */
+function findOrFirst<T>(rows: readonly T[], match: (row: T) => boolean): T {
+  return rows.find(match) ?? rows[0];
+}
+
+/**
+ * 一行折叠栏的头部（收起态）。
+ *
+ * 固定 54pt 高 —— 12 行 × 54 = 648pt，iPhone 13 的可用高度约 760pt，
+ * 加上标题栏正好一屏，这就是"打开设置页一屏看清 12 大类"的算术依据。
+ * 布局从左到右：2pt 竖条 → 标题（占剩余）→ 摘要 → 旋转箭头。
+ */
+function AccordionHeader({
+  title,
+  summary,
+  dotColor,
+  expanded,
+  onToggle,
+}: {
+  title: string;
+  summary: string;
+  dotColor?: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const theme = useTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
+  return (
+    <Pressable
+      onPress={onToggle}
+      accessibilityRole="button"
+      // `expanded` 是标准无障碍状态：VoiceOver 会念"已展开/已收起"。
+      accessibilityState={{ expanded }}
+      accessibilityLabel={title}
+      style={({ pressed }) => [styles.accHeader, pressed && styles.accHeaderPressed]}
+    >
+      <View style={styles.accBar} />
+      <Text style={styles.accTitle} numberOfLines={1}>
+        {title}
+      </Text>
+      <View style={styles.accSpacer} />
+      {dotColor !== undefined ? (
+        // 圆点是纯装饰：颜色信息已经由摘要文字（色名）和无障碍标签承载。
+        <View style={[styles.accDot, { backgroundColor: dotColor }]} accessible={false} />
+      ) : null}
+      <Text style={styles.accSummary} numberOfLines={1}>
+        {summary}
+      </Text>
+      <Text
+        style={[styles.accChevron, expanded && styles.accChevronOpen]}
+        numberOfLines={1}
+        accessible={false}
+      >
+        ⌄
+      </Text>
+    </Pressable>
+  );
+}
+
 /** 定位三个档位的顺序（数组顺序 = 界面顺序 = 从最保守到最具体）。 */
-const LOCATION_ROWS: readonly { mode: LocationMode; labelKey: 'settings.location.off' | 'settings.location.place' | 'settings.location.coords' }[] = [
+const LOCATION_ROWS: readonly {
+  mode: LocationMode;
+  labelKey:
+    | 'settings.location.off'
+    | 'settings.location.place'
+    | 'settings.location.coords';
+}[] = [
   { mode: 'off', labelKey: 'settings.location.off' },
   { mode: 'place', labelKey: 'settings.location.place' },
   { mode: 'coords', labelKey: 'settings.location.coords' },
@@ -580,7 +906,7 @@ const PLACE_DETAIL_ROWS: readonly {
  * 地名语言四档的顺序 = 从"交给系统"到越来越具体。
  *
  * 为什么「跟随界面」排第一：它和上面两段一样，默认档必须排在最前 ——
- * 用户打开这一屏时，当前档位就在第一行，"我现在是不是在跟随系统"一眼可见。
+ * 用户打开这一栏时，当前档位就在第一行，"我现在是不是在跟随系统"一眼可见。
  * 后三档按使用人数排，中文两档在英文之前（这个 App 的界面语言里中文占多数）。
  */
 const GEO_LOCALE_ROWS: readonly {
@@ -613,13 +939,10 @@ const WATERMARK_ROWS: readonly {
 ];
 
 /**
- * 日期引擎四张行的表（v1.8.0 · 模块五）。
+ * 日期引擎四张行的表。
  *
- * 为什么这四张表的 `labelKey` 写成 `MessageKey` 而不是像上面几张表那样逐条列出
- * 字面量联合：格式一档就有 13 行，四张表加起来 31 行，逐条写等于把同一份枚举
- * 抄第二遍 —— 抄漏一条编译器不会报，而是让那一行在界面上变成空白。
- * `MessageKey` 本身就是"所有键的字面量联合"，写错键名照样过不了编译，
- * 保护一点没少。
+ * 四张表各自对应一个折叠栏（格式 / 字形 / 机位 / 发光），**不再混排**：
+ * 用户 m01534 明确要求"严禁把格式、字形、位置、颜色混在一起"。
  *
  * 顺序一律 = `types/index.ts` 里那个枚举的声明顺序，不另排一套：
  * 界面顺序与枚举顺序一致，改档位时只需要看一个地方。
@@ -642,10 +965,14 @@ const DATE_FORMAT_ROWS: readonly { format: DateFormatId; labelKey: MessageKey }[
   { format: 'OFF', labelKey: 'settings.dateEngine.format.OFF' },
 ];
 
-/** 字形五档：从最"电子的"到最"印刷的"。 */
+/**
+ * 字形四档（v1.8.3 合并 7 段数码管 + 5×7 点阵为「石英機背發光」）。
+ *
+ * 顺序 = 从最"电子的"（石英灯管）到最"印刷的"（钢印），全部是原生等宽字体
+ * 渲染，没有逐格几何 —— 竖排时不会再出现空心红框/圆圈错位。
+ */
 const DATE_GLYPH_ROWS: readonly { glyphStyle: DateGlyphStyleId; labelKey: MessageKey }[] = [
-  { glyphStyle: 'led_7seg', labelKey: 'settings.dateEngine.glyph.led_7seg' },
-  { glyphStyle: 'led_dot_matrix', labelKey: 'settings.dateEngine.glyph.led_dot_matrix' },
+  { glyphStyle: 'quartz_led', labelKey: 'settings.dateEngine.glyph.quartz_led' },
   { glyphStyle: 'ccd_osd', labelKey: 'settings.dateEngine.glyph.ccd_osd' },
   { glyphStyle: 'lab_inkjet', labelKey: 'settings.dateEngine.glyph.lab_inkjet' },
   { glyphStyle: 'archival_steel', labelKey: 'settings.dateEngine.glyph.archival_steel' },
@@ -686,24 +1013,12 @@ const NO_FRAME_ASPECT_LABEL_KEYS: Record<NoFrameAspect, MessageKey> = {
   '3:2': 'frame.noFrame.aspect32',
 };
 
-function SectionHeading({ label }: { label: string }) {
-  // 每个用到样式的组件各取一份"当前机身配色"。理由见 SettingsScreen 里 `styles` 的注释：
-  // 模块作用域的 StyleSheet 会把颜色烧死，系统换肤时不会重渲染。
-  const theme = useTheme();
-  const styles = useMemo(() => createStyles(theme), [theme]);
-
-  return (
-    <View style={styles.sectionHeading}>
-      <View style={styles.sectionRule} />
-      <Text style={styles.sectionLabel}>{label}</Text>
-    </View>
-  );
-}
-
 interface OptionRowProps {
   label: string;
   /** 右侧那行小字（比如"跟随系统"当前实际解析成了哪门语言）。 */
   note?: string;
+  /** 左侧文字前面的一枚色块（日期发光色用，v1.8.3 A1）。 */
+  swatch?: string;
   selected: boolean;
   onPress: () => void;
   a11yLabel: string;
@@ -724,9 +1039,17 @@ interface OptionRowProps {
  *
  * 为什么对勾写在 `note` **后面**而不是取代它：`note` 是"这一档的代号"
  * （颗粒的 `STD` / 语言的 `zh-Hans`），它是内容不是状态，选中时更不该消失
- * —— 用户想知道"标准档的代号是 STD"。所以顺序固定为：文字 → 代号 → 对勾。
+ * —— 用户想知道"标准档的代号是 STD"。所以顺序固定为：色块 → 文字 → 代号 → 对勾。
  */
-function OptionRow({ label, note, selected, onPress, a11yLabel, disabled }: OptionRowProps) {
+function OptionRow({
+  label,
+  note,
+  swatch,
+  selected,
+  onPress,
+  a11yLabel,
+  disabled,
+}: OptionRowProps) {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
 
@@ -746,6 +1069,9 @@ function OptionRow({ label, note, selected, onPress, a11yLabel, disabled }: Opti
       accessibilityLabel={a11yLabel}
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
     >
+      {swatch !== undefined ? (
+        <View style={[styles.swatch, { backgroundColor: swatch }]} accessible={false} />
+      ) : null}
       <Text
         style={[
           styles.rowLabel,
@@ -788,7 +1114,7 @@ function OptionRow({ label, note, selected, onPress, a11yLabel, disabled }: Opti
 /**
  * 样式表 = "当前机身配色"的函数。
  *
- * 为什么不是模块级常量：见 SettingsScreen 里 `styles` 那段注释（颜色会被烧死）。
+ * 为什么不是模块级常量：见文件头注释（`StyleSheet.create` 会把颜色烧死）。
  * 为什么所有颜色都从 `theme` 取、连半透明的按压底色也走 `glass`：
  * `rgba(255,255,255,0.04)` 这类"提亮"在深机身上是按压反馈，在浅机身上会变成
  * 一层白雾糊在浅底上 —— 看着像渲染脏了。`glass` 两套机身各自定义为
@@ -798,172 +1124,222 @@ function createStyles(theme: Theme) {
   const { ink, scrim, glass } = theme;
 
   return StyleSheet.create({
-  root: {
-    // 注意：RN 0.86 已移除 StyleSheet.absoluteFillObject，只能用 absoluteFill
-    ...StyleSheet.absoluteFill,
-    // 压在 DevelopOverlay（zIndex 20）之上：显影过程中打开设置也不该被盖住
-    zIndex: 30,
-    // 必须不透明：取景器的实时预览就在这块下面跑（见上面 SCRIM 的注释）
-    backgroundColor: scrim,
-  },
-  scroll: {
-    flex: 1,
-  },
-  content: {
-    paddingHorizontal: 20,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginBottom: 24,
-  },
-  headerText: {
-    flex: 1,
-  },
-  title: {
-    color: ink.paper,
-    fontFamily: UI_MONO,
-    fontSize: 18,
-    letterSpacing: 4,
-  },
-  subtitle: {
-    marginTop: 6,
-    color: ink.paperDim,
-    fontFamily: UI_MONO,
-    fontSize: 9,
-    letterSpacing: 2,
-  },
-  close: {
-    minWidth: 34,
-    height: 30,
-    paddingHorizontal: 12,
-    borderRadius: 15,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: ink.hairline,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  closePressed: {
-    backgroundColor: glass,
-  },
-  closeText: {
-    color: ink.amberSoft,
-    fontFamily: UI_MONO,
-    fontSize: 12,
-    letterSpacing: 1.2,
-  },
-  sectionHeading: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 18,
-    marginBottom: 10,
-  },
-  sectionRule: {
-    width: 2,
-    height: 12,
-    // 小竖线用"深一档的强调色"，不是写死的琥珀：浅机身下 `amberDeep` 是朱红，
-    // 写死 `rgba(194,122,48,0.60)` 会在浅底上变成一块土黄。
-    backgroundColor: ink.amberDeep,
-    marginRight: 8,
-  },
-  sectionLabel: {
-    color: ink.paperDim,
-    fontFamily: UI_MONO,
-    fontSize: 10,
-    letterSpacing: 2.4,
-  },
-  group: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: ink.hairline,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: ink.hairline,
-  },
-  rowPressed: {
-    backgroundColor: glass,
-  },
-  rowLabel: {
-    flex: 1,
-    color: ink.paperDim,
-    fontSize: 15,
-    letterSpacing: 0.6,
-  },
-  rowLabelOn: {
-    color: ink.paper,
-  },
-  /** 灰掉的行：压到 0.38 —— 还读得清是什么，但一眼看得出"现在不生效"。 */
-  rowLabelDim: {
-    opacity: 0.38,
-  },
-  /**
-   * 对勾的固定槽位。宽度写死 20pt，选中与否都占着，避免选中瞬间文字被挤窄。
-   * 用 `alignItems: 'flex-end'` 而不是靠外边距对齐：右端就是这一行的右缘，
-   * 不随 `note` 的长短漂移。
-   */
-  check: {
-    width: 20,
-    marginLeft: 12,
-    alignItems: 'flex-end',
-  },
-  checkMark: {
-    // 跟着配色表走：深机身是琥珀 `#E5A93C`，浅机身是朱红 `#D32F2F`（见上方注释）
-    color: ink.amber,
-    fontSize: 15,
-    lineHeight: 20,
-  },
-  rowNote: {
-    marginLeft: 12,
-    color: ink.paperFaint,
-    fontFamily: UI_MONO,
-    fontSize: 10,
-    letterSpacing: 1,
-    maxWidth: 120,
-  },
-  hint: {
-    marginTop: 10,
-    color: ink.paperFaint,
-    fontSize: 11,
-    lineHeight: 17,
-  },
-  statusLine: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 12,
-    paddingTop: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: ink.hairline,
-  },
-  statusDot: {
-    width: 6,
-    height: 6,
-    marginRight: 8,
-    borderRadius: 3,
-    backgroundColor: ink.paperFaint,
-  },
-  statusDotOn: {
-    backgroundColor: ink.amber,
-  },
-  statusDotError: {
-    backgroundColor: ink.amberDeep,
-  },
-  statusText: {
-    flex: 1,
-    color: ink.amberSoft,
-    fontFamily: UI_MONO,
-    fontSize: 11,
-    letterSpacing: 0.8,
-  },
-  footer: {
-    marginTop: 30,
-    color: ink.paperFaint,
-    fontFamily: UI_MONO,
-    fontSize: 9,
-    lineHeight: 15,
-    letterSpacing: 1.2,
-  },
+    root: {
+      // 注意：RN 0.86 已移除 StyleSheet.absoluteFillObject，只能用 absoluteFill
+      ...StyleSheet.absoluteFill,
+      // 压在 DevelopOverlay（zIndex 20）之上：显影过程中打开设置也不该被盖住
+      zIndex: 30,
+      // 必须不透明：取景器的实时预览就在这块下面跑（见 SCRIM 的注释）
+      backgroundColor: scrim,
+    },
+    scroll: {
+      flex: 1,
+    },
+    content: {
+      paddingHorizontal: 20,
+    },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      marginBottom: 18,
+    },
+    headerText: {
+      flex: 1,
+    },
+    title: {
+      color: ink.paper,
+      fontFamily: UI_MONO,
+      fontSize: 18,
+      letterSpacing: 4,
+    },
+    subtitle: {
+      marginTop: 6,
+      color: ink.paperDim,
+      fontFamily: UI_MONO,
+      fontSize: 9,
+      letterSpacing: 2,
+    },
+    close: {
+      minWidth: 34,
+      height: 30,
+      paddingHorizontal: 12,
+      borderRadius: 15,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: ink.hairline,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    closePressed: {
+      backgroundColor: glass,
+    },
+    closeText: {
+      color: ink.amberSoft,
+      fontFamily: UI_MONO,
+      fontSize: 12,
+      letterSpacing: 1.2,
+    },
+    /** 一栏的外框：栏与栏之间只有一条发丝线，不画卡片、不加圆角。 */
+    section: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: ink.hairline,
+    },
+    /** 收起态头部：固定 54pt（12 行正好一屏，见 AccordionHeader 的注释）。 */
+    accHeader: {
+      height: 54,
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    accHeaderPressed: {
+      backgroundColor: glass,
+    },
+    /** 左侧竖条指示器：朱红/琥珀色，语义 = "这是一栏"。 */
+    accBar: {
+      width: 2,
+      height: 14,
+      marginRight: 10,
+      // 深机身是琥珀 `#E5A93C`，浅机身是朱红 `#D32F2F`（由配色表决定）
+      backgroundColor: ink.amberDeep,
+    },
+    accTitle: {
+      color: ink.paper,
+      fontSize: 14,
+      fontWeight: '600',
+      letterSpacing: 0.8,
+      flexShrink: 1,
+    },
+    accSpacer: {
+      flex: 1,
+    },
+    /** 摘要：用户逐字指定的暗金色 `#C86418`，只放当前档位一个值。 */
+    accSummary: {
+      marginLeft: 10,
+      color: SUMMARY_GOLD,
+      fontSize: 14,
+      letterSpacing: 0.4,
+      maxWidth: 170,
+    },
+    /** 日期发光色摘要前的圆点（仅在 `date_color` 栏出现）。 */
+    accDot: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+    },
+    accChevron: {
+      width: 16,
+      marginLeft: 6,
+      color: ink.paperFaint,
+      fontSize: 12,
+      lineHeight: 16,
+      textAlign: 'center',
+    },
+    /** 展开时箭头掉头（180°，用户 m01534 的明确要求）。 */
+    accChevronOpen: {
+      transform: [{ rotate: '180deg' }],
+    },
+    /** 展开体：整体往右缩进 12pt，让"这是上一行的内容"一眼成立。 */
+    accBody: {
+      paddingLeft: 12,
+      paddingBottom: 4,
+    },
+    group: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: ink.hairline,
+    },
+    row: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingVertical: 13,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: ink.hairline,
+    },
+    rowPressed: {
+      backgroundColor: glass,
+    },
+    /** 发光色行的圆点（18pt 实心，左侧）。 */
+    swatch: {
+      width: 10,
+      height: 10,
+      borderRadius: 5,
+      marginRight: 10,
+    },
+    rowLabel: {
+      flex: 1,
+      color: ink.paperDim,
+      fontSize: 15,
+      letterSpacing: 0.6,
+    },
+    rowLabelOn: {
+      color: ink.paper,
+    },
+    /** 灰掉的行：压到 0.38 —— 还读得清是什么，但一眼看得出"现在不生效"。 */
+    rowLabelDim: {
+      opacity: 0.38,
+    },
+    /**
+     * 对勾的固定槽位。宽度写死 20pt，选中与否都占着，避免选中瞬间文字被挤窄。
+     * 用 `alignItems: 'flex-end'` 而不是靠外边距对齐：右端就是这一行的右缘，
+     * 不随 `note` 的长短漂移。
+     */
+    check: {
+      width: 20,
+      marginLeft: 12,
+      alignItems: 'flex-end',
+    },
+    checkMark: {
+      // 跟着配色表走：深机身是琥珀 `#E5A93C`，浅机身是朱红 `#D32F2F`（见上方注释）
+      color: ink.amber,
+      fontSize: 15,
+      lineHeight: 20,
+    },
+    rowNote: {
+      marginLeft: 12,
+      color: ink.paperFaint,
+      fontFamily: UI_MONO,
+      fontSize: 10,
+      letterSpacing: 1,
+      maxWidth: 120,
+    },
+    hint: {
+      marginTop: 10,
+      color: ink.paperFaint,
+      fontSize: 11,
+      lineHeight: 17,
+    },
+    statusLine: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginTop: 12,
+      paddingTop: 10,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: ink.hairline,
+    },
+    statusDot: {
+      width: 6,
+      height: 6,
+      marginRight: 8,
+      borderRadius: 3,
+      backgroundColor: ink.paperFaint,
+    },
+    statusDotOn: {
+      backgroundColor: ink.amber,
+    },
+    statusDotError: {
+      backgroundColor: ink.amberDeep,
+    },
+    statusText: {
+      flex: 1,
+      color: ink.amberSoft,
+      fontFamily: UI_MONO,
+      fontSize: 11,
+      letterSpacing: 0.8,
+    },
+    footer: {
+      marginTop: 30,
+      color: ink.paperFaint,
+      fontFamily: UI_MONO,
+      fontSize: 9,
+      lineHeight: 15,
+      letterSpacing: 1.2,
+    },
   });
 }

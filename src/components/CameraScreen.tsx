@@ -72,7 +72,7 @@ import {
   zoomToFactor,
 } from '../constants/lenses';
 import { DEFAULT_PRESET_ID, PRESETS, findPresetIndex, resolvePreset } from '../constants/presets';
-import { UI_MONO, useTheme } from '../constants/theme';
+import { DARK_THEME, ThemeScope, UI_MONO } from '../constants/theme';
 import { DEFAULT_ZOOM, ZOOM_MAX, toCameraZoom } from '../constants/zoom';
 import { describeError } from '../utils/describeError';
 import { addShot } from '../utils/galleryStore';
@@ -90,7 +90,7 @@ import { FrameBadge } from './FrameBadge';
 import { FramePreviewLayer } from './FramePreviewLayer';
 import { FrameSwitcher } from './FrameSwitcher';
 import { GalleryScreen } from './GalleryScreen';
-import { GLASS_TEXT_COLOR, LiquidGlassView } from './LiquidGlassView';
+import { LiquidGlassView } from './LiquidGlassView';
 import { ParameterScrubBar, focalStopIndex } from './ParameterScrubBar';
 import { PermissionNotice } from './PermissionNotice';
 import { SettingsScreen } from './SettingsScreen';
@@ -200,6 +200,16 @@ const FILM_GLYPH = 22;
  * 再大就飘到取景画面中央去了。真正的 `bottom` 是 `consoleHeight + 这个值`。
  */
 const BAR_LAYER_GAP = 10;
+
+/**
+ * 相机主界面**永远**的暗色底座（v1.8.3 · 模块四 D1）。
+ *
+ * 用户实测：系统切浅色时底栏变成米白，白色图标全部融进白底。根因不在某一枚按钮，
+ * 而在这一屏整棵树跟着 `useColorScheme()` 走（`LIGHT_THEME.body` + 浅色玻璃材质）。
+ * v1.8.3 起相机树用 `ThemeScope` 锁进 `DARK_THEME`，这层根底色再钉死成近黑 ——
+ * 就算系统在系统外观切换的过渡帧里短暂读不到颜色，背后也不会露出一块浅色。
+ */
+const CAMERA_ROOT_BACKGROUND = '#09090C';
 
 /**
  * `CameraView` 的原生扩展属性。对焦点与曝光补偿都打在原生补丁上，
@@ -340,7 +350,21 @@ export function CameraScreen() {
   const locationStamp = useLocationStamp();
   const { settings, setCaptureQuality } = useSettings();
   const { t, localeId } = useI18n();
-  const theme = useTheme();
+  /*
+   * v1.8.3 · 模块四 D1：**这一屏不再跟随系统深浅色**。
+   *
+   * 用户实测：系统切浅色时底部工具栏变成米白，白色图标全糊进白底。根因是整棵树
+   * 跟着 `useColorScheme()` 走：`LiquidGlassView` 浅色用 `...MaterialLight` +
+   * `rgba(255, 255, 255, 0.52)` 覆盖层，根容器背景是 `LIGHT_THEME.body`。
+   * 现在的方案：`theme` 直接钉成 `DARK_THEME`，返回的整棵树再包一层
+   * `<ThemeScope value={DARK_THEME}>` —— 子树里三十几处 `useTheme()` 全部读它，
+   * 不需要逐个组件去传色值。
+   *
+   * ⚠️ 副作用：挂在相机树下的 `SettingsScreen` / `GalleryScreen` 会一起锁暗。
+   * 这是可接受的（暗房 App 的主场景本来就是深色）；如果将来要单独支持浅色相册，
+   * 得把这两个页面挪到 `ThemeScope` 外面单独挂载。
+   */
+  const theme = DARK_THEME;
   const { ink } = theme;
   const styles = useMemo(() => createStyles(theme.ink, theme.scheme), [theme.ink, theme.scheme]);
   const [cameraPermission, requestCameraPermission, getCameraPermission] = useCameraPermissions();
@@ -495,10 +519,10 @@ export function CameraScreen() {
    */
   const effectivePreset = useMemo(
     () => ({
-      ...applyGrainLevel(preset, grainLevel.scale),
+      ...applyGrainLevel(preset, grainLevel.opacity),
       captureLongEdge: resolveCaptureLongEdge(settings.captureQuality),
     }),
-    [preset, grainLevel.scale, settings.captureQuality],
+    [preset, grainLevel.opacity, settings.captureQuality],
   );
   /**
    * 真正拿去冲印/导入的预设 = 胶卷本色 + 刻度尺拧出来的临时色温覆盖。
@@ -1492,14 +1516,17 @@ export function CameraScreen() {
   }
 
   return (
-    <View style={[styles.root, { backgroundColor: theme.body }]}>
+    // v1.8.3 · D1：整棵树锁暗。副作用（设置页/相册页一起变暗）见上面 `theme` 处的注释。
+    <ThemeScope value={DARK_THEME}>
+    <View style={[styles.root, { backgroundColor: CAMERA_ROOT_BACKGROUND }]}>
       {/*
         ① 顶栏：画幅徽标 + 底片计数 + 画质档 + 设置。闪光灯/翻转/相册都搬去了工具行与核心区。
 
         皮革底纹那一整块（`UI_ASSETS.leatherTile` 的 `resizeMode="repeat"`）已经删掉。
         理由：这块玻璃材质要能**采到它背后的画面**（`LiquidGlassView` 默认叠 75 强度的
         `BlurView`），底纹是一张完全不透明的平铺位图，铺在下面等于让模糊去采一块死平的布 ——
-        那不是液态玻璃，那是一块塑料贴纸。屏幕的底色由 `styles.root` 的 `theme.body` 兜底。
+        那不是液态玻璃，那是一块塑料贴纸。屏幕的底色由根容器的
+        `CAMERA_ROOT_BACKGROUND`（`#09090C`）兜底。
 
         `styles.overlayChrome` 里的 `zIndex` 见文件头注释：取景器在 JSX 里排在后面。
       */}
@@ -1958,6 +1985,7 @@ export function CameraScreen() {
         locationState={locationStamp.state}
       />
     </View>
+    </ThemeScope>
   );
 }
 

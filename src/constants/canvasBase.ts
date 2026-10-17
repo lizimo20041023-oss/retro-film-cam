@@ -18,8 +18,9 @@
  * `DESIGN_*_PX` 的单位是**设计像素**（1440 宽画布上的像素），不是点、不是设备像素。
  * 换算后得到的是**逻辑点**（与画布宽高同一坐标系），乘 `PixelRatio` 才是设备像素。
  *
- * 日期字形的设计像素随字形不同（数码管笔画粗、点阵一格一格，视觉高度要分别校准），
- * 所以按 `DateGlyphStyleId` 分档给出。
+ * 日期字形的设计像素随字形不同（四档的视觉高度要分别校准），
+ * 所以按 `DateGlyphStyleId` 分档给出。`quartz_led` 沿用 v1.8.2 里 7 段数码管的
+ * 44 设计像素 —— v1.8.3 起四档都是同一套等宽文本，44 保住参考画布上 10.94pt 的既有观感。
  */
 
 import type { DateGlyphStyleId } from '../types';
@@ -29,8 +30,7 @@ export const BASE_CANVAS_W = 1440;
 
 /** 日期文本在标准画布上的设计像素高（按字形分档）。 */
 export const DATE_DESIGN_PX: Record<DateGlyphStyleId, number> = {
-  led_7seg: 44,
-  led_dot_matrix: 42,
+  quartz_led: 44,
   ccd_osd: 46,
   lab_inkjet: 44,
   archival_steel: 46,

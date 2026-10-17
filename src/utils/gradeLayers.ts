@@ -11,8 +11,12 @@
  *   饱和度用"中灰/高饱和色 + saturation 混合"实现；
  * - `<Image blurRadius>` 在 iOS 上**是真模糊 UIImage**（`RCTImageView.mm:158` 的
  *   `setBlurRadius:` → `RCTBlurredImageWithRadius`），能被 `captureRef` 截进成片 ——
- *   所以"真泛光"（模糊后 screen 叠回）和"微柔焦"是可行的。
+ *   所以"真泛光"（8pt 模糊后 screen 叠回）是可行的。
  *   ⚠️ v1.6.0 这里曾写着"RN 的 Image 没有 blurRadius"，那句是错的（见 `types/index.ts:437-451`）。
+ *   ⚠️ v1.8.3（用户 m01534 · C1）已**删除唯一一层"模糊副本"**（`micro-soft-focus`，
+ *      `blurRadius=1.2` + 0.5pt 偏移 + normal 0.16）：用户实测"照片像没对上焦一样模糊发灰"，
+ *      红线是"严禁在原图上叠加模糊副本，必须 100% 恢复相机原生清晰度"。
+ *      现在 `blurRadius` 只服务于光晕那一层真泛光。
  *
  * ── v1.8.0：为什么整条色层都换成 `overlay` + 亮度恰好 0.5 的色 ──────────────
  * 用户报的"白雾"= 图层栈把整幅画面抬亮了。要根除它，得让色层在数学上**不动亮度**：
@@ -24,19 +28,29 @@
  *   其中 Y = 0.2126R + 0.7152G + 0.0722B。**只要色的 Y 恰好是 0.5，任何底色上都不动亮度。**
  *   同时 `overlay(1, cs) = 1`（纯白永不被压）、`overlay(0, cs) = 0`（纯黑永不被抬）。
  *   一个色值同时满足"白不变形 + 黑不泛白 + 亮度恒等 + 色相照转"，这就是下面所有
- *   `WARM / COOL / TINT_绿品红 / FADE_LIFT` 都写成 Y≈0.5 的原因（探针逐色断言 |Y−0.5| ≤ 0.002）。
+ *   `WARM / COOL / TINT_绿品红` 都写成 Y≈0.5 的原因（探针逐色断言 |Y−0.5| ≤ 0.002）。
  *   ⇒ 门的 `whiteLoss / veilHigh / veilMid / blackLift / normalMid` 对色层全部为 0。
  *
  * 反过来，**screen 加光**的量必须按预算掐死：screen 的抬升 = cs·(1−cb)，0.1 处抬 0.9·cs、
- * 0.9 处只抬 0.1·cs（最伤暗部、最伤对比度）。所以 halation / 漏光 / 灰尘都用小 opacity，
- * 而"提亮"这件事整体交给 `fade`（托黑）+ 预设自身的曝光值，不再有任何整幅白/浅黄层。
+ * 0.9 处只抬 0.1·cs（最伤暗部、最伤对比度）。所以现在只剩 halation / 漏光两层用小 opacity。
+ * v1.8.0 已删掉正曝光的纯白 screen 与低对比中灰层；v1.8.3 又删掉 `fade` 托黑层 ——
+ * **现在栈里没有任何整幅白 / 浅黄 / 青灰层**，原图对比度直接呈现。
  *
  * 图层顺序（= 绘制顺序，改顺序会改结果）：
- *   ① 色温 ② 色调 ③ 分离色调 ④ 饱和度 ⑤ 对比度 ⑤.5 微柔焦 ⑥ 褪色
- *   ⑦ 曝光 ⑧ 光晕 ⑨ 颗粒 ⑩ 灰尘 ⑪ 暗角 ⑫ 漏光
- * 前七层负责"色"，后五层负责"质"。
- * （曾经在 ⑧ 和 ⑨ 之间还有一层 `chroma-noise` 彩噪贴图，已在 2026-10-12 彻底删除，
- *   理由见下面 ⑨ 处的注释 —— 那一层是满屏紫绿伪色的唯一来源。）
+ *   ① 色温 ② 色调 ③ 分离色调 ④ 饱和度 ⑤ 对比度
+ *   ⑥ 曝光 ⑦ 光晕 ⑧ 颗粒 ⑨ 暗角 ⑩ 漏光
+ * 前五层负责"色"，后五层负责"质"。
+ *
+ * ── v1.8.3（用户 m01534 · 模块 C1）删掉的三层 ───────────────────────────────
+ *   · ⑤.5 `micro-soft-focus`：`blurRadius=1.2` 的模糊副本 + 0.5pt 偏移。
+ *     用户红线："严禁在原图上叠加模糊副本，必须 100% 恢复相机原生清晰度！"
+ *   · ⑥ `fade`（褪色托黑，`lighten #545A61`，opacity ≤ 0.13）：全画幅半透明**青灰**层 ——
+ *     正是用户说的"盖在照片上方的半透明青灰遮罩"，它把 0.35 以下的灰阶整体抬起来，
+ *     画面因此"模糊发灰、对比度不够"。要"真实对比度直接呈现"就必须删掉它。
+ *   · ⑩ `dust` 纹理层（`dust.png` 平铺 + screen）：用户要求白尘只以"成片上 1~2 颗"出现，
+ *     不再整幅铺贴图 —— 现在由 `FilmLookLayers.planDustSpecks()` 按颗粒档位生成。
+ * （曾经在 ⑦ 和 ⑧ 之间还有一层 `chroma-noise` 彩噪贴图，已在 2026-10-12 彻底删除，
+ *   理由见下面 ⑧ 处的注释 —— 那一层是满屏紫绿伪色的唯一来源。）
  */
 import { grainLayerOpacity } from '../constants/grain';
 import type { GradeLayer, ResolvedFilmPreset } from '../types';
@@ -57,13 +71,6 @@ const TINT_MAGENTA = '#E657E6';
 const NEUTRAL_GRAY = '#808080';
 /** 高饱和红：saturation 混合时用来加饱和。 */
 const SATURATE_ACCENT = '#FF3B30';
-/**
- * 托黑用的深板岩灰（略偏冷）。Y = 0.3499。
- * 配 `lighten` → 只把**比它更暗**的像素抬起来：中间调（≥0.35）和高光一个像素都不动，
- * 所以"托起暗部灰阶"和"保持原图对比度"能同时成立（旧值 `#1C1C1C` 太黑，
- * 抬不动 0.02~0.09 这一段的灰阶，见 ⑥ 处注释）。
- */
-const FADE_LIFT = '#545A61';
 const BLACK = '#000000';
 /**
  * 光晕（halation）的暖红。Y = 0.4357。配 `screen` 加光；
@@ -81,10 +88,8 @@ function round2(value: number): number {
 
 /** 光晕泛光层的模糊半径（逻辑点）。8pt ≈ 光在乳剂层里扩散的尺度。 */
 const HALATION_BLUR = 8;
-/** 微柔焦：模糊半径（逻辑点）与叠加强度（去数码锐化）。 */
-const SOFT_FOCUS_BLUR = 1.2;
-const SOFT_FOCUS_OPACITY = 0.16;
-const SOFT_FOCUS_OFFSET = 0.5;
+// v1.8.3：`SOFT_FOCUS_BLUR / _OPACITY / _OFFSET` 三个常量随 `micro-soft-focus` 层一起删除
+// （用户红线：不许在原图上叠模糊副本）。不要再加回来。
 
 /**
  * 把一个已解析的预设展开成有序图层数组。
@@ -190,43 +195,20 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
   //    normal 混合 + 中灰 = 在每一条底色的暗部平铺一层灰（0.02 处抬 +0.48×opacity），
   //    是"白雾 / 灰雾"最典型的来源。低对比性格改由 ⑥ 的托黑 + 低饱和承担。
 
-  // ⑤.5 去数码锐化：同一张照片模糊 1.2pt 再 normal 叠回 0.16。
-  //      只对照片生效（不碰颗粒/相框/日期），所以它排在质感层**之前** —— 颗粒保持锐利。
-  //      iOS 上是真 CIGaussianBlur（见文件头），只在成片用（planFilmLooks 在 'live' 里滤掉）。
-  layers.push({
-    kind: 'photo',
-    key: 'micro-soft-focus',
-    label: '去数码锐化（微柔焦）',
-    blendMode: 'normal',
-    opacity: SOFT_FOCUS_OPACITY,
-    blurRadius: SOFT_FOCUS_BLUR,
-    offsetX: SOFT_FOCUS_OFFSET,
-    offsetY: SOFT_FOCUS_OFFSET,
-  });
+  // ⑤.5 微柔焦（`micro-soft-focus`）已按 v1.8.3 用户红线**整层删除** ——
+  //      旧实现是"同一张照片模糊 1.2pt 再 normal 叠回 0.16"，等于给整幅画面蒙一层柔焦。
+  //      用户实测"拍出来像没对上焦一样模糊"，要求 100% 回到相机原生锐度。
+  //      不要再加回来；`blurRadius` 现在只用于 ⑦ 的真泛光。
 
-  // ⑥ 褪色 / 托黑（Lifted Blacks）：lighten 只抬**比 FADE_LIFT 更暗**的像素。
-  //
-  //    数值是掐着门的预算配的（`_haze_audit.mjs`，`BUDGET.blackLift = 0.07`）：
-  //      blackLift  = opacity·(0.3499 − 0.02) ≤ 0.07  → opacity ≤ 0.212
-  //      normalMid  = opacity·(0.5 − 0.3499) ≤ 0.06    → opacity ≤ 0.40（还有别的层分摊）
-  //      satRatio   = 抬 0.1 这一点会直接缩小 (y(0.1)+0.05) 分母 → 由 ⑤ 的对比层支付
-  //    所以这里取 0.30×fade 并硬夹到 0.13：expired-64（fade 0.42）拿到 0.126，
-  //    黑场从 0 抬到 ≈0.044、y(0.02) 从 0.02 抬到 ≈0.061 —— 看得见的托黑，
-  //    而 0.35 以上一个像素都不动。
-  if (color.fade > 0.01) {
-    layers.push({
-      kind: 'color',
-      key: 'fade',
-      label: `褪色托黑 ${round2(color.fade)}`,
-      color: FADE_LIFT,
-      blendMode: 'lighten',
-      opacity: Math.min(0.13, clamp01(color.fade * 0.3)),
-    });
-  }
+  // ⑥ 褪色托黑（`fade`）已按 v1.8.3 用户红线**整层删除** ——
+  //      旧实现是 `lighten #545A61`，把 0.35 以下的灰阶整体抬向 0.3499：
+  //      本质是"全画幅半透明青灰遮罩"，画面因此发灰、对比度不足（用户投诉的原话是
+  //      "模糊发灰"）。用户要求"让原图以 100% 原生对比度直接呈现"，所以这层不再存在。
+  //      `color.fade` 数值仍留在预设数据里（历史字段，不参与渲染），不要再接回图层。
 
   // ⑦ 曝光：**正的曝光不再有图层**（原来是一层纯白 screen：0.1 处抬 0.9×opacity，
   //    是所有预设 whiteLoss/veilMid 的共同来源，按 v1.8.0 直接删）。
-  //    暗部要靠"提亮"就去调 ⑥ 的 fade；负曝光仍用黑 multiply 压暗，系数从 0.45 收到 0.30
+  //    暗部不再有"提亮"层（v1.8.3 已删 `fade`）；负曝光仍用黑 multiply 压暗，系数从 0.45 收到 0.30
   //    （multiply 会把纯白压到 1−opacity，ccd-cyber 的 −0.06 在 0.45 时正好顶破 0.02 预算）。
   if (color.exposure < -0.01) {
     layers.push({
@@ -275,19 +257,21 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
   // （实测 |R-G| = |R-B| = |G-B| = 0）—— 这就是绝无红绿紫伪色的保证。
   // 想再要"CCD 味"，请用 `splitTone` + `bloom` + 高对比，不要往合成栈里塞彩色噪声。
   //
-  // 贴图本身是"双尺度团簇颗粒"（`scripts/generate_grain_clump.py` 烘焙：粗网格上细颗粒
-  // σ=0.55 + 团簇 σ=1.6 → 1.4× 周期放大 → 0.7px 周期高斯模糊 → 绕中灰 127.5、σ≈66/255），
+  // 贴图本身是"细密双尺度银盐"（v1.8.2 重烤，`scripts/generate_grain_clump.py`：
+  // `0.78·wrap_blur(白噪, 0.60) + 0.22·wrap_blur(白噪, 1.80)`，σ=0.2616、
+  // 频带 <8px 65.7% / 8–24px 28.5% / 24–64px 5.0%），平铺走的是**手工 1:1 方格**
+  // （1 贴图像素 = 1 设备像素，见 `FilmLookLayers.planTextureTiles`）——
   // 所以这一层的视觉效果完全由"贴图对比度 × 图层不透明度"决定。
   //
-  // ⚠️ **v1.8.1 用户强制规范**：颗粒层的总不透明度**必须锁死在 [0.12, 0.22]**，
-  // 绝不允许随参数调节变成实心遮罩。
-  // v1.8.0 这里写的是 `clamp01(preset.grain)` —— 而 v1.8.0 起 `preset.grain` 是**振幅**
-  // （0.42~0.62），再乘档位 scale（`applyGrainLevel` 的 max 档 ×2.2）就是 1.364 →
-  // `clamp01` 夹成 **1.0**：`grain.png` 是不透明中灰噪声贴图，于是取景器被一整块
-  // 不透明灰网盖死（用户实测图 23/24）。根因是**"振幅"被当成了 opacity**。
-  // 现在由 `grainLayerOpacity()` 做这一层映射（唯一产地，带硬上限），并且
-  // `surface='live'`（取景器实时预览）与 `'composite'`（ViewShot 成片）走的是**同一个**
-  // `buildGradeLayers` —— 两边的颗粒层语义天然一致，都是 overlay。
+  // ⚠️ **v1.8.3 用户强制数值表**（m01534 · C1 第 3 条）：
+  //     關 0 / 輕 0.022 / 標準 0.045 / 重 0.075 / 極重 0.110（硬封顶 0.11）
+  //   档位直接给**绝对不透明度**（`grainLevel.opacity`），不再乘预设底味 ——
+  //   旧实现 0.42~0.62 × scale(2.2) = 1.364 → clamp01 = 1.0，整张不透明中灰贴图
+  //   100% 盖住画面（用户图 23/24 的"灰色大网"）；v1.8.1 夹到 [0.12, 0.22] 仍被判
+  //   "像脏云雾"（2026-10-17 投诉），所以 v1.8.3 按用户表锁死。
+  //   `grainLayerOpacity()` 是唯一的封顶入口（`min(s, 0.11)`），不要再抬。
+  //   这一层现在**只出现在成片**：`planFilmLooks(..., 'live')` 会把 grain 纹理层滤掉，
+  //   取景器保持 100% 干净通透（用户 m01534 · C1 第 2 条）。
   if (preset.grain > 0.01) {
     layers.push({
       kind: 'texture',
@@ -300,18 +284,12 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  // ⑩ 灰尘与划痕：screen 只加亮点，暗部什么都不加 —— 老扫描件那种"不干净"
-  if (preset.dust > 0.01) {
-    layers.push({
-      kind: 'texture',
-      key: 'dust',
-      label: `灰尘 ${round2(preset.dust)}`,
-      textureId: 'dust',
-      resizeMode: 'repeat',
-      blendMode: 'screen',
-      opacity: clamp01(preset.dust),
-    });
-  }
+  // ⑩ 灰尘纹理层已按 v1.8.3 用户规范**删除**：
+  //    `dust.png`（稀疏白点/划痕）整幅平铺 + screen 会把画面弄脏，用户要求
+  //    "白尘只在 HV / MAX 两档、每张成片 1~2 颗、透明度 ≤ 0.18"。
+  //    实现改在 `FilmLookLayers.planDustSpecks()`：颗数由 `preset.grain`（档位绝对
+  //    不透明度）决定，见 `constants/grain.ts` 的 `dustSpecCountForGrain()`。
+  //    `preset.dust` 字段仍留在数据里（历史字段，不参与渲染）。
 
   // ⑪ 暗角：PNG 拉伸 + **overlay**（原来是 multiply）。
   //
@@ -357,16 +335,29 @@ export type FilmLookSurface = 'composite' | 'live';
 /**
  * 某个 surface 真正要画的图层。
  *
- * `'live'`（取景器镂空窗，可能只有两百多 pt）滤掉所有 `kind:'photo'` 层：
- * 它们要么需要原照片（对比度自叠 / 泛光 / 微柔焦），要么在这么小的尺寸上毫无意义，
- * 却要让实时预览多跑一次全分辨率 CIGaussianBlur。取景器只要"色 + 质感"就够仿真了。
+ * `'live'`（取景器镂空窗，可能只有两百多 pt）滤掉两类层：
+ *   · 所有 `kind:'photo'` 层 —— 它们需要原照片（对比度自叠 / 泛光），
+ *     在这么小的尺寸上毫无意义，却要让实时预览多跑一次全分辨率 CIGaussianBlur；
+ *   · **颗粒纹理层**（v1.8.3 · 用户 m01534 C1 第 2 条）—— 用户实测取景器"铺满刺眼的
+ *     雪花噪点"，要求"严禁渲染任何颗粒组件，保持取景器 100% 干净通透、满帧 60fps"。
+ *     颗粒只在按下快门后的成片合成阶段渲染。
+ * 取景器剩下的只有纯色调色层（overlay / saturation / multiply）+ 暗角 + 漏光，
+ * 代价是纯 View，60fps 无压力。
  */
 export function planFilmLooks(preset: ResolvedFilmPreset, surface: FilmLookSurface): GradeLayer[] {
   const layers = buildGradeLayers(preset);
   if (surface === 'composite') {
     return layers;
   }
-  return layers.filter((layer) => layer.kind !== 'photo');
+  return layers.filter((layer) => {
+    if (layer.kind === 'photo') {
+      return false;
+    }
+    if (layer.kind === 'texture' && layer.textureId === 'grain') {
+      return false;
+    }
+    return true;
+  });
 }
 
 /**
@@ -375,8 +366,9 @@ export function planFilmLooks(preset: ResolvedFilmPreset, surface: FilmLookSurfa
  * 口径（v1.8.0）：**2 + 每个 `texture` 层 1 张 + 每个 `photo` 层 1 张**。
  *   · 2 = 底板照片 + 相框（`FilmCompositor` 自己渲染）；
  *   · `texture` 层由 `FilmLookLayers` 渲染，每层恰好一张 `<Image>` + 一次 `onPlateLoad`；
- *   · `photo` 层（对比度自叠 / 泛光 / 微柔焦）需要原照片 URI：宿主渲染时每层一张 `<Image>`，
+ *   · `photo` 层（对比度自叠 / 泛光）需要原照片 URI：宿主渲染时每层一张 `<Image>`,
  *     或者把 URI 通过 `FilmLookLayers` 的可选 `photoUri` 交给它渲染 —— **两条路都恰好一张**，
+ *     ⚠️ v1.8.3 删掉微柔焦后 photo 层从 3 层降到 2 层（对比度自叠 + 泛光）。
  *     所以这个计数在两种接线下都精确。
  *     ⚠️ 绝不能两边都渲染：多一张图就要白等 `READY_TIMEOUT_MS`（1500ms）超时，
  *        少一张图 `captureRef` 可能截到半张（`useFilmStage.ts` 的等待门就是按这个数开合的）。

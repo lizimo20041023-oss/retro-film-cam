@@ -177,7 +177,7 @@ export interface ImportAndDevelopOptions {
   locationMode?: LocationMode;
   /**
    * 颗粒档位 id（`AppSettings.grainLevel`）。
-   * 不传 = 标准档。相机页是 `applyGrainLevel(preset, grainLevelAt(...).scale)`，
+   * 不传 = 标准档。相机页是 `applyGrainLevel(preset, grainLevelAt(...).opacity)`，
    * 这里走同一对纯函数，两边的颗粒力度不会漂移。
    */
   grainLevel?: string;
@@ -550,7 +550,7 @@ export async function importAndDevelop(
 
   // ---- 2. 颗粒档位：和相机页走同一对纯函数，力度不漂移 --------------------
   const grainLevel = grainLevelAt(findGrainLevelIndex(options.grainLevel ?? 'std'));
-  const effectivePreset = applyGrainLevel(preset, grainLevel.scale);
+  const effectivePreset = applyGrainLevel(preset, grainLevel.opacity);
 
   const exposureBase = Math.max(1, Math.floor(options.exposureIndex ?? 1));
   const uris: string[] = [];

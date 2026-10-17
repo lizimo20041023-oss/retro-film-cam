@@ -18,7 +18,7 @@
  *        （`kind:'photo'` 是"同一张原图再叠一层"，没有第二个 URI 就画不出来）
  * 2. **photo 层只能由一边渲染**。宿主有两条合法接法：
  *      a) 把 `rawUri` 当 `photoUri` 传进来（推荐 —— 本组件会正确应用
- *         `blurRadius`/`offsetX/offsetY`，那是"真泛光"和"微柔焦"的**全部**实现）；
+ *         `blurRadius`/`offsetX/offsetY`，那是"真泛光"的**全部**实现）；
  *      b) 宿主自己渲染 photo 层 —— 那么它必须自己挂 `blurRadius`/`offsetX/offsetY`
  *         和 `onLoad`（`FilmCompositor` 现有的 `GradeLayerView` 这两样都没有）。
  *    两边都渲染 = 白白多等 `READY_TIMEOUT_MS`（1500ms）超时；少一张 = `captureRef` 可能截到半张。
@@ -32,7 +32,7 @@
  * · `mixBlendMode` 只声明在 `ViewStyle` 上（RN 0.86 的 `ImageStyle` 没有），
  *   所以每个叠图都要外面包一层 `<View>` 承载混合模式与透明度。
  * · `<Image blurRadius>` 在 iOS 上是真模糊 UIImage（`RCTImageView.mm:158`），
- *   能被 `captureRef` 截进成片 —— 真泛光/微柔焦靠它。
+ *   能被 `captureRef` 截进成片 —— 真泛光靠它（v1.8.3 起这是栈里**唯一**的模糊层）。
  *
  * ── 为什么平铺不用 `resizeMode="repeat"`（v1.8.2 的根因修正）─────────────
  * iOS 的 repeat 由 `RCTImageComponentView.mm:148-150` 的
@@ -49,6 +49,7 @@
 import { memo, useMemo } from 'react';
 import { Image, StyleSheet, View } from 'react-native';
 import { textureSource } from '../constants/textures';
+import { dustSpecAlpha, dustSpecCountForGrain } from '../constants/grain';
 import { planFilmLooks } from '../utils/gradeLayers';
 import type { GradeLayer, ResolvedFilmPreset } from '../types';
 import type { ViewStyle } from 'react-native';
@@ -61,7 +62,10 @@ export interface FilmLookLayersProps {
   /** 渲染区域尺寸（逻辑点）。取景器里就是镂空窗的尺寸，可能只有两百多 pt。 */
   width: number;
   height: number;
-  /** `'composite'` = 成片（含 photo 层与微尘）；`'live'` = 取景器实时预览（只有色层与质感层）。 */
+  /**
+   * `'composite'` = 成片（含 photo 层、颗粒层与微尘）；
+   * `'live'` = 取景器实时预览（v1.8.3 起滤掉 photo 层与颗粒层，只剩色层 + 暗角 + 漏光）。
+   */
   surface: FilmLookSurface;
   /** 颗粒相位 / 微尘位置的种子。取景器与成片必须传同一个值。 */
   seed: number;
@@ -69,7 +73,7 @@ export interface FilmLookLayersProps {
   onPlateLoad?: () => void;
   /**
    * 可选：原照片 URI。给了就由本组件渲染 `kind:'photo'` 层
-   * （对比度自叠 / 真泛光 / 微柔焦），每层一张 `<Image>` + 一次 `onPlateLoad`。
+   * （对比度自叠 / 真泛光），每层一张 `<Image>` + 一次 `onPlateLoad`。
    * 不给就**完全跳过** photo 层，交给宿主渲染 —— 但两边只能选一边（见文件头）。
    */
   photoUri?: string;
@@ -111,21 +115,26 @@ function makeRandom(seed: number, salt: number): () => number {
 }
 
 /**
- * 光学微尘：每张成片 2~4 颗白色柔光颗粒，颗数 = `clamp(2 + round(dust * 2), 2, 4)`。
+ * 光学微尘：**只在 HV / MAX 两档**出现，每张成片 1~2 颗（用户 m01534 · C1 第 3 条）。
  *
- * 纯函数、纯 View（没有贴图、不加新预设字段）：位置/大小/透明度全部由 `seed` 决定，
+ * 硬表：OFF / LT / STD = 0 颗，HV = 1 颗，MAX = 2 颗；核心透明度 0.10 / 0.18（≤ 0.18）。
+ * 颗数由 `preset.grain`（档位绝对不透明度）判定 —— 见 `constants/grain.ts` 的
+ * `dustSpecCountForGrain()` / `dustSpecAlpha()`，两边是同一个产地，探针直接读。
+ *
+ * 纯函数、纯 View（没有贴图、不加新预设字段）：位置/大小全部由 `seed` 决定，
  * 所以同一个 seed 下取景器与成片逐点相同，重跑一次成片也逐点相同。
- * 位置避开最外圈 8%（暗角最重的地方），半径按短边比例 —— 取景器可能只有两百多 pt。
+ * 位置避开最外圈 14%（暗角最重的地方），半径按短边比例 —— 成片可能只有几百 pt。
  */
 export function planDustSpecks(preset: ResolvedFilmPreset, seed: number): DustSpeck[] {
-  const count = Math.min(4, Math.max(2, 2 + Math.round((preset.dust ?? 0) * 2)));
+  const count = dustSpecCountForGrain(preset.grain);
   const specks: DustSpeck[] = [];
   for (let i = 0; i < count; i += 1) {
     const rand = makeRandom(seed, 0x51 + i);
-    const x = 0.08 + rand() * 0.84;
-    const y = 0.08 + rand() * 0.84;
-    const radius = 0.004 + rand() * 0.006;
-    const opacity = 0.12 + rand() * 0.2;
+    const x = 0.14 + rand() * 0.72;
+    const y = 0.14 + rand() * 0.72;
+    // 短边 0.22%~0.50%：512px 成片上只有 1.1~2.6px，是"一粒灰"而不是"一块斑"。
+    const radius = 0.0022 + rand() * 0.0028;
+    const opacity = dustSpecAlpha(i);
     specks.push({ key: `speck-${i}`, x, y, radius, opacity });
   }
   return specks;
@@ -253,10 +262,9 @@ function FilmLookLayersImpl({
         }
 
         const flip = layer.flipX === true ? !grainFlipped : grainFlipped;
-        // 只有**颗粒板**走手工 1:1 方格（见文件头）。`dust.png` 是稀疏离散的白点/划痕，
-        // 让它在 170.67pt 的网格里重复 4 次会被一眼看出来；它保持 RN 的 repeat ——
-        // 一屏之内只铺一块，代价是打包路径下斑点的尺度比 Metro 路径大 3 倍
-        // （已在 README 的已知缺口里记档，这一轮不动它，免得一次改两件事）。
+        // 只有**颗粒板**走手工 1:1 方格（见文件头）。v1.8.3 起 `dust` 纹理层已从图层栈
+        // 删除（白尘改成成片上 1~2 颗 specks，见 `planDustSpecks`）；剩下的纹理层
+        // （`vignette` / `lightLeak`）都是 `resizeMode='stretch'`，走不到 repeat 分支。
         const tiled = layer.resizeMode === 'repeat' && layer.textureId === 'grain';
         const tiles = tiled ? planTextureTiles(width, height) : [];
         const source = textureSource(layer.textureId);
@@ -302,7 +310,7 @@ function FilmLookLayersImpl({
         );
       })}
 
-      {/* 光学微尘：只在成片上加（"每张成片 2~4 颗"），screen 混合只提亮不压暗。 */}
+      {/* 光学微尘：只在成片上加，HV 1 颗 / MAX 2 颗（核心 opacity ≤ 0.18），screen 混合只提亮不压暗。 */}
       {specks.map((speck) => {
         const core = speck.radius * shortEdge;
         const ring = core * 1.9;

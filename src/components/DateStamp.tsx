@@ -1,12 +1,12 @@
 /**
- * 日期水印 —— 硬件字形版（v1.8.0 模块四）。
+ * 日期水印 —— 日期引擎渲染层（v1.8.3 模块四 · B1）。
  *
  * ── 这个文件现在的两个身份 ────────────────────────────────────────────────────
  * 1. **旧路径（兼容面，一行都不许破）**：`{ quartz, color, fontFamily }` ——
- *    `FilmCompositor.tsx:714` 与 `FramePreviewLayer.tsx:177/201` 就是这么调它的。
+ *    `FilmCompositor.tsx` 与 `FramePreviewLayer.tsx:177/201` 就是这么调它的。
  *    缺省（不传 `glyphStyle`）时走 `<Text>` 等宽粗体，与 v1.7.0 的成片逐像素同观感。
  * 2. **新路径（日期引擎）**：额外传 `glyphStyle` / `spot` / `glow` / `canvasWidth`，
- *    由 `DateGlyphs` 按机位与字形画，并挂上双层荧光晕染。
+ *    由 `DateGlyphs.OpticalDateText` 画「一行 iOS 原生等宽文本 × 三层绝对对齐发光」。
  *
  * ## 为什么保留旧路径而不是一刀切
  * 成片、实时预览、导出三条链路都在用这一个组件，且分属不同人改。
@@ -30,9 +30,11 @@
  * 它会静默吃掉"水位"：日期一旦被 iOS 自动缩放，成片上的字高就不再等于排版层算出的数，
  * "绝对像素锁定"当场失效，而且屏幕上看着"还行"。这条后门必须关着。
  *
- * ── v1.8.0 的新路径为什么**能**关着这道门还不出错 ─────────────────────────────
- * 像素字形（`led_7seg` / `led_dot_matrix`）根本不排字，宽高全是算出来的整数；
- * 文字字形（后三档）沿用 `quartz` 的发下来的宽度与余量。两条路都不需要自动缩放。
+ * ── v1.8.3 的新路径为什么**能**关着这道门还不出错 ─────────────────────────────
+ * 新路径不再逐格画字：整行只排一次字，`OpticalDateText` 把同一行文本画三遍
+ * （同字体 / 同字号 / 同行高 / 同字距，只有颜色与阴影不同），竖排机位是**整行**旋转。
+ * 所以既没有"逐格取整"的累积误差，也没有"每格量宽"的必要：
+ * 宽度照抄 `quartz.width`，高度照抄 `glyphHeight()`，渲染层不量任何东西。
  *
  * ⚠️ 因此**不许**再把 `adjustsFontSizeToFit` / `minimumFontScale` 加回来，
  * 也不许把旧路径的 `ellipsizeMode` 改成 `tail`：省略号会把"算错了"伪装成"字体没装好"。
@@ -42,7 +44,7 @@ import type { ReactElement } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import type { DateGlowId, DateGlyphStyleId, DateStampSpot } from '../types';
 import { DATE_SPOT_TRAITS, dateEngineFontPx } from '../constants/dateEngine';
-import { DateGlyphs, glyphHeight } from './DateGlyphs';
+import { OpticalDateText, glyphHeight } from './DateGlyphs';
 import type { WatermarkQuartz } from '../utils/geometry';
 
 /** 行高 ÷ 字号。1.16 = iOS 默认行高，与 `geometry.ts` 的 `QUARTZ_LINE_BOX_RATIO` 同一个数。 */
@@ -53,7 +55,7 @@ export interface DateStampProps {
   quartz: WatermarkQuartz;
   /** 墨色。已按锚点解析好：压在照片上是琥珀橙，印在相纸留白上是印字橙。 */
   color: string;
-  /** 等宽字体族（`useFilmFonts()` 给，iOS 是 `CourierNewPS-BoldMT`）。 */
+  /** 等宽字体族（`useFilmFonts()` 给，iOS 是 `CourierNewPS-BoldMT`）。新路径不使用它。 */
   fontFamily: string;
   /**
    * 字形风格（日期引擎）。**不传 = 走 v1.7.0 的等宽文字旧路径**（见文件头）。
@@ -89,7 +91,7 @@ export interface DateStampProps {
 /**
  * 新路径的实际字号。
  *
- * 提取成函数是因为它**同时**被字形与晕染层读：两处各算一次就会出现
+ * 提取成函数是因为它**同时**被字形层与（曾经的）晕染层读：两处各算一次就会出现
  * "字形按 12pt 画、光晕按 11.94pt 扩"这种半个像素的分叉，而它在真机上表现为
  * "光晕比字大了一圈"，很容易被当成配色问题。
  */
@@ -122,19 +124,27 @@ function DateStampImpl({
     return null;
   }
 
-  const rotationDeg = spot ? DATE_SPOT_TRAITS[spot].rotationDeg : 0;
-  const engine = glyphStyle !== undefined;
-  /** 渲染宽度：旧路径逐字照抄 `quartz.width`（那是排版层算死的数，压不动）；新路径同源。 */
+  const rotationDeg: 0 | 90 = spot ? DATE_SPOT_TRAITS[spot].rotationDeg : 0;
+  /** 渲染宽度：两条路径都用排版层算死的 `quartz.width`（`width` 与 `maxWidth` 是同一个数）。 */
   const width = quartz.width;
+  /**
+   * 新路径的实际字号（旧路径不用）：与排版层的 `quartz.fontSize` **同源**
+   * （都走 `canvasBase.absoluteFontPx`）；不传 canvasWidth 时退回 `quartz.fontSize`。
+   */
+  const fontPx = glyphStyle !== undefined ? engineFontPx(glyphStyle, quartz, canvasWidth) : 0;
+  /**
+   * 行盒高度：新路径 = `字号 × DATE_GLYPH_STYLES[style].heightRatio`（1.16），
+   * 旧路径 = `字号 × 1.16`。两条路径是同一个几何，切换字形不会让日期块上下跳。
+   */
   const height =
-    engine && glyphStyle !== undefined ? glyphHeight(glyphStyle, quartz.fontSize) : Math.round(quartz.fontSize * LINE_HEIGHT_RATIO);
+    glyphStyle !== undefined ? glyphHeight(glyphStyle, fontPx) : Math.round(quartz.fontSize * LINE_HEIGHT_RATIO);
 
   /*
    * ── 旧路径（v1.7.0 观感，逐像素不变）─────────────────────────────────────
    * `width` 与 `maxWidth` 用**同一个数**：`width` 保证它不会被父级的 flex 分配压小，
    * `maxWidth` 保证它也不会被"文字想要更宽"撑开（撑开就会盖住左边的地名）。
    */
-  if (!engine || glyphStyle === undefined) {
+  if (glyphStyle === undefined) {
     return (
       <View style={[styles.root, { width, maxWidth: width }]}>
         <Text
@@ -164,15 +174,15 @@ function DateStampImpl({
 
   /*
    * ── 新路径（日期引擎）───────────────────────────────────────────────────
-   * v1.8.1 起**没有独立的晕染层**了：光晕由每个字形自己画（亮灯的放大副本 + 文字字形的
-   * `textShadow`），所以这一行只剩字形。用户强制规范：日期水印的背景必须 100% 透明，
-   * 任何实色或半透明矩形都不许有 —— 旧 `DateHaze` 的两层实心圆角矩形正是实测图 21 里
-   * 那块橙色方块的来源，已整体删除（见 `DateGlyphs.tsx` 第八节的说明）。
-   * 旋转仍然由 `DateGlyphs` 自己处理，光的中心与字形中心同源。
+   * 渲染只剩 `OpticalDateText` 这一层：一行原生等宽文本画三遍
+   * （外层 halation / 中层 glow / 顶层 core），三层共用同一份 TextStyle，
+   * 所以"发光"和"字形"天然逐点对齐，没有第二棵会漂移的树。
+   *
+   * 日期水印的背景仍然必须 100% 透明：这里只允许文本与 `textShadow`，
+   * 不许出现任何实色 / 半透明矩形（v1.8.1 实测图里那块橙色方块就是这么来的）。
    */
-  const fontPx = engineFontPx(glyphStyle, quartz, canvasWidth);
   const glowId: DateGlowId = glow ?? 'classic_amber';
-  /** 排版层给的字距优先；它是日期行真正会用的那个数（`DATE_LETTER_SPACING = 2`）。 */
+  /** 排版层给的字距优先；它是日期行真正会用的那个数（已按字形档折算过 `trackingScale`）。 */
   const tracking = quartz.letterSpacing;
 
   return (
@@ -183,21 +193,20 @@ function DateStampImpl({
           width,
           maxWidth: width,
           height,
-          // 新路径必须自己钉住高度：像素字形的高度是算出来的（不等于行盒），
-          // 不写死的话父级的 `alignItems: 'center'` 会把它压到行盒里、上下各切一截
+          // 新路径必须自己钉住高度：字形层的高度是算出来的行盒（1.16 × 字号），
+          // 不写死的话父级的 `alignItems: 'center'` 会把它压进行盒、上下各切一截。
           ...(box ? { position: 'absolute', left: box.left, top: box.top } : {}),
         },
       ]}
     >
       <View style={{ width, height, justifyContent: 'center' }}>
-        <DateGlyphs
+        <OpticalDateText
           text={quartz.text}
           style={glyphStyle}
           fontPx={fontPx}
-          glow={glowId}
-          tintColor={color}
-          fontFamily={fontFamily}
+          width={width}
           letterSpacing={tracking}
+          glow={glowId}
           rotationDeg={rotationDeg}
         />
       </View>

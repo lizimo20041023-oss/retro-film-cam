@@ -118,6 +118,16 @@ export interface LiquidGlassViewProps extends ViewProps {
   rim?: boolean;
   /** 关掉顶部内高光。视觉上"没有厚度"的薄片（比如分隔条）才关。 */
   highlight?: boolean;
+  /**
+   * 显式描边色（v1.8.3 · D1）。不传 = 不画描边。
+   *
+   * 为什么需要它：工具行那六枚圆盘要有一条**不随系统深浅色变**的 1pt 白描边
+   * （规格 `rgba(255, 255, 255, 0.28)`）。折射环虽然也是白的，但它从左上到右下
+   * 亮度不均、宽度只有 1pt，浅色系统下会被白底吃掉 —— 这条描边是保证"圆盘永远有界"的方案。
+   */
+  borderColor?: ColorValue;
+  /** 描边线宽，默认 1pt（规格写的是 1px）。 */
+  borderWidth?: number;
 }
 
 function LiquidGlassViewInner({
@@ -127,6 +137,8 @@ function LiquidGlassViewInner({
   overlay,
   rim = true,
   highlight = true,
+  borderColor,
+  borderWidth = 1,
   style,
   children,
   ...rest
@@ -173,6 +185,18 @@ function LiquidGlassViewInner({
       </View>
 
       {children}
+
+      {/*
+        显式描边画在**内容之上**：它是一条"盘子边界"，不该被盘里的图标/色块盖住。
+        铺满整块玻璃 + 同样的圆角，把 border 全落在最外圈 —— 与 `rim` 的折射环
+        叠在一起时，环在内、描边在外，两道都在最外 1pt 里，不会把盘子撑大。
+      */}
+      {borderColor === undefined ? null : (
+        <View
+          style={[styles.border, { borderRadius: radius, borderWidth, borderColor }]}
+          pointerEvents="none"
+        />
+      )}
     </View>
   );
 }
@@ -189,6 +213,7 @@ const FILL = { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 } as c
 
 const styles = StyleSheet.create({
   fill: FILL,
+  border: FILL,
   glassLayer: {
     position: 'absolute',
     // 玻璃本体自己裁圆角：模糊和底色都是矩形，不裁的话四个角会露出方形色块。

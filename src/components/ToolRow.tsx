@@ -21,15 +21,21 @@
  * 例外是闪光灯那一枚（v1.6.2 重做）：用户反馈"⚡️ 按钮看不出开没开"，它从两档布尔值
  * 变成了三档（off / on / auto），并拿到了这一行里唯一一块会变色的底盘与描边。
  * 另外五枚仍然是"图标 + 状态点"，判据没动。
+ *
+ * v1.8.3 · 模块四 D1：这一行的圆盘不再跟着系统深浅色走 —— 相机树被
+ * `ThemeScope` 锁进 `DARK_THEME`，圆盘再显式给一层**写死的深色底**
+ * `rgba(32, 32, 38, 0.78)` 与 1pt 白描边 `rgba(255, 255, 255, 0.28)`。
+ * 原因：系统浅色时玻璃材质会变米白，纯白图标直接糊进白底（用户实测）。
+ * 描边不再承担"点亮"语义（统一白），点亮改由**图标变琥珀 `#E5A93C`**表达。
  */
 import { memo } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { AccessibilityState, ColorValue } from 'react-native';
 import type { ReactNode } from 'react';
 import { useI18n } from '../i18n';
-import { UI_MONO, useTheme } from '../constants/theme';
+import { UI_MONO } from '../constants/theme';
 import { UI_ASSETS } from '../constants/uiAssets';
-import { GLASS_TEXT_COLOR, glassTextShadow, LiquidGlassView } from './LiquidGlassView';
+import { glassTextShadow, LiquidGlassView } from './LiquidGlassView';
 
 /** 定时档位：0 = 关。3 / 10 秒是这份任务书定死的两个档，不做成任意秒数。 */
 export type TimerSeconds = 0 | 3 | 10;
@@ -61,6 +67,25 @@ const INACTIVE_INK = 'rgba(255, 255, 255, 0.38)';
 
 /** 灰下去的盘子底色。禁用态和 `DialButton` 用同一个压暗值。 */
 const INACTIVE_FILL = 'rgba(120, 120, 128, 0.16)';
+
+/**
+ * 圆盘底色（v1.8.3 · D1 规格值）。**写死不跟主题**：浅色系统下这一行也必须
+ * 是一块暗盘，否则纯白图标会直接消失。0.78 的不透明度让底下的实时画面只透出
+ * 一点点 —— 暗盘要读得出来是"玻璃"，但对比度绝不能靠它。
+ */
+const DISC_FILL = 'rgba(32, 32, 38, 0.78)';
+
+/** 圆盘的 1pt 白描边（D1 规格值）。不取主题色，浅色系统下也不会变米白。 */
+const DISC_BORDER = 'rgba(255, 255, 255, 0.28)';
+
+/** 描边线宽（规格写 1px）。 */
+const DISC_BORDER_WIDTH = 1;
+
+/** 图标色：规格要求强制纯白 `#FFFFFF`。 */
+const TOOL_ICON = '#FFFFFF';
+
+/** 激活态图标色：规格值 `#E5A93C`（与闪光灯点亮色同值，直接取它免得两个魔数）。 */
+const TOOL_ICON_ACTIVE = FLASH_AMBER;
 
 const ICON_SIZE = 22;
 /** 触控区边长。低于 44pt 的按钮在移动端就是"看得到、点不中"。 */
@@ -136,8 +161,6 @@ interface ToolButtonProps {
    * 这里改成在玻璃**上面**再压一层，深色底还在，对比度就不看天气了。
    */
   accentFill?: ColorValue;
-  /** 点亮态的 1pt 描边色。画在盘子最外圈，正好盖住那圈白色折射环。 */
-  accentRing?: ColorValue;
   /** 右上角角标（闪光灯的 auto）。 */
   cornerBadge?: ReactNode;
   onPress: () => void;
@@ -151,13 +174,10 @@ function ToolButton({
   disabled = false,
   dot = false,
   accentFill,
-  accentRing,
   cornerBadge,
   onPress,
   children,
 }: ToolButtonProps) {
-  const { ink } = useTheme();
-
   return (
     <Pressable
       onPress={disabled ? undefined : onPress}
@@ -179,7 +199,10 @@ function ToolButton({
         style={styles.disc}
         pointerEvents="none"
         // 禁用态和 `DialButton` 用同一个压暗值，两处按钮灰下去的程度才一致
-        overlay={disabled ? INACTIVE_FILL : undefined}
+        overlay={disabled ? INACTIVE_FILL : DISC_FILL}
+        // 盘子永远有一圈不随主题变的 1pt 白描边 —— 浅色系统下也还是个"圆"
+        borderColor={DISC_BORDER}
+        borderWidth={DISC_BORDER_WIDTH}
       >
         {/*
           琥珀底盘必须排在 `children` **前面**：它和图标是同一个父容器的兄弟节点，
@@ -189,13 +212,10 @@ function ToolButton({
           <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.accentFill, { backgroundColor: accentFill }]} />
         ) : null}
         {children}
-        {!disabled && accentRing !== undefined ? (
-          <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.accentRing, { borderColor: accentRing }]} />
-        ) : null}
       </LiquidGlassView>
       {/* 灰下去的按钮不该还挂着角标：角标在说"自动"，而按钮已经按不动了 */}
       {!disabled && cornerBadge !== undefined ? cornerBadge : null}
-      {dot ? <View style={[styles.dot, { backgroundColor: ink.amber }]} /> : null}
+      {dot ? <View style={[styles.dot, { backgroundColor: TOOL_ICON_ACTIVE }]} /> : null}
     </Pressable>
   );
 }
@@ -214,36 +234,32 @@ function ToolRowInner({
   onFlip,
   onToggleFramePreview,
 }: ToolRowProps) {
-  const { ink } = useTheme();
   const { t } = useI18n();
 
   /*
-   * 图标强制纯白 —— 玻璃盘是深浅色自适应的，图标再跟着主题走就变成了
-   * "浅色玻璃上画深色线"，那和玻璃是两层语言。
+   * 图标强制纯白 `#FFFFFF`。v1.8.3 起盘子**写死**成暗色玻璃 + 白描边
+   * （见 `DISC_FILL` / `DISC_BORDER`），所以白色图标不再依赖系统深浅色 ——
+   * 系统浅色下也一样清楚。
    *
-   * ⚠️ 已知代价：浅色主题下玻璃底是 `rgba(255, 255, 255, 0.52)`，纯白图标落在
-   * 它上面只靠 `glassTextShadow` 那圈 2pt 暗影撑对比度。深色主题下毫无问题。
-   * 这是规格明确要求的表现（"强制纯白 `#FFFFFF`"），所以照做，风险记在报告里。
+   * 激活态图标转琥珀 `#E5A93C`：v1.8.3 之前"点亮"只靠圆点/秒数/描边表达，
+   * 锁暗之后图标本身也能承载状态了（浅色玻璃上染琥珀会糊，暗盘上不会）。
    */
-  const iconColor = busy ? INACTIVE_INK : GLASS_TEXT_COLOR;
+  const iconColor = busy ? INACTIVE_INK : TOOL_ICON;
+  const activeIconColor = busy ? INACTIVE_INK : TOOL_ICON_ACTIVE;
   /*
-   * 点亮态：图标仍是纯白，**状态靠"左上角圆点 + 定时秒数"这两个琥珀标记说**。
-   * 上一版是把图标本身染成琥珀，改纯白之后那条路没了 —— 好在琥珀圆点本来就在，
-   * 而且在玻璃底上比染色更干净（染色会把 1pt 的线框染糊）。
-   *
-   * ⚠️ 反过来说，重曝/定时的"开着"现在只剩一个小圆点和一行 8pt 秒数，
-   * 比"整枚图标变琥珀"要弱。这里刻意**保留琥珀**而不是也刷成白色：
-   * 纯白在浅色玻璃上表达不出"亮/灭"的差别，状态就彻底丢了。
+   * 定时的秒数小字、重曝/预览的状态点：v1.8.3 起统一用激活态琥珀 ——
+   * 它们和"图标转琥珀"是同一个状态语言，不该出现两种琥珀（`ink.amber` 在
+   * 深色机身下恰好同值，但浅色/覆盖主题下会变，所以这里不再经过主题）。
    */
-  const litColor = busy ? INACTIVE_INK : ink.amber;
+  const litColor = activeIconColor;
   const timerLabel = timerSeconds === 3 ? t('camera.tool.timer.3') : timerSeconds === 10 ? t('camera.tool.timer.10') : t('camera.tool.timer.off');
 
   /*
-   * 闪光灯三档的视觉语言。用户的原话是"状态变化太微弱"，所以三档的差别刻意落在
-   * **三条互相独立**的通道上，任何一条失效都不会退化成"看不出开没开"：
-   *   描边：off 暗灰 1pt → on 琥珀 1pt → auto 不描边
-   *   图标：off 暗灰 + 斜杠 → auto 亮白 → on 琥珀 + 发光
-   *   底盘：off / auto 深色毛玻璃原样 → on 再压一层琥珀
+   * 闪光灯三档的视觉语言。用户的原话是"状态变化太微弱"，所以三档的差别落在
+   * **两条互相独立**的通道上，任何一条失效都不会退化成"看不出开没开"：
+   *   图标：off 暗白 + 斜杠 → auto 亮白 + 角标 A → on 琥珀 + 发光
+   *   底盘：off / auto 深色盘原样 → on 再压一层琥珀
+   * （v1.8.3 起圆盘描边统一成 1pt 白、不再表达状态 —— 见文件头。）
    * 三档只发生在这枚按钮上，另外四枚的"图标 + 状态点"没动。
    */
   const flashInactive = busy || flashDisabled;
@@ -253,9 +269,8 @@ function ToolRowInner({
       ? FLASH_OFF_INK
       : flashMode === 'on'
         ? FLASH_AMBER
-        : GLASS_TEXT_COLOR;
+        : TOOL_ICON;
   const flashFill = flashMode === 'on' ? FLASH_AMBER_FILL : undefined;
-  const flashRing = flashMode === 'on' ? FLASH_AMBER : flashMode === 'off' ? FLASH_OFF_INK : undefined;
   /*
    * 无障碍标签说的是"现在是哪一档"，不是"按下去会怎样"：三档之后一个动作名覆盖不了
    * 三种状态。旧的两个键（`camera.flash.on` / `camera.flash.off`）描述的是**动作**，
@@ -282,7 +297,7 @@ function ToolRowInner({
         dot={doubleExposure}
         onPress={onToggleDouble}
       >
-        <DoubleGlyph color={iconColor} />
+        <DoubleGlyph color={doubleExposure ? activeIconColor : iconColor} />
       </ToolButton>
 
       <ToolButton
@@ -292,7 +307,7 @@ function ToolRowInner({
         disabled={busy}
         onPress={onCycleTimer}
       >
-        <TimerGlyph color={iconColor} />
+        <TimerGlyph color={timerSeconds > 0 ? activeIconColor : iconColor} />
         {timerSeconds > 0 ? (
           // 秒数直接印在图标下面：定时是"下一次快门"的属性，用户必须一眼看见它开着
           <Text style={[styles.badge, { color: litColor }]} allowFontScaling={false}>
@@ -306,7 +321,6 @@ function ToolRowInner({
         a11yState={{ selected: flashMode !== 'off' }}
         disabled={flashInactive}
         accentFill={flashFill}
-        accentRing={flashRing}
         cornerBadge={
           flashMode === 'auto' ? (
             <View style={styles.autoBadge}>
@@ -336,7 +350,7 @@ function ToolRowInner({
         （合计 276pt）。**再加第七枚就不行了** —— 到那时该拆成两行或改布局，
         而不是继续缩触控区：低于 44pt 的按钮在移动端就是点不准。
 
-        状态语言用「左上角琥珀圆点 + 琥珀描边」，不跟闪光灯抢那层琥珀底盘：
+        状态语言用「左上角琥珀圆点 + 图标转琥珀」，不跟闪光灯抢那层琥珀底盘：
         闪光灯的点亮态是"硬件在工作"（用户明确要求它最抢眼），预览是"我在看东西"，
         两种状态不该长得一样。`dot` 是这一行现成的语言（重曝在用），不新增视觉词汇。
       */}
@@ -348,10 +362,9 @@ function ToolRowInner({
         a11yState={{ selected: framePreview }}
         disabled={busy}
         dot={framePreview}
-        accentRing={framePreview ? litColor : undefined}
         onPress={onToggleFramePreview}
       >
-        <PreviewGlyph color={iconColor} />
+        <PreviewGlyph color={framePreview ? activeIconColor : iconColor} />
       </ToolButton>
     </View>
   );
@@ -469,10 +482,6 @@ const styles = StyleSheet.create({
   },
   // `StyleSheet.absoluteFill` 负责铺满，这里只管圆角：盘子是圆的，色块不能是方的
   accentFill: {
-    borderRadius: DISC / 2,
-  },
-  accentRing: {
-    borderWidth: 1,
     borderRadius: DISC / 2,
   },
   flashGlow: {

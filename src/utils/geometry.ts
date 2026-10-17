@@ -44,6 +44,7 @@
  *    推导与复现脚本见 `src/components/DateStamp.tsx` 顶部。
  */
 import type { LocaleId } from '../i18n/types';
+import { DATE_GLYPH_STYLES } from '../constants/dateEngine';
 import { CENTERED_SEPARATOR, pad2, timestampTracking } from './formatTimestamp';
 import {
   codeFontOf,
@@ -280,7 +281,8 @@ export type DateSpotRegion = 'photo' | 'strip';
  * ⚠️ `rotationDeg === 90` 时**不能**把 `bounds` 当成"box 左上角 + 宽高互换"——
  * 那样算出来的矩形比真实占位小 `(text.width − text.height) / 2`（一条 8 字日期
  * 在 358pt 画布上是 ~17pt 量级），渲染落点会偏出它自己声称的安全区。
- * `src/components/DateGlyphs.tsx` 里那版临时实现（`resolveDateSpotInterim`）就是这个毛病。
+ * v1.8.0 的临时实现（`DateGlyphs.tsx` 里的 `resolveDateSpot*`，v1.8.3 已随逐格字形
+ * 一起删除）正是这个毛病，所以本文件才是机位落点的**唯一实现**。
  */
 export interface DateSpotBox {
   left: number;
@@ -943,13 +945,14 @@ export function computeWatermarkPlan(
   /** 关闭定位时要印的摄影代号行（`PR-400 // ISO 400 · 35MM · EXP.07`）；空串 = 没有。 */
   codeText: string = '',
   /**
-   * 日期字形档（v1.8.0 §五）—— 决定日期字号的设计像素（`DATE_DESIGN_PX`）。
+   * 日期字形档（v1.8.0 §五，v1.8.3 收成 4 档）—— 决定日期字号的设计像素
+   * （`DATE_DESIGN_PX`）、**字重**与**字距倍数**（`DATE_GLYPH_STYLES`）。
    *
    * 放在**最后一个可选参数**上是有意的：`layoutId` / `codeText` 之前的调用点一个都不用改，
    * focus-ev 那边的 `DateStamp` / `DateGlyphs` 可以先只传文字样式、后接档位。
-   * 缺省 `'led_7seg'` = `DEFAULT_SETTINGS.dateEngine.glyphStyle` = v1.7.0 观感。
+   * 缺省 `'quartz_led'` = `DEFAULT_SETTINGS.dateEngine.glyphStyle` = v1.7.0 观感。
    */
-  glyphStyle: DateGlyphStyleId = 'led_7seg',
+  glyphStyle: DateGlyphStyleId = 'quartz_led',
 ): WatermarkPlan {
   const anchor = resolveTimestampAnchor(frame, config);
   const tone: 'amber' | 'graphite' = frame.watermark?.tone ?? 'amber';
@@ -984,7 +987,18 @@ export function computeWatermarkPlan(
   const canvasWidth = layout.width;
   const dateFont = dateFontOf(canvasWidth, glyphStyle);
   const placeFont = placeFontOf(canvasWidth);
-  const dateSpacing = dateLetterSpacingOf(canvasWidth);
+  /*
+   * 日期字距 = 基准字距（参考画布 358pt 上 2pt）× 字形档的 `trackingScale`。
+   *
+   * 「同一个字号、不同字形档，字距必须真的不同」：v1.8.2 之前排版层只按画布宽度算
+   * 一个数、四档拿到的字距完全一样 —— 那等于 `DATE_GLYPH_STYLES.trackingScale` 白写，
+   * 而四档观感的差别恰恰主要来自字距（quartz_led 1.25 / ccd_osd 1.0 /
+   * lab_inkjet 0.92 / archival_steel 0.84）。
+   *
+   * ⚠️ 只在这里乘一次：`quartz.letterSpacing` 是下游唯一读到的字距，
+   * 渲染层（`OpticalDateText`）拿到后直接照抄，不再乘第二次。
+   */
+  const dateSpacing = dateLetterSpacingOf(canvasWidth) * DATE_GLYPH_STYLES[glyphStyle].trackingScale;
   const glyphSlack = dateGlyphSlackOf(canvasWidth);
   const splitGutter = splitGutterOf(canvasWidth);
   /*
@@ -1054,10 +1068,13 @@ export function computeWatermarkPlan(
     fontSize: dateFont,
     letterSpacing: dateSpacing,
     /*
-     * 粗体。iOS 那个族（`CourierNewPS-BoldMT`）本身就是 Bold 面，写 700 是为了让
-     * Android 的 `monospace` 也跟着加粗 —— 两平台观感一致。
+     * 字重按字形档（`DATE_GLYPH_STYLES`）：ccd_osd / quartz_led 700、lab_inkjet 600、
+     * archival_steel 800。
+     *
+     * ⚠️ 这一格同时是**旧路径**（`DateStamp` 不传 `glyphStyle` 时）读到的字重，
+     * 缺省档 `quartz_led` 的 700 正是 v1.7.0 日期行的字重，观感不变。
      */
-    fontWeight: '700',
+    fontWeight: DATE_GLYPH_STYLES[glyphStyle].fontWeight,
     ...quartzShadow(anchor, tone, config),
   };
   /*
@@ -1298,8 +1315,8 @@ export function computeTimestampLayout(
   layout: FrameLayout,
   config: ResolvedTimestampConfig,
   anchor: TimestampAnchor,
-  /** 日期字形档（v1.8.0）；不传 = `'led_7seg'`，与 `DEFAULT_SETTINGS.dateEngine` 一致。 */
-  glyphStyle: DateGlyphStyleId = 'led_7seg',
+  /** 日期字形档（v1.8.0，v1.8.3 收成 4 档）；不传 = `'quartz_led'`，与 `DEFAULT_SETTINGS.dateEngine` 一致。 */
+  glyphStyle: DateGlyphStyleId = 'quartz_led',
 ): TimestampLayout {
   // 旧接口只需要"日期那一行"，所以借道新版式算一次 `dateOnly`：
   // 两边的字号 / 边距 / 基线修正因此**不可能对不上**（这正是留这个壳子的原因）。
