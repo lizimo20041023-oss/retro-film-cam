@@ -466,8 +466,8 @@ export function hazeLimit(fontPx: number): number {
  * `dateEngineFontPx()`），属于排版层；本表只管"同一字号下这一档长什么样"。
  */
 export interface DateGlyphStyleSpec {
-  /** 字重。iOS 预装的等宽字只提供这几档可选字面。 */
-  fontWeight: '600' | '700' | '800';
+  /** 字重。iOS 预装字体只提供这几档可选字面（v1.8.7 加入 400：喷墨用常规体）。 */
+  fontWeight: '400' | '600' | '700' | '800';
   /**
    * 字距倍数（相对 `watermarkTypography.dateLetterSpacingOf()` 的基准 8 设计像素）。
    *
@@ -485,18 +485,26 @@ export interface DateGlyphStyleSpec {
 /**
  * 4 档字形的参数表（唯一产地）。
  *
+ * ⚠️ **v1.8.7 口径变了**：v1.8.3 的四档只差字重/字距/光强，肉眼几乎分不出来被用户投诉；
+ * v1.8.7 起字体族、几何变换、阴影/浮雕、透明度这些"材质"参数在渲染层
+ * （`DateGlyphs.tsx` 的 `dateGlyphLayers()` / `GLYPH_FONT_FAMILY`），本表只保留
+ * **排版层也需要的四个数**（字重、字距倍数、发光强度、行高比）—— 因为宽度是由
+ * `trackingScale` 算进 `quartz.width` 的，不能分叉。
+ *
  * 数值口径：
- * - `quartz_led`：7 段数码管的继承者 —— 700 字重、2.5pt 级字距、满强度三层光；
- * - `ccd_osd`：CCD 錄製字幕 —— 700 字重、基准字距、0.8 强度（录像 OSD 的荧光比
- *   石英液晶收敛一点，但仍要"亮"）；
- * - `lab_inkjet`：暗房噴墨 —— 600 字重、略紧字距、0.4 强度（墨点扩散小）；
- * - `archival_steel`：檔案鋼印 —— 800 字重、最紧字距、0.35 强度（钢印只有边缘反光）。
+ * - `quartz_led`：石英液晶的继承者 —— 700 字重、2.5pt 级字距（1.25×）、满强度三层光；
+ * - `ccd_osd`：CCD 录像字幕 —— 800 字重、**紧凑字距**（0.60×，OSD 字模挤得很紧）、
+ *   0.8 光强（渲染层不再用它发光，但 `opticalGlowLayers` 仍按这个数派生历史配方）；
+ * - `lab_inkjet`：暗房喷墨 —— 400 字重（`AmericanTypewriter` 只有常规/粗体两档，
+ *   400 落到常规）、**中等偏宽字距**（1.10×，打字机排字的呼吸感）、0.4 强度；
+ * - `archival_steel`：檔案鋼印 —— 600 字重（`Copperplate` 常规）、**超宽字距**
+ *   （1.90×，钢印字距是四档最宽的；用户规范 5.5×S 在参考画布上约 3.8pt）、0.35 强度。
  */
 export const DATE_GLYPH_STYLES: Record<DateGlyphStyleId, DateGlyphStyleSpec> = {
   quartz_led: { fontWeight: '700', trackingScale: 1.25, glowScale: 1, heightRatio: 1.16 },
-  ccd_osd: { fontWeight: '700', trackingScale: 1, glowScale: 0.8, heightRatio: 1.16 },
-  lab_inkjet: { fontWeight: '600', trackingScale: 0.92, glowScale: 0.4, heightRatio: 1.16 },
-  archival_steel: { fontWeight: '800', trackingScale: 0.84, glowScale: 0.35, heightRatio: 1.16 },
+  ccd_osd: { fontWeight: '800', trackingScale: 0.6, glowScale: 0.8, heightRatio: 1.16 },
+  lab_inkjet: { fontWeight: '400', trackingScale: 1.1, glowScale: 0.4, heightRatio: 1.16 },
+  archival_steel: { fontWeight: '600', trackingScale: 1.9, glowScale: 0.35, heightRatio: 1.16 },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

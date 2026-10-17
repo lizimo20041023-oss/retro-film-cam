@@ -82,8 +82,24 @@ export const PRESET_DEFAULTS = {
   exposure: 0,
   /** 分离色调：暗部青蓝 + 高光暖调。0 = 关。 */
   splitTone: 0,
-  /** 光晕（halation）：暖红纯色 screen，opacity ≤ 0.06。0 = 关。 */
+  /** 光晕（halation）：暖红纯色 screen，opacity ≤ 0.08。0 = 关。 */
   halation: 0,
+  /**
+   * v1.8.7 模块二：自混合 S-Curve（同源副本）强度与混合模式。0 = 关。
+   * 具体数值由每支卷给出（0.22~0.42），这里只是"没写就不产生图层"的锚点。
+   */
+  sCurveIntensity: 0,
+  curveBlendMode: 'soft-light',
+  /**
+   * v1.8.7 模块二/三：分离染色两层（暗部 + 柔光）。空串 = 该卷没有这一层；
+   * 混合模式与不透明度都按用户给的数值表（不是半透明平涂）。
+   */
+  shadowTint: '',
+  shadowTintBlendMode: 'multiply',
+  shadowTintOpacity: 0,
+  highlightTint: '',
+  highlightTintBlendMode: 'soft-light',
+  highlightTintOpacity: 0,
   /**
    * 颗粒**强度**（v1.8.3 起 = 图层绝对不透明度，硬上限 0.11）。
    * 默认 0.045 = 标准档；运行时会先被用户颗粒档位覆盖（applyGrainLevel）。
@@ -151,9 +167,18 @@ export const PRESETS: FilmPreset[] = [
       saturation: 1,
       contrast: 1.06,
       splitTone: 0.13,
+      // v1.8.7 模块三数值表：柔光 S-Curve + 暗部暖棕 + 柔光金。
+      sCurveIntensity: 0.32,
+      curveBlendMode: 'soft-light',
+      shadowTint: '#2D1C0C',
+      shadowTintBlendMode: 'multiply',
+      shadowTintOpacity: 0.1,
+      highlightTint: '#FFC85F',
+      highlightTintBlendMode: 'soft-light',
+      highlightTintOpacity: 0.22,
     },
     grain: 0.045,
-    vignette: 0.22,
+    vignette: 0.26,
   },
   {
     id: 'pt-400',
@@ -165,6 +190,15 @@ export const PRESETS: FilmPreset[] = [
       saturation: 0.95,
       contrast: 1,
       splitTone: 0.12,
+      // v1.8.7：柔光更轻 + 暗部冷蓝 exclusion + 柔光米白。
+      sCurveIntensity: 0.24,
+      curveBlendMode: 'soft-light',
+      shadowTint: '#0A1623',
+      shadowTintBlendMode: 'exclusion',
+      shadowTintOpacity: 0.08,
+      highlightTint: '#FFDAC3',
+      highlightTintBlendMode: 'soft-light',
+      highlightTintOpacity: 0.18,
     },
     grain: 0.045,
     vignette: 0.18,
@@ -179,9 +213,15 @@ export const PRESETS: FilmPreset[] = [
       saturation: 1.06,
       contrast: 1.18,
       splitTone: 0.14,
+      // v1.8.7：硬 overlay + 单层冷蓝柔光（无暗部染色）。
+      sCurveIntensity: 0.28,
+      curveBlendMode: 'overlay',
+      highlightTint: '#0F2D5F',
+      highlightTintBlendMode: 'soft-light',
+      highlightTintOpacity: 0.18,
     },
     grain: 0.045,
-    vignette: 0.26,
+    vignette: 0.34,
   },
   {
     id: 'cp-200',
@@ -193,6 +233,15 @@ export const PRESETS: FilmPreset[] = [
       saturation: 1,
       contrast: 1.08,
       splitTone: 0.16,
+      // v1.8.7：琥珀暗部 multiply + 暖金柔光。
+      sCurveIntensity: 0.26,
+      curveBlendMode: 'soft-light',
+      shadowTint: '#3A2612',
+      shadowTintBlendMode: 'multiply',
+      shadowTintOpacity: 0.12,
+      highlightTint: '#F5B964',
+      highlightTintBlendMode: 'soft-light',
+      highlightTintOpacity: 0.2,
     },
     grain: 0.045,
     vignette: 0.28,
@@ -208,6 +257,15 @@ export const PRESETS: FilmPreset[] = [
       saturation: 0.95,
       contrast: 1,
       splitTone: 0.12,
+      // v1.8.7：青绿暗部 exclusion + 深青柔光。
+      sCurveIntensity: 0.3,
+      curveBlendMode: 'soft-light',
+      shadowTint: '#082026',
+      shadowTintBlendMode: 'exclusion',
+      shadowTintOpacity: 0.12,
+      highlightTint: '#146E5F',
+      highlightTintBlendMode: 'soft-light',
+      highlightTintOpacity: 0.16,
     },
     grain: 0.045,
     vignette: 0.22,
@@ -222,11 +280,17 @@ export const PRESETS: FilmPreset[] = [
       saturation: 1.04,
       contrast: 1.2,
       splitTone: 0.11,
+      // v1.8.7：反转片用硬 overlay + 极淡冷黑 color-burn 压暗部。
+      sCurveIntensity: 0.34,
+      curveBlendMode: 'overlay',
+      shadowTint: '#141923',
+      shadowTintBlendMode: 'color-burn',
+      shadowTintOpacity: 0.06,
     },
     // 反转片零颗粒：即使运行时把用户档位覆盖成 0.11，buildGradeLayers 也会按
     // GRAINLESS_PRESET_IDS 跳过这一层（见 gradeLayers.ts ⑨）。
     grain: 0,
-    vignette: 0.32,
+    vignette: 0.38,
   },
   {
     id: 'cs-800t',
@@ -238,8 +302,13 @@ export const PRESETS: FilmPreset[] = [
       saturation: 1,
       contrast: 1.1,
       splitTone: 0.13,
-      // 暖红 halation 纯色 screen：0.85 × 0.06 = 0.051 ≤ 0.06，零模糊。
-      halation: 0.85,
+      // v1.8.7：硬度 overlay + 冷蓝柔光；暖红 halation 走 screen，1.0 × 0.08 = 0.08。
+      sCurveIntensity: 0.26,
+      curveBlendMode: 'overlay',
+      highlightTint: '#125596',
+      highlightTintBlendMode: 'soft-light',
+      highlightTintOpacity: 0.28,
+      halation: 1,
     },
     grain: 0.045,
     vignette: 0.26,
@@ -256,6 +325,9 @@ export const PRESETS: FilmPreset[] = [
       saturation: 0,
       contrast: 1.12,
       splitTone: 0,
+      // v1.8.7：黑白卷先由 ⑧ 满幅去色，再做同源 soft-light 自混合（中灰层次）。
+      sCurveIntensity: 0.3,
+      curveBlendMode: 'soft-light',
     },
     grain: 0.045,
     vignette: 0.24,
@@ -271,9 +343,12 @@ export const PRESETS: FilmPreset[] = [
       saturation: 0,
       contrast: 1.25,
       splitTone: 0,
+      // v1.8.7：硬朗银盐 = 去色后 overlay 自混合（更硬的 S 曲线）。
+      sCurveIntensity: 0.42,
+      curveBlendMode: 'overlay',
     },
     grain: 0.045,
-    vignette: 0.38,
+    vignette: 0.42,
   },
   // ↓↓↓ 在这里继续加你的预设 ↓↓↓
 ];
@@ -322,6 +397,15 @@ export function resolvePreset(preset: FilmPreset): ResolvedFilmPreset {
     exposure: color.exposure ?? PRESET_DEFAULTS.exposure,
     splitTone: color.splitTone ?? PRESET_DEFAULTS.splitTone,
     halation: color.halation ?? PRESET_DEFAULTS.halation,
+    // v1.8.7 模块二：S-Curve 自混合 + 分离染色两层（暗部/柔光）
+    sCurveIntensity: color.sCurveIntensity ?? PRESET_DEFAULTS.sCurveIntensity,
+    curveBlendMode: color.curveBlendMode ?? PRESET_DEFAULTS.curveBlendMode,
+    shadowTint: color.shadowTint ?? PRESET_DEFAULTS.shadowTint,
+    shadowTintBlendMode: color.shadowTintBlendMode ?? PRESET_DEFAULTS.shadowTintBlendMode,
+    shadowTintOpacity: color.shadowTintOpacity ?? PRESET_DEFAULTS.shadowTintOpacity,
+    highlightTint: color.highlightTint ?? PRESET_DEFAULTS.highlightTint,
+    highlightTintBlendMode: color.highlightTintBlendMode ?? PRESET_DEFAULTS.highlightTintBlendMode,
+    highlightTintOpacity: color.highlightTintOpacity ?? PRESET_DEFAULTS.highlightTintOpacity,
   };
 
   const timestamp = preset.timestamp;

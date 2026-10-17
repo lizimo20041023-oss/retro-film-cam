@@ -61,6 +61,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [37. v1.8.4：真机焦段归位（取景盒重几何 / 四档焦段 / 最高分辨率 / 取景器去雾）](#37-v184真机焦段归位取景盒重几何--四档焦段--最高分辨率--取景器去雾)
 - [38. v1.8.5：Dazz #Inst C 立体相纸（内窗黑边根治 / 9 款传奇胶卷 / 135 NEG 齿孔与地名 / 纯净化地名多语言）](#38-v185dazz-inst-c-立体相纸内窗黑边根治--9-款传奇胶卷--135-neg-齿孔与地名--纯净化地名多语言)
 - [39. v1.8.6：真机发热五条投诉的逐条核查（按需合成 / 硬件光栅化 / 零 SVG / 六节点隔离 / 画质档与 GPS 去重）](#39-v186真机发热五条投诉的逐条核查按需合成--硬件光栅化--零-svg--六节点隔离--画质档与-gps-去重)
+- [40. v1.8.7：字形档四档真正分家（STAMP FONT 实时穿透 / 自混合 S-Curve / 9 卷重调 / 胶片卡渐变与无框日期暗影）](#40-v187字形档四档真正分家stamp-font-实时穿透--自混合-s-curve--9-卷重调--胶片卡渐变与无框日期暗影)
 
 ---
 
@@ -5161,6 +5162,232 @@ renderToHardwareTextureAndroid
 
 工作区根（不进仓库）：`_probe_v186_perf.cjs`（新增第 15 道门禁）、`_gate_v186_run.out.txt`、
 `_gate_v186_lead.txt`、`_gate_v186_report.txt`、`_v186_contract.md`。
+
+---
+
+## 40. v1.8.7：字形档四档真正分家（STAMP FONT 实时穿透 / 自混合 S-Curve / 9 卷重调 / 胶片卡渐变与无框日期暗影）
+
+> 本版**零新依赖、零 `as any`、成片几何零回归**；`planCapture` / `planPhotoCrop` / `takePictureAsync`
+> 参数 / 画质三档长边（2048 / 3024 / 4032）/ JPEG 0.98 一行未动。
+>
+> 四条用户指令：①「日期字形 STAMP FONT」切档必须实时穿透预览与成片、四档必须肉眼可分；
+> ②调色要有自混合 S-Curve、分离色调，暗角要径向而不是平涂黑边；③9 款胶卷按用户给定配方重调；
+> ④`SELECT FILM STOCK` 卡片头部要渐变 + ISO 角标，`00 NO FRAME` 的白色日期/地名要双层暗影。
+>
+> 四条里最刺眼的一条是①：v1.8.6 的渲染层把字体族写死成 `Menlo-Bold`，四档只在
+> `fontWeight` / `letterSpacing` 上差几个百分点 —— 用户"看不出区别"是**代码事实**，
+> 不是主观感受。本版从字体族、几何变换、层数、阴影四条轴同时拉开，并且把
+> `dateEngine` 一路传进取景器相框预览层（此前它根本收不到字形档）。
+
+### 40.1 四条指令 → 真因 → 本版动作
+
+| # | 指令（要点） | v1.8.6 冻结树的实测事实 | 本版动作 |
+|---|-------------|------------------------|---------|
+| ① | STAMP FONT 切档无效，四档看起来一样 | `DateGlyphs.tsx` 的 `OPTICAL_FONT_FAMILY` 写死 `Menlo-Bold`（注释还写明"不许按字形档换字体"）；四档只差 `fontWeight`（700/700/600/800，三档几乎同粗）与 `trackingScale`（0.84~1.25）；渲染层永远画三层同色发光。**取景器预览层 `FramePreviewLayer` 的 props 根本没有 `dateEngine`**，两处 `<DateStamp>` 没传 `glyphStyle`/`glow`/`spot` → 预览永远走旧文字路径 | 重写 `DateGlyphs.tsx`：四档各一支 iOS 原生字体 + 各一套材质配方（见 §40.2）；`dateGlyphLayers()` 返回 1~3 层墨迹；`FramePreviewLayer` 加 `dateEngine?` 并传 `glyphStyle`/`glow`/`spot`；`CameraScreen` 传 `dateEngine={settings.dateEngine}` 且进 `framePreviewNode` 依赖；设置页每行右侧直接渲染该档样例 |
+| ② | 调色要自混合 S-Curve / 分离色调，暗角要径向 | `ColorGradeConfig` 只有 `contrast` 等旧字段；暗角是 `vignette.png` 以 `normal` 叠加且**中心也有 alpha**（≈0.65 起跳）；照片内窗顶部是一条 `0.28` 不透明的黑灰渐变（`innerShadows.top`，高度 = 实测包边像素） | `ColorGradeConfig` 加 8 个可选字段（`sCurveIntensity` / `curveBlendMode` / `shadowTint*` / `highlightTint*`）；`gradeLayers` 在 `mono` 之后插 `s-curve`（同源副本自叠）与 `shadow-tint` / `highlight-tint`；暗角蒙版改 `INNER_RADIUS=0.68`（中心 alpha 0）且 `blendMode: 'multiply'`；顶部内窗阴影降到 `0.12`、高度 `min(2, innerShadows.top)`（见 §40.3） |
+| ③ | 9 卷重调 | 9 卷只有旧的 `contrast` / `saturation` / 少量 `color` 层；无 S-Curve、无分离色调 | 按用户给定逐卷配方写进 `PRESETS`（表见 §40.4），`PRESET_DEFAULTS` / `resolvePreset` 同步默认值 |
+| ④ | 胶片卡渐变 + ISO 角标；无框日期双层暗影 | `FilmCard` 卡片头是 3 条 `swatchZone` 纯色块；`00 NO FRAME` 的日期只有一层发光/墨色，白天浅色照片上白字发飘 | 卡片头改 `LinearGradient` 三段渐变 + 右上角 `ISO 200`/`ISO 400`/`SLIDE`/`800T`/`B&W` 微角标（按底色亮度自适应黑/白）；无框模式日期与地名加双层全向暗影（预览层 + 成片合成器 + `DateStamp` 的 `haloShadow` 三处，见 §40.5） |
+
+### 40.2 模块一：四档字形从"同一支字体"到"四种材质"
+
+**真因两层**：渲染层把字体族写死（`OPTICAL_FONT_FAMILY = Menlo-Bold`），且取景器预览层
+根本没接字形档数据。所以此前用户切档时：预览层纹丝不动，成片只换字距/字重 —— 两者都不像"换字体"。
+
+渲染层重写后的四档口径（`src/components/DateGlyphs.tsx`，`S = fontPx / 44` 为相对字号基准）：
+
+| 档位 | iOS 字体 / 字重 | 几何 | 墨迹层 | 阴影 / 透明度 |
+| --- | --- | --- | --- | --- |
+| `quartz_led` 石英 LED | `Courier-Bold` / 700 | 整层 `skewX: '-10deg'`（机械斜刀） | 3 层（`outer` / `mid` / `core`，仍由 `opticalGlowLayers()` 派生） | 外两层同色大半径发光，`core` 无阴影；层不透明度全部 1 |
+| `ccd_osd` CCD OSD | `Menlo-Bold` / 800 | `scaleY: 1.22` + `scaleX: 0.92`（窄高体） | 1 层纯白 `#F8F9FA` | 零模糊硬黑投影 `rgba(0,0,0,0.92)`，radius 0.2、offset `1.8S / 1.8S`；**严禁柔和红晕** |
+| `lab_inkjet` 暗房喷墨 | `AmericanTypewriter` / 400 | 无变换（正体） | 1 层墨色（调色板 `core`） | 整体 `opacity: 0.84`；油墨边缘 `rgba(30,20,10,0.35)`，radius `1.2S`、offset y `0.5S`；无发光 |
+| `archival_steel` 档案钢印 | `Copperplate` / 600 | 无整层变换，字号 `0.90×`（`glyphFontPx` 唯一入口） | 2 层：底层右下高光 `rgba(255,248,232,0.34)` + 顶层主体 | 高光层 `translateX/Y: 0.8S`；主体层左上暗影 `rgba(0,0,0,0.65)`，radius `0.5S`、offset `-0.8S / -0.8S` |
+
+- 新导出 `GLYPH_FONT_FAMILY`（iOS 四档映射，Android 统一 `monospace`）与 `glyphFontPx()`
+  （archival 的 0.90× 只在这里发生）；旧导出 `OPTICAL_FONT_FAMILY` 保留为 `Menlo-Bold` 兼容旧探针。
+- 新函数 `dateGlyphLayers(style, glow, fontPx, letterSpacing, haloShadow = false)`：纯函数返回
+  `DateGlyphLayer[]`（`key` / `color` / `opacity` / `shadowColor` / `shadowRadius` / `shadowOffset` /
+  `transform?`），渲染层只负责把配方铺成 N 层 `<Text>`。
+- 渲染层仍是**同一处 JSX `map`**（不是复制 N 份），各层共用一份 `textStyle`；每层的
+  `transform` 由 `combineTransforms(基础变换, 层位移)` **显式合并** —— RN 样式数组是覆盖语义，
+  某一层如果写 `transform: undefined` 会把整层斜刀/窄高体盖掉，那样四档又只剩字体族不同。
+- `type GlyphTransform = Extract<NonNullable<TextStyle['transform']>, ReadonlyArray<unknown>>`：
+  避免 `[...base, ...extra]` 的元素类型退化成 `string`，不需要任何类型断言。
+
+**穿透链**（一遍读完即可确认"切档立即生效"）：
+
+```
+settings.dateEngine
+  ├─ CameraScreen: previewPieces = planWatermark({ dateEngine })
+  │     └─ FramePreviewLayer（新增 dateEngine?: DateEngineConfig）
+  │           └─ DateStamp（传 glyphStyle / glow / spot）
+  ├─ CameraScreen: <FramePreviewLayer dateEngine={settings.dateEngine}>（依赖已加）
+  ├─ FilmStageComposer → FilmCompositor → QuartzPiece → DateStamp（既有路径）
+  └─ SettingsScreen: 每行 date_style 右侧 <DateGlyphSample>（直接渲染 `10 17 '26`）
+```
+
+设置页 `日期字形` 四行右侧新增样例列（`GLYPH_SAMPLE_TEXT = "10 17 '26"`，
+`GLYPH_SAMPLE_FONT_PX = 12`，字距按 `trackingScale` 折算），用的就是 `OpticalDateText` ——
+用户在设置页看到的样例与取景器/成片是同一套渲染代码，不是另画的示意图。
+
+### 40.3 模块二：自混合 S-Curve + 分离色调 + 径向暗角
+
+`src/utils/gradeLayers.ts` 的图层顺序（自底向上）：
+
+| 序 | 层 | 本版变化 |
+| --- | --- | --- |
+| ① | 原图 | **零雾**：不铺任何全屏白膜（v1.8.0 已确立） |
+| ⑦ | 漏光 `halation` | 系数 `0.06` → `0.08`、上限同步 0.08 |
+| ⑧ | 对比 `contrast-boost` | 未改 |
+| ⑧.5 | **`s-curve`（新增）** | `kind: 'photo'`：同源照片副本，`opacity: min(0.42, sCurveIntensity)`，`blendMode: curveBlendMode`（`soft-light` / `overlay`）→ "同源自叠"近似 S 曲线，而不是给画面加灰 |
+| ⑧.6 | **`shadow-tint` / `highlight-tint`（新增）** | `kind: 'color'`：暗部染色（`multiply` / `exclusion` / `color-burn`）与高光染色（`soft-light`），空串或 opacity ≤ 0.01 不产生层 |
+| ⑨ | 黑白 `mono` | 未改（`#808080` + `saturation` + 1.0） |
+| ⑩ | 暗角 `vignette` | 蒙版重生成（`INNER_RADIUS = 0.68`，中心 alpha 0，68%→100% 过渡到四角），`blendMode: 'multiply'`；不再用 `normal` 平涂 |
+| ⑪ | 颗粒 `grain` | 未改（`overlay`，不透明度硬夹 0.12~0.22） |
+
+**顶部黑灰带**：`FilmCompositor.tsx` 的照片内窗顶部渐变由
+`['rgba(0, 0, 0, 0.28)', 'rgba(0, 0, 0, 0)']` + `height: innerShadows.top` 改为
+`['rgba(0, 0, 0, 0.12)', 'rgba(0, 0, 0, 0)']` + `height: Math.min(2, innerShadows.top)` ——
+用户说的"照片顶部生硬黑灰带"就是这条包边阴影，v1.8.6 的实测包边像素把它撑成了可见的灰带。
+
+数据结构（`src/types/index.ts` 的 `ColorGradeConfig`，全部可选，缺省 = 行为不变）：
+
+```ts
+sCurveIntensity?: number;      curveBlendMode?: BlendMode;
+shadowTint?: string;           shadowTintBlendMode?: BlendMode;   shadowTintOpacity?: number;
+highlightTint?: string;        highlightTintBlendMode?: BlendMode; highlightTintOpacity?: number;
+```
+
+`PRESET_DEFAULTS` 里对应默认值：`sCurveIntensity: 0`、`curveBlendMode: 'soft-light'`、
+`shadowTint: ''`、`shadowTintBlendMode: 'multiply'`、`shadowTintOpacity: 0`、
+`highlightTint: ''`、`highlightTintBlendMode: 'soft-light'`、`highlightTintOpacity: 0`；
+`resolvePreset()` 逐项 `??` 填充，旧自定义预设（缺字段）原样可用。
+
+**暗角蒙版**由 `scripts/generate_vignette.py` 生成（`INNER_RADIUS = 0.68`）：
+`vignette.png` 1024×1024 RGBA、117,094 B、sha256 `e02d6c6ba3b6b9a389ae29c07bb3672d8a817b92465acfb6e26e941b3d8e6561`；
+alpha 剖面实测 `ρ=0.65 → 0`、`0.70 → 3`、`0.75 → 31`、`0.80 → 81`、`0.85 → 139`、`0.90 → 196`、`1.0 → 255`。
+
+### 40.4 模块三：9 卷重调（逐卷配方）
+
+| 预设 | `curveBlendMode` / `sCurveIntensity` | 暗部层 | 高光/柔光层 | 暗角 | 其它 |
+| --- | --- | --- | --- | --- | --- |
+| `gd-200` 经典金 200 | `soft-light` / 0.32 | `#2D1C0C` `multiply` 0.10 | `#FFC85F` `soft-light` 0.22 | 0.26 | — |
+| `pt-400` 人像 400T | `soft-light` / 0.24 | `#0A1623` `exclusion` 0.08 | `#FFDAC3` `soft-light` 0.18 | — | — |
+| `um-400` 都市 400 | `overlay` / 0.28 | — | `#0F2D5F` `soft-light` 0.18 | 0.34 | — |
+| `cp-200` 复古彩 200 | `soft-light` / 0.26 | `#3A2612` `multiply` 0.12 | `#F5B964` `soft-light` 0.20 | 0.28 | — |
+| `fj-400` 富士 400 | `soft-light` / 0.30 | `#082026` `exclusion` 0.12 | `#146E5F` `soft-light` 0.16 | — | — |
+| `ek-100` 柯达 100 | `overlay` / 0.34 | `#141923` `color-burn` 0.06 | — | 0.38 | — |
+| `cs-800T` 电影 800T | `overlay` / 0.26 | — | `#125596` `soft-light` 0.28 | — | 径向暖红 `rgba(255,55,30,0.08)`（`screen`）+ halation |
+| `hp-400-bw` 黑白 400 | `soft-light` / 0.30 | — | — | — | 先 `color` 叠 `#808080` 去色，再同源 `soft-light` 0.30 |
+| `tx-400-bw` 黑白 400T | `overlay` / 0.42 | — | — | 0.42 | 去色同 `hp-400-bw`，同源 `overlay` 0.42 |
+
+所有 9 卷在门禁里逐项核对：`s-curve` 层必须存在且 `opacity === min(0.42, sCurveIntensity)`、
+`blendMode === curveBlendMode`、无 `blurRadius`；黑白卷的 `s-curve` 必须排在 `mono` **之后**；
+`shadow-tint` / `highlight-tint` 的颜色、blendMode、opacity 与上表逐位相等。
+
+### 40.5 模块四：胶片卡渐变 / ISO 角标 + 00 NO FRAME 日期双层暗影
+
+**胶片卡（`FilmCard.tsx`）**：删除 3 条 `swatchZone` 纯色块，卡片头改成
+`<LinearGradient colors={[top, mid, bottom] as const} start={{x:0.15,y:0}} end={{x:0.4,y:1}}>`，
+保留 `swatchSheen` 高光。右上角新增微角标：
+
+| 预设 | 角标 | 预设 | 角标 |
+| --- | --- | --- | --- |
+| `gd-200` / `cp-200` | `ISO 200` | `pt-400` / `um-400` / `fj-400` | `ISO 400` |
+| `ek-100` | `SLIDE` | `cs-800t` | `800T` |
+| `hp-400-bw` / `tx-400-bw` | `B&W` | 其它 | 名字末段数字 → `ISO n`，否则 `FILM` |
+
+角标底色/字色按渐变顶端色（`swatchZones(preset.color)` 的最后一段）亮度自适应：
+亮度 > 0.62 用 `rgba(255,255,255,0.72)` 底 + 近黑字，否则 `rgba(0,0,0,0.55)` 底 + 近白字。
+选中勾从 `right: 4` 挪到 `left: 6`，避开角标与 2pt 选中导轨。
+
+**`00 NO FRAME` 日期/地名双层暗影**（三处同口径，保证"预览 = 成片"）：
+
+| 位置 | 实现 |
+| --- | --- |
+| `DateGlyphs.tsx` | `dateGlyphLayers(..., haloShadow = true)` 在**所有材质层下面**垫两层黑色同字形副本：`halo-around`（字色 `rgba(0,0,0,0.55)`、阴影 `rgba(0,0,0,0.82)`、半径 `max(3, 9.7S)`）+ `halo-drop`（字色 `rgba(0,0,0,0.62)`、阴影 `rgba(0,0,0,0.92)`、半径 `max(1.5, 3.5S)`、向下 `max(1, 0.9S)`）；默认 `false` 时返回值与 v1.8.6 逐字节一致 |
+| `FramePreviewLayer.tsx` | 纯文字水印分支：`fullBleed` 时返回两层 `<Text>`（`noFrameHaloStyle` 大半径 + `noFrameFaceStyle` 贴边），否则仍是单层；两处 `<DateStamp>` 传 `haloShadow={fullBleed}` |
+| `FilmCompositor.tsx` | 画内日期/地名同款双层 Text（`NO_FRAME_HALO_COLOR` / `noFrameHaloStyle` / `noFrameFaceStyle`）；`QuartzPiece` 新增 `haloShadow` prop 并透传 `DateStamp`；两处调用传 `haloShadow={fullBleed}` |
+
+白边水印（`fullBleed === false`）**零变化**：不加任何额外阴影、层数不变 —— 用户只要求无框模式可读。
+
+### 40.6 验证清单与门禁
+
+15 道探针全部 EXIT 0（workspace 根，`node <probe>` 直跑；原始输出 `_gate_v187_*.out.txt`）：
+
+| # | 门禁 | 本版实测 |
+| --- | --- | --- |
+| 1 | `_probe_date_engine.cjs` | 3372 条 / 0 失败（v1.8.7 四档字体族/层数/材质配方/transform/halo） |
+| 2 | `_probe_film_look.cjs` | 1743 条 / 0 失败（新增 `exclusion`/`color-burn` 混合、S-Curve/tint 层、暗角 68% + multiply、halation 0.08、预算重定标） |
+| 3 | `_probe_geo_lock.cjs` | 16207 通过 / 0 失败 |
+| 4 | `_probe_noframe_v181.cjs` | 455 条 / 0 失败 |
+| 5 | `_probe_noframe_watermark.cjs` | 458 条 / 0 失败 |
+| 6 | `_probe_skin_material.cjs` | 1069 条 / 0 失败 |
+| 7 | `_probe_v180_seams.mjs` | 1349 条 / 0 失败（`dateEngine` 透传点期望改为 2：取景器预览 + 合成器） |
+| 8 | `_probe_lead_integration.mjs` | 315 条 / 0 失败 |
+| 9 | `_probe_capture_quality.mjs` | 78 条 / 0 失败 |
+| 10 | `_probe_v184_camera.cjs` | 960 条 / 0 失败 |
+| 11 | `_probe_v185_place.cjs` | 468 条 / 0 失败 |
+| 12 | `_probe_v185_frame.cjs` | 1781 条 / 0 失败 |
+| 13 | `_haze_audit.mjs` | 9/9 卷 PASS；超预算 0/9、结构门禁 0 失败、暗角问题 0（预算按 v1.8.7 染色契约重定标：whiteLoss ≤0.14 / veilHigh ≤0.10 / veilMid ≤0.10 / satFloor ≥0.88） |
+| 14 | `_purity_audit.mjs` | 64 条 / 0 失败，`RESULT: PURE` |
+| 15 | `_probe_v186_perf.cjs` | 241 条 / 0 失败（`framePreviewNode` 依赖新增 `settings.dateEngine`） |
+
+- `npx tsc --noEmit -p tsconfig.json` → **EXIT 0**。
+- `npx expo export --platform ios --no-bytecode` → **EXIT 0**，bundle
+  `index-f22b0f86b99df58a4b838fde35a2dd2c.js` **1,358,721 B**。
+- 探针改动（只改口径，不放宽语义）：`_probe_date_engine.cjs` 的 §4 冻结表换 v1.8.7 值、
+  §9 改为按 `dateGlyphLayers()` 配方逐层核对；`_probe_film_look.cjs` 的图层白名单 16 键、
+  `BLEND` 增 `exclusion` / `color-burn`；`_haze_audit.mjs` 预算重定标、结构门禁按声明上限
+  区分 `shadow-tint` / `highlight-tint` / `s-curve`、暗角门禁改 `multiply` 数学；
+  `_probe_v186_perf.cjs` / `_probe_v180_seams.mjs` / `_probe_v185_frame.cjs` /
+  `_probe_noframe_v181.cjs` 各一处锚点跟随新代码形态。
+
+### 40.7 已知缺口与如实说明
+
+- **`s-curve` 不是真正的曲线**：RN 没有 color matrix / LUT 通道，本版用"同源照片副本按
+  `soft-light`/`overlay` 自叠"近似 S 曲线。好处是零新依赖、零逐像素 JS；代价是白位会被
+  轻微抬高 —— 所以 `_haze_audit.mjs` 的 `whiteLoss` 预算从 0.02 调到 **0.14**，并如实打印每卷实测值
+  （最大 0.0961 cp-200），不是"看起来没变所以放过"。
+- **暗角是预烘 PNG**（1024×1024）而不是逐像素 shader；`multiply` 下中心 alpha=0 不参与混合，
+  四角乘向深青黑 `(6,14,20)`。蒙版重生成会改变 `vignette.png` 的 sha256（见 §40.3）。
+- **`mixBlendMode` 在 iOS RN 上映射到 CALayer 的 compositingFilter**，旧设备/低电量模式下
+  个别 blend 可能被系统降级为 normal；图层顺序与不透明度仍保证"就算退化也是同源图叠同源图"，
+  不会出现第三种颜色。
+- **48MP 仍然不存在**：expo-camera 57.0.6 iOS 的 `PictureSize` 只有 9 个枚举串，`'Photo'` 是
+  4:3 全幅（4032×3024），三档画质只改导出画布长边。此结论与 v1.8.6 §39.1 一致，未变。
+- 四档字形的差异在 `12pt` 设置页样例上靠字体族 + 阴影已可分辨；再细小的差异（例如
+  `letterSpacing` 的 ±0.1pt）不做承诺 —— 那是系统字体渲染的舍入范围。
+
+### 40.8 产物指纹（发布后回填）
+
+- 本地提交 `<待回填>` → 远端 `<待回填>`（经 `_push_v180_api.py` 建树提交）。
+- CI run / job / artifact / IPA 体积与 sha256 / Release id 与 asset id / 下载地址 / 核验结果：
+  发布完成后在本节回填（格式同 §39.9）。
+
+### 40.9 文件改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/components/DateGlyphs.tsx` | 重写为四档材质配方（`GLYPH_FONT_FAMILY` / `glyphFontPx` / `dateGlyphLayers` / `haloLayers` / `combineTransforms` / `glyphTextTransform`），`OpticalDateText` 加 `haloShadow` |
+| `src/components/DateStamp.tsx` | 加 `haloShadow?: boolean` 并透传（旧文字路径零改动） |
+| `src/components/FramePreviewLayer.tsx` | props 加 `dateEngine?`，两处 `DateStamp` 传 `glyphStyle`/`glow`/`spot`/`haloShadow`，纯文字分支加无框双层暗影 |
+| `src/components/FilmCompositor.tsx` | 顶部内窗黑灰带 0.28→0.12、高度 `min(2, …)`；无框日期双层暗影；`QuartzPiece` 加 `haloShadow` |
+| `src/components/CameraScreen.tsx` | `framePreviewNode` 传 `dateEngine={settings.dateEngine}` 并加进依赖 |
+| `src/components/SettingsScreen.tsx` | `OptionRow` 支持右侧 `preview`；`日期字形` 四行渲染 `DateGlyphSample`（`10 17 '26`） |
+| `src/components/FilmCard.tsx` | 卡片头渐变 + ISO/SLIDE/800T/B&W 角标（亮度自适应），选中勾左移 |
+| `src/constants/dateEngine.ts` | `DateGlyphStyleSpec.fontWeight` 增 `'400'`；四档 `fontWeight` / `trackingScale` / `glowScale` 重定（700/1.25/1、800/0.6/0.8、400/1.1/0.4、600/1.9/0.35） |
+| `src/types/index.ts` | `ColorGradeConfig` 加 8 个可选字段（S-Curve / 分离色调） |
+| `src/constants/presets.ts` | 8 个新默认值 + `resolvePreset` 填充 + 9 卷逐卷配方 |
+| `src/utils/gradeLayers.ts` | 新增 `s-curve`（photo）/ `shadow-tint` / `highlight-tint`（color）层；暗角改 `multiply`；halation 0.06→0.08 |
+| `src/constants/textures.ts` | 暗角纹理注释改 v1.8.7 口径（68% / multiply / 中心 alpha 0） |
+| `scripts/generate_vignette.py` | `INNER_RADIUS = 0.68`，重新生成 `vignette.png` |
+| `assets/textures/vignette.png` | 重新生成（117,094 B，sha256 `e02d6c6b…8e6561`） |
+| `app.json` | version `1.8.6` → `1.8.7` |
+| `README.md` | 本节 §40 + TOC |
+
+工作区根（不进仓库）：`_probe_date_engine.cjs` / `_probe_film_look.cjs` / `_haze_audit.mjs` /
+`_probe_v186_perf.cjs` / `_probe_v180_seams.mjs` / `_probe_v185_frame.cjs` / `_probe_noframe_v181.cjs`
+（本版口径更新）、`_gate_v187_*.out.txt`、`_plate_stats.json` / `_plate_stats.py`。
 
 ---
 

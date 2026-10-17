@@ -61,7 +61,7 @@ import { frameOrientationOfLayout, frameSourceOf } from '../utils/geometry';
 import { DateStamp } from './DateStamp';
 import { FrameSkin, paperCornerRadius } from './FrameSkin';
 import type { WatermarkPiece } from './FilmCompositor';
-import type { FrameLayout, FrameSpec, FrameVariant, Rect } from '../types';
+import type { DateEngineConfig, FrameLayout, FrameSpec, FrameVariant, Rect } from '../types';
 
 /**
  * 预览层整体不透明度。取 0.82 的理由见文件头 —— 它是"看得清相框"与"看得见实时画
@@ -173,6 +173,17 @@ export interface FramePreviewLayerProps {
   fontFamily: string;
   /** 预设的辉光总开关（`preset.timestamp.glow`），与成片同源。 */
   glow: boolean;
+  /**
+   * 日期引擎配置（v1.8.7 模块一）。
+   *
+   * 为什么必须传到这里：v1.8.6 之前预览层只画「纯文字行 + 老式 `<Text>` 日期」，
+   * `DateStamp` 拿不到 `glyphStyle` 就退回 v1.8.2 的旧路径 —— 于是切「字形」后
+   * **成片变了、取景器不变**，用户看到的就是"设置没用"。v1.8.7 起预览与成片
+   * 共用同一份 `settings.dateEngine`（三处渲染点：取景器、白边下巴、成片合成器）。
+   *
+   * 可选：历史上 `FilmDrawer` 的迷你预览不传也允许（退回旧路径，不影响主流程）。
+   */
+  dateEngine?: DateEngineConfig;
 }
 
 function FramePreviewLayerImpl({
@@ -184,6 +195,7 @@ function FramePreviewLayerImpl({
   pieces,
   fontFamily,
   glow,
+  dateEngine,
 }: FramePreviewLayerProps): ReactElement | null {
   /*
    * `previewBox` 还没量出来时（首帧）尺寸是 0，摆上去就是"贴在左上角的一个点"。
@@ -343,27 +355,50 @@ function FramePreviewLayerImpl({
 
           // 纯文字行（地名 / 摄影代号 / 日期关掉时的纯文字）
           if (piece.quartz === undefined) {
-            return (
+            const position = {
+              left: piece.left,
+              right: piece.right,
+              bottom: piece.bottom,
+              maxWidth: piece.maxWidth,
+              textAlign: piece.textAlign,
+            } as const;
+            if (!fullBleed) {
+              return (
+                <Text
+                  key={piece.key}
+                  allowFontScaling={false}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                  style={[styles.stamp, position, text]}
+                >
+                  {piece.text}
+                </Text>
+              );
+            }
+            /*
+              00 NO FRAME：双层全向暗影（与 `FilmCompositor` 的 ③ 段同一口径）。
+              预览层必须一起改 —— 用户在取景器里看到的和成片必须是同一种可读性。
+            */
+            return [
+              <Text
+                key={`${piece.key}-halo`}
+                allowFontScaling={false}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                style={[styles.stamp, position, noFrameHaloStyle(piece, text)]}
+              >
+                {piece.text}
+              </Text>,
               <Text
                 key={piece.key}
                 allowFontScaling={false}
                 numberOfLines={1}
                 ellipsizeMode="tail"
-                style={[
-                  styles.stamp,
-                  {
-                    left: piece.left,
-                    right: piece.right,
-                    bottom: piece.bottom,
-                    maxWidth: piece.maxWidth,
-                    textAlign: piece.textAlign,
-                  },
-                  text,
-                ]}
+                style={[styles.stamp, position, noFrameFaceStyle(piece, text)]}
               >
                 {piece.text}
-              </Text>
-            );
+              </Text>,
+            ];
           }
 
           // 独立日期块（`text` 为空）：宽度来自排版层，这里只负责摆位置
@@ -382,7 +417,15 @@ function FramePreviewLayerImpl({
                   },
                 ]}
               >
-                <DateStamp quartz={piece.quartz} color={piece.color} fontFamily={fontFamily} />
+                <DateStamp
+                  quartz={piece.quartz}
+                  color={piece.color}
+                  fontFamily={fontFamily}
+                  glyphStyle={dateEngine?.glyphStyle}
+                  glow={dateEngine?.glow}
+                  spot={dateEngine?.spot}
+                  haloShadow={fullBleed}
+                />
               </View>
             );
           }
@@ -406,13 +449,45 @@ function FramePreviewLayerImpl({
               <Text allowFontScaling={false} numberOfLines={1} ellipsizeMode="tail" style={[styles.centeredText, text]}>
                 {piece.text}
               </Text>
-              <DateStamp quartz={piece.quartz} color={piece.color} fontFamily={fontFamily} />
+              <DateStamp
+                quartz={piece.quartz}
+                color={piece.color}
+                fontFamily={fontFamily}
+                glyphStyle={dateEngine?.glyphStyle}
+                glow={dateEngine?.glow}
+                spot={dateEngine?.spot}
+                haloShadow={fullBleed}
+              />
             </View>
           );
         })}
       </View>
     </View>
   );
+}
+
+/**
+ * 00 NO FRAME 地名暗影（v1.8.7 模块四）—— 与 `FilmCompositor.noFrameHaloStyle`
+ * 同一口径：预览坐标本来就是设备点（358 基准），所以 `max(6, …)` 直接等于用户
+ * 在取景器里要的那个半径。
+ */
+function noFrameHaloStyle(piece: WatermarkPiece, text: TextStyle): TextStyle {
+  return {
+    ...text,
+    textShadowColor: 'rgba(0, 0, 0, 0.82)',
+    textShadowRadius: Math.max(6, Math.round(piece.fontSize * 0.75)),
+    textShadowOffset: { width: 0, height: Math.max(1, Math.round(piece.fontSize * 0.125)) },
+  };
+}
+
+/** 00 NO FRAME 地名顶层：白字本体 + 贴边实影（补锐度）。 */
+function noFrameFaceStyle(piece: WatermarkPiece, text: TextStyle): TextStyle {
+  return {
+    ...text,
+    textShadowColor: 'rgba(0, 0, 0, 0.92)',
+    textShadowRadius: Math.max(1, Math.round(piece.fontSize * 0.08)),
+    textShadowOffset: { width: 0, height: Math.max(1, Math.round(piece.fontSize * 0.125)) },
+  };
 }
 
 /**

@@ -816,17 +816,20 @@ function FilmCompositorImpl({
           <>
             {/*
               内窗立体投影（v1.8.5，用户 m02760 §一.2）：相纸厚度投在照片上的微阴影。
-              顶部 6px 从 rgba(0,0,0,0.28) 渐到透明、左侧 4px 从 rgba(0,0,0,0.16) 渐到透明，
-              按 358pt 参考短边等比缩放（`planInnerWindowShadows`）。画在窗口容器最上层 ——
-              它是"纸压着照片"的光，不是滤镜，所以必须在调色/颗粒之后。
+              v1.8.7 模块二修正：顶部原来是 6pt、0.28 的黑灰渐变 —— 在成片上就是一条
+              "照片顶部的生硬黑灰带"（用户明确要删掉）。现在缩到 **≤2pt、0.12**，
+              只留一丝"纸压着照片"的立体感，不再压暗画面顶部。
+              左侧 4px 0.16 保留：它不是用户投诉的那条带，且只在左边缘 4pt 内。
+              按 358pt 参考短边等比缩放（`planInnerWindowShadows`）。
+              画在窗口容器最上层 —— 它是"纸压着照片"的光，不是滤镜，所以必须在调色/颗粒之后。
               没有相纸（00 NO FRAME）就没有这道投影。
             */}
             <LinearGradient
               pointerEvents="none"
-              colors={['rgba(0, 0, 0, 0.28)', 'rgba(0, 0, 0, 0)']}
+              colors={['rgba(0, 0, 0, 0.12)', 'rgba(0, 0, 0, 0)']}
               start={{ x: 0, y: 0 }}
               end={{ x: 0, y: 1 }}
-              style={[styles.innerShadowTop, { height: innerShadows.top }]}
+              style={[styles.innerShadowTop, { height: Math.min(2, innerShadows.top) }]}
             />
             <LinearGradient
               pointerEvents="none"
@@ -919,27 +922,55 @@ function FilmCompositorImpl({
 
         // 纯文字行（地名 / 摄影代号 / 日期关掉时的纯文字）
         if (piece.quartz === undefined) {
-          return (
+          /** 三个片段共用的定位：两层文字必须**逐字相同**，否则会出现重影。 */
+          const position = {
+            left: piece.left,
+            right: piece.right,
+            bottom: piece.bottom,
+            maxWidth: piece.maxWidth,
+            textAlign: piece.textAlign,
+          } as const;
+          if (!fullBleed) {
+            return (
+              <Text
+                key={piece.key}
+                allowFontScaling={false}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                style={[styles.stamp, position, text]}
+              >
+                {piece.text}
+              </Text>
+            );
+          }
+          /*
+            00 NO FRAME：地名 / 代号是**白字压在照片上**，浅色画面里根本读不出来。
+            v1.8.7 模块四：叠两层 —— 底层只负责"全向暗影"（大半径黑晕 + 微小下偏），
+            顶层是白字本体 + 一圈贴边实影。
+            RN 的一个 `<Text>` 只能带一组 `textShadow*`，所以"双层"必须真的是两个
+            `<Text>`；两层共用同一个 `position`（绝对定位 + 同一个 maxWidth），
+            因此文字逐像素重合，暗影只从字边渗出来。
+          */
+          return [
+            <Text
+              key={`${piece.key}-halo`}
+              allowFontScaling={false}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+              style={[styles.stamp, position, noFrameHaloStyle(piece, text)]}
+            >
+              {piece.text}
+            </Text>,
             <Text
               key={piece.key}
               allowFontScaling={false}
               numberOfLines={1}
               ellipsizeMode="tail"
-              style={[
-                styles.stamp,
-                {
-                  left: piece.left,
-                  right: piece.right,
-                  bottom: piece.bottom,
-                  maxWidth: piece.maxWidth,
-                  textAlign: piece.textAlign,
-                },
-                text,
-              ]}
+              style={[styles.stamp, position, noFrameFaceStyle(piece, text)]}
             >
               {piece.text}
-            </Text>
-          );
+            </Text>,
+          ];
         }
 
         /*
@@ -969,6 +1000,7 @@ function FilmCompositorImpl({
                 fontFamily={fontFamily}
                 dateEngine={dateEngine}
                 canvasWidth={layout.width}
+                haloShadow={fullBleed}
               />
             </View>
           );
@@ -1016,6 +1048,7 @@ function FilmCompositorImpl({
               fontFamily={fontFamily}
               dateEngine={dateEngine}
               canvasWidth={layout.width}
+              haloShadow={fullBleed}
             />
           </View>
         );
@@ -1096,6 +1129,38 @@ function stampTextStyle(piece: WatermarkPiece, fontFamily: string, glowEnabled: 
   };
 }
 
+/** 00 NO FRAME 地名暗影色（v1.8.7 模块四，与用户规范逐字一致）。 */
+const NO_FRAME_HALO_COLOR = 'rgba(0, 0, 0, 0.82)';
+
+/**
+ * 00 NO FRAME 地名的**底层**：只负责全向暗影。
+ *
+ * 半径按排版字号等比放大（0.75 em）：用户在设备预览上要的是「radius 6」，而画布
+ * 宽度从 358pt 到 2048pt 都走同一段代码 —— 写死 6 在成片上等于没阴影，所以换算
+ * 成字号比例，`max(6, …)` 保证小画布上也真的有 6。
+ */
+function noFrameHaloStyle(piece: WatermarkPiece, text: TextStyle): TextStyle {
+  return {
+    ...text,
+    textShadowColor: NO_FRAME_HALO_COLOR,
+    textShadowRadius: Math.max(6, Math.round(piece.fontSize * 0.75)),
+    textShadowOffset: { width: 0, height: Math.max(1, Math.round(piece.fontSize * 0.125)) },
+  };
+}
+
+/**
+ * 00 NO FRAME 地名的**顶层**：白字本体 + 一圈贴边实影 —— 让字在亮照片上仍有轮廓。
+ * 底层已经给了大黑晕，这一层只补锐度，不重复加粗。
+ */
+function noFrameFaceStyle(piece: WatermarkPiece, text: TextStyle): TextStyle {
+  return {
+    ...text,
+    textShadowColor: 'rgba(0, 0, 0, 0.92)',
+    textShadowRadius: Math.max(1, Math.round(piece.fontSize * 0.08)),
+    textShadowOffset: { width: 0, height: Math.max(1, Math.round(piece.fontSize * 0.125)) },
+  };
+}
+
 /**
  * 日期片段。参数**全部**来自 `piece.quartz` 与 `piece.color`，
  * 这里不做任何判断（阴影该不该发、发什么颜色都由 `geometry.ts` 定好了）。
@@ -1113,12 +1178,15 @@ function QuartzPiece({
   fontFamily,
   dateEngine,
   canvasWidth,
+  haloShadow,
 }: {
   piece: WatermarkPiece;
   fontFamily: string;
   dateEngine: DateEngineConfig;
   /** 画布宽度（逻辑点）：新路径的字号唯一来源就是它（`dateEngineFontPx`）。 */
   canvasWidth: number;
+  /** 00 NO FRAME 时给日期垫双层全向暗影（见 `DateGlyphs`）。 */
+  haloShadow: boolean;
 }) {
   const quartz = piece.quartz;
   if (quartz === undefined) {
@@ -1133,6 +1201,7 @@ function QuartzPiece({
       glow={dateEngine.glow}
       spot={dateEngine.spot}
       canvasWidth={canvasWidth}
+      haloShadow={haloShadow}
     />
   );
 }

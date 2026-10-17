@@ -1895,6 +1895,7 @@ export function CameraScreen() {
           pieces={previewPieces}
           fontFamily={fonts.fontFamily}
           glow={resolved.timestamp.glow}
+          dateEngine={settings.dateEngine}
         />
       ) : null,
     [
@@ -1906,6 +1907,9 @@ export function CameraScreen() {
       frameOffset.left,
       frameOffset.top,
       settings.frameVariant,
+      // v1.8.7 模块一：日期引擎四个轴（格式/字形/机位/发光色）必须进依赖 ——
+      // 少一行，用户改「字形」时取景器就不重渲染，看起来就是"设置无效"。
+      settings.dateEngine,
       previewPieces,
       fonts.fontFamily,
       resolved.timestamp.glow,

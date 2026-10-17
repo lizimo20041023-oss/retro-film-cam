@@ -55,7 +55,7 @@ export const TEXTURES: Record<TextureId, TextureSpec> = {
     name: '暗角',
     source: require('../../assets/textures/vignette.png'),
     defaultResizeMode: 'stretch',
-    note: '从中心透明 → 边缘纯黑的径向渐变，拉伸铺满，用 overlay 压暗四角。v1.8.0 从 multiply 改过来：multiply 会把纯白压成灰（白雾来源之一），而 overlay(1, cs) = 1 对纯白一个像素都不动。',
+    note: '从中心透明 → 边缘深青黑的径向渐变（中心 68% 半径 alpha=0，四角 alpha=255，smoothstep 无硬边），拉伸铺满，v1.8.7 起用 multiply 压暗四角。为什么这次 multiply 安全：中心 alpha=0 —— 没有上层像素参与混合，纯白不会被压灰；v1.8.0 那次是整张不透明白底铺满，才有白雾。multiply 四角"乘"暗比 normal"盖"黑纱保留更多中间调。',
   },
   lightLeak: {
     id: 'lightLeak',

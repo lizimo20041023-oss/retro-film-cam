@@ -36,6 +36,7 @@
  */
 import { memo, useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import type { ColorGradeConfig, FilmPreset } from '../types';
 import { UI_MONO, useTheme } from '../constants/theme';
 import type { Theme } from '../constants/theme';
@@ -181,18 +182,108 @@ function swatchZones(color: ColorGradeConfig): SwatchZone {
 }
 
 /**
- * 色块本体：三段色阶 + 一道"乳剂层"高光。
- * 刻意不做圆角以外的装饰，它不是缩略图，只是一个色彩示意。
+ * 卡片右上角的**卷种角标**（v1.8.7 模块四）：`ISO 200` / `ISO 400` / `SLIDE` /
+ * `800T` / `B&W`。
+ *
+ * 为什么写显式映射而不是从 `preset.name` 解析：名字是给人看的商品名，不是数据
+ * 字段；`EK-100` 实际是反转片（该标 SLIDE 而不是 ISO 100）、`CS-800T` 的 800 在
+ * 名字中间 —— 解析迟早出错。九卷是冻结的，一张表最省心，也不需要给 `FilmPreset`
+ * 加 `iso` / `stockType` 字段（那会牵动 `presets.ts` 与五语言包）。
+ * 兜底（将来加卷忘了登记）才退回 `mono` 判断 + 末段数字，绝不抛错。
  */
-function FilmSwatch({ zones, styles }: { zones: SwatchZone; styles: FilmStyles }) {
+function stockBadgeOf(preset: FilmPreset): string {
+  switch (preset.id) {
+    case 'gd-200':
+    case 'cp-200':
+      return 'ISO 200';
+    case 'pt-400':
+    case 'um-400':
+    case 'fj-400':
+      return 'ISO 400';
+    case 'ek-100':
+      return 'SLIDE';
+    case 'cs-800t':
+      return '800T';
+    case 'hp-400-bw':
+    case 'tx-400-bw':
+      return 'B&W';
+    default:
+      break;
+  }
+  if (preset.mono === true) {
+    return 'B&W';
+  }
+  // 兜底：取名字里最后一段连续数字（`800-T` 的 800 在中间，不能用"结尾数字"）。
+  const digits = /(\d+)(?!.*\d)/.exec(preset.name.trim());
+  return digits === null ? 'FILM' : `ISO ${digits[1]}`;
+}
+
+/** 角标的两种配色：浅色色块上用深字，其余用白字。 */
+interface BadgeTone {
+  readonly background: string;
+  readonly color: string;
+}
+
+/**
+ * 按色块顶部的**相对亮度**选角标底色。
+ *
+ * 色块颜色是 `swatchZones()` 现算出来的 `rgb(r, g, b)`；褪色重的过期片能到
+ * `rgb(238, …)` 这种接近白纸的值，黑底白字会直接消失，所以这里必须真的看一眼
+ * 亮度。解析失败（将来色值换成 hex/rgba）就退回黑底 —— 宁可对比弱一点，也不要
+ * 因为一行解析把整张卡画崩。
+ */
+function badgeToneFor(zone: string): BadgeTone {
+  const match = /^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/.exec(zone);
+  if (match === null) {
+    return { background: 'rgba(0, 0, 0, 0.55)', color: 'rgba(255, 255, 255, 0.94)' };
+  }
+  const red = Number(match[1]);
+  const green = Number(match[2]);
+  const blue = Number(match[3]);
+  const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
+  if (luminance > 0.62) {
+    return { background: 'rgba(255, 255, 255, 0.72)', color: 'rgba(12, 12, 12, 0.86)' };
+  }
+  return { background: 'rgba(0, 0, 0, 0.55)', color: 'rgba(255, 255, 255, 0.94)' };
+}
+
+/**
+ * 色块本体：**三色渐变** + 一道"乳剂层"高光 + 右上角卷种角标。
+ *
+ * v1.8.7 模块四把原来的三条纯色 `View`（`swatchZone`）换成一张
+ * `expo-linear-gradient`：三段色阶本来就是"高光→中间调→暗部"的连续明暗，
+ * 纯色台阶在 34pt 高的小块上看着像色卡纸；渐变才是胶片乳剂层的观感。
+ * 渐变方向 0.15,0 → 0.4,1（略偏右下的斜向），比纯竖直更接近真实光照。
+ *
+ * 为什么用 `as const`：`expo-linear-gradient` v57 的 `colors` 类型是
+ * `readonly [string, string, ...string[]]`（至少两色），普通 `string[]` 会
+ * 被 TS 判成"可能只有 0/1 个"，编译不过。
+ */
+function FilmSwatch({
+  zones,
+  badge,
+  styles,
+}: {
+  zones: SwatchZone;
+  badge: string;
+  styles: FilmStyles;
+}) {
   const { ink } = useTheme();
+  const tone = badgeToneFor(zones.top);
   return (
     <View style={styles.swatch}>
-      <View style={[styles.swatchZone, styles.swatchZoneTop, { backgroundColor: zones.top }]} />
-      <View style={[styles.swatchZone, { backgroundColor: zones.mid }]} />
-      <View style={[styles.swatchZone, { backgroundColor: zones.bottom }]} />
+      <LinearGradient
+        colors={[zones.top, zones.mid, zones.bottom] as const}
+        start={{ x: 0.15, y: 0 }}
+        end={{ x: 0.4, y: 1 }}
+        style={styles.swatchFill}
+      />
       {/* 顶部一条极淡的白线，模拟乳剂层的高光，让色块不至于像纯色卡纸。 */}
       <View style={[styles.swatchSheen, { backgroundColor: ink.paperFaint }]} pointerEvents="none" />
+      {/* 卷种角标：只做识别用，不是按钮 —— 点它必须等价于点整张卡。 */}
+      <View style={[styles.badge, { backgroundColor: tone.background }]} pointerEvents="none">
+        <Text style={[styles.badgeText, { color: tone.color }]}>{badge}</Text>
+      </View>
     </View>
   );
 }
@@ -209,10 +300,14 @@ export const FilmCard = memo(function FilmCard({
   // 而这十张卡是抽屉里唯一会整片换肤的东西。
   const styles = useMemo(() => createStyles(theme), [theme]);
   const description = preset.description ?? '';
+  const badge = stockBadgeOf(preset);
   // 选中态在无障碍里也要说出来：读屏用户不会看到那根琥珀色指示条。
-  const label = selected
-    ? `${t('film.card.a11y', { name: preset.name, description })} · ${t('film.card.selected')}`
-    : t('film.card.a11y', { name: preset.name, description });
+  // 角标是视觉信息，读屏拿不到，所以附在 label 末尾（本就是 ASCII 代号，不占语言包）。
+  const label = `${
+    selected
+      ? `${t('film.card.a11y', { name: preset.name, description })} · ${t('film.card.selected')}`
+      : t('film.card.a11y', { name: preset.name, description })
+  } · ${badge}`;
 
   return (
     <Pressable
@@ -229,7 +324,7 @@ export const FilmCard = memo(function FilmCard({
         pressed ? styles.cardPressed : null,
       ]}
     >
-      <FilmSwatch zones={swatchZones(preset.color)} styles={styles} />
+      <FilmSwatch zones={swatchZones(preset.color)} badge={badge} styles={styles} />
       <View style={styles.body}>
         <Text style={[styles.code, selected ? styles.codeSelected : null]} numberOfLines={1}>
           {preset.name}
@@ -295,11 +390,27 @@ function createStyles(theme: Theme) {
     swatch: {
       height: SWATCH_HEIGHT,
     },
-    swatchZone: {
-      flex: 1,
+    /** 三色渐变铺满整个色块区；`swatchSheen` / 角标都压在它上面。 */
+    swatchFill: {
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 0,
     },
-    swatchZoneTop: {
-      flex: 1.1,
+    /** 右上角卷种角标（`ISO 200` 等）：8pt 等宽、2pt 圆角，压在渐变上。 */
+    badge: {
+      position: 'absolute',
+      top: 4,
+      right: 4,
+      paddingHorizontal: 3,
+      paddingVertical: 1,
+      borderRadius: 2,
+    },
+    badgeText: {
+      fontSize: 8,
+      letterSpacing: 0.6,
+      fontFamily: UI_MONO,
     },
     swatchSheen: {
       position: 'absolute',
@@ -342,13 +453,15 @@ function createStyles(theme: Theme) {
       backgroundColor: ink.amber,
     },
     /**
-     * 右上角 `✓`。压在色块上，所以自己带一层实心底 + 一圈琥珀描边 ——
+     * 左上角 `✓`（v1.8.7 从右上角挪来：右上角让给卷种角标，否则 8pt 角标与
+     * 16pt 圆标会叠在一起）。压在色块上，所以自己带一层实心底 + 一圈琥珀描边 ——
      * 否则遇到浅色色块（褪色很重的过期片）这个字会糊在背景里看不见。
+     * left 取 6 是为了让开 `selectedRail` 那根 2pt 竖条。
      */
     selectedCheck: {
       position: 'absolute',
       top: 4,
-      right: 4,
+      left: 6,
       width: CHECK_SIZE,
       height: CHECK_SIZE,
       borderRadius: CHECK_SIZE / 2,

@@ -37,8 +37,10 @@
  *
  * 图层顺序（= 绘制顺序，改顺序会改结果）：
  *   ① 色温 ② 色调 ③ 分离色调 ④ 饱和度 ⑤ 对比度
- *   ⑥ 曝光 ⑦ 光晕 ⑧ 真黑白（仅 mono 卷） ⑨ 颗粒 ⑩ 暗角 ⑪ 漏光
- * 前五层负责"色"，后六层负责"质"；⑧ 必须在所有彩色层之后再叠，黑白才是数学纯灰度。
+ *   ⑥ 曝光 ⑦ 光晕 ⑧ 真黑白（仅 mono 卷） ⑧.5 S-Curve 自混合
+ *   ⑧.6 分离染色（暗部/柔光） ⑨ 颗粒 ⑩ 暗角 ⑪ 漏光
+ * 前五层负责"色"，后六层负责"质"；⑧ 必须在所有彩色层之后再叠，黑白才是数学纯灰度；
+ * ⑧.5/⑧.6（v1.8.7）同理必须排在 ⑧ 之后：黑白卷也要"先去色、再自混合/染色"。
  *
  * ── v1.8.3（用户 m01534 · 模块 C1）删掉的三层 ───────────────────────────────
  *   · ⑤.5 `micro-soft-focus`：`blurRadius=1.2` 的模糊副本 + 0.5pt 偏移。
@@ -72,9 +74,10 @@
  * 用户拿 Dazz #Inst C 的成片做对照，核心诉求是"照片必须通透"：
  *   ① **零模糊**：旧的 `bloom` 泛光 = "模糊 8pt 的原图 screen 叠回"（`halation-glow`，
  *      `blurRadius: 8`）。用户红线是"严禁在原图上叠加模糊副本"，整层删除。
- *      `halation` 只剩**一层暖红纯色 screen**（`#FF4028`，opacity = 值 × 0.06 ≤ 0.06）。
- *   ② **零白蒙**：不再有任何浅白/米色遮罩；暗角贴图换成中心 65% 半径全透明的新 PNG，
- *      混合从 `overlay` 改成 `normal` —— 只压外圈到深青黑，画面中心一个像素都不压。
+ *      `halation` 只剩**一层暖红纯色 screen**（`#FF4028`，opacity = 值 × 0.08 ≤ 0.08，
+ *      v1.8.7 按用户模块三数值表把上限从 0.06 抬到 0.08）。
+ *   ② **零白蒙**：不再有任何浅白/米色遮罩；暗角贴图中心 68% 半径全透明，
+ *      混合 v1.8.7 起从 `normal` 改为 `multiply` —— 四角"乘"暗、中心一个像素都不压。
  *   ③ **真黑白**：`mono:true` 的卷在彩色层之后、颗粒之前叠 `#808080` + `saturation` + 1.0
  *      的满幅层。saturation 混合"取颜色的饱和度、保留底图明度"，输出 R=G=B ⇒ 数学纯灰度，
  *      不是半透明灰罩（灰罩只会把画面抬灰，不会去掉颜色）。
@@ -108,7 +111,8 @@ const BLACK = '#000000';
 /**
  * 光晕（halation）的暖红。Y = 0.4034。配 `screen` 加光；
  * 之所以不写更亮的橙色：screen 的代价 = Y·opacity，Y 越低越省对比度。
- * v1.8.5 起只剩这一层**纯色**光晕（零模糊），`opacity = clamp01(halation) × 0.06` ≤ 0.06。
+ * v1.8.5 起只剩这一层**纯色**光晕（零模糊），`opacity = clamp01(halation) × 0.08` ≤ 0.08
+ * （v1.8.7 模块三把上限从 0.06 抬到 0.08，CS-800T 要 rgba(255,55,30,0.08) 的暖红）。
  */
 const HALATION = '#FF4028';
 
@@ -267,8 +271,9 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
   //    叠加 blurRadius 模糊副本"），所以 v1.8.5 删掉模糊那层，只保留纯色光晕：
   //    物理上它是"高光在乳剂层里扩散出的暖红 halo"，视觉上仍是胶片味，但没有一个像素被模糊。
   //
-  //    screen 的代价 = Y·opacity（最伤暗部），所以 opacity = clamp01(halation) × 0.06
-  //    硬封顶 0.06；色值 #FF4028 的 Y≈0.403，比旧 #FF4B2D 更省。纯白恒等（screen(1,·)=1）。
+  //    screen 的代价 = Y·opacity（最伤暗部），所以 opacity = clamp01(halation) × 0.08
+  //    硬封顶 0.08（v1.8.7 模块三：用户要求 CS-800T 的暖红 screen 到 rgba(…,0.08)）。
+  //    色值 #FF4028 的 Y≈0.403，比旧 #FF4B2D 更省。纯白恒等（screen(1,·)=1）。
   if (color.halation > 0.01) {
     layers.push({
       kind: 'color',
@@ -276,7 +281,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
       label: `光晕 ${round2(color.halation)}`,
       color: HALATION,
       blendMode: 'screen',
-      opacity: clamp01(color.halation * 0.06),
+      opacity: clamp01(color.halation * 0.08),
     });
   }
 
@@ -295,6 +300,55 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
       color: NEUTRAL_GRAY,
       blendMode: 'saturation',
       opacity: 1,
+    });
+  }
+
+  // ⑧.5 自混合 S-Curve（v1.8.7 模块二）：**同一张原图的无模糊副本**按预设指定的
+  //      `curveBlendMode`（soft-light / overlay）再叠一层，opacity = `sCurveIntensity`
+  //      （用户表 0.22~0.42，这里硬夹 ≤ 0.42）。
+  //
+  //      为什么它必须排在 ⑧ 之后：对彩色卷，这是"调完色再自混合"；对黑白卷，这是
+  //      "满幅去色之后再自混合"—— 顺序反了 S 曲线就会把彩色信息拉回来，黑白不纯。
+  //      `soft-light(cb, cb)` 在 0/0.5/1 三处恒等，只把中间调往 S 形推；overlay 版本
+  //      更硬（高光抬升约为 soft-light 的两倍）。两者都**不模糊、不叠白**。
+  //
+  //      ⚠️ 这是 `kind:'photo'` 层：live 取景器仍按 v1.8.4 规则把它滤掉
+  //      （`planFilmLooks` 的 photo 过滤），取景器保持干净；成片走完整栈。
+  const sCurve = clamp01(color.sCurveIntensity);
+  if (sCurve > 0.01) {
+    layers.push({
+      kind: 'photo',
+      key: 's-curve',
+      label: `S-Curve 自混合 ${color.curveBlendMode} ${round2(sCurve)}`,
+      blendMode: color.curveBlendMode,
+      // 硬夹 0.42（用户表上限）+ 0.01 下限：0.01 以下不产生图层，避免空跑。
+      opacity: Math.min(0.42, sCurve),
+    });
+  }
+
+  // ⑧.6 分离染色（v1.8.7 模块二/三）：暗部与柔光各一层，**全部用 `mixBlendMode`**
+  //      而不是半透明平涂 —— 用户原话是"分离色调用 mixBlendMode，而非平涂"。
+  //      暗部用乘性混合（multiply / exclusion / color-burn）压暗并转色相；
+  //      柔光用 soft-light / screen 把高光往某个色相提。数值逐卷见 `presets.ts`。
+  //      空串 = 该卷没有这一层（不是黑层，别用空色值骗渲染器）。
+  if (color.shadowTint.length > 0 && color.shadowTintOpacity > 0.01) {
+    layers.push({
+      kind: 'color',
+      key: 'shadow-tint',
+      label: `暗部染色 ${color.shadowTintBlendMode} ${round2(color.shadowTintOpacity)}`,
+      color: color.shadowTint,
+      blendMode: color.shadowTintBlendMode,
+      opacity: clamp01(color.shadowTintOpacity),
+    });
+  }
+  if (color.highlightTint.length > 0 && color.highlightTintOpacity > 0.01) {
+    layers.push({
+      kind: 'color',
+      key: 'highlight-tint',
+      label: `柔光染色 ${color.highlightTintBlendMode} ${round2(color.highlightTintOpacity)}`,
+      color: color.highlightTint,
+      blendMode: color.highlightTintBlendMode,
+      opacity: clamp01(color.highlightTintOpacity),
     });
   }
 
@@ -343,15 +397,19 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
   //    不透明度）决定，见 `constants/grain.ts` 的 `dustSpecCountForGrain()`。
   //    `preset.dust` 字段仍留在数据里（历史字段，不参与渲染）。
 
-  // ⑩ 暗角：v1.8.5 起是**光学暗角** —— PNG 拉伸 + `normal`（旧版 overlay 已弃用）。
+  // ⑩ 暗角：v1.8.7 模块三起是 **multiply 混合的光学暗角**（v1.8.5 曾用 normal）。
   //
-  //    贴图 `assets/textures/vignette.png` 由 `scripts/generate_vignette.py` 生成：
-  //    1024×1024 RGBA，RGB 恒 (6,14,20)，alpha 按归一化半径 rho 走 smoothstep：
-  //      rho ≤ 0.65 → alpha 0（画面中心 65% 半径**一个像素都不压**）；
-  //      rho 0.65~1 → alpha 0→255 平滑（无硬边）；四角 rho>1 按 1 处理。
-  //    层 opacity = 预设 vignette 值 = 边缘最大不透明度（EK 0.32 / TX 0.38 / PT 0.18，
-  //    其余 0.22~0.28）。normal 混合下最终暗角 ≈ opacity × 贴图 alpha × 底色：
-  //    中心不变，边角被压向 (6,14,20) 深青黑 —— 这就是"光学暗角"，不是灰纱。
+  //    贴图 `assets/textures/vignette.png`：1024×1024 RGBA，RGB (6,14,20)，alpha 按
+  //    归一化半径 rho 走 smoothstep：rho ≤ 0.68 → alpha 0（中心 68% 半径**一个像素
+  //    都不压**）；rho 0.68~1 → alpha 0→255 平滑（无硬边）；四角按 1 处理。
+  //
+  //    为什么现在敢用 multiply：贴图中心是**完全透明**的，multiply 在中心没有任何
+  //    上层像素可取（不做混合），所以不存在 v1.8.0 那种"multiply 把纯白压成灰"的
+  //    问题 —— 那次是整张铺满的不透明白底；这张只有四角有 alpha。
+  //    multiply 的好处是四角被"乘"向深青黑而不是"盖"上一层黑纱：中间调保留更多
+  //    层次，纯白/纯黑两端恒等（multiply(1,·)=上层色、multiply(0,·)=0）。
+  //    层 opacity = 预设 vignette 值 = 边缘最大不透明度（EK 0.38 / TX 0.42 /
+  //    UM 0.34，其余 0.18~0.28）。
   if (preset.vignette > 0.01) {
     layers.push({
       kind: 'texture',
@@ -359,7 +417,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
       label: `暗角 ${round2(preset.vignette)}`,
       textureId: 'vignette',
       resizeMode: 'stretch',
-      blendMode: 'normal',
+      blendMode: 'multiply',
       opacity: clamp01(preset.vignette),
     });
   }

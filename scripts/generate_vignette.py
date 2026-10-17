@@ -4,14 +4,16 @@
 
 重新生成 assets/textures/vignette.png：一张 1024x1024 RGBA 的径向暗角遮罩。
 
-设计口径（与 v1.8.5 契约 §3.5 / Lead 冻结补充一致）：
-  - 中心到 65% 半径（按短边一半归一化）alpha 恒为 0：画面中心零遮挡；
-  - 65% -> 100% 半径用 smoothstep 平滑升到 alpha 255：没有硬边；
+设计口径（v1.8.7 模块二/三起，替代 v1.8.5 的 65% 口径）：
+  - 中心到 68% 半径（按短边一半归一化）alpha 恒为 0：画面中心零遮挡；
+  - 68% -> 100% 半径用 smoothstep 平滑升到 alpha 255：没有硬边；
   - 四角 rho>1 按 1 处理（满不透明度）；
   - RGB 恒为 (6, 14, 20) 深青黑，不随半径变化（半径只控制 alpha）。
 
-渲染侧（gradeLayers.ts）以 `blendMode:'normal'` + `opacity = preset.vignette`
-叠加该贴图，因此贴图 alpha 只负责"遮挡比例"，最终不透明度由预设值决定。
+渲染侧（gradeLayers.ts）以 `blendMode:'multiply'` + `opacity = preset.vignette`
+叠加该贴图。multiply 之所以安全：中心 alpha=0（没有任何上层像素参与混合，白不变灰），
+四角是深青黑乘上去（纯白/纯黑两端恒等），比 normal 的"盖一层黑纱"保留更多中间调。
+贴图 alpha 只负责"遮挡比例"，最终不透明度由预设值决定。
 
 生成方式（零新依赖：本机 python 自带 Pillow）：
   python scripts/generate_vignette.py
@@ -34,7 +36,7 @@ except ImportError:  # pragma: no cover - 运行环境缺 Pillow 时给出明确
 
 # --- 冻结常量 -------------------------------------------------------------
 SIZE = 1024                 # 契约建议 1024x1024：够大不糊，文件仍是普通 PNG
-INNER_RADIUS = 0.65         # 中心透明半径（相对短边一半）
+INNER_RADIUS = 0.68         # 中心透明半径（相对短边一半；v1.8.7 用户规范 68%）
 OUTER_RADIUS = 1.0          # 到边中点为满不透明度
 RGB = (6, 14, 20)           # 深青黑，恒定的暗角颜色
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))

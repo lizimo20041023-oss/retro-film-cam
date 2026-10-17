@@ -341,6 +341,36 @@ export interface ColorGradeConfig {
   saturation?: number;
   /** 对比度：0 平 ~ 1 原样 ~ 2 硬。 */
   contrast?: number;
+  /**
+   * v1.8.7 模块二：**自混合 S-Curve** 强度（同一张原图的无模糊副本再叠一层的
+   * 不透明度，0.22~0.42；0 = 关）。`curveBlendMode` 决定这层走 soft-light 还是 overlay：
+   * soft-light 在 0.5 处恒等、高光抬升只有 overlay 的一半，overlay 更"硬"。
+   *
+   * 为什么是"同源副本"而不是滤镜：RN 的 `filter` 在 iOS 上只有 brightness/opacity，
+   * 真正的 S 曲线只能靠"同一画面以 soft-light/overlay 自叠"来近似 —— 数学上
+   * `soft-light(cb, cb)` 就是一条过 (0,0)/(0.5,0.5)/(1,1) 的 S 曲线。
+   */
+  sCurveIntensity?: number;
+  /** S-Curve 自混合的混合模式：`'soft-light'`（柔）或 `'overlay'`（硬）。 */
+  curveBlendMode?: BlendMode;
+  /**
+   * v1.8.7 模块二：**暗部染色**（分离色调的"暗部"半边）。空串 = 该卷没有这一层。
+   * 用户规范用 `multiply` / `exclusion` / `color-burn` 这类"乘性"混合，不是半透明平涂。
+   */
+  shadowTint?: string;
+  /** 暗部染色的混合模式（缺省 `multiply`）。 */
+  shadowTintBlendMode?: BlendMode;
+  /** 暗部染色的不透明度（用户表 0.06~0.12）。 */
+  shadowTintOpacity?: number;
+  /**
+   * v1.8.7 模块二：**柔光染色**（分离色调的"高光"半边）。空串 = 没有这一层。
+   * 用 `soft-light` / `screen` 把高光往某个色相提。
+   */
+  highlightTint?: string;
+  /** 柔光染色的混合模式（缺省 `soft-light`）。 */
+  highlightTintBlendMode?: BlendMode;
+  /** 柔光染色的不透明度（用户表 0.16~0.28）。 */
+  highlightTintOpacity?: number;
   /** 褪色：0 无 ~ 1 极重（只抬黑场，模拟过期胶片）。 */
   fade?: number;
   /** 曝光：-1 压暗 ~ 0 原样 ~ +1 提亮。 */

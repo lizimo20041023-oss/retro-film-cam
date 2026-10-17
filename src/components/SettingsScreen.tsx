@@ -41,13 +41,14 @@
  * 足够了；引了导航库反而要给取景器套一层 navigator，得不偿失。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { LayoutAnimation, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { useTheme, UI_MONO } from '../constants/theme';
 import type { Theme } from '../constants/theme';
 import { CAPTURE_QUALITIES, captureQualityCapNote } from '../constants/captureQuality';
-import { DATE_GLOW_PALETTE } from '../constants/dateEngine';
+import { DATE_GLOW_PALETTE, DATE_GLYPH_STYLES } from '../constants/dateEngine';
 import { NO_FRAME_ASPECTS } from '../constants/frames';
 import { GRAIN_LEVELS } from '../constants/grain';
 import { useI18n } from '../i18n';
@@ -55,6 +56,7 @@ import type { MessageKey } from '../i18n';
 import { LOCALES } from '../i18n/locales';
 import { useSettings } from '../hooks/useSettings';
 import { LOCATION_FAILURE_COPY } from '../utils/locationStamp';
+import { glyphWidth, OpticalDateText } from './DateGlyphs';
 import type {
   CaptureQuality,
   DateFormatId,
@@ -619,6 +621,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
                 <OptionRow
                   key={row.glyphStyle}
                   label={t(row.labelKey)}
+                  preview={<DateGlyphSample style={row.glyphStyle} glow={dateEngine.glow} />}
                   selected={dateEngine.glyphStyle === row.glyphStyle}
                   onPress={() => pickAfter(() => handleDateGlyph(row.glyphStyle))}
                   a11yLabel={t('settings.dateEngine.a11y.glyph', { label: t(row.labelKey) })}
@@ -981,6 +984,39 @@ const DATE_GLYPH_ROWS: readonly { glyphStyle: DateGlyphStyleId; labelKey: Messag
   { glyphStyle: 'archival_steel', labelKey: 'settings.dateEngine.glyph.archival_steel' },
 ];
 
+/** 字形行右侧样例的固定日期串（用户规范逐字：`10 17 '26`）。 */
+const GLYPH_SAMPLE_TEXT = "10 17 '26";
+
+/** 字形样例的渲染字号（pt）。太小看不出材质差别，太大把一行撑高。 */
+const GLYPH_SAMPLE_FONT_PX = 12;
+
+/**
+ * 日期字形行右侧的样例（v1.8.7 模块一）。
+ *
+ * 为什么直接在设置页渲染：用户投诉的根因是"四档看不出差别"，最直接的修法就是
+ * **让差别在选之前就可见** —— 这一行画的不是字体名，而是 `OpticalDateText`
+ * 按该档字体/几何/阴影真实排出来的日期。发光色取当前选中档，所以样例同时反映
+ * 「字形 × 发光色」两轴，与取景器/成片同一套渲染入口。
+ *
+ * 字距与宽度都按排版层同一条公式折算（8 设计像素基准 × trackingScale × 字号/44），
+ * 所以样例里的字距比例与成片一致，不是另调一套观感。
+ */
+function DateGlyphSample({ style, glow }: { style: DateGlyphStyleId; glow: DateGlowId }) {
+  const letterSpacing =
+    Math.round(((GLYPH_SAMPLE_FONT_PX * 8 * DATE_GLYPH_STYLES[style].trackingScale) / 44) * 100) / 100;
+  const width = glyphWidth(GLYPH_SAMPLE_TEXT, style, GLYPH_SAMPLE_FONT_PX, letterSpacing);
+  return (
+    <OpticalDateText
+      text={GLYPH_SAMPLE_TEXT}
+      style={style}
+      fontPx={GLYPH_SAMPLE_FONT_PX}
+      width={width}
+      letterSpacing={letterSpacing}
+      glow={glow}
+    />
+  );
+}
+
 /** 机位八档：画内六档在前（左下 → 右下 → 右上 → 底部居中），白边两档在后。 */
 const DATE_SPOT_ROWS: readonly { spot: DateStampSpot; labelKey: MessageKey }[] = [
   { spot: 'in_bl_v', labelKey: 'settings.dateEngine.spot.in_bl_v' },
@@ -1022,6 +1058,14 @@ interface OptionRowProps {
   note?: string;
   /** 左侧文字前面的一枚色块（日期发光色用，v1.8.3 A1）。 */
   swatch?: string;
+  /**
+   * 行尾的自定义预览节点（v1.8.7 模块一：日期字形行右侧直接画样例 `10 17 '26`）。
+   *
+   * 为什么不是 `note?: string`：字形样例是**用该档字体真实渲染的日期**，不是文字代号 ——
+   * 用户在设置页就该看见"这一档刻出来长什么样"，而不是先选完再回取景器验证。
+   * 放在 `note` 前面（色块 → 文字 → 预览 → 代号 → 对勾），对勾槽位仍恒定占宽。
+   */
+  preview?: ReactNode;
   selected: boolean;
   onPress: () => void;
   a11yLabel: string;
@@ -1048,6 +1092,7 @@ function OptionRow({
   label,
   note,
   swatch,
+  preview,
   selected,
   onPress,
   a11yLabel,
@@ -1085,6 +1130,11 @@ function OptionRow({
       >
         {label}
       </Text>
+      {preview !== undefined ? (
+        <View style={styles.rowPreview} accessible={false}>
+          {preview}
+        </View>
+      ) : null}
       {note !== undefined ? (
         <Text style={styles.rowNote} numberOfLines={1}>
           {note}
@@ -1264,6 +1314,20 @@ function createStyles(theme: Theme) {
       height: 10,
       borderRadius: 5,
       marginRight: 10,
+    },
+    /**
+     * 字形行右侧样例的槽位（v1.8.7 模块一）。
+     *
+     * 宽度写死 112pt：四档的样例宽度不同（字距差 4 倍），槽位不固定的话
+     * 每行文字会被挤到不同长度，一列看下来参差不齐；`alignItems: 'flex-end'`
+     * 让样例右端对齐，和右侧对勾槽位形成两条干净的竖线。
+     */
+    rowPreview: {
+      width: 112,
+      height: 20,
+      marginLeft: 10,
+      alignItems: 'flex-end',
+      justifyContent: 'center',
     },
     rowLabel: {
       flex: 1,

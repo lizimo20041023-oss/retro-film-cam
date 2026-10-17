@@ -86,6 +86,13 @@ export interface DateStampProps {
    * —— 旧路径依赖文档流（`split` 版式那一行是靠 `align.right` 摆的）。
    */
   box?: { left: number; top: number };
+  /**
+   * 是否给日期垫「双层全向暗影」（v1.8.7 模块四）。**只对 00 NO FRAME 生效**：
+   * 日期直接压在照片上，白字/发光字在浅色画面上需要黑晕才读得出来；印在相纸
+   * 留白上的日期一个额外阴影都不该有（白边观感零变化）。
+   * 旧路径（不传 `glyphStyle`）忽略此参数 —— 旧探针冻结了它的 offset 恒 (0,0)。
+   */
+  haloShadow?: boolean;
 }
 
 /**
@@ -111,6 +118,7 @@ function DateStampImpl({
   glow,
   canvasWidth,
   box,
+  haloShadow = false,
 }: DateStampProps): ReactElement | null {
   /*
    * `format === 'OFF'` 的判据落在**文本**上，不落在 render 层的 switch 上：
@@ -208,6 +216,7 @@ function DateStampImpl({
           letterSpacing={tracking}
           glow={glowId}
           rotationDeg={rotationDeg}
+          haloShadow={haloShadow}
         />
       </View>
     </View>
