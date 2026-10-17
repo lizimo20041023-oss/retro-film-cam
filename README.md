@@ -6051,8 +6051,23 @@ export 冒烟：`npx expo export --platform ios --no-bytecode` → EXIT 0，bund
 
 ### 44.6 产物指纹
 
-（发布后回填：本地提交 / 远端 master / CI run+job / artifact / IPA 体积与 sha256 /
-Release id+asset / 下载链接 / IPA 回读核验摘要。）
+- **本地提交**：`655a22800b2536e4cb86af1b7f549bc99d02d38d`（22 files，+2,199 / −70）
+- **远端 master**：`976914cf88d3528453a95ddaae197b7794af6e7a`（`_push_v180_api.py`，
+  TREE MATCH True，137 blobs 全一致）
+- **CI**：run [`39065036127`](https://github.com/lizimo20041023-oss/retro-film-cam/actions/runs/39065036127)
+  / job `117490773227` —— 12 个 step 全 success（skip 1 个「只在上次失败时才执行」的哈希缓存 step）
+- **artifact**：`12113351715`（`FretroCam-unsigned-ipa`，10,495,140 B）
+- **IPA**：`FretroCam-v1.8.11-unsigned.ipa`，**10,609,079 B**
+  sha256 `91be1ceaea8a5609c9fd4804a050a910a050b55de81873fabe837f11940efe86`
+- **Release**：id `416035905`，tag `v1.8.11`，asset `651491918`（size / digest 双 MATCH）
+- **下载**：<https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.8.11/FretroCam-v1.8.11-unsigned.ipa>
+- **IPA 回读核验**（`python _verify_ipa_v1811.py 12113351715` → `RESULT: OK`，115 entries）：
+  `main.jsbundle` **2,093,114 B**；`Info.plist` 1.8.11 FOUND；10 张相框素材齐全；
+  颗粒 `2d30d077…`（频带 <8px = 65.7% / 24–64px = 5.0%，两道门禁 OK）、
+  暗角 `e02d6c6b…`（中心 alpha 0、四角 255、RGB 恒 (6,14,20)）；
+  v1.8.11 新 needle 全命中（`scene-shadow-lift` ×2、`scene-highlight-rolloff` ×2、
+  `settings.adaptiveGrade` ×8、`settings.watermarkZone` ×10、`settings.watermarkAlign` ×10），
+  零 `missing:`，登记的 x0 全部是已知兜底（源码级探针另行守护）。
 
 ### 44.7 文件改动
 
