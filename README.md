@@ -4371,23 +4371,35 @@ iOS 的 `resizeMode="repeat"` 不是 `colorWithPatternImage`，而是
 
 ### 36.7 验证清单（本地实测，全部真实跑过）
 
-> 本节数字由发布流程回填（见 docs-only 提交）。
+> 全部为冻结树（本地提交 `e0e006d`）上的独立实跑；11 道串行门禁总耗时 5065ms。
+> 探针在本轮按新契约重写过（A1/B1/C1/D1 都是行为级重写，不是删断言），
+> 每道门禁的"断言条数变化"与理由见 `_gate_v183_report.txt` §五。
 
-| 门禁 | 结果 |
-| --- | --- |
-| `npx tsc --noEmit -p tsconfig.json` | **EXIT=0**（全仓 0 错） |
-| `_probe_date_engine.cjs` | 待回填 |
-| `_probe_film_look.cjs` | 待回填 |
-| `_probe_geo_lock.cjs` | 待回填 |
-| `_probe_noframe_v181.cjs` | 待回填 |
-| `_probe_noframe_watermark.cjs` | 待回填 |
-| `_probe_skin_material.cjs` | 待回填（已按新 8 元素契约重写） |
-| `_probe_v180_seams.mjs` | 待回填 |
-| `_probe_lead_integration.mjs` | 待回填 |
-| `_probe_capture_quality.mjs` | 待回填 |
-| `_haze_audit.mjs` | 待回填 |
-| `_purity_audit.mjs` | 待回填 |
-| `npx expo export --platform ios --no-bytecode` | **EXIT=0**（bundle `index-53a7ba4cba5e97274d57856a1ec5b03d.js`，1.3MB） |
+| 门禁 | 结果 | v1.8.2 基线 |
+| --- | --- | --- |
+| `npx tsc --noEmit -p tsconfig.json` | **EXIT=0**（全仓 0 诊断） | 0 |
+| `_probe_date_engine.cjs` | **3810 条 / 0 失败**（B1：四档算术 + 5 glow × 4 style × 3 字号三层配方 + 旧几何 30 导出缺席） | 1818 |
+| `_probe_film_look.cjs` | **1656 条 / 0 失败**（C1：颗粒 5 档绝对值 0/0.022/0.045/0.075/0.11 + 0.11 硬顶 + 白尘 0/0/0/1/2 + 三层删除证据 + §⑨ 频带门） | 1201 |
+| `_probe_geo_lock.cjs` | **16207 条 / 0 失败**（四机位/白边/上下限全绿；④ 段期望已乘 `trackingScale`） | 19336 |
+| `_probe_noframe_v181.cjs` | **455 条 / 0 失败**（A8–A24 按 B1 重写） | 217 |
+| `_probe_noframe_watermark.cjs` | **458 条 / 0 失败** | 458 |
+| `_probe_skin_material.cjs` | **879 条 / 0 失败**（D1：恒 8 元素逐 key/kind/顺序、三材质、fullBleed 0、旧色缺席） | 859 |
+| `_probe_v180_seams.mjs` | **1339 条 / 0 失败**（C 段元素数 12/80/60 → 恒 8；D 段四档字形） | 1312 |
+| `_probe_lead_integration.mjs` | **315 条 / 0 失败**（新增 G 段 A1 手风琴、H 段暗黑锁定） | 133 |
+| `_probe_capture_quality.mjs` | **78 条 / 0 失败** | 78 |
+| `_haze_audit.mjs` | **超预算预设 0 / 10**，`RESULT: OK` | 0/10 |
+| `_purity_audit.mjs` | **59 断言 / 0 失败**，`RESULT: PURE` | 59 |
+| `npx expo export --platform ios --no-bytecode` | **EXIT=0**（bundle `index-53a7ba4cba5e97274d57856a1ec5b03d.js`，1,332,811 B；18 张 PNG 资产） | — |
+
+**grain 频带门"旧红新绿"负控制**（`_plate_stats.py` / 探针 §⑨ / 独立 FFT 三方同式，见 §35）：
+
+| 贴图 | `<8px` | `8–24px` | `24–64px` | `64–160px` | `>160px` | 判定 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 当前 `grain.png`（`2d30d077…`，249,201 B） | 65.66% | 28.54% | 4.96% | 0.70% | 0.14% | **全过** |
+| 旧 v1.8.1 贴图（`381acc56…`，211,111 B） | 25.84% | 55.01% | 16.24% | 2.38% | 0.54% | **4 条越界** |
+
+门线：`<8px ≥ 0.60`、`8–24px ≤ 0.35`、`24–64px ≤ 0.06`、`64–160px ≤ 0.02`。
+负控制断言已固化进探针：同一段测量喂旧贴图必红、喂新贴图必绿，门不是恒真。
 
 ### 36.8 已知缺口
 
@@ -4403,21 +4415,19 @@ iOS 的 `resizeMode="repeat"` 不是 `colorWithPatternImage`，而是
 - **门禁只覆盖结构与数值契约**，不模拟 GPU 合成器，也不出真机截图 —— "三层发光在真实屏幕上
   够不够亮/会不会糊"仍然只能靠人眼。
 
-### 36.9 产物指纹（发布后回填）
-
-> 本节数字由发布流程回填（见 docs-only 提交）。
+### 36.9 产物指纹（全部为本次实测值）
 
 | 项目 | 实测值 |
 | --- | --- |
-| 本地提交 | 待回填 |
-| 推送 | 待回填 |
-| CI | 待回填 |
-| artifact | 待回填 |
-| IPA | 待回填 |
-| 核验（CI 产物） | 待回填 |
-| Release | 待回填 |
-| 打包前 export 冒烟 | 待回填 |
-| 下载 | 待回填 |
+| 本地提交 | `e0e006d`（30 files changed, +2301 / −2515） |
+| 推送 | 远端 `master` = `522d65d1accb512b6d1c924bb2cc2857b0869ea7`，tree `004aef22da6c900ab0e71220475ec679fee16c99`，`TREE MATCH = True` |
+| CI | run `39016560029`（job `117349768614`，`build-ipa`），**CONCLUSION = success** |
+| artifact | `12095162792`（`FretroCam-unsigned-ipa`，10,381,357 B，zip 内 1 个 `.ipa`） |
+| IPA | `FretroCam-v1.8.3-unsigned.ipa`，**10,495,729 B**，sha256 `e209fa062266e7acee1d6e8a7519fe034368625a71c65dcf55b08ca5d2681d53`（115 entries，jsbundle `main.jsbundle` 2,031,633 B） |
+| 核验（CI 产物） | `python _verify_ipa_v183.py 12095162792` → 7 段全过：PRESENT（A1/B1/C1/D1 新符号与色值）、ABSENT（旧 7seg/点阵/柔焦/渐变/旧纸色/旧 i18n 键全为 0）、grain 贴图 249,201 B + sha256 `2d30d077…` + 频带 `<8=65.7% / 24–64=5.0%`、19 个非 frame 素材与 10 张 frame、`Info.plist` 版本 `1.8.3`；**`RESULT: OK`**。本地导包 `--local` 亦 `RESULT(local): OK` |
+| Release | tag `v1.8.3`，id `415677030`，asset id `649969775`（远端 size/digest 与本地双匹配） |
+| 打包前 export 冒烟 | `npx expo export --platform ios --no-bytecode` **EXIT=0**，bundle `index-53a7ba4cba5e97274d57856a1ec5b03d.js` 1,332,811 B，18 张 PNG 资产全含 |
+| 下载 | `https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.8.3/FretroCam-v1.8.3-unsigned.ipa` |
 
 ---
 
