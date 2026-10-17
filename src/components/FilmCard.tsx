@@ -186,26 +186,27 @@ function swatchZones(color: ColorGradeConfig): SwatchZone {
  * `800T` / `B&W`。
  *
  * 为什么写显式映射而不是从 `preset.name` 解析：名字是给人看的商品名，不是数据
- * 字段；`EK-100` 实际是反转片（该标 SLIDE 而不是 ISO 100）、`CS-800T` 的 800 在
- * 名字中间 —— 解析迟早出错。九卷是冻结的，一张表最省心，也不需要给 `FilmPreset`
- * 加 `iso` / `stockType` 字段（那会牵动 `presets.ts` 与五语言包）。
+ * 字段；`RI-100` 实际是反转片（该标 SLIDE 而不是 ISO 100）、`NT-800T` 的 800 在
+ * 名字中间 —— 解析迟早出错。九卷是冻结的（v1.8.10 底片库重做后仍是九卷），一张
+ * 表最省心，也不需要给 `FilmPreset` 加 `iso` / `stockType` 字段（那会牵动
+ * `presets.ts` 与五语言包）。
  * 兜底（将来加卷忘了登记）才退回 `mono` 判断 + 末段数字，绝不抛错。
  */
 function stockBadgeOf(preset: FilmPreset): string {
   switch (preset.id) {
-    case 'gd-200':
-    case 'cp-200':
+    case 'su-200':
+    case 'am-200':
       return 'ISO 200';
-    case 'pt-400':
-    case 'um-400':
-    case 'fj-400':
+    case 'vl-400':
+    case 'vx-400':
+    case 'nz-400':
       return 'ISO 400';
-    case 'ek-100':
+    case 'ri-100':
       return 'SLIDE';
-    case 'cs-800t':
+    case 'nt-800t':
       return '800T';
-    case 'hp-400-bw':
-    case 'tx-400-bw':
+    case 'mn-400-bw':
+    case 'sl-400-bw':
       return 'B&W';
     default:
       break;

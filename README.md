@@ -64,6 +64,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [40. v1.8.7：字形档四档真正分家（STAMP FONT 实时穿透 / 自混合 S-Curve / 9 卷重调 / 胶片卡渐变与无框日期暗影）](#40-v187字形档四档真正分家stamp-font-实时穿透--自混合-s-curve--9-卷重调--胶片卡渐变与无框日期暗影)
 - [41. v1.8.8：成片糊的根因（错位自叠层）与真机发热三刀](#41-v188成片糊的根因错位自叠层与真机发热三刀)
 - [42. v1.8.9：闪光灯拍摄被停机打断（v1.8.8 发热改动的回归）与修法](#42-v189闪光灯拍摄被停机打断v188-发热改动的回归与修法)
+- [43. v1.8.10：底片库整套重做（九支新代号 + 仿色 + 旧照片兼容）](#43-v1810底片库整套重做九支新代号--仿色--旧照片兼容)
 
 ---
 
@@ -5734,6 +5735,131 @@ export 冒烟：`npx expo export --platform ios --no-bytecode` → EXIT 0，bund
 工作区根（不进仓库）：`_probe_v189_flash.cjs`（新）、`_probe_v188_sharp.cjs`（S3.3/S3.3b 口径跟随）、
 `_verify_ipa_v189.py` / `_release_v189.py` / `_commit_v189_msg.txt`、`_gate_v189_run.out.txt`、
 `_export_v189_lead/`。
+
+---
+
+## 43. v1.8.10：底片库整套重做（九支新代号 + 仿色 + 旧照片兼容）
+
+### 43.1 用户需求（m06500）
+
+原话：「图一这张图是我现在 app 的滤镜库，我要求把他删了重做，接下来，参考我给你发的这几种胶卷，
+对其进行仿色并导入我 app 中的数据库中『Kodak Gold 200 / Kodak Portra 400 / Kodak UltraMax 400 /
+Kodak ColorPlus 200 / Fujifilm 400 / Kodak Ektar 100 / CineStill 800T / Ilford HP5 Plus 400 /
+Kodak Tri-X 400』且必须每个换名字成新代号，以防侵权纠纷，然后再修改成新的 ipa 出来」。
+
+三条硬要求：① 旧九支卷**整套删掉**，不是停用；② 按九种胶卷的样张性格**重新仿色**；
+③ 每支卷**必须换新代号**（用户红线：防商标纠纷）。附图给了九种胶卷的参考成片与性格描述：
+
+| 参考胶卷 | 性格（用户附图描述） |
+| --- | --- |
+| Gold 200 | 暖黄色、阳光感、复古日常，适合旅行和校园 |
+| Portra 400 | 肤色自然、柔和、层次好，人像经典 |
+| UltraMax 400 | 色彩相对鲜明，日常/街拍/旅行都万能 |
+| ColorPlus 200 | 暖调、微复古，比较便宜的日常胶卷 |
+| Fujifilm 400 | 日常记录舒服、颜色自然，ISO 400 好用 |
+| Ektar 100 | 颗粒非常细、颜色浓郁，风景/建筑特别漂亮 |
+| CineStill 800T | 夜景王者，霓虹灯、高光晕光、蓝红色调有电影感 |
+| Ilford HP5 Plus 400 | 经典黑白，颗粒感与反差有味道，人文/街拍/情绪人像好用 |
+| Kodak Tri-X 400 | 比 HP5 更经典纪实，黑白反差和颗粒有辨识度，街头夜景 |
+
+### 43.2 九支新卷（代号 + 仿色）
+
+命名规则：两个字母 + ISO 数字（黑白卷带 `-bw` 后缀），**不含任何厂商名/商品名/产品线名**；
+卡片副标题也重写，不复用旧文案。顺序 = 抽屉卡片顺序，第一支是默认卷。
+
+| id | 代号 | 副标题 | 色温 | 色调 | 饱和 | 反差 | 分离染色 | S-Curve | 暗角 | 特殊 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `su-200` | SU-200 | 暖阳日光 · 通透日常 | +0.14 | −0.13 | 1 | 1.05 | 0.12 | 0.30 soft-light | 0.24 | 暖棕暗部 multiply + 金色高光 |
+| `vl-400` | VL-400 | 丝绒人像 · 肤色自然 | +0.09 | −0.13 | 0.95 | 1 | 0.10 | 0.22 soft-light | 0.16 | 冷蓝暗部 exclusion + 柔桃高光（最平的反差，人像专用） |
+| `vx-400` | VX-400 | 鲜活色彩 · 万能日常 | −0.08 | +0.13 | 1.06 | 1.14 | 0.12 | 0.30 overlay | 0.30 | 冷蓝柔光，街拍/旅行 |
+| `am-200` | AM-200 | 琥珀怀旧 · 黄昏暖调 | +0.15 | −0.14 | 1 | 1.06 | 0.15 | 0.26 soft-light | 0.27 | 琥珀暗部 multiply + 轻漏光 0.12 |
+| `nz-400` | NZ-400 | 自然清透 · 日系冷调 | −0.10 | +0.18 | 0.97 | 1 | 0.12 | 0.28 soft-light | 0.20 | 青绿暗部 exclusion，低对比 |
+| `ri-100` | RI-100 | 浓郁反转 · 零雾高饱和 | 0 | 0 | 1.06 | 1.18 | 0.11 | 0.34 overlay | 0.36 | **零颗粒**（`GRAINLESS_PRESET_IDS`）+ 极淡冷黑 color-burn |
+| `nt-800t` | NT-800T | 夜色钨丝 · 霓虹光晕 | −0.13 | 0 | 1.05 | 1.10 | 0.13 | 0.26 overlay | 0.24 | 暖红光晕 `halation:1`（screen ≤0.08）+ 漏光 0.16 |
+| `mn-400-bw` | MN-400 BW | 纪实黑白 · 中灰层次 | 0 | 0 | 0 | 1.10 | 0 | 0.30 soft-light | 0.22 | `mono: true`，保中灰层次 |
+| `sl-400-bw` | SL-400 BW | 硬朗银盐 · 高反差 | 0 | 0 | 0 | 1.24 | 0 | 0.42 overlay | 0.42 | `mono: true`，最硬曲线 + 最重暗角 |
+
+数值纪律（v1.8.5 起冻结、v1.8.7 只改配方不改公式）：色层 opacity 必须落在 `[0.03, 0.06]`
+（`_haze_audit` 全绿的前提），S-Curve ≤ 0.42，`halation × 0.08 ≤ 0.08`；`grain` 列统一 0.045
+（G02 冻结口径：颗粒粗细归用户全局档位，不靠数据分家；零颗粒卷是 0 并由 `GRAINLESS_PRESET_IDS` 兜底）。
+因此九支卷的性格差异主要来自**色相倾向 + 反差 + 分离染色 + 暗角**，而不是靠加不透明度堆出来。
+
+### 43.3 商标规避
+
+- `PRESETS` 数据里只有新代号与自写副标题；旧商品名（GD-200 / PT-400 / … / TX-400 BW）、
+  旧副标题（金色日光 / 浓郁街拍 / 日系青绿 / 反转锐利 / 电影钨丝灯）**全部删除**，
+  连 `FilmCard` 的角标映射与注释都换掉了。
+- 九种参考胶卷的厂商名/商品名（Kodak / Portra / Ektar / UltraMax / ColorPlus / CineStill /
+  Ilford / Fujifilm / HP5 / Tri-X）在 `src/` 里一次都不出现；仓库源码与产物都靠门禁守着：
+  `_probe_v1810_stocks.cjs` 的 S2（源码，词边界）与 `_verify_ipa_v1810.py` 的 `SHOULD_BE_ABSENT`
+  （压缩后的包内字符串）。
+- 说明书只写"参考九种经典胶卷的观感"，不出现品牌名。
+
+### 43.4 旧照片兼容（不能碎）
+
+旧照片的 `presetId` 存在照片记录里，换库后如果直接查表，旧照片会默默变成默认卷（甚至下标错位）。
+本版新增 `LEGACY_PRESET_ID_ALIASES`，把旧 id 映射到**性格最接近**的新卷：
+
+| 旧 id | → 新 id | 理由 |
+| --- | --- | --- |
+| gd-200 | su-200 | 都是暖日光日常 |
+| pt-400 | vl-400 | 都是低反差人像 |
+| um-400 | vx-400 | 都是高饱和万能卷 |
+| cp-200 | am-200 | 都是复古暖调 |
+| fj-400 | nz-400 | 都是日系冷调自然 |
+| ek-100 | ri-100 | 都是高饱和零颗粒反转观感 |
+| cs-800t | nt-800t | 都是钨丝夜景+光晕 |
+| hp-400-bw | mn-400-bw | 都是中灰纪实黑白 |
+| tx-400-bw | sl-400-bw | 都是高反差硬黑白 |
+
+`findPresetIndex(id)` 的顺序是：**先查别名表 → 再查 `PRESETS` → 都没有才回落 0**（默认卷）。
+`DEFAULT_PRESET_ID` 从旧默认（gd-200）改成 `su-200`，即新装用户第一支卷。
+
+### 43.5 门禁与验证
+
+- `npx tsc --noEmit -p tsconfig.json` → **EXIT 0**。
+- **18 道门禁全绿、0 失败**（`_gate_v1810_run.out.txt`）：G01 3372 / G02 1754 / G03 16207 / G04 455 /
+  G05 458 / G06 1069 / G07 1358 / G08 315 / G09 78 / G10 947 / G11 468 / G12 1781 / G13（9 卷超预算 0）/
+  G14 64 / G15 241 / G16 80 / G17 51 / **G18 204**，合计约 2.89 万条断言。
+- 新增 `_probe_v1810_stocks.cjs`（204 条，零新依赖）六组：
+  S0 装载与版本；S1 九卷数据完整性（id/代号正则、副标题格式、唯一性）；
+  S2 商标规避（源码 27 条禁用词）；S3 兼容映射（9 别名目标互不重复、旧照片落点、
+  `wrapPresetIndex` 环形）；S4 仿色性格（暖/冷/低反差/高饱和/零颗粒/光晕/黑白对比等约 40 条）；
+  S5 图层纪律（无 blurRadius、色层 ∈[0.03,0.06]、S-Curve ≤0.42、零颗粒卷无 grain 层、mono 单层）；
+  S6 接线（`FilmCard` 角标 9 个新 id、源码无旧 id 残留除别名表、`_haze_audit` 数据源、零 `as any`）。
+- 过程中真实踩到并修掉的一条：`sl-400-bw` 最初把 `grain` 写成 0.075（想表达"颗粒重"），
+  G02 `_probe_film_look.cjs` 的"颗粒列必须统一 = `PRESET_DEFAULTS.grain`"与"旧最坏乘积 ≤ 0.11"
+  两条同时失败（0.075 × 2.2 = 0.165）→ 改回 0.045。**这正好说明门禁在守"颗粒粗细归全局档位"，
+  底片数据只负责性格**。
+- `_haze_audit.mjs` 的零颗粒名单原来从 `gradeLayers.ts` 的正则里抓（v1.8.5 时那里确实有一份），
+  现在定义搬到了 `constants/presets.ts`，若不同步读新位置就会永远走 fallback —— 本版改成
+  **先读 `presets.ts`、再兜底 `gradeLayers.ts`、最后 fallback `'ri-100'`**。
+- `npx expo export --platform ios --no-bytecode` → **EXIT 0**，bundle
+  `index-0dad5ac75ca2456c53c8ca0cbc362b0b.js` **1,359,374 B**；
+  `python _verify_ipa_v1810.py --local ...` → `RESULT(local): OK`。
+- 仍**没有真机复测**：装上后建议逐支卷各拍一张对比观感，重点看人像（VL-400 肤色）、
+  夜景（NT-800T 光晕）与黑白（MN-400 BW / SL-400 BW 的层次差别）。
+
+### 43.6 产物指纹
+
+（发布后回填：本地提交 / 远端 master / CI run+job / artifact / IPA 体积+sha256 / Release id+asset / 下载地址 /
+IPA 回读核验明细。）
+
+### 43.7 文件改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/constants/presets.ts` | `PRESETS` 九支卷整套替换（新 id/代号/副标题/仿色数值）；`GRAINLESS_PRESET_IDS` → `ri-100`；`DEFAULT_PRESET_ID` → `su-200`；新增 `LEGACY_PRESET_ID_ALIASES`；`findPresetIndex` 先查别名；文件头数值纪律补 v1.8.10 段、halation 口径修正为 ≤0.08 |
+| `src/components/FilmCard.tsx` | `stockBadgeOf()` 角标 switch 换新 id（ISO 200 / ISO 400 / SLIDE / 800T / B&W）；头注释同步 |
+| `src/utils/gradeLayers.ts` | 注释里的 EK-100 → RI-100、CS-800T → NT-800T（逻辑零改） |
+| `src/components/FilmLookLayers.tsx` | 注释 EK-100 → RI-100（逻辑零改） |
+| `app.json` | version `1.8.9` → `1.8.10` |
+| `README.md` | 本节 §43 + TOC |
+
+工作区根（不进仓库）：`_probe_v1810_stocks.cjs`（新）、`_probe_v188_sharp.cjs`（S4.5 版本号跟随）、
+`_probe_v189_flash.cjs`（S6.8 版本号跟随）、`_haze_audit.mjs`（零颗粒数据源改读 presets.ts）、
+`_make_v1810_scripts.py`、`_verify_ipa_v1810.py` / `_release_v1810.py` / `_commit_v1810_msg.txt`、
+`_gate_v1810_run.out.txt`、`_export_v1810_lead/`。
 
 ---
 

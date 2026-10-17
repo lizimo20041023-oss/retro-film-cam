@@ -146,7 +146,7 @@ function makeRandom(seed: number, salt: number): () => number {
  * 位置避开最外圈 14%（暗角最重的地方），半径按短边比例 —— 成片可能只有几百 pt。
  */
 export function planDustSpecks(preset: ResolvedFilmPreset, seed: number): DustSpeck[] {
-  // v1.8.5：无颗粒卷（EK-100 反转片）连白尘点都不给 —— `preset.grain` 会被用户档位
+  // v1.8.5：无颗粒卷（RI-100 反转片）连白尘点都不给 —— `preset.grain` 会被用户档位
   // 覆盖成 HV/MAX，所以必须按 id 判（与 `buildGradeLayers` ⑨ 共用同一份名单）。
   const count = GRAINLESS_PRESET_IDS.has(preset.id) ? 0 : dustSpecCountForGrain(preset.grain);
   const specks: DustSpeck[] = [];

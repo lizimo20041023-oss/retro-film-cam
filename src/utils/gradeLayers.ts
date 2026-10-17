@@ -83,7 +83,7 @@
  *      不是半透明灰罩（灰罩只会把画面抬灰，不会去掉颜色）。
  *   ④ **色层纪律**：彩色卷每个 color 层 opacity 必须 ∈ [0.03, 0.06]（`_haze_audit` 断言），
  *      性格靠暗角 / 阴影倾向 / 颗粒区分，不靠浓遮罩。
- *   ⑤ 反转片 EK-100 通过 `GRAINLESS_PRESET_IDS` 永久跳过颗粒层（用户颗粒档位会覆盖
+ *   ⑤ 反转片 RI-100 通过 `GRAINLESS_PRESET_IDS` 永久跳过颗粒层（用户颗粒档位会覆盖
  *      `preset.grain`，所以只能按 id 表达"这支卷天生无颗粒"）。
  *   `buildGradeLayers` 的架构和其余公式（overlay 色层 / soft-light 自叠）一个数没动。
  */
@@ -112,7 +112,7 @@ const BLACK = '#000000';
  * 光晕（halation）的暖红。Y = 0.4034。配 `screen` 加光；
  * 之所以不写更亮的橙色：screen 的代价 = Y·opacity，Y 越低越省对比度。
  * v1.8.5 起只剩这一层**纯色**光晕（零模糊），`opacity = clamp01(halation) × 0.08` ≤ 0.08
- * （v1.8.7 模块三把上限从 0.06 抬到 0.08，CS-800T 要 rgba(255,55,30,0.08) 的暖红）。
+ * （v1.8.7 模块三把上限从 0.06 抬到 0.08，NT-800T 要 rgba(255,55,30,0.08) 的暖红）。
  */
 const HALATION = '#FF4028';
 
@@ -272,7 +272,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
   //    物理上它是"高光在乳剂层里扩散出的暖红 halo"，视觉上仍是胶片味，但没有一个像素被模糊。
   //
   //    screen 的代价 = Y·opacity（最伤暗部），所以 opacity = clamp01(halation) × 0.08
-  //    硬封顶 0.08（v1.8.7 模块三：用户要求 CS-800T 的暖红 screen 到 rgba(…,0.08)）。
+  //    硬封顶 0.08（v1.8.7 模块三：用户要求 NT-800T 的暖红 screen 到 rgba(…,0.08)）。
   //    色值 #FF4028 的 Y≈0.403，比旧 #FF4B2D 更省。纯白恒等（screen(1,·)=1）。
   if (color.halation > 0.01) {
     layers.push({
@@ -376,7 +376,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
   //   `grainLayerOpacity()` 是唯一的封顶入口（`min(s, 0.11)`），不要再抬。
   //   这一层现在**只出现在成片**：`planFilmLooks(..., 'live')` 会把 grain 纹理层滤掉，
   //   取景器保持 100% 干净通透（用户 m01534 · C1 第 2 条）。
-  //    v1.8.5：`GRAINLESS_PRESET_IDS` 里的卷（EK-100 反转片）**永不产生颗粒层** ——
+  //    v1.8.5：`GRAINLESS_PRESET_IDS` 里的卷（RI-100 反转片）**永不产生颗粒层** ——
   //    `preset.grain` 会被用户档位覆盖（applyGrainLevel），所以不能只靠数据里的 0 表达。
   if (preset.grain > 0.01 && !GRAINLESS_PRESET_IDS.has(preset.id)) {
     layers.push({
