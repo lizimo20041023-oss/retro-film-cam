@@ -55,7 +55,7 @@ export async function normalizePhoto(
       context.resize({ height: Math.round(photo.height * scale) });
     }
     const image = await context.renderAsync();
-    const saved = await image.saveAsync({ format: SaveFormat.JPEG, compress: 0.95 });
+    const saved = await image.saveAsync({ format: SaveFormat.JPEG, compress: 0.98 });
     return {
       uri: saved.uri,
       width: saved.width,

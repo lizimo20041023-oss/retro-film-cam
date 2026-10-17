@@ -191,6 +191,15 @@ export function useFilmStage(): FilmStageController {
         if (!target) {
           throw new Error('合成视图还没挂载，无法截图');
         }
+        /*
+         * react-native-view-shot 5.1.0 的 `capture()` **不接受参数**：它内部读的是
+         * `optionsRef.current`（= `<ViewShot options={...}>` 这个 prop 的最新值，
+         * 见 `node_modules/react-native-view-shot/lib/index.js:143-149`）。
+         * 所以尺寸口径只有一个注入点 —— `FilmCompositor` 用 `planCapture().options`
+         * 算好 `width/height/quality` 传给 `<ViewShot options>`，这里直接 `capture()` 即可。
+         * 不要再改成 `captureRef(ref, options)`：那个签名要求显式传 view handle，
+         * 5.1.0 的 ref 上挂的 `capture` 才是"用组件 options"的官方路径。
+         */
         return target.capture();
       },
     };

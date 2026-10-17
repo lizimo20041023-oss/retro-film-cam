@@ -75,8 +75,15 @@ export interface CapturePlan {
   clampedToSource: boolean;
 }
 
-/** JPEG 质量：0.95 在"看不出压缩"和"文件别太大"之间。 */
-const JPEG_QUALITY = 0.95;
+/**
+ * JPEG 质量：**0.98**（v1.8.4 起）。
+ *
+ * 用户（m02103 item ④）明确要求 quality 0.98：上一版 0.95 在 12MP 成片上会被看出
+ * 色块边界（尤其大面积天空 + 颗粒叠加之后）。0.98 的代价是文件大约 +15%，
+ * 相对"原图零柔焦"的红线可以接受；归一化 / 中心裁切两处中间 JPEG 也统一到 0.98
+ * （`normalizePhoto.ts` / `processFilmPhoto.ts`），否则中间那两次重编码会先降一次质。
+ */
+const JPEG_QUALITY = 0.98;
 
 export interface CapturePlanInput {
   /** 舞台的逻辑宽度（点），来自 `computeFrameLayout`。 */

@@ -29,9 +29,9 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, PanResponder, StyleSheet, View, useWindowDimensions } from 'react-native';
 import type { GestureResponderEvent, PanResponderGestureState } from 'react-native';
 
-import { ASSUMED_LENS_NATIVE_MM, ZOOM_STOPS } from '../constants/lenses';
+import { ASSUMED_LENS_NATIVE_MM, TELEPHOTO_FOCAL_STOP, ZOOM_STOPS, factorToZoom } from '../constants/lenses';
 import { useCapsuleAutoHide } from '../hooks/useCapsuleAutoHide';
-import type { ZoomLensRole } from '../constants/lenses';
+import type { ZoomLensRole, ZoomStop } from '../constants/lenses';
 import { useI18n } from '../i18n';
 import {
   DIAL_PAD_H,
@@ -98,90 +98,114 @@ const EV_HAPTIC_STEP = 0.1;
 type ExtractableDial = 'wb' | 'ev';
 
 /**
- * 焦段四档的**丝印毫米数**。
+ * 焦段四档的**丝印毫米数**不再另抄一张表（v1.8.4）：`ZOOM_STOPS[i].focalMm` 就是它。
  *
- * 为什么毫米数要写死一张表而不是从 `ZOOM_STOPS` 算：`wide14` 那一档的倍率因子是
- * 1.4（`26 × 1.4 = 36.4mm`），但镜头上丝印的是 **35mm** —— 这是相机行业的老习惯
- * （等效焦距取整到 35 这个经典值）。给用户看 36.4mm 是"算得对、读不懂"，
- * 所以毫米数用丝印表，倍率（0.5/1/1.4/2）仍来自 `ZOOM_STOPS.multiplier`。
- * 两个数组一一对应、同序，`optionMmFor` 是唯一的映射点。
+ * 上一版之所以要一张 `FOCAL_STOPS_MM`，是因为 `wide14` 的数学倍率是 1.4
+ * （26 × 1.4 = 36.4mm）、而丝印是 35mm —— 两个数不得不分开记。v1.8.4 的 35 档把
+ * `digitalFactor` 钉成 `35/26`，丝印与画面严格一致（26 × 35/26 = 35mm），一张表就够。
  */
-const FOCAL_STOPS_MM: readonly number[] = [13, 26, 35, 52];
-/**
- * 档位分界：相邻两档毫米数的中点（13/26 → 19.5，26/35 → 30.5，35/52 → 43.5，
- * 52/77 → 64.5）。用中点是因为"离哪一档近就算哪一档"是用户唯一能预期的规则。
- */
-const FOCAL_BOUNDARIES_MM: readonly number[] = [19.5, 30.5, 43.5, 64.5];
 
-/** 一个可选焦段档位。`stopIndex` 指回 `ZOOM_STOPS`，父级靠它对齐档位状态。 */
+/** 一个可选焦段档位。`stopIndex` 指回 `ZOOM_STOPS`（长焦段是 -1，它不在四档表里）。 */
 export interface FocalOption {
   readonly mm: number;
   readonly multiplier: number;
   readonly role: ZoomLensRole;
+  /**
+   * 刻度尺这一档要写的**原生**倍率因子：`handleFocalScrub` 会用
+   * `factorToZoom(factor)` 把它换成 `CameraView.zoom`。
+   *
+   * 注意它**不是** `ZoomStop.digitalFactor`：档位按钮（`applyStop`）走布局裁切、
+   * 原生 zoom 恒 0；刻度尺的连续行程沿用 v1.8.3 口径（原生 zoom 落点），
+   * 两条路各走各的确定性通道，但读数在同一个丝印值上对齐。
+   * 长焦段恒为 1（原生 zoom 0 = 那支镜头的完整视场）。
+   */
   readonly factor: number;
   readonly zoom: number;
   readonly stopIndex: number;
 }
 
-/** 第 `stopIndex` 档的丝印毫米数；认不出来的档返回 `null`（宁缺勿错的入口）。 */
-function optionMmFor(stopIndex: number): number | null {
-  const stop = ZOOM_STOPS[stopIndex];
-  if (stop === undefined) {
-    return null;
+/**
+ * 毫米数落在 `ZOOM_STOPS` 的哪一档。父级 `CameraScreen` 也 import 这个函数
+ * （`setStopIndex` 要用它），所以它必须是纯函数、不依赖组件状态。
+ *
+ * 判据 = 相邻两档丝印毫米数的中点（13/26 → 19.5、26/35 → 30.5、35/52 → 43.5）。
+ * `> 52mm`（长焦段的连续行程）取最后一档 —— 长焦不在四档表里，`stopIndex` 只能
+ * 对齐到 52；读数与镜头由 `handleFocalScrub` 的 `scrubFocal` 负责。
+ */
+export function focalStopIndex(focalMm: number): number {
+  const lastIndex = Math.max(0, ZOOM_STOPS.length - 1);
+  for (let index = 1; index < ZOOM_STOPS.length; index += 1) {
+    const lower = ZOOM_STOPS[index - 1];
+    const upper = ZOOM_STOPS[index];
+    if (lower === undefined || upper === undefined) {
+      continue;
+    }
+    const boundary = (lower.focalMm + upper.focalMm) / 2;
+    if (focalMm < boundary) {
+      return index - 1;
+    }
   }
-  const printed = FOCAL_STOPS_MM[stopIndex];
-  if (printed !== undefined) {
-    return printed;
-  }
-  return stop.lens === 'telephoto' ? ASSUMED_LENS_NATIVE_MM.telephoto : null;
+  return lastIndex;
 }
 
 /**
- * 毫米数落在哪一档。父级 `CameraScreen` 也 import 这个函数（`setStopIndex` 要用它），
- * 所以它必须是纯函数、不依赖组件状态。
+ * 刻度尺这一档要写的原生倍率因子。
+ *
+ * 13 / 26 段不放大（1）；35 / 52 段按「相对主摄原生视场」的倍率写原生 zoom
+ * （35/26 / 2）—— 这条连续行程**不经过** `digitalFactor` 布局裁切（见
+ * `FocalOption.factor`），所以不能直接用档位表里的 `digitalFactor`。长焦段恒为 1。
  */
-export function focalStopIndex(focalMm: number): number {
-  for (let index = 0; index < FOCAL_BOUNDARIES_MM.length; index += 1) {
-    const boundary = FOCAL_BOUNDARIES_MM[index];
-    if (boundary !== undefined && focalMm < boundary) {
-      return index;
-    }
-  }
-  return FOCAL_BOUNDARIES_MM.length;
+function rulerFactorFor(stop: ZoomStop): number {
+  return stop.lens === 'wide' ? Math.max(1, stop.focalMm / ASSUMED_LENS_NATIVE_MM.wide) : 1;
 }
 
 /**
  * 这一步能给出哪些焦段档位。
  *
  * `focalMinMm` 由父级按"超广角到底能不能用"给（判据在 `lenses.ts` 的 `resolveStop`）；
- * `focalMaxMm` 只有在父级确认长焦可用时才给 —— 长焦档会切物理镜头，
+ * `focalMaxMm` 只有在父级确认长焦可用时才给 —— 长焦段会切物理镜头，
  * **判不出来就宁可不给**，不能凭猜把一个可能不存在的镜头挂上去。
- * 默认上限取四档表里最大的一档（52mm），也就是"没有长焦档"。
+ *
+ * 返回值 = 四档表里落在 `[focalMinMm, focalMaxMm]` 的档 + **可选的长焦光学段**
+ * （`TELEPHOTO_FOCAL_STOP`，它不在 `ZOOM_STOPS` 里，所以 `stopIndex: -1`）。
  */
 export function buildFocalOptions(input: {
   readonly focalMinMm: number;
   readonly focalMaxMm: number | undefined;
 }): readonly FocalOption[] {
-  const maxMm = input.focalMaxMm ?? FOCAL_STOPS_MM[FOCAL_STOPS_MM.length - 1] ?? 52;
   const options: FocalOption[] = [];
   for (let index = 0; index < ZOOM_STOPS.length; index += 1) {
     const stop = ZOOM_STOPS[index];
-    const mm = optionMmFor(index);
-    if (stop === undefined || mm === null) {
+    if (stop === undefined) {
       continue;
     }
-    if (mm < input.focalMinMm || mm > maxMm) {
+    if (stop.focalMm < input.focalMinMm) {
       continue;
     }
+    if (input.focalMaxMm !== undefined && stop.focalMm > input.focalMaxMm) {
+      continue;
+    }
+    const factor = rulerFactorFor(stop);
     options.push({
-      mm,
+      mm: stop.focalMm,
       multiplier: stop.multiplier,
       role: stop.lens,
-      factor: stop.factor,
-      // `stop.zoom` 就是 `factorToZoom(stop.factor)`，这里直接用档位表的值，
-      // 免得同一个数在两处各算一遍（上一轮的教训）。
-      zoom: stop.zoom,
+      factor,
+      // 刻度尺的路由 `factorToZoom` 现算：v1.8.4 四档的 `zoom` 恒 0（档位按钮走
+      // `digitalFactor` 布局裁切），而刻度尺要的是 0.10721 / 0.25 这类连续落点。
+      zoom: factorToZoom(factor),
       stopIndex: index,
+    });
+  }
+  // 长焦光学段（不在四档表里）：只有父级确认长焦可用（`focalMaxMm` 给到 77）时才加。
+  if (input.focalMaxMm !== undefined && input.focalMaxMm >= TELEPHOTO_FOCAL_STOP.focalMm) {
+    options.push({
+      mm: TELEPHOTO_FOCAL_STOP.focalMm,
+      multiplier: TELEPHOTO_FOCAL_STOP.multiplier,
+      role: TELEPHOTO_FOCAL_STOP.lens,
+      factor: 1,
+      zoom: 0,
+      stopIndex: -1,
     });
   }
   return options;

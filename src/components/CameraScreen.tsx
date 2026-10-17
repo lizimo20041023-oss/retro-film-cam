@@ -63,6 +63,7 @@ import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex, resolveFrame, wrapIndex } fro
 import { applyGrainLevel, findGrainLevelIndex, grainLevelAt } from '../constants/grain';
 import {
   ASSUMED_LENS_NATIVE_MM,
+  TELEPHOTO_FOCAL_STOP,
   ZOOM_STOPS,
   factorToZoom,
   pickDefaultLens,
@@ -76,6 +77,7 @@ import { DARK_THEME, ThemeScope, UI_MONO } from '../constants/theme';
 import { DEFAULT_ZOOM, ZOOM_MAX, toCameraZoom } from '../constants/zoom';
 import { describeError } from '../utils/describeError';
 import { addShot } from '../utils/galleryStore';
+import { focusPointInCamera, planCameraLayer } from '../utils/cameraGeometry';
 import { computeFrameLayout } from '../utils/geometry';
 import { importAndDevelop } from '../utils/importPhoto';
 import { processAndSaveFilmPhoto } from '../utils/processFilmPhoto';
@@ -159,20 +161,31 @@ const LENS_PUSH_SCALE = 0.965;
 const LENS_PUSH_SPEED = 28;
 const LENS_PUSH_BOUNCINESS = 7;
 
+/**
+ * 每次切档时 `autofocus` 打多长的 `'on'` 脉冲（v1.8.4）。
+ *
+ * expo-camera 的原生语义（`node_modules/expo-camera/ios/Current/CameraEnums.swift:48-50`）：
+ *   · `'on'`  → `.autoFocus`：**单次对焦后锁定**，画面不再自己追焦；
+ *   · `'off'` → `.continuousAutoFocus`：连续 AF。
+ * 用户要的是"切档时重新锁一次焦点"，所以常态必须是 `'off'`（连续 AF），切档瞬间打
+ * 50ms 的 `'on'` 再回 `'off'` —— 50ms 足够让原生跑一次 focus，又不至于让用户在取景时
+ * 看见"画面卡住不追焦"。
+ */
+const FOCUS_PULSE_MS = 50;
+
 /** 重曝第二张压在第一张上的强度：太实会把第一张吃掉，太淡等于没叠 */
 const DOUBLE_OVERLAY_OPACITY = 0.5;
 
 /**
- * 开屏默认停在 1×那一档，也是捏合变焦的落脚档。
+ * 开屏默认停在 1×那一档（26mm），也是捏合变焦的落脚档。
  *
- * 用 `id` 反查下标而不是写死数字：档位表现在有五档
- * （0.5× / 1× / 1.4× / 2× / 长焦），它是**语义顺序**而不是什么硬件寄存器顺序，
- * 往表里插一档，写死的 1 就会静默指到别的档上去。
+ * 用 `id` 反查下标而不是写死数字：档位表是**语义顺序**而不是什么硬件寄存器顺序，
+ * 往表里插一档，写死的 1 就会静默指到别的档上去（v1.8.4 从五档变四档时就差点撞上）。
  * `Math.max(0, …)` 兜住"找不到"（表被改空）的情况，退回第一档而不是 -1。
  */
 const DEFAULT_STOP_INDEX = Math.max(
   0,
-  ZOOM_STOPS.findIndex((stop) => stop.id === 'wide10'),
+  ZOOM_STOPS.findIndex((stop) => stop.id === 'wide26'),
 );
 
 /** 定时档位顺序：关 → 3s → 10s */
@@ -226,6 +239,47 @@ function clamp01(value: number): number {
     return 0;
   }
   return Math.min(Math.max(value, 0), 1);
+}
+
+/**
+ * 从 `getAvailablePictureSizesAsync()` 的结果里挑**最高分辨率**的照片档（v1.8.4）。
+ *
+ * iOS 返回的不是像素尺寸，而是 `AVCaptureSession.Preset` 的枚举串（实测
+ * `["3840x2160","1920x1080","1280x720","640x480","352x288","Photo","High","Medium","Low"]`）。
+ * 最大照片档就是 `'Photo'`（也是 expo 的默认值，但用户要求**显式绑定**，
+ * 免得将来某个版本改了默认值就把画质悄悄降下去）：
+ *   1. 有 `'Photo'` 就用它；
+ *   2. 否则把 `WxH` 解析出来按面积降序取最大（Android 返回的才是像素尺寸）；
+ *   3. 再否则退回 `'High'`（最后一个有"高质量"语义的枚举值）；
+ *   4. 空列表 / 认不出来 → `undefined`，即不传 `pictureSize`，让 expo 用自己的默认。
+ */
+function pickPictureSize(sizes: readonly string[]): string | undefined {
+  if (sizes.length === 0) {
+    return undefined;
+  }
+  if (sizes.includes('Photo')) {
+    return 'Photo';
+  }
+  let best: string | undefined;
+  let bestArea = 0;
+  for (const size of sizes) {
+    const match = /^(\d+)x(\d+)$/.exec(size);
+    if (match === null) {
+      continue;
+    }
+    const area = Number(match[1]) * Number(match[2]);
+    if (Math.max(0, area) > bestArea) {
+      bestArea = area;
+      best = size;
+    }
+  }
+  if (best !== undefined) {
+    return best;
+  }
+  if (sizes.includes('High')) {
+    return 'High';
+  }
+  return undefined;
 }
 
 /** 底片计数后缀：后摄 A 卷、前摄 B 卷 */
@@ -388,9 +442,32 @@ export function CameraScreen() {
    * 会在切换语言后留一句旧语言的话。渲染时再 `t()`，语言一变它跟着变。
    */
   const [flashHint, setFlashHint] = useState<FlashMode | null>(null);
-  /** 直接就是 `CameraView` 的 zoom 值（0~1 归一化），捏合与档位都往这里写 */
+  /** 直接就是 `CameraView` 的 zoom 值（0~1 归一化），捏合与「刻度尺连续行程」都往这里写 */
   const [zoom, setZoom] = useState<number>(DEFAULT_ZOOM);
   const [stopIndex, setStopIndex] = useState(DEFAULT_STOP_INDEX);
+  /**
+   * 当前档位的**布局裁切因子**（v1.8.4）：1 = 用满传感器，35 档 35/26，52 档 2。
+   *
+   * 为什么另开一份 state 而不是每次从 `stop.digitalFactor` 现读：捏合与刻度尺会把
+   * 镜头切回主摄、把原生 `zoom` 写成一个连续值 —— 那两条路上"数码倍率"由原生
+   * `zoom` 负责，布局必须**立刻回到 1**，否则会和原生变焦叠乘。档位按钮则相反：
+   * 原生 zoom 恒 0、倍率全交给布局。所以它是"当前哪条通道在负责放大"的开关，
+   * 由三个写入点（`applyStop` / `handleZoomChange` / `handleFocalScrub`）各自维护。
+   */
+  const [digitalFactor, setDigitalFactor] = useState(1);
+  /**
+   * 要显式写给 `CameraView.pictureSize` 的最大照片档（v1.8.4）。
+   *
+   * `undefined` = 不传这个 prop（相机还没就绪 / API 不可用），让 expo 用默认值。
+   * 值由 `getAvailablePictureSizesAsync()` + `pickPictureSize()` 算出来，见那个 effect。
+   */
+  const [pictureSize, setPictureSize] = useState<string | undefined>(undefined);
+  /**
+   * `CameraView.autofocus` 的一次性脉冲（v1.8.4）：`true` → `'on'`（单次对焦后锁定），
+   * `false` → `'off'`（连续 AF）。每次切档/换镜头后 50ms 内为 `true`，然后自己落回。
+   * 语义推导见 `FOCUS_PULSE_MS` 的注释。
+   */
+  const [focusPulse, setFocusPulse] = useState(false);
   /**
    * 刻度尺搓出来的**连续**焦段（读数 + 当前真正挂着的那支镜头）。
    *
@@ -552,10 +629,15 @@ export function CameraScreen() {
   const interactive = !developing && cameraGranted;
   const lensesKnown = lenses.length > 0;
   const stop: ZoomStop = ZOOM_STOPS[stopIndex] ?? ZOOM_STOPS[DEFAULT_STOP_INDEX];
-  // 焦段读数按"这颗镜头的原生等效焦距 × 当前变焦倍数"算：JS 读不到真实焦距，
-  // 用的是 `ASSUMED_LENS_NATIVE_MM` 里的假定值，捏合变焦时它也跟着连续变。
-  // 刻度尺搓过之后（`scrubFocal`）由搓出来的读数直接说了算 —— 理由见那份 state 的注释
-  const focalMm = scrubFocal?.mm ?? Math.round(ASSUMED_LENS_NATIVE_MM[stop.lens] * zoomToFactor(zoom));
+  // 焦段读数 = 假定原生焦距 × 布局裁切因子 × 原生变焦因子（v1.8.4）：
+  //   · 13 / 26 档：digitalFactor 1、zoom 0 ⇒ 就是 13 / 26mm；
+  //   · 35 / 52 档：digitalFactor 35/26 / 2、zoom 0 ⇒ 26 × 1.346 ≈ 35、26 × 2 = 52；
+  //   · 捏合：digitalFactor 1，倍率全部来自 `zoom`（`zoomToFactor`）；
+  //   · 刻度尺：由搓出来的读数（`scrubFocal`）直接说了算，见那份 state 的注释。
+  // JS 读不到真实焦距，`ASSUMED_LENS_NATIVE_MM` 是假定值。
+  const focalMm =
+    scrubFocal?.mm ??
+    Math.round(ASSUMED_LENS_NATIVE_MM[stop.lens] * digitalFactor * zoomToFactor(zoom));
   /** 当前**实际**挂着的镜头：优先信搓动记录，其次信档位。它同时是刻度尺的死区记忆初值。 */
   const focalRole: ZoomLensRole = scrubFocal?.role ?? stop.lens;
   /**
@@ -585,26 +667,10 @@ export function CameraScreen() {
    * 所以口径是"宁缺勿错"：判不出来就只给 13/26/35/52 四档，分段条自己少画一格。
    * `!lensesKnown` 时按"够得到"放行，与 `focalMinMm` / `handleCycleFocal` 同一约定。
    */
-  const telephotoStop = ZOOM_STOPS.find((candidate) => candidate.lens === 'telephoto');
   const focalMaxMm =
-    telephotoStop === undefined || !lensesKnown || resolveStop(telephotoStop, { lenses, facing }).available
+    !lensesKnown || resolveStop(TELEPHOTO_FOCAL_STOP, { lenses, facing }).available
       ? ASSUMED_LENS_NATIVE_MM.telephoto
       : undefined;
-
-  /**
-   * 对焦点与曝光补偿一起下发给原生。EV 归零时故意省略 `exposureBias` 键：
-   * 原生收到 `nil` 就完全不碰测光，同时也少一次无意义的 prop diff。
-   */
-  const cameraFocusProps = useMemo<CameraViewProps & FocusPointProp>(() => {
-    const props: CameraViewProps & FocusPointProp = {};
-    if (focusTarget !== null) {
-      props.focusPoint = { x: focusTarget.x, y: focusTarget.y };
-    }
-    if (exposure !== 0) {
-      props.exposureBias = exposure;
-    }
-    return props;
-  }, [focusTarget, exposure]);
 
   const previewLayout = useMemo(
     () =>
@@ -652,6 +718,47 @@ export function CameraScreen() {
     }),
     [frameOffset.left, frameOffset.top, previewLayout.window],
   );
+
+  /**
+   * 取景窗里的**相机层几何**（v1.8.4，`cameraGeometry.ts` 的 `planCameraLayer`）。
+   *
+   * 这一个对象同时决定三件事，所以必须**只有一处**算：
+   *   · `clip`   —— 裁剪容器的矩形 = 镂空取景窗（`<Animated.View>` 的 left/top/w/h）；
+   *   · `box`    —— `CameraView` 自己的布局尺寸，宽高比恒为 4:3 传感器比例、
+   *                 被 `digitalFactor` 等比放大（35 / 52 档的"确定性数码裁切"）；
+   *   · `offset` —— 盒子左上角相对窗口的偏移（居中 ⇒ 负数）。
+   * 成片侧 `planPhotoCrop` 用的是同一个公式，所以取景与成片逐点对应。
+   *
+   * 窗口还没量出来时（`previewBox` 是 0×0）它会退化成一个 0 尺寸的恒等计划；
+   * 渲染那边也用 `previewBox` 做了门控，不会把 0×0 的相机层挂到原生会话上。
+   */
+  const cameraLayer = useMemo(
+    () => planCameraLayer(viewfinderWindow, digitalFactor),
+    [viewfinderWindow, digitalFactor],
+  );
+
+  /**
+   * 对焦点与曝光补偿一起下发给原生。EV 归零时故意省略 `exposureBias` 键：
+   * 原生收到 `nil` 就完全不碰测光，同时也少一次无意义的 prop diff。
+   *
+   * 定义在 `cameraLayer` 之后（v1.8.4）：`focusPoint` 要把"预览容器里的点"换算成
+   * "相机层里的点"，没有 `cameraLayer` 就算不出来。
+   */
+  const cameraFocusProps = useMemo<CameraViewProps & FocusPointProp>(() => {
+    const props: CameraViewProps & FocusPointProp = {};
+    if (focusTarget !== null) {
+      /*
+       * 对焦点必须换算到**相机层**的 0~1 坐标（v1.8.4）：预览容器上点哪，不等于
+       * 相机层上哪 —— 相机盒子被居中放大、被窗口裁掉一圈，直接拿预览比例下发给
+       * 原生会让对焦框和实际焦点错位（35 / 52 档裁切后，错位随 digitalFactor 变大）。
+       */
+      props.focusPoint = focusPointInCamera(focusTarget, previewBox, cameraLayer);
+    }
+    if (exposure !== 0) {
+      props.exposureBias = exposure;
+    }
+    return props;
+  }, [focusTarget, exposure, previewBox, cameraLayer]);
 
   const stageBox = useMemo(
     () => computeDevelopStageBox({ width: window.width, height: window.height }),
@@ -823,6 +930,70 @@ export function CameraScreen() {
     setCameraKey((current) => current + 1);
   }, []);
 
+  /**
+   * 拉一次「这台相机支持哪些照片尺寸」，并绑上其中**最大**的那一档（v1.8.4）。
+   *
+   * expo-camera 默认的 `pictureSize` 其实就是 `'Photo'`，但用户要求**显式绑定**：
+   * 万一将来默认值变了、或者某台设备给的是另一组枚举，画质不该跟着悄悄降。
+   * 拿不到就保持现状（`pictureSize` 为 `undefined` ⇒ 不传这个 prop，用 expo 默认）。
+   */
+  const refreshPictureSize = useCallback(async () => {
+    const camera = cameraRef.current;
+    if (!camera) {
+      return;
+    }
+    try {
+      const sizes = await camera.getAvailablePictureSizesAsync();
+      setPictureSize(pickPictureSize(sizes));
+    } catch {
+      // 拿不到尺寸不该拦住拍照：退回"不传 pictureSize"，让 expo 用自己的默认值
+    }
+  }, []);
+
+  /**
+   * `pictureSize` 的刷新时机（v1.8.4）：相机就绪、以及每次换镜头 / 前后摄 / 重建视图之后。
+   *
+   * 为什么必要：每个镜头会话能支持的照片尺寸并不完全相同（前摄与后摄尤其不同），
+   * 换镜头后不重拉就可能把后摄的 `'Photo'` 塞给前摄。`cameraReady` 一进来就一起
+   * 覆盖了 `onCameraReady` 那条路（`handleCameraReady` 会 `setCameraReady(true)`）。
+   */
+  useEffect(() => {
+    if (!cameraReady) {
+      return;
+    }
+    void refreshPictureSize();
+  }, [cameraReady, lens, facing, cameraKey, refreshPictureSize]);
+
+  /**
+   * 翻过面之后补拉一次镜头列表（v1.8.4 修 bug）。
+   *
+   * `handleFlipCamera` 会把 `lenses` 清空（避免前摄继承后摄的档位），但以前没有
+   * 任何地方再拉一次 —— 翻到前摄后 0.5× 会整档变灰，直到下一次 `onCameraReady`。
+   * 相机不换 `key` 时那个回调不会再来，所以必须显式补这一下。
+   */
+  useEffect(() => {
+    if (cameraReady) {
+      void refreshLenses();
+    }
+  }, [cameraReady, facing, refreshLenses]);
+
+  /**
+   * 切档 / 换镜头后的**对焦重锁**（v1.8.4）：`autofocus` 打一个 50ms 的 `'on'` 脉冲。
+   *
+   * 为什么不是一直 `'on'`：原生 `'on'` = 单次对焦后**锁定**，一直开着等于关了连续 AF，
+   * 用户稍微换个角度画面就不追焦了。所以常态 `'off'`（连续 AF），只在"焦段变了、
+   * 画面尺度和景深都变了"的这一刻重锁一次。依赖里的 `stop.id` / `lens` / `facing`
+   * 把三种会改变取景几何的事件都覆盖了。
+   */
+  useEffect(() => {
+    if (!cameraReady) {
+      return;
+    }
+    setFocusPulse(true);
+    const timer = setTimeout(() => setFocusPulse(false), FOCUS_PULSE_MS);
+    return () => clearTimeout(timer);
+  }, [cameraReady, stop.id, lens, facing]);
+
   const handleFrameChange = useCallback((next: number) => {
     setFrameIndex(wrapIndex(next));
     /*
@@ -868,6 +1039,7 @@ export function CameraScreen() {
     // 而前摄根本没有闪光灯 —— 那句话会变成假信息
     setFlashHint(null);
     setZoom(DEFAULT_ZOOM);
+    setDigitalFactor(1);
     setLens(undefined);
     setLenses([]);
     setFocusTarget(null);
@@ -905,6 +1077,9 @@ export function CameraScreen() {
           setLens(resolveStop(wideStop, { lenses, facing }).lens);
         }
       }
+      // 捏合是"原生变焦"通道：数码倍率全部由 `zoom` 表达，布局裁切必须立刻归 1，
+      // 否则会和原生变焦叠乘（拍出来比读数远一档）。
+      setDigitalFactor(1);
       // 捏合也是"另一种改焦段的方式"，读数从此由 `zoom` 说了算
       setScrubFocal(null);
       setZoom(quantized);
@@ -930,6 +1105,9 @@ export function CameraScreen() {
       setStopIndex(index);
       setLens(resolution.lens);
       setZoom(resolution.zoom);
+      // 档位走"布局裁切"通道（v1.8.4）：原生 zoom 恒 0（档位表里就是 0），倍率交给
+      // `digitalFactor` —— 13/26 档为 1，35/52 档分别为 35/26 与 2。
+      setDigitalFactor(resolution.digitalFactor);
       // 档位是"离散的权威"：点了档，搓出来的读数就该让位给档位
       setScrubFocal(null);
       // 推拉只作用在画面容器上：参考线和对焦层跟着缩的话，等于告诉用户"画幅变了"
@@ -1007,6 +1185,9 @@ export function CameraScreen() {
             ? pickTelephotoLens(lenses) ?? undefined
             : pickDefaultLens(lenses) ?? undefined,
       );
+      // 刻度尺走"原生变焦"通道（v1.8.3 口径）：布局裁切归 1，连续倍率交给 zoom；
+      // 长焦段的 factor 恒为 1 ⇒ zoom 0 ⇒ 那支镜头的完整原生视场。
+      setDigitalFactor(1);
       setZoom(factorToZoom(factor));
       setStopIndex(focalStopIndex(nextFocalMm));
       // 读数以搓出来的连续值为准（而不是拿档位反推），理由见 `scrubFocal` 的注释
@@ -1276,6 +1457,11 @@ export function CameraScreen() {
          * 只有这里少一层色温覆盖 ⇒ 拖完色温"取景器暖了、成片没暖"。
          */
         preset: gradedPreset,
+        /*
+         * 布局裁切因子（v1.8.4）：与取景器 `planCameraLayer` 收到的是**同一个 state**，
+         * 冲印链路用它算 `planPhotoCrop` —— 取景里看到的窗口区域与成片逐点对应。
+         */
+        digitalFactor,
         stage: stageBox,
         host: filmStage.host,
         place,
@@ -1326,6 +1512,7 @@ export function CameraScreen() {
     developing,
     doubleExposure,
     pendingExposureUri,
+    digitalFactor,
     filmStage.host,
     frame,
     // 依赖写 `gradedPreset` 而不是 `effectivePreset`：色温覆盖一变，这个回调必须拿到
@@ -1593,14 +1780,41 @@ export function CameraScreen() {
         onLayout={handlePreviewLayout}
         {...pinchHandlers}
       >
-        {cameraGranted ? (
-          // 只给画面容器做推拉，`CameraView` 本身不动：`key` 恒定，
-          // 切焦段/换预设都只是改 props，原生会话不会重建
-          <Animated.View style={[styles.fill, { transform: [{ scale: lensScale }] }]}>
+        {cameraGranted && previewBox.width > 1 && previewBox.height > 1 ? (
+          /*
+           * 相机层（v1.8.4）：**裁剪容器** = 镂空取景窗，里面的 `CameraView` 是一个
+           * 宽高比恒为 4:3、被 `digitalFactor` 等比放大、居中于窗口的盒子。
+           *
+           * 为什么必须这样：expo-camera 的 `takePictureAsync` 会把成片裁成**预览层**
+           * 的宽高比（`CameraPhotoCapture.swift:187-190`）。上一版 CameraView 铺满整屏，
+           * 4:3 传感器被裁成竖条，成片与取景一起被放大约 1.6~1.9 倍 —— 这就是
+           * 「0.5× 像 1×、1× 像 2×」的根因。盒子比例 = 传感器比例时那道裁切变成恒等。
+           *
+           * `key` 恒定：切焦段只改 props（`selectedLens` / `zoom` / 布局 style），
+           * 原生会话不重建，不会有黑一下。
+           */
+          <Animated.View
+            style={[
+              styles.cameraClip,
+              {
+                left: viewfinderWindow.left,
+                top: viewfinderWindow.top,
+                width: viewfinderWindow.width,
+                height: viewfinderWindow.height,
+              },
+              { transform: [{ scale: lensScale }] },
+            ]}
+          >
             <CameraView
               key={cameraKey}
               ref={cameraRef}
-              style={styles.fill}
+              style={{
+                position: 'absolute',
+                left: cameraLayer.offset.x,
+                top: cameraLayer.offset.y,
+                width: cameraLayer.box.width,
+                height: cameraLayer.box.height,
+              }}
               facing={facing}
               mode="picture"
               {...cameraFocusProps}
@@ -1614,6 +1828,13 @@ export function CameraScreen() {
               selectedLens={lens}
               onAvailableLensesChanged={handleLensesChanged}
               zoom={zoom}
+              /* 显式绑定最高分辨率照片档（v1.8.4）：空列表时 undefined = 不传 */
+              pictureSize={pictureSize}
+              /*
+                autofocus 语义（`CameraEnums.swift:48/50`）：'on' = 单次对焦后**锁定**，
+                'off' = 连续 AF。常态必须是连续 AF，切档那 50ms 才打一次 'on' 重锁。
+              */
+              autofocus={focusPulse ? 'on' : 'off'}
               animateShutter
               onCameraReady={handleCameraReady}
               onMountError={handleMountError}
@@ -2085,6 +2306,12 @@ function createStyles(ink: ThemeInk, scheme: 'dark' | 'light') {
      * 真机实测报的"抽屉被快门栏挡住"就是 `FilmDrawer` 漏了这一格。
      */
     overlayChrome: { zIndex: 2 },
+    /**
+     * 相机层的裁剪容器（v1.8.4）：矩形由 JSX 现算成镂空取景窗的几何，这里只管
+     * "绝对定位 + 裁掉窗口外"两件事。`CameraView` 是它的子层，尺寸/偏移来自
+     * `cameraGeometry.planCameraLayer()`。
+     */
+    cameraClip: { position: 'absolute', overflow: 'hidden' },
     liveLook: { position: 'absolute', overflow: 'hidden' },
     canvas: { position: 'absolute' },
     focusCatcher: { ...fill },

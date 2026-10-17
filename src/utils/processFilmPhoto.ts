@@ -70,6 +70,7 @@ import type {
   WatermarkLayout,
 } from '../types';
 import type { LocaleId } from '../i18n/types';
+import { planPhotoCrop } from './cameraGeometry';
 import { planCapture } from './captureOptions';
 import { describeError } from './describeError';
 import { computeFrameLayout, resolveFrameOrientation } from './geometry';
@@ -99,6 +100,17 @@ export interface ProcessFilmPhotoInput {
    * 建议 = 取景器里相框预览的实际尺寸，这样"所见即所得"。
    */
   stage: Size;
+  /**
+   * 相机档位的**数码裁切因子**（v1.8.4）：1 = 该镜头原生视场，>1 = 在窗口内再中心裁一刀。
+   *
+   * 由 `CameraScreen` 里 `resolveStop()` 的结果给出（35mm 档 `35/26`、52mm 档 `2`）。
+   * 为什么和取景器共用同一个数：live 的相机盒按同一因子放大（`planCameraLayer`），
+   * 窗口露出的传感器范围就缩小到 `1 / digitalFactor`；成片在这里按同样比例裁
+   * —— 两处消费同一套纯函数几何，所以「取景器里看到多少 = 成片里有多少」是结构性的。
+   *
+   * 不传 = 1（老调用方 / 缩放档位为光学时的行为完全不变）。
+   */
+  digitalFactor?: number;
   /** 宿主：负责把 `<FilmCompositor />` 挂到屏幕上并截图（App 里由 `useFilmStage` 提供）。 */
   host: FilmStageHost;
   /**
@@ -277,47 +289,58 @@ function resolveCropAspect(frame: FrameSpec, layout: FrameLayout): number | null
  * 单位：`CroppedPhoto` 的 `width` / `height` 是**像素**。
  */
 
-async function centerCropPhoto(photo: NormalizedPhoto, aspect: number): Promise<CroppedPhoto> {
+async function centerCropPhoto(
+  photo: NormalizedPhoto,
+  aspect: number,
+  digitalFactor = 1,
+): Promise<CroppedPhoto> {
   const { width, height } = photo;
   if (!(width > 0) || !(height > 0)) {
     return { ...photo, cropped: false, note: '裁切跳过：原图宽高不可用（宽或高为 0）' };
   }
 
-  const current = width / height;
-  // 差不到一个像素就是同一个比例：这时候裁出来的矩形等于原图，
-  // 却要付一次全图解码 + 重编码（12MP 图约 48MB 峰值），所以直接跳过。
-  if (Math.abs(current - aspect) * Math.min(width, height) < 1) {
+  /*
+   * v1.8.4：「窗口裁切」与「档位数码裁切」合并成一次裁切，尺寸交给 `planPhotoCrop()`。
+   *
+   * 它和取景器里的 `planCameraLayer()` 是**同一个几何模型**：相机盒放大 `digitalFactor` 倍
+   * ⇒ 取景窗口露出的传感器范围缩小到 `1 / digitalFactor`；成片就按同样比例从中心裁掉
+   * ⇒ 「所见即所得」由结构保证，而不是两处各写一遍公式再对参数。
+   *
+   * 一个像素都不裁（比例已经相同、且 `digitalFactor === 1`）时直接返回：裁出来的矩形
+   * 等于原图，却要付一次全图解码 + 重编码（12MP 图约 48MB 峰值），所以跳过。
+   */
+  const rect = planPhotoCrop({ width, height }, aspect, digitalFactor);
+  if (rect.width >= width && rect.height >= height) {
     return { ...photo, cropped: false };
+  }
+  /*
+   * 空矩形保护：`aspect` 极端小（窗口只有一两像素宽）时取整会把它压成 0，
+   * 而 `crop()` 的宽高必须是 ≥ 1 的整数。调原生之前先判一次，
+   * 免得把"参数非法"变成一个需要用户重拍的错误。
+   */
+  if (rect.width < 1 || rect.height < 1) {
+    return { ...photo, cropped: false, note: '裁切跳过：算出来的裁切矩形宽或高为 0' };
   }
 
   try {
     /*
-     * 最大内接矩形：以中心为基准往两边撑。
-     * 图比窗口**宽**（current > aspect）→ 高度留满、裁掉左右；
-     * 图比窗口**高** → 宽度留满、裁掉上下。两者不可能同时发生。
+     * 落点沿用 v1.8.3 的 `centerCropOrigin`（floor 居中、奇数余量归左）：
+     * 这一版只换了「裁多大」的口径，没有动「裁在哪」的规则 —— 居中只允许有一个落点，
+     * 两处各算一遍就会差出 ±1px 的偏心。
      */
-    const cropWidth = current > aspect ? Math.round(height * aspect) : width;
-    const cropHeight = current > aspect ? height : Math.round(width / aspect);
-    /*
-     * 空矩形保护：`aspect` 极端小（窗口只有一两像素宽）时 `Math.round` 会把它压成 0，
-     * 而 `crop()` 的宽高必须是 ≥ 1 的整数。调原生之前先判一次，
-     * 免得把"参数非法"变成一个需要用户重拍的错误。
-     */
-    if (cropWidth < 1 || cropHeight < 1) {
-      return { ...photo, cropped: false, note: '裁切跳过：算出来的裁切矩形宽或高为 0' };
-    }
-    const { originX, originY } = centerCropOrigin(width, height, cropWidth, cropHeight);
+    const { originX, originY } = centerCropOrigin(width, height, rect.width, rect.height);
 
     const context = ImageManipulator.manipulate(photo.uri);
-    context.crop({ originX, originY, width: cropWidth, height: cropHeight });
+    context.crop({ originX, originY, width: rect.width, height: rect.height });
     const image = await context.renderAsync();
     /*
      * 用 JPEG 而不是 PNG：源图在归一化那一步已经是 JPEG（`normalizePhoto` 的
-     * `saveAsync({ format: JPEG, compress: 0.95 })`），这里再存一次不会引入新的
+     * `saveAsync({ format: JPEG, compress: 0.98 })`），这里再存一次不会引入新的
      * 格式损失等级；PNG 会把 12MP 的中间文件写到几十 MB，而它下一秒就被截图替代掉了。
-     * 质量同样取 0.95：和归一化那一步同一个数，两处不对齐就等于悄悄降了一次质。
+     * 质量 v1.8.4 起统一取 **0.98**（用户要求 quality 0.98）：归一化 / 裁切 / 成片截图
+     * 三处是同一个数，任何一处不对齐就等于悄悄多降了一次质。
      */
-    const saved = await image.saveAsync({ format: SaveFormat.JPEG, compress: 0.95 });
+    const saved = await image.saveAsync({ format: SaveFormat.JPEG, compress: 0.98 });
     return { uri: saved.uri, width: saved.width, height: saved.height, cropped: true };
   } catch (error) {
     return {
@@ -429,7 +452,9 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
    */
   const cropAspect = resolveCropAspect(frame, layout);
   const cropped =
-    cropAspect === null ? { ...normalized, cropped: false } : await centerCropPhoto(normalized, cropAspect);
+    cropAspect === null
+      ? { ...normalized, cropped: false }
+      : await centerCropPhoto(normalized, cropAspect, input.digitalFactor ?? 1);
   if (cropped.note) {
     warnings.push(cropped.note);
   }

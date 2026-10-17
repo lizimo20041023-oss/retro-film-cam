@@ -58,6 +58,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [34. v1.8.1：日期背景 100% 透明 + 颗粒不透明度硬上限 + `00 NO FRAME` 无相框模式](#34-v181日期背景-100-透明--颗粒不透明度硬上限--00-no-frame-无相框模式)
 - [35. v1.8.2：颗粒不再糊成脏云雾（贴图重烤 + 1:1 手工平铺）](#35-v182颗粒不再糊成脏云雾贴图重烤--11-手工平铺)
 - [36. v1.8.3：四模块军规改造（手风琴设置页 / 原生等宽三层发光日期 / 原图零柔焦 / 实色卡纸与暗色相机壳）](#36-v183四模块军规改造手风琴设置页--原生等宽三层发光日期--原图零柔焦--实色卡纸与暗色相机壳)
+- [37. v1.8.4：真机焦段归位（取景盒重几何 / 四档焦段 / 最高分辨率 / 取景器去雾）](#37-v184真机焦段归位取景盒重几何--四档焦段--最高分辨率--取景器去雾)
 
 ---
 
@@ -4428,6 +4429,218 @@ iOS 的 `resizeMode="repeat"` 不是 `colorWithPatternImage`，而是
 | Release | tag `v1.8.3`，id `415677030`，asset id `649969775`（远端 size/digest 与本地双匹配） |
 | 打包前 export 冒烟 | `npx expo export --platform ios --no-bytecode` **EXIT=0**，bundle `index-53a7ba4cba5e97274d57856a1ec5b03d.js` 1,332,811 B，18 张 PNG 资产全含 |
 | 下载 | `https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.8.3/FretroCam-v1.8.3-unsigned.ipa` |
+
+---
+
+## 37. v1.8.4：真机焦段归位（取景盒重几何 / 四档焦段 / 最高分辨率 / 取景器去雾）
+
+这一版只做一件事：**把相机底层拍对**。用户（m02103）真机对着系统相机逐档比：
+13mm（0.5×）的视野和系统 1× 一模一样，26mm（1×）被数码放大了两倍多、画质发糊；
+取景器还有一层去不掉的雾。四条红线照旧：严禁省略代码 / 严禁多色块拼渐变 /
+严禁原图上叠 `blurRadius` 模糊副本 / 100% 原生锐度。
+
+### 37.1 真因链：一张照片被裁了两次，取景器也被裁了一次
+
+不是变焦公式写错，是**预览层和成片共用的那张 4:3 传感器画幅被裁掉了一多半**。
+
+1. **expo-camera 的成片永远被裁成预览层宽高比**。
+   `node_modules/expo-camera/ios/Current/CameraPhotoCapture.swift:187-190`：
+   ```swift
+   let cropRect = CGRect(x: 0, y: 0, width: takenCgImage.width, height: takenCgImage.height)
+   let croppedSize = AVMakeRect(aspectRatio: previewSize, insideRect: cropRect)
+   takenImage = ExpoCameraUtils.crop(image: takenImage, to: croppedSize)
+   ```
+   `previewSize` 来自 `currentPreviewSize()`（同文件 `:159-167`，就是
+   `previewLayer.frame.size`，竖向会交换宽高）。也就是说：**你给 `<CameraView>` 多大、
+   什么比例，它拍出来的照片就被裁成那个比例。**
+2. **上一版的 `<CameraView>` 铺满整屏**（`styles.fill`，`.resizeAspectFill` ——
+   `node_modules/expo-camera/ios/Current/CameraView.swift:248-250`
+   `previewLayer.videoGravity = .resizeAspectFill`）。以 iPhone 13 的 393×852pt 取景区为例：
+   预览区宽高比 0.461，传感器竖拍宽高比 0.75，`.resizeAspectFill` 横向只保留
+   `0.461 / 0.75 = 61.5%` 的传感器宽度 ⇒ **预览先被数码放大 1.63×**。
+3. **相框窗口再裁一刀**。1:1 窗口（341pt）在 393pt 宽的预览里占 86.8%，于是窗口里
+   实际只有 `0.615 × 0.868 = 53.4%` 的传感器宽度 ⇒ **合计放大约 1.87×**。
+   - 0.5× 档：13mm × 1.87 ≈ **24mm**，和系统 26mm 的 1× 几乎重合 —— 用户看到的就是这个。
+   - 1× 档：26mm × 1.87 ≈ **49mm**，看起来就是「被数码放大了两倍多」。
+4. **成片分辨率同步崩**：3024×4032 的原图先按 0.461 比例裁成约 **1859×4032**，
+   再按 1:1 窗口裁成 1859×1859（5.4MP，只剩传感器 12.2MP 的 44%）；随后
+   `processFilmPhoto` 的「源图更小就夹回源长边」逻辑把 極致 4032px 的目标夹到 1859px
+   —— 这就是「画质严重劣化」的第二个来源。
+
+结论：**只要相机视图的宽高比不等于传感器宽高比，取景器、成片、分辨率三件事会一起坏。**
+所以修法的第一刀不是调 zoom，而是给相机一个「宽高比恒为 4:3 的盒子」。
+
+### 37.2 修法一：`cameraBox` 取景盒（`src/utils/cameraGeometry.ts`，新增）
+
+盒子（`box`）宽高比恒为传感器比例 `SENSOR_ASPECT = 3 / 4`、居中于取景窗（`clip`），
+并且只在窗口里露出一块（`visibleFraction`）：
+
+| 窗口比例 | 盒子尺寸（窗口 = 341×H） | 偏移（相对窗口） | 窗口占传感器 |
+| --- | --- | --- | --- |
+| 1:1（341×341） | 341 × 454.67 | y = −56.83 | (1, 0.75) |
+| 3:4（341×454.67） | 341 × 454.67 | (0, 0) | (1, 1) |
+| 3:2（341×227.33） | 341 × 454.67 | y = −113.67 | (1, 0.5) |
+| 1:1 + digitalFactor 2 | 682 × 909.33 | y = −284.17 | (0.5, 0.375) |
+
+- **成片一侧的裁切变成恒等**：盒子宽高比 == 传感器宽高比 ⇒ `.resizeAspectFill` 不裁、
+  expo 的 `AVMakeRect` 裁切也不裁 ⇒ `takePictureAsync` 返回 **3024×4032 全幅**。
+- **取景器里窗口看到的就是传感器上的最大内接裁切**，和成片按窗口裁出来的区域逐点一致
+  （同一套 `planCameraLayer` / `planPhotoCrop` 几何，WYSIWYG 是结构性的，不是靠调参数）。
+- `digitalFactor > 1` 时盒子等比放大、仍居中 ⇒ 窗口露出的传感器范围缩小为 `1 / digitalFactor`
+  —— 这就是 35mm / 52mm 两档的**确定性数码裁切**（不使用 expo 的原生 zoom）。
+
+> 为什么不做「在整屏预览上盖一个窗口」：`CURTAIN_COLOR` 虽然不透明，但预览层本身仍会把
+> 传感器裁成整屏比例，expo 也会把成片裁成整屏比例 —— 裁切发生在原生层，JS 侧遮不住。
+
+### 37.3 修法二：四档焦段 13 / 26 / 35 / 52，原生 `zoom` 恒 0
+
+`src/constants/lenses.ts` 的 `ZOOM_STOPS` 从五档改成四档，`ZoomStop` 增加 `digitalFactor`：
+
+| 档位 | 等效焦距 | 倍率 | 镜头 | 数码因子 | 原生 zoom |
+| --- | --- | --- | --- | --- | --- |
+| `ultra13` | 13mm | 0.5× | `ultraWide` | 1 | **0** |
+| `wide26` | 26mm | 1× | `wide` | 1 | **0** |
+| `wide35` | 35mm | 35/26 ≈ 1.346× | `wide` | 35/26 | **0** |
+| `wide52` | 52mm | 2× | `wide` | 2 | **0** |
+
+- 13mm / 26mm 档**一律不写任何大于 0 的 `zoom`**：`selectedLens` 直接切到超广角/主摄物理镜头，
+  原生 `zoom = 0` 就是该镜头的原生视场。
+- **35mm / 52mm 档不再用 `zoom` 去做**。expo-camera 的 `zoom` 是指数映射：
+  `node_modules/expo-camera/ios/Current/CameraSessionManager.swift:392`
+  `device.videoZoomFactor = minZoom * pow(device.activeFormat.videoMaxZoomFactor / minZoom, delegate.zoom)`，
+  而这个 `videoMaxZoomFactor`（公式里的 M）**JS 侧完全不可读**（物理镜头约 16、虚拟多摄 >100）。
+  在这个模型下，用户给的 `0.018` 在 M=16 时只有 `16^0.018 = 1.05×`、`0.045` 只有 `1.13×`，
+  **远达不到 1.4× / 2×**；若按 `0.12136` / `0.25` 去设（v1.8.3 的做法），换到 M 不同的机型上
+  又会偏。所以 v1.8.4 改成**布局裁切**：盒子放大到 `1.346×` / `2×`，成片按同一因子中心裁切
+  —— 与设备无关、与 M 无关，读数、取景、成片三处必然一致。
+- **偏离说明（用户原始要求）**：用户希望「有 telephotoLens 就切长焦」。本版**没有**把长焦接到
+  52mm 档：App 对长焦的原生焦距假定是 `ASSUMED_LENS_NATIVE_MM.telephoto = 77mm`，真机 Pro 系列
+  是 77/120mm，接上去 2× 档会变成 3×/4.6× 视野、与档位标签 52mm 直接矛盾。**长焦光学没有丢**：
+  刻度尺（`ParameterScrubBar`）连续行程仍会切到 `telephoto` 镜头 + 原生 `zoom = 0`（v1.8.3 能力保留）。
+- 捏合变焦（`usePinchZoom`）与刻度尺的**连续**行程仍走原生 `zoom`（它们本来就是对当前镜头做
+  相对放大，且是唯一需要连续读数的入口）；这两条入口会同时把 `digitalFactor` 复位为 1。
+  刻度尺在「有长焦」时会额外追加一段 77mm 长焦行程（`buildFocalOptions`，切 `telephoto` 镜头 +
+  原生 `zoom = 0`）——这是 v1.8.3 的能力，不属于四档按钮。
+- 35mm 档的按钮读数显示 `1.35×`（`formatMultiplier` 两位小数；`35/26 = 1.346…` 四舍五入）。
+  四档的倍率标签与 `digitalFactor` 刻意取同一个数，免得「标签写 1.35×、画面按 2× 裁」。
+- `resolveStop()` 的可用性语义：**空镜头列表（`lenses.length === 0`）时四档一律
+  `available: false`（保守）**；「列表还没回来」与「设备真没有」由调用方用 `lensesKnown`
+  区分，`CameraScreen` 在 `!lensesKnown` 时自己按「够得到」放行，所以第一帧不会闪灰。
+  列表已知但镜头名字认不出（`unknown`）时，wide 系四档里 26/35/52 **仍然可用**
+  （`lens: undefined` 交给原生回落默认主摄——35/52 是布局裁切，不需要镜头名字）；
+  只有超广角/长焦认不出时才变灰（不回落主摄当假 0.5× / 假长焦）。
+
+### 37.4 修法三：`pictureSize` 与 `autofocus` 的真实 API 语义
+
+- **iOS 的 `pictureSize` 不是像素尺寸**。`node_modules/expo-camera/ios/Current/CameraRecordingOptions.swift:56-88`
+  的 `enum PictureSize: String` 只有 9 个值：`"3840x2160" / "1920x1080" / "1280x720" / "640x480" /
+  "352x288" / "Photo" / "High" / "Medium" / "Low"`，`toCapturePreset()` 把它们映射成
+  `AVCaptureSession.Preset`（`.hd4K3840x2160` … `.photo` / `.high` …）。
+  `getAvailablePictureSizesAsync()`（`CameraViewModule.swift:268-270`）返回的就是这 9 个**枚举字符串**，
+  不是 `4032x3024`。用户要求的 「`4032x3024` / `8064x6048`」**无法喂给这个 prop**。
+  本版按用户意图落地为：`onCameraReady` / `selectedLens` / `facing` / `cameraKey` 变化后拉一次
+  `getAvailablePictureSizesAsync()`，**优先 `'Photo'`（照片最大预设），否则按 `WxH` 面积降序取最大**，
+  显式传给 `<CameraView pictureSize={...}>`；真实像素尺寸由 `photoOutput` 的 active format 与
+  `photoSettings.maxPhotoDimensions` 决定（`CameraPhotoCapture.swift:92-94`，expo 已把它设成设备最大）。
+- **`autofocus` 的 `'on'` 不是「连续对焦」**。`node_modules/expo-camera/ios/Current/CameraEnums.swift:45-50`：
+  `'on' → .autoFocus`（**对焦一次后锁定**）、`'off' → .continuousAutoFocus`（连续自动对焦）。
+  用户原话是「加 `autofocus="on"`，并在切换焦段时先 off 50ms 再切回 on 强制重锁」——按本库语义，
+  那样会把相机长期锁死在一次对焦上（近摄必糊）。本版的落地是：**常态 `autofocus="off"`（连续 AF），
+  每次切档脉冲 `'on'` 50ms 再回 `'off'`**，既满足「切档强制重新对焦」的意图，又不牺牲连续对焦。
+  常量 `FOCUS_PULSE_MS = 50`。
+- 聚焦点换算：`cameraFocusProps.focusPoint` 现在经 `focusPointInCamera()` 从「预览容器 0~1」
+  换算到「相机盒 0~1」，盒子被窗口裁过、还有负偏移，不能再用预览比例直接当相机比例。
+
+### 37.5 修法四：取景器去雾（`src/utils/gradeLayers.ts` 的 `planFilmLooks('live')`）
+
+- 取景器继续滤掉 `kind:'photo'`（自叠/泛光）与颗粒纹理层；**再滤掉一切降对比的中性层**
+  （desaturate / saturate / contrast 这类以 `NEUTRAL_GRAY` / `SATURATE_ACCENT` 为载体、
+  用 saturation / soft-light 混合的层）。取景器里绝不允许出现灰白色纱。
+- 剩下的色彩/色温层 opacity 统一乘 `LIVE_LOOK_OPACITY_SCALE = 0.4`（= 降 60%），并硬夹到
+  `[LIVE_LOOK_OPACITY_MIN = 0.04, LIVE_LOOK_OPACITY_MAX = 0.08]`；导出 `liveLookOpacity()` 纯函数，
+  探针直接断言这个区间。
+- 暗角 / 漏光层保留原 opacity（它们是边缘质感，不是纱）；**成片路径完全不动** —— 胶片调依旧
+  只在成片里发生，取景器回到接近原生相机的通透度。
+- 为什么不是「再盖一层提亮/对比层」：任何额外合成层都会继续糊字、糊细节，用户要的是
+  「文字边缘和细节跟原生相机一样锐利、黑白分明」，唯一正确的做法是**减层**，不是补层。
+
+### 37.6 修法五：1:1 导出与 JPEG 0.98
+
+- 尺寸规划沿用 `captureOptions.planCapture` 的真实口径：`captureRef` 的 `width/height` 单位是**点**，
+  `planCapture` 把目标像素除以 `PixelRatio.get()` 得到点值（= 用户要求的 `targetPx / PixelRatio.get()`），
+  iOS `UIGraphicsImageRendererFormat.scale = 0` 会把整棵合成树按真像素重绘，照片重采样、文字矢量、
+  相框 PNG 重采样，**不丢像素**。
+- JPEG `quality` 从 0.95 提到 **0.98**（`captureOptions.ts` 的 `JPEG_QUALITY`）；源图更小时仍按
+  「夹回源长边、不凭空插值」处理（这条逻辑没动）。
+- 合成器的成片 `<Image>` 直接消费裁好的**全尺寸原图 URI**，不存在二次 resize/降采样。
+- 分辨率上限的物理事实（写清楚避免误期待）：1:1 窗口从 4:3 传感器里裁的是「全宽正方形」，
+  短边 = 传感器短边 3024px ⇒ 極致 4032px 的目标会被夹到 **3024px**（成片仍是 9.1MP 真像素）。
+  要更高只能换设备/换画幅比例，靠插值放大违背 100% 原生锐度红线。
+
+### 37.7 验证清单（本地实测）
+
+冻结树（12 个改动文件 + 新增 `src/utils/cameraGeometry.ts`）实测，全部 EXIT=0：
+
+| 门禁 | 断言 / 失败 | 耗时 |
+| --- | --- | --- |
+| `npx tsc --noEmit -p tsconfig.json` | 0 诊断（输出 0 字节） | 2311ms |
+| `_probe_date_engine.cjs` | 3810 / 0 | 300ms |
+| `_probe_film_look.cjs` | 1676 / 0 | 584ms |
+| `_probe_geo_lock.cjs` | 16207 / 0 | 464ms |
+| `_probe_noframe_v181.cjs` | 455 / 0 | 347ms |
+| `_probe_noframe_watermark.cjs` | 458 / 0 | 312ms |
+| `_probe_skin_material.cjs` | 879 / 0 | 444ms |
+| `_probe_v180_seams.mjs` | 1349 / 0 | 367ms |
+| `_probe_lead_integration.mjs` | 315 / 0 | 351ms |
+| `_probe_capture_quality.mjs` | 78 / 0 | 422ms |
+| `_haze_audit.mjs` | 超预算 0 / 10（= 整幅加白层一个都不在） | 281ms |
+| `_purity_audit.mjs` | 59 / 0 PURE | 77ms |
+| `_probe_v184_camera.cjs`（新增） | 979 / 0 | 301ms |
+
+- 12 道探针合计 4263ms；与 v1.8.3 终版对照，只有 `_probe_film_look.cjs`（1656 → 1676）与
+  `_probe_v180_seams.mjs`（1339 → 1349）数字变化，其余 9 道断言数一字未动。
+- 旧探针修复口径（**只加语义断言，没放宽**）：`film_look` 的 `countStageImages` 改成绝对项
+  `2 + textureLive + grainCount + photoCount`、live = composite 差值加 `neutralCount`；
+  `seams` 的 G 段「必须包含」集合豁免中性灰层，并新增「live 零中性灰层」反向断言（10 preset 各 +1）。
+- `npx expo export --platform ios --no-bytecode` → EXIT=0，6139ms；bundle
+  `dist/_expo/static/js/ios/index-1a56d2de705876f48e93ab5416f1b5c0.js` **1,336,677 B**；
+  dist 合计 20 文件 / 2,852,532 B（2.72MB），颗粒/漏光/尘埃/暗角贴图全部进包。
+- `_probe_v184_camera.cjs` 用三种独立手段覆盖契约 §7①~⑥：真模块加载（tsc 转译后 require）+
+  探针内手抄等价算法逐位对拍（`planCameraLayer` / `planPhotoCrop` / `focusPointInCamera`）+
+  剥注释源码文本断言（`cameraClip` 接线、`pictureSize`、50ms AF 脉冲）；其中「裁切后可见区
+  比例 == 取景器可见比例」正是 live 与成片一致性的数学证明。
+
+### 37.8 已知缺口
+
+- **仍然没有真机/模拟器验证**：本机跑不了 iOS 真机。所有结论来自 expo-camera 57.0.6 源码级契约 +
+  几何推导 + 零依赖探针；真机上的观感（尤其 35/52 档裁切后的锐度、f/1.78 主摄近摄的 AF 脉冲）
+  建议装上去目视确认一次。
+- **4:3 假设**：`SENSOR_ASPECT = 3/4` 是按 expo-camera 拍照默认输出（`.photo` 预设 4:3）写死的。
+  如果哪天 iOS 设备/预设改成 16:9 输出，取景盒与成片的对应关系会偏，需要同步改这个常量。
+- **52mm 档与用户原始要求有偏差**：见 §37.3（长焦 77/120mm 不接 52mm 档；长焦光学从刻度尺可达）。
+- **数码档的分辨率损失是物理的**：35mm 档裁后 2246×2246、52mm 档 1512×1512，再按画质档放大到目标
+  长边；这是「主摄数码变焦」的固有代价，不引入插值糊图（`planCapture` 的夹回逻辑会如实反映）。
+- **取景器与成片的色彩仍不是逐像素相同**：取景器是「远景调的减配版」，成片才是完整胶片调，
+  两者一致性靠 `buildGradeLayers` 同源 + live 层过滤保证，不是同一张图。
+
+### 37.9 产物指纹（全部为本次实测值）
+
+<!-- 发布后回填 -->
+
+### 37.10 文件改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/utils/cameraGeometry.ts` | **新增**：`SENSOR_ASPECT`、`planCameraLayer()`、`planPhotoCrop()`、`focusPointInCamera()`、`clampDigitalFactor()` 纯函数（取景盒与成片裁切的唯一几何来源） |
+| `src/constants/lenses.ts` | `ZoomStop` 增加 `digitalFactor` / `focalMm`；`ZOOM_STOPS` 五档→四档（13/26/35/52，zoom 全 0）；`TELEPHOTO_FOCAL_STOP`（77mm，只给刻度尺）；`resolveStop()` 返回数码因子，wide 系恒可用 |
+| `src/components/CameraScreen.tsx` | 相机视图装进 `cameraClip`（窗口几何 + `overflow:'hidden'`）；新增 `pictureSize` / `autofocus` prop、`digitalFactor` state、图片尺寸枚举拉取、AF 50ms 脉冲、翻面补拉镜头列表、对焦坐标重算、快门传 `digitalFactor`；`focalMm` 计入数码因子 |
+| `src/components/ParameterScrubBar.tsx` / `ViewfinderBar.tsx` | 四档表适配（默认档 `wide26`、按相邻中点就近取档、刻度尺保留 77mm 长焦光学行程）；35 档读数 `1.35×` |
+| `src/utils/processFilmPhoto.ts` | 新增 `digitalFactor` 入参；`centerCropPhoto` 改用 `planPhotoCrop()` 一次裁出（live/成片同一几何模型）；中间 JPEG 0.98 |
+| `src/utils/captureOptions.ts` / `src/utils/normalizePhoto.ts` | `JPEG_QUALITY` 0.95 → 0.98（归一化 / 裁切 / 成片截图三处统一） |
+| `src/hooks/useFilmStage.ts` / `src/components/FilmCompositor.tsx` | 核对 1:1 导出链路（ViewShot 5.1.0 的 `capture()` 读 `<ViewShot options>`；全尺寸原图直读，无二次降采样），补注释 |
+| `src/utils/gradeLayers.ts` | `planFilmLooks('live')` 去雾：滤中性层 + 色彩层 ×0.4 且夹 [0.04, 0.08]；成片路径不动 |
+| `app.json` | version `1.8.3` → `1.8.4` |
+| `README.md` | 本节 §37 + TOC |
 
 ---
 

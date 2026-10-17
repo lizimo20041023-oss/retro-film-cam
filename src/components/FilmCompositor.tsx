@@ -507,7 +507,15 @@ export function FilmCompositor({
    */
   const fullBleed = frame.fullBleed === true;
 
-  // 截图尺寸：预设的 captureLongEdge 决定成片长边有多少像素
+  // 截图尺寸：预设的 captureLongEdge 决定成片长边有多少像素。
+  /*
+   * 这是 `captureRef` 尺寸的**唯一注入点**：react-native-view-shot 5.1.0 的
+   * `ViewShotRef.capture()` 不接受参数，组件内部读 `optionsRef.current`
+   * （`lib/index.js:143-149`），所以尺寸只能经由这个 `options` prop 传下去。
+   * `planCapture().options` 里的 `width/height` 单位是**点**（= 目标像素 ÷ PixelRatio，
+   * 见 `captureOptions.ts`），iOS `UIGraphicsImageRendererFormat.scale = 0` 会按真像素重绘
+   * —— 照片重采样、日期矢量、相框 PNG 都是 1:1，不存在 ViewShot 侧的额外降采样。
+   */
   const captureOptions = useMemo(
     () =>
       planCapture({

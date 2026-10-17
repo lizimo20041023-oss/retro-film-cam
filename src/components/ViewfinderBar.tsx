@@ -225,12 +225,18 @@ export function formatScrubExposure(value: number): string {
   return `${value > 0 ? '+' : '-'}${Math.abs(value).toFixed(1)}`;
 }
 
-/** 倍率写法：0.5 → `0.5×`，1 → `1×`，1.4 → `1.4×`（去掉无意义的小数 0）。 */
+/**
+ * 倍率写法：0.5 → `0.5×`，1 → `1×`，35/26 → `1.35×`（去掉无意义的小数 0）。
+ *
+ * 两位小数而不是一位：v1.8.4 的 35mm 档倍率是 `35/26 = 1.346…`，一位小数会显示
+ * `1.3×`（把 1.346 说成 1.3）；两位刚好落回用户能对照的 `1.35×`。0.5 / 1 / 2
+ * 这类整数倍在两位精度下仍然输出 `0.5× / 1× / 2×`，视觉不变。
+ */
 function formatMultiplier(multiplier: number): string {
-  return `${Number(multiplier.toFixed(1))}×`;
+  return `${Number(multiplier.toFixed(2))}×`;
 }
 
-/** 离给定焦距最近的档位。用于把"当前 mm"翻译成丝印倍数（1.346 → 1.4×）。 */
+/** 离给定焦距最近的档位。用于把"当前 mm"翻译成丝印倍数（1.346 → 1.35×）。 */
 function nearestFocalOption(
   focalMm: number,
   options: readonly FocalOption[],
@@ -253,8 +259,8 @@ function nearestFocalOption(
  * 为什么分两行：一行放不下 `26mm 1×` 再加中文词（定宽胶囊会被挤爆），
  * 而"毫米数"和"倍数"是两种用户都会用的说法（老摄影看 mm，手机用户看 ×），
  * 砍掉任何一个都会让一半人看不懂。两行都是等宽字体，右对齐成一列。
- * 倍数优先取档位表里的丝印值（`26×1.4 = 36.4mm` 的档，丝印就是 35mm/1.4×），
- * 拿 mm 现除会得到 1.35× 这种没人认的数字。
+ * 倍数优先取档位表里的丝印值（v1.8.4 的 35 档 `digitalFactor = 35/26`，丝印就是
+ * 35mm / 1.35×），拿 mm 现除会得到 1.346× 这种没人认的数字。
  */
 export function focalReadoutLines(focalMm: number, options: readonly FocalOption[]): readonly string[] {
   const rounded = Math.round(focalMm);

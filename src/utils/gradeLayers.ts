@@ -51,6 +51,23 @@
  *     不再整幅铺贴图 —— 现在由 `FilmLookLayers.planDustSpecks()` 按颗粒档位生成。
  * （曾经在 ⑦ 和 ⑧ 之间还有一层 `chroma-noise` 彩噪贴图，已在 2026-10-12 彻底删除，
  *   理由见下面 ⑧ 处的注释 —— 那一层是满屏紫绿伪色的唯一来源。）
+ *
+ * ── v1.8.4（用户 m02103 · 模块 C3）取景器去雾：色彩层降 60% + 硬夹 [0.04, 0.08] ──
+ * 用户真机对比原生相机，报"取景器有雾感"（成片反而没有这么明显）。根因：取景器
+ * `planFilmLooks(preset, 'live')` 以前把成片同一套色彩层按**成片原 opacity** 画在
+ * 两百多 pt 的小窗口上 —— PR-400 的色温 + 色调 + 分离色调叠在实时画面上，视觉效果
+ * 就是一层灰白纱（越暗的环境越像"蒙了雾"）。用户要求：
+ *   「把胶卷色彩遮罩（如 PR-400）与色温遮罩的整体 opacity 降低 60%（目标 0.04~0.08）」，
+ *   并且**绝不允许在实时预览上叠灰白色纱**。
+ * 所以 v1.8.4 起 live 路径三件事（`buildGradeLayers` 成片路径一个数字都不改）：
+ *   ① 继续滤掉 `kind:'photo'`（自叠/泛光）与 grain 纹理层；
+ *   ② 再滤掉一切中性灰/降对比层（`desaturate` / `saturate` / `contrast-boost`，
+ *      载体是 NEUTRAL_GRAY / SATURATE_ACCENT、走 saturation / soft-light 混合）；
+ *   ③ 剩下的 `kind:'color'` 层 opacity = `liveLookOpacity(原值)`：
+ *      × `LIVE_LOOK_OPACITY_SCALE`(0.4) 再硬夹到 `[LIVE_LOOK_OPACITY_MIN, MAX]`
+ *      = **[0.04, 0.08]**。暗角/漏光是边缘质感、不是纱，保留原 opacity。
+ * 为什么不干脆把成片也降了：用户只投诉**取景器**；成片的色彩性格是 v1.8.0~v1.8.3
+ * 一层层按白雾预算调出来的，动它就是换滤镜，属于不请自来的改动，所以不碰。
  */
 import { grainLayerOpacity } from '../constants/grain';
 import type { GradeLayer, ResolvedFilmPreset } from '../types';
@@ -332,16 +349,78 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
 /** 取景器实时预览 / 成片合成 —— 决定哪些图层要渲染。 */
 export type FilmLookSurface = 'composite' | 'live';
 
+/* ── v1.8.4 · C3：取景器色彩层统一衰减到 [0.04, 0.08] ─────────────────────── */
+
+/**
+ * 取景器色彩层统一缩放系数：**0.4 = 降 60%**（用户 m02103 的硬要求）。
+ * 只作用于 live 剩下的 `kind:'color'` 层；成片 composite 路径不经过它。
+ */
+export const LIVE_LOOK_OPACITY_SCALE = 0.4;
+
+/** 取景器色彩层 opacity 下限：降 60% 后太淡的层托底到 0.04（成片里多数色彩层都比它浓）。 */
+export const LIVE_LOOK_OPACITY_MIN = 0.04;
+
+/** 取景器色彩层 opacity 上限：原层再浓，实时预览也绝不超过 0.08，杜绝灰白纱。 */
+export const LIVE_LOOK_OPACITY_MAX = 0.08;
+
+/**
+ * 把成片色彩层的 opacity 换算成取景器（live）的 opacity：
+ * `clamp(原值 × LIVE_LOOK_OPACITY_SCALE, LIVE_LOOK_OPACITY_MIN, LIVE_LOOK_OPACITY_MAX)`。
+ * 纯函数、无副作用；探针直接调它断言（不要在其他地方复制这个公式）。
+ */
+export function liveLookOpacity(opacity: number): number {
+  const scaled = opacity * LIVE_LOOK_OPACITY_SCALE;
+  return Math.min(Math.max(scaled, LIVE_LOOK_OPACITY_MIN), LIVE_LOOK_OPACITY_MAX);
+}
+
+/**
+ * 取景器必须滤掉的「中性层」key（v1.8.4 · C3）。判别用 `kind + key`，再用载体色/
+ * 混合模式兜底 —— 这些层不带来色相，只靠 saturation / soft-light 把画面拉灰：
+ *   · `desaturate`：`NEUTRAL_GRAY` + saturation（抽掉颜色）；
+ *   · `saturate`：`SATURATE_ACCENT` + saturation（加饱和，同样走 saturation 混合）；
+ *   · `contrast-boost`：soft-light 自叠（kind:'photo'，① 的 photo 过滤已拦，这里再兜一次）；
+ *   · `fade`：v1.8.3 已从图层栈删除，仅作历史 key 兜底。
+ * 将来新增任何压对比/去饱和的中性层，都要把 key 加进这里 —— 取景器绝不允许出现灰白色纱。
+ */
+const LIVE_NEUTRAL_LAYER_KEYS: ReadonlySet<string> = new Set([
+  'desaturate',
+  'saturate',
+  'contrast-boost',
+  'fade',
+]);
+
+/** 中性层的载体色：saturation 混合用的中灰 / 高饱和红，出现即代表"降通透"层。 */
+const LIVE_NEUTRAL_CARRIERS: ReadonlySet<string> = new Set([NEUTRAL_GRAY, SATURATE_ACCENT]);
+
+/** 某一层是不是「中性灰/降对比」层（live 必须滤掉）。 */
+function isLiveNeutralLayer(layer: GradeLayer): boolean {
+  if (LIVE_NEUTRAL_LAYER_KEYS.has(layer.key)) {
+    return true;
+  }
+  if (layer.kind !== 'color') {
+    return false;
+  }
+  return layer.blendMode === 'saturation' || LIVE_NEUTRAL_CARRIERS.has(layer.color);
+}
+
 /**
  * 某个 surface 真正要画的图层。
  *
- * `'live'`（取景器镂空窗，可能只有两百多 pt）滤掉两类层：
+ * `'composite'`（成片合成）= `buildGradeLayers` 全量，**v1.8.4 未改动任何数字**。
+ *
+ * `'live'`（取景器镂空窗，可能只有两百多 pt）滤掉三类层：
  *   · 所有 `kind:'photo'` 层 —— 它们需要原照片（对比度自叠 / 泛光），
  *     在这么小的尺寸上毫无意义，却要让实时预览多跑一次全分辨率 CIGaussianBlur；
  *   · **颗粒纹理层**（v1.8.3 · 用户 m01534 C1 第 2 条）—— 用户实测取景器"铺满刺眼的
  *     雪花噪点"，要求"严禁渲染任何颗粒组件，保持取景器 100% 干净通透、满帧 60fps"。
  *     颗粒只在按下快门后的成片合成阶段渲染。
- * 取景器剩下的只有纯色调色层（overlay / saturation / multiply）+ 暗角 + 漏光，
+ *   · **中性灰/降对比层**（v1.8.4 · 用户 m02103 C3）—— `desaturate` / `saturate` /
+ *     `contrast-boost` 这类以 NEUTRAL_GRAY / SATURATE_ACCENT 为载体、靠 saturation /
+ *     soft-light 拉低通透度的层。用户真机反馈"取景器有雾感"，它们就是那层灰白纱。
+ * 剩下的 `kind:'color'` 层（色温/色调/分离色调/光晕色偏/曝光压暗）一律经
+ * `liveLookOpacity()` 压到 **[0.04, 0.08]**（原 opacity × 0.4，再硬夹）；
+ * 暗角/漏光是边缘质感、不是纱，保留原 opacity。
+ * 取景器剩下的只有纯色 View（overlay / saturation / multiply）+ 暗角 + 漏光，
  * 代价是纯 View，60fps 无压力。
  */
 export function planFilmLooks(preset: ResolvedFilmPreset, surface: FilmLookSurface): GradeLayer[] {
@@ -349,15 +428,29 @@ export function planFilmLooks(preset: ResolvedFilmPreset, surface: FilmLookSurfa
   if (surface === 'composite') {
     return layers;
   }
-  return layers.filter((layer) => {
-    if (layer.kind === 'photo') {
-      return false;
-    }
-    if (layer.kind === 'texture' && layer.textureId === 'grain') {
-      return false;
-    }
-    return true;
-  });
+  return layers
+    .filter((layer) => {
+      // ① 自叠/泛光：需要原照片，实时窗口画不了，也最容易发灰。
+      if (layer.kind === 'photo') {
+        return false;
+      }
+      // ② 颗粒：v1.8.3 起取景器保持 100% 干净通透，一格颗粒都不画。
+      if (layer.kind === 'texture' && layer.textureId === 'grain') {
+        return false;
+      }
+      // ③ 中性灰/降对比层：v1.8.4 去雾的核心 —— 取景器绝不允许出现灰白色纱。
+      if (isLiveNeutralLayer(layer)) {
+        return false;
+      }
+      return true;
+    })
+    .map((layer): GradeLayer => {
+      if (layer.kind !== 'color') {
+        // 暗角 / 漏光：边缘质感，不是纱，保留成片原 opacity。
+        return layer;
+      }
+      return { ...layer, opacity: liveLookOpacity(layer.opacity) };
+    });
 }
 
 /**

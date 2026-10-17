@@ -1,6 +1,7 @@
 /**
- * 焦段档位 0.5× / 1× / 1.4× / 2× / 长焦 —— 把「屏幕上那个倍率」
- * 翻译成 expo-camera 真正认的两个 props（`selectedLens` + `zoom`）。
+ * 焦段档位 0.5× / 1× / 1.35× / 2×（13 / 26 / 35 / 52mm）—— 把「屏幕上那个倍率」
+ * 翻译成 expo-camera 真正认的 props（`selectedLens` + `zoom`；v1.8.4 起 35/52 两档
+ * 改成 `digitalFactor` 布局裁切，原生 zoom 恒 0，见 `cameraGeometry.ts`）。
  *
  * ─────────────────────────────────────────────────────────────────────────
  * 这个模块解决什么问题
@@ -36,21 +37,24 @@
  * 见下面「哪几档需要猜」和 `factorToZoom` 的注释。
  *
  * ─────────────────────────────────────────────────────────────────────────
- * 五档里哪几档需要"猜"
+ * 四档里哪几档需要"猜"
  * ─────────────────────────────────────────────────────────────────────────
- *   - **0.5× / 1× / 长焦档不依赖 M**。做法是「切到那支镜头、放大倍率 1.0」，
+ *   - **13 / 26 档不依赖 M**。做法是「切到那支镜头、原生 zoom 写 0」，
  *     而 `videoZoomFactor = 1.0` 对应 `zoom = 0`，`log_M(1)` 无论 M 取多少都是 0。
- *     换句话说这三档是**准的**，M 猜错了也不影响。
- *   - **1.4× 和 2× 依赖 M，也依赖「主摄原生是多少毫米」**。它们是「留在主摄上做数码裁切」，
- *     `factor = 1.35` / `factor = 2`，`zoom = ln(factor) / ln(16)`。这里的 factor 是
- *     **相对主摄原生视场**的，所以只要主摄原生焦距的假定（`ASSUMED_LENS_NATIVE_MM.wide = 26mm`）
- *     不变，这两档的**倍率语义**就是对的；M 猜错只会让实际裁切量偏一点点（见下面的误差分析）。
- *   - **长焦档只有"按钮上的数字"需要猜**：`zoom` 恒为 0，画面由镜头自己决定，
- *     但标签（3× / 4× / 5×）要拿长焦的假定焦距除以主摄假定焦距算出来 ——
- *     而 JS 读不到任何一支镜头的真实焦距。假定错了只会让按钮上的数字骗人，**画面不受影响**。
+ *     换句话说这两档是**准的**，M 猜错了也不影响。
+ *   - **35 档（35mm）与 52 档（2×）在 v1.8.4 里也不依赖 M**：它们不再写原生 zoom，
+ *     而是把 `digitalFactor`（35/26、2）交给 `cameraGeometry.planCameraLayer` 做
+ *     **确定性布局裁切** —— 相机盒子等比放大、取景窗只露出中间一块，成片由
+ *     `planPhotoCrop` 从同一比例反推裁切矩形，两边逐点对应。这是「0.5× 像 1×、
+ *     1× 像 2×」那个 bug 的另一半修法（第一半是相机盒子的宽高比恒为 4:3）。
+ *   - **长焦只有"倍率标签"需要猜**：它不在四档表里（52 档一律主摄数码裁切），只在
+ *     `TELEPHOTO_FOCAL_STOP` 与刻度尺的连续行程里出现；`zoom` 恒为 0，画面由镜头
+ *     自己决定，但标签（3× / 4× / 5×）要拿长焦的假定焦距除以主摄假定焦距算出来 ——
+ *     而 JS 读不到任何一支镜头的真实焦距。假定错了只会让标签骗人，**画面不受影响**。
+ *   - **捏合变焦与刻度尺的连续行程仍然依赖 M**（`factorToZoom`），见下面的误差分析。
  *
  * ─────────────────────────────────────────────────────────────────────────
- * 误差分析：M 猜错会怎样（这一节是刻意的，别删）
+ * 误差分析：M 猜错会怎样（这一节是刻意的，别删；管的是捏合/刻度尺写进 `zoom` 的那条路）
  * ─────────────────────────────────────────────────────────────────────────
  * `zoom = ln(factor) / ln(M)`，M 在分母的对数里，所以
  *   - M 猜**小**了 → zoom 偏**大** → 放大**过头**；
@@ -225,15 +229,16 @@ export const ASSUMED_MAX_ZOOM_FACTOR = 16;
  * ⚠️ **这些数字都是假定值，不是实测值**，而且逐机型不一样。假定错了会怎样，
  * 分两种情况 —— 这是本表最需要记住的一点：
  *
- *   1. `ultraWide` / `wide` 错了：**只影响文字**。它们不参与任何换算 ——
- *      切镜头的档位 `factor` 恒为 1，数码裁切的档位 `factor` 是字面量，
- *      画面由镜头自己决定。这两个数字目前的唯一用途是
- *      `CameraScreen` 右下角那个"当前等效焦距"读数（`ASSUMED_LENS_NATIVE_MM[stop.lens] * zoomToFactor(zoom)`），
- *      以及回答"2× 到底等于多少毫米"这类文档问题。
- *   2. `telephoto` 错了：**也只影响文字**，而且这一档的**按钮标签**就是用它算的
- *      （`ZOOM_STOPS` 里 `multiplier = telephotoMm / wideMm`）。假定 77mm 而真机是 120mm
- *      的话，按钮写「3×」、实际是 4.6× —— **标签骗人，画面不骗人**：
- *      长焦档的 `zoom` 恒为 0，用户看到的就是那支长焦的完整原生视场。
+ *   1. `ultraWide` / `wide` 错了：**只影响文字与数码档的裁切量**。13 / 26 两档不参与
+ *      任何换算（切镜头的档位 `digitalFactor` 恒为 1，画面由镜头自己决定）；这两个数字
+ *      目前的用途是 `CameraScreen` 的"当前等效焦距"读数
+ *      （`ASSUMED_LENS_NATIVE_MM[stop.lens] * digitalFactor * zoomToFactor(zoom)`）、
+ *      35 / 52 两档的 `digitalFactor`（写成 `35 / wideMm`、字面量 2），以及回答
+ *      "2× 到底等于多少毫米"这类文档问题。
+ *   2. `telephoto` 错了：**也只影响文字**，而且长焦段的**倍率标签**就是用它算的
+ *      （`TELEPHOTO_FOCAL_STOP.multiplier = telephotoMm / wideMm`）。假定 77mm 而真机是
+ *      120mm 的话，标签写「3×」、实际是 4.6× —— **标签骗人，画面不骗人**：
+ *      长焦的 `zoom` 恒为 0，用户看到的就是那支长焦的完整原生视场。
  *
  * 想给某台机器修正标签，只需改下面 `telephoto` 的数字（77 → 100 / 120），
  * 换算和 `zoom` 都不用动，因为长焦档不经过任何换算。
@@ -309,7 +314,7 @@ export function zoomToFactor(zoom: number): number {
 }
 
 /* ========================================================================
- * 五个档位
+ * 四个档位
  * ===================================================================== */
 
 /**
@@ -317,121 +322,133 @@ export function zoomToFactor(zoom: number): number {
  *
  * ⚠️ 这里**不含** `multi`（虚拟多摄设备），虽然 `LensRole` 里有它。
  * 三个挑镜头的函数（`pickUltraWideLens` / `pickDefaultLens` / `pickTelephotoLens`）
- * 一个 `multi` 都不返回 —— 理由见文件头「唯一的正确姿势」：虚拟设备的 M 上百，
- * 而档位一定会写 `zoom`，两边一撞就是几十倍的数码变焦。
+ * 一个 `multi` 都不返回 —— 理由见文件头：虚拟设备的 M 上百，两边一撞就是几十倍数码变焦。
  */
 export type ZoomLensRole = 'ultraWide' | 'wide' | 'telephoto';
 
-/** 一个倍率档位的定义。 */
+/** 一个倍率档位的定义（v1.8.4：四档 = 13 / 26 / 35 / 52mm）。 */
 export type ZoomStop = {
   /** 稳定标识，给 React key 和 `activeStopId` 用。**不要**拿倍率当 key。 */
   readonly id: string;
-  /** 按钮上显示的倍率（0.5 / 1 / 2）。**只是语义标签**，见下面 multiplierIsDigital。 */
-  readonly multiplier: number;
-  /** 这一档希望切到哪支镜头。 */
-  readonly lens: ZoomLensRole;
-  /** 相对 `lens` 原生焦距的 `videoZoomFactor` 倍数。1 = 切镜头不放大。 */
-  readonly factor: number;
   /**
-   * `factor` 对应的 zoom 字面量，由 `factorToZoom(factor)` 预计算（见文件末尾验算）。
-   * 预计算而不是运行期调用，是为了让这三个数字**在代码里肉眼可查**：
-   * 将来谁改了 `ASSUMED_MAX_ZOOM_FACTOR`，只要搜 `zoom:` 就能看出哪些地方过期了。
+   * 丝印毫米数（13 / 26 / 35 / 52）。它既是 UI 上那行 `35mm` 的来源，也是刻度尺
+   * 判"落在哪一档"的排序依据 —— 档位表必须按它升序排列。
+   */
+  readonly focalMm: number;
+  /** 档位标签上的倍率（0.5 / 1 / 35/26 / 2）。**只是语义标签**，见下面注释。 */
+  readonly multiplier: number;
+  /** 这一档希望切到哪支镜头。52 档**不是**长焦，见 `ZOOM_STOPS` 的注释。 */
+  readonly lens: ZoomLensRole;
+  /**
+   * 布局裁切因子（≥1）。1 = 不裁、用满传感器；2 = 取景窗只露出传感器中间 1/2。
+   *
+   * v1.8.4 起它同时是「数码倍率」的唯一权威：`CameraScreen` 把它交给
+   * `planCameraLayer()` 放大相机盒子，成片侧 `processFilmPhoto` 用同一个数调
+   * `planPhotoCrop()` —— 不经过原生 `videoZoomFactor`，所以与 M 无关、逐机型一致。
+   */
+  readonly digitalFactor: number;
+  /**
+   * 档位的原生 `zoom` 字面量。v1.8.4 四档**恒为 0**（切镜头或布局裁切都已足够），
+   * 保留字段是为了让"这一档绝不写原生变焦"在代码里可查。
    */
   readonly zoom: number;
 };
 
 /**
- * 长焦档的倍率标签：`round(77 / 26) = 3`。
+ * 主摄 35mm 档的裁切因子：`35 / 26`（按主摄假定 26mm 算，正好 35mm）。
  *
- * 写成算式而不是字面量 3，是为了让"改了假定焦距就自动跟着变"这件事在代码里看得见 ——
- * 这个数字**不参与任何换算**（长焦档 `zoom` 恒为 0），它只是按钮上那个字。
+ * 写成算式而不是 `1.346`：只要 `ASSUMED_LENS_NATIVE_MM.wide` 变了，它就跟着变，
+ * 而 35 这个丝印毫米数不变（那是相机行业的老习惯，不是算出来的）。
  */
-const TELEPHOTO_MULTIPLIER = Math.round(ASSUMED_LENS_NATIVE_MM.telephoto / ASSUMED_LENS_NATIVE_MM.wide);
+const WIDE_35_DIGITAL_FACTOR = 35 / ASSUMED_LENS_NATIVE_MM.wide;
 
 /**
- * 0.5× / 1× / 1.4× / 2× / 长焦 五档。
+ * 13 / 26 / 35 / 52 四档（v1.8.4）。
  *
  * ## 为什么 0.5× 和 1× 不写成"把相邻那档放大 N 倍"
  * 从超广角数码放大到主摄视场走不通：超广角格式的 `videoMaxZoomFactor` 通常只有 2 上下，
  * 正好卡在边界，而且数码放大的画质比直接切到主摄糊得多。切镜头让主摄用满整个传感器，
- * 是唯一正确的做法 —— 所以这两档的 factor 恒为 1。
+ * 是唯一正确的做法 —— 所以这两档的 digitalFactor 恒为 1。
  *
- * ## 为什么 1.4× / 2× 是主摄数码裁切，而不是去切长焦
- * 1.4× 要的是 35mm 这个"人文焦段"，它落在主摄（假定 26mm）和长焦（77mm 起）**之间**，
- * 任何一支现有镜头都给不出来，只能裁。2× 同理：切到长焦是 3× 起，不是 2×。
- * 留在主摄上裁，标签和画面严格一致；切长焦则要用户接受"我要 2× 你给我 3×"。
+ * ## 为什么 35 / 52 是主摄裁切，而不是去切长焦
+ * 35mm 落在主摄（假定 26mm）和长焦（77mm 起）**之间**，任何一支现有镜头都给不出来；
+ * 52 = 2× 同理：切到长焦是 3× 起，不是 2×。
  *
- * ## 最后一档为什么叫"长焦档"而不是写死"3×"
- * 因为 JS 侧**读不出长焦是多少毫米**（`getAvailableLenses()` 只给本地化名字，
- * 名字里不含焦距）。与其写死一个"3×"然后在 5× 机型上骗人，不如让它老实按
- * `ASSUMED_LENS_NATIVE_MM.telephoto` 假定：它的 `factor` 恒为 1、`zoom` 恒为 0，
- * **画面就是那支长焦的完整原生视场**（这一点与假定值无关），标签只是近似读数。
+ * ⚠️ **52 档一律走主摄 + digitalFactor 2**（Lead 2026-10-17 修订，别推翻）：
+ * 本 App 的长焦假定是 `ASSUMED_LENS_NATIVE_MM.telephoto = 77mm`（真机 Pro 系列是
+ * 77 / 120mm），把长焦接到 52 档会让这档变成 3× / 4.6× 视野、和标签 52mm 矛盾。
+ * 长焦光学仍可通过刻度尺的连续行程到达（`TELEPHOTO_FOCAL_STOP`）。
  *
- * ## multiplier 与 factor 的关系
- * `factor === 1` 的档位是"切镜头"（0.5×、1×、长焦），它们的 `multiplier` 是
- * 相对**主摄**视场写的；`factor > 1` 的档位是数码裁切（1.4×、2×），
- * `multiplier` 与 `factor` **刻意取同一个数**，免得标签和画面差几个百分点。
- * 需要判断"这一档是不是数码变焦"时用 `isDigitalStop()`，不要自己比 multiplier ——
- * 0.5 < 1 会被那种写法误判。
+ * ## multiplier 与 digitalFactor 的关系
+ * **数码档**一律 `multiplier === digitalFactor`：标签和画面刻意取同一个数，免得用户
+ * 读到 1.4×、画面却是 1.35×。需要判断"这一档是不是数码裁切"时用 `isDigitalStop()`，
+ * 不要自己比 multiplier —— 0.5 < 1 会被那种写法误判。
  */
 export const ZOOM_STOPS: readonly ZoomStop[] = [
   {
-    id: 'ultraWide05',
+    id: 'ultra13',
+    focalMm: ASSUMED_LENS_NATIVE_MM.ultraWide,
     multiplier: 0.5,
     lens: 'ultraWide',
     // 切到超广角、不放大。超广角原生视场就是主摄的约 0.5 倍，这个数字由镜头决定，
-    // 不由标签决定 —— 改这里的 factor 不会让画面变成别的倍率，只会把它算错。
-    factor: 1,
+    // 不由标签决定 —— 改这里的 digitalFactor 不会让画面变成别的倍率，只会把它算错。
+    digitalFactor: 1,
     zoom: 0,
   },
   {
-    id: 'wide10',
+    id: 'wide26',
+    focalMm: ASSUMED_LENS_NATIVE_MM.wide,
     multiplier: 1,
     lens: 'wide',
-    factor: 1,
+    digitalFactor: 1,
     zoom: 0,
   },
   {
-    id: 'wide14',
-    multiplier: 1.4,
+    id: 'wide35',
+    focalMm: 35,
+    multiplier: WIDE_35_DIGITAL_FACTOR,
     lens: 'wide',
-    // 主摄上裁 1.4×：factor 与上面的 multiplier 故意同值。
-    // 26mm 假定下等于 36.4mm —— 比标称的 35mm 那一档长约 4%。
-    // 之所以不写精确的 `35/26 = 1.3462`：那样标签（1.4×）和实际裁切（1.346×）就对不上了，
-    // 而"标签和画面严格一致"是本表的第一原则。
-    factor: 1.4,
-    // ln(1.4) / ln(16) = 0.1213549…，见文件末尾验算。
-    zoom: 0.12136,
+    // 主摄上裁 35/26：丝印 35mm 与画面严格一致（26mm × 35/26 = 35mm）。
+    digitalFactor: WIDE_35_DIGITAL_FACTOR,
+    zoom: 0,
   },
   {
-    id: 'wide20',
+    id: 'wide52',
+    focalMm: 52,
     multiplier: 2,
     lens: 'wide',
-    // 留在主摄上做 2 倍数码裁切：factor 就是字面量 2，与 ASSUMED_LENS_NATIVE_MM 脱钩。
-    // 写成表达式（比如 `2 * something`）会让这一档在没人注意时静默漂移。
-    factor: 2,
-    // ln(2) / ln(16) = 0.25，恰好是二进制可精确表示的值，无需取整误差说明。
-    zoom: 0.25,
-  },
-  {
-    id: 'tele',
-    multiplier: TELEPHOTO_MULTIPLIER,
-    lens: 'telephoto',
-    // 切到长焦、不放大：`videoZoomFactor = M^0 = 1.0` 就是它的完整原生视场。
-    factor: 1,
+    // 真正的 2× = 52mm：留在主摄上做布局裁切，**不接长焦**（见上面 ⚠️）。
+    digitalFactor: 2,
     zoom: 0,
   },
 ];
 
 /**
- * 这一档是不是"数码变焦"（而不是切光学镜头）。
+ * 「长焦光学」这一档：**不在四档表里**，只给刻度尺的连续行程用（v1.8.3 能力保留）。
  *
- * 判据是 `factor > 1` —— 切镜头的档位永远写 `factor: 1`，见 `ZOOM_STOPS` 的注释。
+ * 为什么必须留着它：52 档被钉成主摄数码裁切之后，长焦镜头若再无入口，三摄机型上
+ * 那支长焦就彻底用不到了。所以刻度尺能滑到 `77mm` 这一段：切长焦 + 原生 zoom 0 ——
+ * 画面就是那支镜头的完整原生视场，与 `ASSUMED_LENS_NATIVE_MM.telephoto` 这个假定无关，
+ * 标签只是近似读数。
+ */
+export const TELEPHOTO_FOCAL_STOP: ZoomStop = {
+  id: 'telephotoOptical',
+  focalMm: ASSUMED_LENS_NATIVE_MM.telephoto,
+  multiplier: Math.round(ASSUMED_LENS_NATIVE_MM.telephoto / ASSUMED_LENS_NATIVE_MM.wide),
+  lens: 'telephoto',
+  digitalFactor: 1,
+  zoom: 0,
+};
+
+/**
+ * 这一档是不是"数码裁切"（而不是切光学镜头或直接不裁）。
+ *
+ * 判据是 `digitalFactor > 1` —— v1.8.4 四档里只有 35 / 52 满足，13 / 26 / 长焦恒为 1。
  * 单独抽成函数是为了让 UI 不必自己推导这个规则（推导错的典型写法是 `multiplier > 1`，
  * 那会把 0.5× 也算成非数码，虽然当下结果一样，但一旦有 0.5× 的数码档就会错）。
  */
 export function isDigitalStop(stop: ZoomStop): boolean {
-  return stop.factor > 1;
+  return stop.digitalFactor > 1;
 }
 
 /* ========================================================================
@@ -448,8 +465,12 @@ export type StopResolution = {
    * 里匹配失败、同样回落，但白写一次状态。传 `undefined` 语义最直白。
    */
   readonly lens: string | undefined;
-  /** 要写给 `zoom` 的值，0~1，已量化。 */
+  /** 要写给 `zoom` 的值，0~1，已量化。v1.8.4 四档恒为 0（切镜头/布局裁切已足够）。 */
   readonly zoom: number;
+  /** 布局裁切因子，原样来自 `ZoomStop.digitalFactor`（见 `cameraGeometry.ts`）。 */
+  readonly digitalFactor: number;
+  /** 这一档的丝印毫米数，原样来自 `ZoomStop.focalMm`（UI 读数与就近判档都用它）。 */
+  readonly focalMm: number;
   /** 这一档能不能给出来。`false` 时 UI 应该把按钮画成禁用。 */
   readonly available: boolean;
 };
@@ -473,12 +494,16 @@ export type StopContext = {
  *    前摄是这里的常客（前摄往往只有一支 `builtInWideAngleCamera`，
  *    它的 localizedName 可能不带任何焦距词 → `unknown` → 找不到），
  *    前摄既没有超广角也没有长焦，0.5× 与长焦档变灰是对的，不是 bug。
- *    单摄机型（SE / 16e / Air）同理：0.5× 和长焦档变灰，但 1.4× / 2× **仍然可用**
+ *    单摄机型（SE / 16e / Air）同理：0.5× 和长焦档变灰，但 35 / 52 档 **仍然可用**
  *    ——它们是主摄上的数码裁切，不需要第二支镜头。
- * 3. `wide` 角色找不到时的**唯一例外**：1× 档仍然可用，但 `lens` 传 `undefined`
- *    让原生回落到默认镜头（`DeviceDiscovery.swift:109-114` 的 `defaultBackCamera`
- *    就是 `AVCaptureDevice.default(.builtInWideAngleCamera, …)`，那本来就是物理主摄）。
- *    理由是 1× 的语义是"默认视场"，传 `undefined` 比硬塞一个名字更安全（前摄尤其如此）。
+ * 3. `wide` 角色找不到时的兜底（v1.8.4 起是**整条 wide 系**，不只是 1×）：仍然
+ *    `available: true`，但 `lens` 传 `undefined` 让原生回落到默认镜头
+ *    （`DeviceDiscovery.swift:109-114` 的 `defaultBackCamera` 就是
+ *    `AVCaptureDevice.default(.builtInWideAngleCamera, …)`，那本来就是物理主摄）。
+ *    理由：主摄的 localizedName 常常只是「Back Camera」/「后置相机」这种不带焦距词的
+ *    字符串（`classifyLens` 会判成 `unknown`），而 v1.8.4 的 35 / 52 档是**布局裁切**
+ *    （`digitalFactor`），根本不需要知道镜头名字 —— 默认镜头本来就是要裁的那支主摄。
+ *    反过来判不可用，会让"名字认不出来"的机型白白丢掉 35 / 52 两档。
  *    ⚠️ 超广角与长焦这两档**没有**这个例外，见下面的实现注释。
  * 4. 找得到 → 可用，`lens` 写那个名字。
  *    也有一种"找得到但切了也没用"的情况：**列表里只有一支镜头时**，
@@ -488,21 +513,19 @@ export type StopContext = {
  */
 export function resolveStop(stop: ZoomStop, ctx: StopContext): StopResolution {
   const { lenses } = ctx;
+  // 三个字段都原样来自档位表：UI 的读数/几何用 `digitalFactor` 与 `focalMm`，
+  // 原生只吃 `lens` + `zoom`。一次摊平，避免每个 return 各拼一遍（拼漏就是 bug）。
+  const basis = { zoom: stop.zoom, digitalFactor: stop.digitalFactor, focalMm: stop.focalMm };
 
   if (lenses.length === 0) {
-    return { lens: undefined, zoom: stop.zoom, available: false };
+    return { ...basis, lens: undefined, available: false };
   }
 
   if (stop.lens === 'wide') {
-    const wide = pickDefaultLens(lenses);
-    // 见规则 3：主摄认不出来时，1× 仍然是"默认视场"，交给原生回落。
-    // 但只有 multiplier 为 1 的那一档能这么兜底：1.4× / 2× 必须知道自己在哪支镜头上裁，
-    // 认不出来就不能假装能裁。
-    if (wide === null) {
-      const available = stop.factor === 1;
-      return { lens: undefined, zoom: stop.zoom, available };
-    }
-    return { lens: wide, zoom: stop.zoom, available: true };
+    // 见规则 3：主摄认不出来就交给原生回落到默认镜头，档位**仍然可用**。
+    // v1.8.4 的 35 / 52 档是布局裁切（`digitalFactor`），不需要镜头名字 ——
+    // 默认镜头本来就是物理主摄，裁切由 JS 布局完成，认不出名字也能正确裁。
+    return { ...basis, lens: pickDefaultLens(lenses) ?? undefined, available: true };
   }
 
   // 超广角与长焦这两档**没有**"回落到默认镜头"的兜底：默认镜头是主摄，
@@ -510,35 +533,39 @@ export function resolveStop(stop: ZoomStop, ctx: StopContext): StopResolution {
   // 挑不出来就变灰，这是这两档唯一诚实的处理。
   const picked = stop.lens === 'telephoto' ? pickTelephotoLens(lenses) : pickUltraWideLens(lenses);
   if (picked === null) {
-    return { lens: undefined, zoom: stop.zoom, available: false };
+    return { ...basis, lens: undefined, available: false };
   }
-  return { lens: picked, zoom: stop.zoom, available: true };
+  return { ...basis, lens: picked, available: true };
 }
 
 /* ========================================================================
  * 验算（写代码时用 node 跑过，留在这里给后人复现；不是运行期代码）
  * =====================================================================
  *
- * 五个档位的 zoom 是从 factor 推出来的，`ZOOM_STOPS` 里那些字面量必须和它对得上。
- * 改了 `ASSUMED_MAX_ZOOM_FACTOR` 或者任何 `factor` 之后，
- * 用下面这段重算，然后把结果抄回 `ZOOM_STOPS`：
+ * v1.8.4 四档的 `zoom` **全是 0**（切镜头或 `digitalFactor` 布局裁切），所以
+ * `ZOOM_STOPS` 里那些 `zoom: 0` 字面量不需要验算。需要验算的是两件事：
+ *
+ * 1. 数码档的 `digitalFactor` 与丝印毫米数必须逐位对得上（主摄按 26mm 假定）：
+ *      26 × 1        = 26   ← wide26
+ *      26 × (35/26)  = 35   ← wide35
+ *      26 × 2        = 52   ← wide52
+ * 2. 捏合 / 刻度尺写进 `zoom` 的那条路仍用 `factorToZoom`（基准 M = 16）：
  *
  *     node -e "
  *       const M = 16;
  *       const q = z => Number(z.toFixed(5));
  *       const clamp = z => Math.min(Math.max(z, 0), 0.75);
  *       const f2z = f => q(clamp(Math.log(f) / Math.log(M)));
- *       for (const [label, f] of [['0.5x', 1], ['1x', 1], ['1.4x', 1.4], ['2x', 2], ['tele', 1]]) {
- *         console.log(label + '  factor=' + f.toFixed(10) + '  zoom=' + f2z(f).toFixed(5));
+ *       for (const f of [1, 35 / 26, 2, 77 / 26]) {
+ *         console.log('factor=' + f.toFixed(10) + '  zoom=' + f2z(f).toFixed(5));
  *       }
  *     "
  *
- * 期望输出：
- *     0.5x   factor=1.0000000000  zoom=0.00000
- *     1x     factor=1.0000000000  zoom=0.00000
- *     1.4x   factor=1.4000000000  zoom=0.12136
- *     2x     factor=2.0000000000  zoom=0.25000
- *     tele   factor=1.0000000000  zoom=0.00000
+ * 期望输出（实测值，改了 `ASSUMED_MAX_ZOOM_FACTOR` 就重算）：
+ *     factor=1.0000000000    zoom=0.00000
+ *     factor=1.3461538462    zoom=0.10721
+ *     factor=2.0000000000    zoom=0.25000
+ *     factor=2.9615384615    zoom=0.39159
  *
  * 配套的反函数检查（实测值，不是估的）：
  *     zoomToFactor(0.25) = 2.0000000000000004
@@ -547,19 +574,19 @@ export function resolveStop(stop: ZoomStop, ctx: StopContext): StopResolution {
  * ─────────────────────────────────────────────────────────────────────────
  * 觉得哪一档不准，改哪个常数（这一节是给未来的自己留的说明书）
  * ─────────────────────────────────────────────────────────────────────────
- * 1. **0.5× / 1× / 长焦档的画面不对** —— 那一定是**镜头识别**错了，不是换算错了。
+ * 1. **13 / 26 档的画面不对** —— 那一定是**镜头识别**错了，不是换算错了。
  *    先打印 `getAvailableLenses()` 的实际字符串，再看 `LENS_KEYWORDS` 里缺哪个词
  *    （可能是没覆盖到的语言）。⚠️ **不要**靠调整数组下标来"修"，理由见 `classifyLens`。
- * 2. **1.4× / 2× 的裁切量不对**（用户反馈"这不是 2 倍"）—— 改 `ASSUMED_MAX_ZOOM_FACTOR`，
- *    然后把 `ZOOM_STOPS` 里的 `zoom` 字面量按上面的命令重算抄回去。
- *    注意这是**全局**影响：捏合行程的百分比读数也会跟着变。
- * 3. **长焦档按钮上的数字不对**（3× 机型显示成 4×）—— 只改
- *    `ASSUMED_LENS_NATIVE_MM.telephoto`，`ZOOM_STOPS` 里的 `multiplier` 会自动跟着变
- *    （它是算式算出来的）。**画面不受影响**，长焦档的 `zoom` 恒为 0。
- * 4. **超广角/长焦档在 Pro 机型上也变灰了** —— 说明 `resolveStop` 拿到的列表是空的
+ * 2. **35 / 52 档的裁切量不对** —— 先确认 `ASSUMED_LENS_NATIVE_MM.wide` 与实际机型
+ *    是否相符（本表按 26mm 假定：35 档 = 35/26、52 档 = 2），再看
+ *    `cameraGeometry.planCameraLayer` 的入参有没有传对 `digitalFactor`。
+ *    ⚠️ 这两档**不经过** `zoom`，改 `ASSUMED_MAX_ZOOM_FACTOR` 不会影响它们。
+ * 3. **长焦段的倍率标签不对**（3× 机型显示成 4×）—— 只改
+ *    `ASSUMED_LENS_NATIVE_MM.telephoto`，`TELEPHOTO_FOCAL_STOP.multiplier` 会自动跟着变。
+ *    **画面不受影响**，长焦的 `zoom` 恒为 0。
+ * 4. **超广角/长焦段在 Pro 机型上也变灰了** —— 说明 `resolveStop` 拿到的列表是空的
  *    或没解析出来。先确认 `<CameraView onAvailableLensesChanged>` 真的有回调，
  *    再看是不是又被 `classifyLens` 判成了 `multi`（那就是关键词表排错了）。
- * 3. **只想让按钮显示别的数字** —— 改 `ZOOM_STOPS` 里的 `multiplier`；
- *    但那**不会**改变实际放大倍率，画面不会跟着变。这是刻意的：
- *    换算关系由镜头和 M 决定，不由标签决定。
+ * 5. **只想让按钮显示别的数字** —— 改 `ZOOM_STOPS` 里的 `multiplier`；
+ *    但那**不会**改变实际放大倍率，画面不会跟着变。
  */
