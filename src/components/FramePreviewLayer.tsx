@@ -59,7 +59,7 @@ import type { TextStyle } from 'react-native';
 import { frameSkinSeedOf } from '../constants/frames';
 import { frameOrientationOfLayout, frameSourceOf } from '../utils/geometry';
 import { DateStamp } from './DateStamp';
-import { FrameSkin } from './FrameSkin';
+import { FrameSkin, paperCornerRadius } from './FrameSkin';
 import type { WatermarkPiece } from './FilmCompositor';
 import type { FrameLayout, FrameSpec, FrameVariant, Rect } from '../types';
 
@@ -210,6 +210,15 @@ function FramePreviewLayerImpl({
    */
   const fullBleed = frame.fullBleed === true;
 
+  /*
+   * v1.8.5：相纸外框圆角（`FrameSpec.skin.cornerRadius` 按短边比例尺换算）。
+   *
+   * 只加在相纸容器上还不够 —— 圆角必须**连 PNG 一起**裁掉，否则四角会被相纸 PNG
+   * 的直角盖回来。所以这里给相纸层加 `borderRadius + overflow: 'hidden'`；
+   * 成片侧由 `FilmCompositor` 对同一组合层做同样的裁剪（两边同一个 `paperCornerRadius`）。
+   */
+  const paperRadius = paperCornerRadius(layout.width, layout.height, frame.skin);
+
   return (
     <View
       /*
@@ -241,7 +250,14 @@ function FramePreviewLayerImpl({
       <View
         style={[
           styles.paper,
-          { left, top, width: layout.width, height: layout.height, opacity: FRAME_PREVIEW_OPACITY },
+          {
+            left,
+            top,
+            width: layout.width,
+            height: layout.height,
+            opacity: FRAME_PREVIEW_OPACITY,
+            borderRadius: paperRadius,
+          },
         ]}
       >
         {/*
@@ -267,8 +283,12 @@ function FramePreviewLayerImpl({
             {/*
               ② 材质层（A/B/C 三档全在画）。`seed` 走 `frameSkinSeedOf(frame)`（现已返 `frame.id`）：
               种子只许有一个产地，免得将来三处调用点各写一遍、其中一处写成别的东西。
-              ⚠️ v1.8.0 起 `FrameSkin` **不用**这个种子了（材质是纯几何，没有随机图案），
+              ⚠️ v1.8.0 起 `FrameSkin` **不用**这个种子了（材质是纯几何 + 纯色），
               但字段是冻结接口的一部分、且三个调用点都还在传，所以留在这里别删。
+
+              v1.8.5：`skin={frame.skin}` 把同一份程序化相纸细节（圆角 / 枕形压边 /
+              下巴压痕 / 135 齿孔 / 帧号）喂给 `FrameSkin` —— 预览与成片必须用**同一批
+              纯函数**（`buildSkinElements` / `buildPaperDetails`），否则"所见即所得"就断了。
             */}
             <FrameSkin
               width={layout.width}
@@ -276,6 +296,7 @@ function FramePreviewLayerImpl({
               window={layout.window}
               variant={variant}
               seed={frameSkinSeedOf(frame)}
+              skin={frame.skin}
             />
           </>
         )}
@@ -400,9 +421,14 @@ const styles = StyleSheet.create({
     position: 'absolute',
     backgroundColor: CURTAIN_COLOR,
   },
-  /** 相纸层。`FRAME_PREVIEW_OPACITY` 挂在这一层，幕布在它外面所以是实心的。 */
+  /**
+   * 相纸层。`FRAME_PREVIEW_OPACITY` 挂在这一层，幕布在它外面所以是实心的。
+   * `overflow: 'hidden'` 与动态的 `borderRadius` 一起把 PNG / 材质层切出相纸圆角
+   * （v1.8.5；`paperCornerRadius` 在渲染体内算，成片侧同一口径）。
+   */
   paper: {
     position: 'absolute',
+    overflow: 'hidden',
   },
   frame: {
     position: 'absolute',

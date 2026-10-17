@@ -154,6 +154,62 @@ export interface FrameOrientationVariant {
 }
 
 /**
+ * 135 底片的齿孔阵列（v1.8.5）。
+ *
+ * 为什么不再画进 PNG：相框 PNG 是**固定颜色**的，而相纸材质有三档（原白 / 暖黄 /
+ * 暗房黑），把齿孔烘进白底 PNG 后，暗房黑那张纸的齿孔就一起变黑了 —— 用户看到的
+ * 是"齿孔丢了"。齿孔改由 `FrameSkin` 按这里的参数**程序化**画在相纸图层最上面，
+ * 颜色跟着材质走，任何一档纸都能看见洞。
+ *
+ * 所有尺寸都是**相对相框宽度**的比例（0~1），渲染层再乘 `width` —— 这样同一份数据
+ * 在 358pt 预览和 3024px 成片上比例一致。
+ */
+export interface FrameSprocketSpec {
+  /** 齿孔排在**哪两条边**上。135 底片 = 左右两条长边。 */
+  side: 'left-right' | 'top-bottom';
+  /** 每条边上的齿孔数量（固定数量，不随长宽比变 —— 少一颗多一颗都是穿帮）。 */
+  count: number;
+  /** 单孔宽 = 相框宽度 × 该比例。 */
+  holeWidth: number;
+  /** 单孔高 = 相框宽度 × 该比例。 */
+  holeHeight: number;
+  /** 相邻两孔的中心距 = 孔高 × 该比例（默认 2.0）。 */
+  pitchRatio?: number;
+  /** 齿孔中心线距纸边 = 相框宽度 × 该比例（默认 0.021）。 */
+  insetRatio?: number;
+  /** 孔圆角 = 孔高 × 该比例（默认 0.32）。 */
+  cornerRatio?: number;
+  /** 孔的颜色。默认 `rgba(255,255,255,0.92)`（黑片基上的透明齿孔）。 */
+  color?: string;
+  /** 孔下方 1px 的描边 / 阴影色，默认 `'rgba(0,0,0,0.18)'`。 */
+  shadeColor?: string;
+}
+
+/**
+ * 相纸的程序化皮肤细节（v1.8.5）。
+ *
+ * 这些是"相片本身的物理结构"，必须画在相框 PNG **之上**（PNG 只当着色纹理）；
+ * 与材质无关的几何数据放这里，材质颜色由 `constants/frameVariants.ts` 决定。
+ * 不写 = 不画任何程序化细节（老相框行为不变）。
+ */
+export interface FrameSkinSpec {
+  /** 外框圆角（相框设计像素，短边 358pt 基准，渲染层按短边缩放）。默认 0。 */
+  cornerRadius?: number;
+  /** 四周 2px 塑料枕形压边：顶/左内缘亮、底/右内缘暗。默认 true。 */
+  paddedBevel?: boolean;
+  /** 宽下巴上部约 18% 处的药水包横向压痕。默认 true（拍立得系）。 */
+  chinCrease?: boolean;
+  /** 135 底片齿孔阵列。 */
+  sprockets?: FrameSprocketSpec;
+  /** 片基上的帧号（如 `'▷ 04A'`），画在左上角。 */
+  frameCode?: string;
+  /** 帧号颜色，默认 `'rgba(229,169,60,0.88)'`（琥珀）。 */
+  frameCodeColor?: string;
+  /** 帧号字号 = 相框宽度 × 该比例（默认 0.032）。 */
+  frameCodeRatio?: number;
+}
+
+/**
  * 一个相框 = 一张透明 PNG + 一个归一化镂空窗口。
  * 新增相框只需要往 `src/constants/frames.ts` 的数组里加一条，核心逻辑一行都不用改。
  */
@@ -211,6 +267,12 @@ export interface FrameSpec {
    * 墨色 / 对齐 / 大写始终听相框的。
    */
   watermark?: FrameWatermarkStyle;
+  /**
+   * 相纸的程序化皮肤细节（v1.8.5）：圆角 / 枕形压边 / 下巴药水包压痕 /
+   * 135 齿孔阵列 / 帧号。PNG 退居"着色纹理 + 纸纹"层，这些真实结构由
+   * `FrameSkin.tsx` 按本字段画在 PNG 之上。不写 = 不画。
+   */
+  skin?: FrameSkinSpec;
   /** PNG 的设计像素尺寸，仅用于文档与自检提示。 */
   designSize?: Size;
   /**
@@ -289,10 +351,16 @@ export interface ColorGradeConfig {
    */
   splitTone?: number;
   /**
-   * 光晕 / 泛光：0 无 ~ 1 极强。把画面自身的亮部模糊后叠回去，
-   * 模拟高光在胶片乳剂层里散射（halation）。
+   * 光晕（halation）：0 无 ~ 1 极强。
+   *
+   * ⚠️ v1.8.5 起**不再**用"把原图模糊一层再叠回去"实现 —— 用户红线：严禁在
+   * 原图上叠 `blurRadius` 模糊副本（成片会像蒙了一层白雾、原生锐度全丢）。
+   * 现在的实现 = 一圈**暖红 screen 混合的纯色层**（不参与模糊、不铺白），只在
+   * 暗部/边缘加一点暖红光晕，抬黑场为零。详见 `utils/gradeLayers.ts`。
+   *
+   * 字段原名 `bloom`，v1.8.5 更名并改语义（旧名已无任何代码读取）。
    */
-  bloom?: number;
+  halation?: number;
 }
 
 /** 填满默认值之后的调色参数。 */
@@ -369,6 +437,12 @@ export interface FilmPreset {
   lightLeak?: number;
   /** 漏光左右翻转（同一张贴图出两种效果）。 */
   lightLeakFlip?: boolean;
+  /**
+   * 真·黑白（v1.8.5）：合成时在全画面叠一层 `mixBlendMode:'saturation'` +
+   * 中性灰 `#808080` 的**满幅实色层**，数学上把每个像素压成纯灰度（保留亮度），
+   * 不是半透明灰罩。数据层只写这个开关，怎么画归 `utils/gradeLayers.ts`。
+   */
+  mono?: boolean;
   /** 日期水印配置（部分覆盖默认值）。 */
   timestamp?: Partial<TimestampConfig>;
   /** 取景器是否显示九宫格 + 水平仪。 */
@@ -393,6 +467,8 @@ export interface ResolvedFilmPreset {
   vignette: number;
   lightLeak: number;
   lightLeakFlip: boolean;
+  /** 真黑白开关（见 `FilmPreset.mono`）。 */
+  mono: boolean;
   timestamp: ResolvedTimestampConfig;
   showGuide: boolean;
   normalizeMaxLongEdge: number;
@@ -680,9 +756,15 @@ export type LocalePreference = 'auto' | 'zh-Hans' | 'zh-Hant' | 'ja' | 'en' | 'f
  * 为什么和界面语言分开：界面可以是日语，但用户可能就想要地名的英文拼写；
  * 反过来界面是英文、地名想印中文也合理。所以这是一个独立设置项。
  *
- * 只有三种取值 —— 地名要么印中文（简/繁），要么印拉丁字母，中间态没有意义。
+ * v1.8.5（用户 m02760 · 模块四）起支持**四种**取值：
+ * - `zh-Hans` 简体（中国 · 广东 · 梅州）
+ * - `zh-Hant` 繁体（中國 · 廣東 · 梅州）
+ * - `ja`      日文（日本 · 兵庫県 · 神戸市，`兵庫県/神戸市/東京都` 式后缀）
+ * - `en`      英文（MEIZHOU · GUANGDONG · CHINA，唯一允许出现拉丁国名的模式）
+ *
+ * 中文 / 日文模式下**严禁**输出 CHINA / JPN 等拉丁国名（真机痛点：`梅州，广东，CHINA`）。
  */
-export type GeoLocale = 'zh-Hans' | 'zh-Hant' | 'en';
+export type GeoLocale = 'zh-Hans' | 'zh-Hant' | 'ja' | 'en';
 
 /**
  * 定位水印模式：
@@ -795,8 +877,8 @@ export interface AppSettings {
   grainLevel: GrainLevelId;
   /**
    * 地名用哪种语言印。**和界面语言刻意分开** —— 界面可以是日语，但地名仍想印简体。
-   * `'auto'` = 跟界面语言走：界面语言是 `zh-Hans` / `zh-Hant` / `en` 就用它，
-   * 其余（ja / fr）退回 `'en'`，因为反查回来的行政名在日法两种语言下没有可靠的对应词表。
+   * `'auto'` = 跟界面语言走：界面语言是 `zh-Hans` / `zh-Hant` / `ja` / `en` 就用它，
+   * 只有 `fr` 退回 `'en'`（法语地名没有词表）；日文 v1.8.5 起是一等公民。
    */
   geoLocale: GeoLocale | 'auto';
   /**

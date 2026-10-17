@@ -213,6 +213,7 @@ export const zhHant: Messages = {
   'settings.geoLocale.auto': '跟隨介面',
   'settings.geoLocale.zhHans': '簡體中文',
   'settings.geoLocale.zhHant': '繁體中文',
+  'settings.geoLocale.ja': '日本語',
   'settings.geoLocale.en': 'English',
   'settings.geoLocale.note': '只影響成片上那一行地名，和介面語言互不干擾',
   'camera.bar.temp': '色溫',

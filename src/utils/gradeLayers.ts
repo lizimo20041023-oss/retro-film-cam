@@ -10,13 +10,12 @@
  * - 因此对比度用"同一画面再叠一层 soft-light"实现（自叠 = 提对比），
  *   饱和度用"中灰/高饱和色 + saturation 混合"实现；
  * - `<Image blurRadius>` 在 iOS 上**是真模糊 UIImage**（`RCTImageView.mm:158` 的
- *   `setBlurRadius:` → `RCTBlurredImageWithRadius`），能被 `captureRef` 截进成片 ——
- *   所以"真泛光"（8pt 模糊后 screen 叠回）是可行的。
- *   ⚠️ v1.6.0 这里曾写着"RN 的 Image 没有 blurRadius"，那句是错的（见 `types/index.ts:437-451`）。
- *   ⚠️ v1.8.3（用户 m01534 · C1）已**删除唯一一层"模糊副本"**（`micro-soft-focus`，
- *      `blurRadius=1.2` + 0.5pt 偏移 + normal 0.16）：用户实测"照片像没对上焦一样模糊发灰"，
- *      红线是"严禁在原图上叠加模糊副本，必须 100% 恢复相机原生清晰度"。
- *      现在 `blurRadius` 只服务于光晕那一层真泛光。
+ *   `setBlurRadius:`），能被 `captureRef` 截进成片 —— 但正因为它真模糊，
+ *   v1.8.3（用户 m01534 · C1）删掉微柔焦、v1.8.5（用户 m02760 · M2）又删掉泛光的
+ *   模糊副本之后，**本文件不再构建任何带 `blurRadius` 的图层**：
+ *   用户红线是"严禁在原图上叠加模糊副本，必须 100% 恢复相机原生清晰度"。
+ *   `GradeLayer.photo` 类型里仍留着 `blurRadius?` 字段（类型定义不归这里），但没有任何
+ *   构建路径会写它 —— 合成栈里 `kind:'photo'` 只剩**无模糊**的对比度自叠。
  *
  * ── v1.8.0：为什么整条色层都换成 `overlay` + 亮度恰好 0.5 的色 ──────────────
  * 用户报的"白雾"= 图层栈把整幅画面抬亮了。要根除它，得让色层在数学上**不动亮度**：
@@ -38,8 +37,8 @@
  *
  * 图层顺序（= 绘制顺序，改顺序会改结果）：
  *   ① 色温 ② 色调 ③ 分离色调 ④ 饱和度 ⑤ 对比度
- *   ⑥ 曝光 ⑦ 光晕 ⑧ 颗粒 ⑨ 暗角 ⑩ 漏光
- * 前五层负责"色"，后五层负责"质"。
+ *   ⑥ 曝光 ⑦ 光晕 ⑧ 真黑白（仅 mono 卷） ⑨ 颗粒 ⑩ 暗角 ⑪ 漏光
+ * 前五层负责"色"，后六层负责"质"；⑧ 必须在所有彩色层之后再叠，黑白才是数学纯灰度。
  *
  * ── v1.8.3（用户 m01534 · 模块 C1）删掉的三层 ───────────────────────────────
  *   · ⑤.5 `micro-soft-focus`：`blurRadius=1.2` 的模糊副本 + 0.5pt 偏移。
@@ -68,8 +67,25 @@
  *      = **[0.04, 0.08]**。暗角/漏光是边缘质感、不是纱，保留原 opacity。
  * 为什么不干脆把成片也降了：用户只投诉**取景器**；成片的色彩性格是 v1.8.0~v1.8.3
  * 一层层按白雾预算调出来的，动它就是换滤镜，属于不请自来的改动，所以不碰。
+ *
+ * ── v1.8.5（用户 m02760 · M2）胶卷库重构：零模糊、零白蒙、真黑白、光学暗角 ──
+ * 用户拿 Dazz #Inst C 的成片做对照，核心诉求是"照片必须通透"：
+ *   ① **零模糊**：旧的 `bloom` 泛光 = "模糊 8pt 的原图 screen 叠回"（`halation-glow`，
+ *      `blurRadius: 8`）。用户红线是"严禁在原图上叠加模糊副本"，整层删除。
+ *      `halation` 只剩**一层暖红纯色 screen**（`#FF4028`，opacity = 值 × 0.06 ≤ 0.06）。
+ *   ② **零白蒙**：不再有任何浅白/米色遮罩；暗角贴图换成中心 65% 半径全透明的新 PNG，
+ *      混合从 `overlay` 改成 `normal` —— 只压外圈到深青黑，画面中心一个像素都不压。
+ *   ③ **真黑白**：`mono:true` 的卷在彩色层之后、颗粒之前叠 `#808080` + `saturation` + 1.0
+ *      的满幅层。saturation 混合"取颜色的饱和度、保留底图明度"，输出 R=G=B ⇒ 数学纯灰度，
+ *      不是半透明灰罩（灰罩只会把画面抬灰，不会去掉颜色）。
+ *   ④ **色层纪律**：彩色卷每个 color 层 opacity 必须 ∈ [0.03, 0.06]（`_haze_audit` 断言），
+ *      性格靠暗角 / 阴影倾向 / 颗粒区分，不靠浓遮罩。
+ *   ⑤ 反转片 EK-100 通过 `GRAINLESS_PRESET_IDS` 永久跳过颗粒层（用户颗粒档位会覆盖
+ *      `preset.grain`，所以只能按 id 表达"这支卷天生无颗粒"）。
+ *   `buildGradeLayers` 的架构和其余公式（overlay 色层 / soft-light 自叠）一个数没动。
  */
 import { grainLayerOpacity } from '../constants/grain';
+import { GRAINLESS_PRESET_IDS } from '../constants/presets';
 import type { GradeLayer, ResolvedFilmPreset } from '../types';
 
 /*
@@ -90,10 +106,11 @@ const NEUTRAL_GRAY = '#808080';
 const SATURATE_ACCENT = '#FF3B30';
 const BLACK = '#000000';
 /**
- * 光晕（halation）的暖红。Y = 0.4357。配 `screen` 加光；
- * 之所以不写更亮的橙色：screen 的代价 = Y·meanAlpha·opacity，Y 越低越省对比度。
+ * 光晕（halation）的暖红。Y = 0.4034。配 `screen` 加光；
+ * 之所以不写更亮的橙色：screen 的代价 = Y·opacity，Y 越低越省对比度。
+ * v1.8.5 起只剩这一层**纯色**光晕（零模糊），`opacity = clamp01(halation) × 0.06` ≤ 0.06。
  */
-const HALATION = '#FF4B2D';
+const HALATION = '#FF4028';
 
 function clamp01(value: number): number {
   return Math.min(Math.max(value, 0), 1);
@@ -103,10 +120,8 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-/** 光晕泛光层的模糊半径（逻辑点）。8pt ≈ 光在乳剂层里扩散的尺度。 */
-const HALATION_BLUR = 8;
-// v1.8.3：`SOFT_FOCUS_BLUR / _OPACITY / _OFFSET` 三个常量随 `micro-soft-focus` 层一起删除
-// （用户红线：不许在原图上叠模糊副本）。不要再加回来。
+// v1.8.3 删 `SOFT_FOCUS_BLUR / _OPACITY / _OFFSET`、v1.8.5 删 `HALATION_BLUR`：
+// 本文件不再有任何模糊半径常量（用户红线：不许在原图上叠模糊副本）。不要再加回来。
 
 /**
  * 把一个已解析的预设展开成有序图层数组。
@@ -169,24 +184,29 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
   }
 
   // ④ 饱和度：saturation 混合"取颜色的饱和度、保留底图明度" ⇒ 本来就不动亮度
-  if (color.saturation < 0.99) {
-    layers.push({
-      kind: 'color',
-      key: 'desaturate',
-      label: `去饱和 ${round2(1 - color.saturation)}`,
-      color: NEUTRAL_GRAY,
-      blendMode: 'saturation',
-      opacity: clamp01(1 - color.saturation),
-    });
-  } else if (color.saturation > 1.01) {
-    layers.push({
-      kind: 'color',
-      key: 'saturate',
-      label: `加饱和 ${round2(color.saturation - 1)}`,
-      color: SATURATE_ACCENT,
-      blendMode: 'saturation',
-      opacity: clamp01((color.saturation - 1) * 0.85),
-    });
+  //
+  //    ⚠️ `mono:true` 的卷**跳过这一层**：⑧ 的满幅去色层（opacity 1）已经接管，
+  //    再叠一层半透明去色/加饱和既没意义，也会破坏"BW 只有一层满幅纯度"的验收口径。
+  if (!preset.mono) {
+    if (color.saturation < 0.99) {
+      layers.push({
+        kind: 'color',
+        key: 'desaturate',
+        label: `去饱和 ${round2(1 - color.saturation)}`,
+        color: NEUTRAL_GRAY,
+        blendMode: 'saturation',
+        opacity: clamp01(1 - color.saturation),
+      });
+    } else if (color.saturation > 1.01) {
+      layers.push({
+        kind: 'color',
+        key: 'saturate',
+        label: `加饱和 ${round2(color.saturation - 1)}`,
+        color: SATURATE_ACCENT,
+        blendMode: 'saturation',
+        opacity: clamp01((color.saturation - 1) * 0.85),
+      });
+    }
   }
 
   // ⑤ 对比度：同一张原图再叠一层 **soft-light**（自叠 = 提对比）。
@@ -215,7 +235,9 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
   // ⑤.5 微柔焦（`micro-soft-focus`）已按 v1.8.3 用户红线**整层删除** ——
   //      旧实现是"同一张照片模糊 1.2pt 再 normal 叠回 0.16"，等于给整幅画面蒙一层柔焦。
   //      用户实测"拍出来像没对上焦一样模糊"，要求 100% 回到相机原生锐度。
-  //      不要再加回来；`blurRadius` 现在只用于 ⑦ 的真泛光。
+  //      v1.8.5 又把 ⑦ 的泛光模糊副本也删了：**本文件现在不构建任何带 blurRadius 的层**。
+  //      ⑤ 这层对比度自叠是 photo 层里唯一活下来的，但它不模糊、不叠副本图 ——
+  //      只是同一画面 soft-light 自己混合，数学上提对比，不是"模糊副本"。不要再加模糊。
 
   // ⑥ 褪色托黑（`fade`）已按 v1.8.3 用户红线**整层删除** ——
   //      旧实现是 `lighten #545A61`，把 0.35 以下的灰阶整体抬向 0.3499：
@@ -223,7 +245,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
   //      "模糊发灰"）。用户要求"让原图以 100% 原生对比度直接呈现"，所以这层不再存在。
   //      `color.fade` 数值仍留在预设数据里（历史字段，不参与渲染），不要再接回图层。
 
-  // ⑦ 曝光：**正的曝光不再有图层**（原来是一层纯白 screen：0.1 处抬 0.9×opacity，
+  // ⑥ 曝光：**正的曝光不再有图层**（原来是一层纯白 screen：0.1 处抬 0.9×opacity，
   //    是所有预设 whiteLoss/veilMid 的共同来源，按 v1.8.0 直接删）。
   //    暗部不再有"提亮"层（v1.8.3 已删 `fade`）；负曝光仍用黑 multiply 压暗，系数从 0.45 收到 0.30
   //    （multiply 会把纯白压到 1−opacity，ccd-cyber 的 −0.06 在 0.45 时正好顶破 0.02 预算）。
@@ -238,30 +260,41 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  // ⑧ 光晕 halation：两层配合 = 一层**真泛光** + 一层暖红色偏。
+  // ⑦ 光晕 halation（v1.8.5 重写）：**只有一层暖红纯色 screen，零模糊**。
   //
-  //    · `halation-glow`：把同一张照片模糊 8pt 用 screen 叠回 —— 物理上就是"乳剂层里
-  //      高光halo"。数学上 lift = opacity·cb(1−cb)：0.1 与 0.9 处都是 0.09·opacity，
-  //      纯白恒等（screen(1,1)=1），比纯色 screen 在暗部便宜 4.4 倍。
-  //    · `halation-tint`：卡片指定的暖红 `#FF4B2D` + screen，opacity 0.05×bloom
-  //      （cinestill-800t 的 0.52 → 0.026，接近卡片写的 0.06，但更省 satRatio）。
-  //    两层都不动纯白；总 screen 质量 M = Σ Y·meanAlpha·opacity 仍在预算内。
-  if (color.bloom > 0.01) {
-    layers.push({
-      kind: 'photo',
-      key: 'halation-glow',
-      label: `泛光 ${round2(color.bloom)}`,
-      blendMode: 'screen',
-      opacity: clamp01(color.bloom * 0.14),
-      blurRadius: HALATION_BLUR,
-    });
+  //    v1.8.0~v1.8.4 的实现是两层：`halation-glow`（把原图模糊 8pt 再 screen 叠回）
+  //    + `halation-tint`（暖红色偏）。模糊副本正是用户 m02760 的红线（"严禁在原图上
+  //    叠加 blurRadius 模糊副本"），所以 v1.8.5 删掉模糊那层，只保留纯色光晕：
+  //    物理上它是"高光在乳剂层里扩散出的暖红 halo"，视觉上仍是胶片味，但没有一个像素被模糊。
+  //
+  //    screen 的代价 = Y·opacity（最伤暗部），所以 opacity = clamp01(halation) × 0.06
+  //    硬封顶 0.06；色值 #FF4028 的 Y≈0.403，比旧 #FF4B2D 更省。纯白恒等（screen(1,·)=1）。
+  if (color.halation > 0.01) {
     layers.push({
       kind: 'color',
-      key: 'halation-tint',
-      label: `光晕暖红 ${round2(color.bloom)}`,
+      key: 'halation',
+      label: `光晕 ${round2(color.halation)}`,
       color: HALATION,
       blendMode: 'screen',
-      opacity: clamp01(color.bloom * 0.05),
+      opacity: clamp01(color.halation * 0.06),
+    });
+  }
+
+  // ⑧ 真黑白（v1.8.5 · mono 卷）：满幅中灰 + `saturation` 混合 + opacity 1。
+  //
+  //    `saturation` 混合的定义是"取上层颜色的**饱和度**、保留底图明度"——上层是
+  //    无饱和度的 #808080，所以底图每个像素输出 R=G=B，是**数学纯灰度**。
+  //    这不是半透明灰罩：灰罩（normal + 半透明灰）只会把画面整体抬灰、颜色还在；
+  //    这一层是把色度整个抽掉，所以黑白卷的颜色差异（色温/分离色调）必须留在它**之前**。
+  //    位置：所有彩色层之后、颗粒/纹理之前（契约 §3.4 冻结口径）。
+  if (preset.mono) {
+    layers.push({
+      kind: 'color',
+      key: 'mono',
+      label: '真黑白',
+      color: NEUTRAL_GRAY,
+      blendMode: 'saturation',
+      opacity: 1,
     });
   }
 
@@ -272,7 +305,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
   // 那张贴图 `|R-G| = 49.3`、`|G-B| = 34.6`，平铺 + overlay 之后满屏紫绿伪色，用户一眼就看出来了。
   // 已**彻底删除**（不是调小）：颗粒只走 `grain`，而 `grain.png` 三通道逐像素恒等
   // （实测 |R-G| = |R-B| = |G-B| = 0）—— 这就是绝无红绿紫伪色的保证。
-  // 想再要"CCD 味"，请用 `splitTone` + `bloom` + 高对比，不要往合成栈里塞彩色噪声。
+  // 想再要"CCD 味"，请用 `splitTone` + `halation` + 高对比，不要往合成栈里塞彩色噪声。
   //
   // 贴图本身是"细密双尺度银盐"（v1.8.2 重烤，`scripts/generate_grain_clump.py`：
   // `0.78·wrap_blur(白噪, 0.60) + 0.22·wrap_blur(白噪, 1.80)`，σ=0.2616、
@@ -289,7 +322,9 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
   //   `grainLayerOpacity()` 是唯一的封顶入口（`min(s, 0.11)`），不要再抬。
   //   这一层现在**只出现在成片**：`planFilmLooks(..., 'live')` 会把 grain 纹理层滤掉，
   //   取景器保持 100% 干净通透（用户 m01534 · C1 第 2 条）。
-  if (preset.grain > 0.01) {
+  //    v1.8.5：`GRAINLESS_PRESET_IDS` 里的卷（EK-100 反转片）**永不产生颗粒层** ——
+  //    `preset.grain` 会被用户档位覆盖（applyGrainLevel），所以不能只靠数据里的 0 表达。
+  if (preset.grain > 0.01 && !GRAINLESS_PRESET_IDS.has(preset.id)) {
     layers.push({
       kind: 'texture',
       key: 'grain',
@@ -308,12 +343,15 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
   //    不透明度）决定，见 `constants/grain.ts` 的 `dustSpecCountForGrain()`。
   //    `preset.dust` 字段仍留在数据里（历史字段，不参与渲染）。
 
-  // ⑪ 暗角：PNG 拉伸 + **overlay**（原来是 multiply）。
+  // ⑩ 暗角：v1.8.5 起是**光学暗角** —— PNG 拉伸 + `normal`（旧版 overlay 已弃用）。
   //
-  //    multiply 会把纯白压到 `1 − meanAlpha·opacity`：旧贴图 meanAlpha 0.1341，
-  //    预设 0.14~0.44 ⇒ whiteLoss 0.019~0.059，是 whiteLoss 预算（0.02）的主要来源之一。
-  //    `overlay(1,·) = 1` ⇒ 白永不变形；代价是暗角变成"压暗暗部"而不是"等比衰减"
-  //    （角上 0.5 的中间调 −36%、0.85 的高光 −6%）—— 胶片暗角本来就是压暗部更明显。
+  //    贴图 `assets/textures/vignette.png` 由 `scripts/generate_vignette.py` 生成：
+  //    1024×1024 RGBA，RGB 恒 (6,14,20)，alpha 按归一化半径 rho 走 smoothstep：
+  //      rho ≤ 0.65 → alpha 0（画面中心 65% 半径**一个像素都不压**）；
+  //      rho 0.65~1 → alpha 0→255 平滑（无硬边）；四角 rho>1 按 1 处理。
+  //    层 opacity = 预设 vignette 值 = 边缘最大不透明度（EK 0.32 / TX 0.38 / PT 0.18，
+  //    其余 0.22~0.28）。normal 混合下最终暗角 ≈ opacity × 贴图 alpha × 底色：
+  //    中心不变，边角被压向 (6,14,20) 深青黑 —— 这就是"光学暗角"，不是灰纱。
   if (preset.vignette > 0.01) {
     layers.push({
       kind: 'texture',
@@ -321,12 +359,12 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
       label: `暗角 ${round2(preset.vignette)}`,
       textureId: 'vignette',
       resizeMode: 'stretch',
-      blendMode: 'overlay',
+      blendMode: 'normal',
       opacity: clamp01(preset.vignette),
     });
   }
 
-  // ⑫ 漏光：PNG 拉伸 + screen（可左右翻转换边）。
+  // ⑪ 漏光：PNG 拉伸 + screen（可左右翻转换边）。
   //    贴图已重烤成"角落一条暖橙光 + 80% 像素严格 screen 中性"（旧版 99% 的像素亮度 ≥0.5，
   //    拉伸 + screen = 整幅加白光，是白雾的第一根因）。
   //    层 opacity 硬夹到 0.10：再亮就不像漏光、像白雾了。
@@ -379,7 +417,9 @@ export function liveLookOpacity(opacity: number): number {
  *   · `desaturate`：`NEUTRAL_GRAY` + saturation（抽掉颜色）；
  *   · `saturate`：`SATURATE_ACCENT` + saturation（加饱和，同样走 saturation 混合）；
  *   · `contrast-boost`：soft-light 自叠（kind:'photo'，① 的 photo 过滤已拦，这里再兜一次）；
- *   · `fade`：v1.8.3 已从图层栈删除，仅作历史 key 兜底。
+ *   · `fade`：v1.8.3 已从图层栈删除，仅作历史 key 兜底；
+ *   · **`mono`（v1.8.5）不在此列**：真黑白满幅去色层是成片观感本身，live 必须保留
+ *     （否则黑白卷取景器会看到彩色，违背所见即所得；见 `isLiveNeutralLayer` 例外）。
  * 将来新增任何压对比/去饱和的中性层，都要把 key 加进这里 —— 取景器绝不允许出现灰白色纱。
  */
 const LIVE_NEUTRAL_LAYER_KEYS: ReadonlySet<string> = new Set([
@@ -396,6 +436,11 @@ const LIVE_NEUTRAL_CARRIERS: ReadonlySet<string> = new Set([NEUTRAL_GRAY, SATURA
 function isLiveNeutralLayer(layer: GradeLayer): boolean {
   if (LIVE_NEUTRAL_LAYER_KEYS.has(layer.key)) {
     return true;
+  }
+  // v1.8.5 · M2：`mono` 真黑白去色层**不是**灰白纱 —— saturation 满幅中灰是数学去色，
+  // 不降低通透度；它在 live 保留（黑白卷取景器 = 黑白，所见即所得）。
+  if (layer.key === 'mono') {
+    return false;
   }
   if (layer.kind !== 'color') {
     return false;
@@ -417,7 +462,11 @@ function isLiveNeutralLayer(layer: GradeLayer): boolean {
  *   · **中性灰/降对比层**（v1.8.4 · 用户 m02103 C3）—— `desaturate` / `saturate` /
  *     `contrast-boost` 这类以 NEUTRAL_GRAY / SATURATE_ACCENT 为载体、靠 saturation /
  *     soft-light 拉低通透度的层。用户真机反馈"取景器有雾感"，它们就是那层灰白纱。
- * 剩下的 `kind:'color'` 层（色温/色调/分离色调/光晕色偏/曝光压暗）一律经
+ *   · **例外：`mono` 真黑白去色层不滤**（v1.8.5 · M2，用户要所见即所得）—— 满幅
+ *     `#808080` + saturation 是成片观感本身，不带来色偏、不压对比；滤掉它黑白卷取景器
+ *     就会看到彩色。它同样**不参与** `liveLookOpacity()` 缩放，保持 opacity 1（预览是
+ *     低反差黑白：底层 photo 对比度层仍按 live 规则淡出）。
+ * 除 `mono` 外的 `kind:'color'` 层（色温/色调/分离色调/光晕色偏/曝光压暗）一律经
  * `liveLookOpacity()` 压到 **[0.04, 0.08]**（原 opacity × 0.4，再硬夹）；
  * 暗角/漏光是边缘质感、不是纱，保留原 opacity。
  * 取景器剩下的只有纯色 View（overlay / saturation / multiply）+ 暗角 + 漏光，
@@ -445,6 +494,11 @@ export function planFilmLooks(preset: ResolvedFilmPreset, surface: FilmLookSurfa
       return true;
     })
     .map((layer): GradeLayer => {
+      // v1.8.5：真黑白去色层在 live 保持满幅 opacity 1 —— 它不属于"色彩层"，不压淡；
+      // 黑白卷取景器因此与成片同为黑白（低反差，因 photo 对比度层已按 live 规则滤掉）。
+      if (layer.key === 'mono') {
+        return layer;
+      }
       if (layer.kind !== 'color') {
         // 暗角 / 漏光：边缘质感，不是纱，保留成片原 opacity。
         return layer;

@@ -776,7 +776,113 @@ function regionVertical(layout: FrameLayout, anchor: TimestampAnchor, inset: num
     const top = layout.window.top + layout.window.height;
     return { top, bottom: layout.height - inset, height: Math.max(0, layout.bottomStripHeight - inset) };
   }
-  return { top: 0, bottom: layout.bottomStripHeight, height: Math.max(0, layout.bottomStripHeight) };
+  /*
+   * `window` 锚点：水印烧在**照片画面内部**（不是下留白条！）。
+   *
+   * v1.8.5（用户 m02760）修复：旧实现返回 `{ top: 0, bottom: layout.bottomStripHeight }`
+   * —— `top` 是"舞台顶"，`bottom` 是"下留白条的高度"，两者物理上根本不是一个坐标系。
+   * `stacked` 版式拿它做 `vertical.top + placeTop <= vertical.bottom` 判据，
+   * 对 135 NEG 恒为 false（`placeTop ≈ 0.144H +` > `bottomStripHeight ≈ 0.144H`），
+   * 地名行于是被**静默丢弃** —— 用户实测成片底部完全没有城市名就是这一行造成的。
+   *
+   * 现在区域就是照片窗口本身（四边各内缩一个 `inset`），单位统一为"距舞台顶的 y"，
+   * 与 `frame` 分支一致。`window` 锚点不再借用下留白条的任何数值。
+   */
+  const top = layout.window.top + inset;
+  const bottom = layout.window.top + layout.window.height - inset;
+  return { top, bottom, height: Math.max(0, bottom - top) };
+}
+
+/* ==========================================================================
+ * 内窗几何 / 内阴影 / 成片导出衬底（v1.8.5 模块一，用户 m02760）
+ * ========================================================================== */
+
+/**
+ * 照片内窗容器矩形的**取整**版本。
+ *
+ * 为什么必须取整：内窗是"相纸减掉照片窗口"算出来的，`window.left/top/width/height`
+ * 天然带小数（如 864.3px）。RN 在 iOS 上对绝对定位矩形会做亚像素布局，而
+ * `<Image>` 解码后的位图是整数像素 —— 两者差 1~2px 时，照片右侧 / 底侧就会漏出
+ * 容器底色（老实现底色是黑，于是成片上出现一条突兀的黑线，用户 m02760 首条投诉）。
+ * 取整后容器与图片像素对齐；再配合 `FilmCompositor` 里图片外扩 2px，
+ * 黑缝在结构上就不可能存在。
+ */
+export function roundInnerWindow(window: Rect): Rect {
+  return {
+    left: Math.round(window.left),
+    top: Math.round(window.top),
+    width: Math.max(1, Math.round(window.width)),
+    height: Math.max(1, Math.round(window.height)),
+  };
+}
+
+/** 内窗立体投影的设计值（358pt 参考画布上：顶部 6px 向下、左侧 4px 向右）。 */
+export const INNER_SHADOW_DESIGN_TOP = 6;
+export const INNER_SHADOW_DESIGN_LEFT = 4;
+/** 设计值对应的参考短边（与 `canvasBase` 的 1440 宽参考不同：这是相纸盒尺寸）。 */
+export const INNER_SHADOW_REFERENCE_SHORT_EDGE = 358;
+
+/**
+ * 内窗四周的「相纸厚度投射阴影」厚度（逻辑点）。
+ *
+ * 拍立得内窗不是贴纸，是嵌在相纸里的：光线从上方来，照片顶部内侧会被相纸边缘压出
+ * 一道向下的暗影，左侧同理（右侧/底部反而更亮）。用户 m02760 要求：
+ * 顶部 6px 从 `rgba(0,0,0,0.28)` 渐变到透明、左侧 4px 从 `rgba(0,0,0,0.16)` 渐变到透明。
+ * 数值按相纸短边等比缩放，大画布上不会缩成 1px 看不见。
+ */
+export function planInnerWindowShadows(shortEdge: number): { top: number; left: number } {
+  const scale = Number.isFinite(shortEdge) && shortEdge > 0 ? shortEdge / INNER_SHADOW_REFERENCE_SHORT_EDGE : 1;
+  return {
+    top: Math.max(3, Math.round(INNER_SHADOW_DESIGN_TOP * scale)),
+    left: Math.max(2, Math.round(INNER_SHADOW_DESIGN_LEFT * scale)),
+  };
+}
+
+/** 成片导出时相纸外围的窄边衬底比例（每边 = 短边 × 该值）。 */
+export const PRINT_CUSHION_RATIO = 0.026;
+
+/** 导出衬底方案：相纸在舞台里的缩放与定位（舞台尺寸不变，成片因此多出一圈衬底）。 */
+export interface PrintCushionPlan {
+  /** 相纸内容的等比缩放（≤1）。 */
+  scale: number;
+  /** 每边衬底宽度（逻辑点，以短边为基准，长边方向实际边距 = (1-scale)×对应边/2）。 */
+  margin: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * 成片导出衬底（v1.8.5「3D 实体相纸」的最后一块）：
+ * 相纸不再顶满画布，四周留一圈窄边衬底，底部打真实悬浮阴影 ——
+ * 用户 m02760 要的"像一张真正拿在手里的塑料卡纸"。
+ *
+ * 数学：`margin = round(短边 × 0.026)`（358pt 短边 → 9pt 衬底），
+ * `scale = (短边 − 2×margin) / 短边`，等比缩放后居中 —— **不能**对宽高分别缩放，
+ * 否则相纸会被拉变形（拍立得比例就错了）。
+ */
+export function planPrintCushion(
+  width: number,
+  height: number,
+  ratio: number = PRINT_CUSHION_RATIO,
+): PrintCushionPlan {
+  const shortEdge = Math.min(width, height);
+  if (!Number.isFinite(shortEdge) || shortEdge <= 0 || !Number.isFinite(width) || !Number.isFinite(height)) {
+    return { scale: 1, margin: 0, left: 0, top: 0, width, height };
+  }
+  const margin = Math.max(1, Math.round(shortEdge * ratio));
+  const scale = Math.max(0.5, (shortEdge - margin * 2) / shortEdge);
+  const paperWidth = width * scale;
+  const paperHeight = height * scale;
+  return {
+    scale,
+    margin,
+    left: (width - paperWidth) / 2,
+    top: (height - paperHeight) / 2,
+    width: paperWidth,
+    height: paperHeight,
+  };
 }
 
 /**
@@ -1209,12 +1315,25 @@ export function computeWatermarkPlan(
       );
     }
   } else if (planLayoutId === 'stacked') {
-    // 地名在上、日期在下，两行都贴同一边。地名行被顶出水印区就丢掉它 ——
-    // 宁可少印一行，也不要让地名压到照片或相框边框上。
-    const placeBottom = bottom + dateFont * STACKED_LEADING;
-    const placeTop = placeBottom + slotFont;
-    if (hasSlot && vertical.top + placeTop <= vertical.bottom) {
+    /*
+     * 地名在上、日期在下，两行都贴同一边。
+     *
+     * v1.8.5（用户 m02760，135 NEG 成片底部丢城市名）：**地名不再允许被静默丢弃**。
+     * 旧实现把"距舞台底的距离"（`placeBottom`/`placeTop`）和"距舞台顶的 y"
+     * （`vertical`，见 `regionVertical`）混在同一个不等式里，对 `window` 锚点恒
+     * 不成立 —— 地名行直接不 push。现在统一换算成 y 坐标后与真实水印区求交，
+     * **放不下就钳制**：先把地名摆到日期行上方（`bottom + 日期字号 × STACKED_LEADING`），
+     * 再把它夹进水印区（顶部不越过水印区上界、底部不跌破日期行基线）。
+     * 日期行的位置一点不动 —— 这条规则只负责"地名 100% 出现"。
+     */
+    if (hasSlot) {
       const letterSpacing = spacingOf(slotFont);
+      const wantBottom = bottom + dateFont * STACKED_LEADING;
+      // 约束（全部换成"距舞台底的距离"）：地名行底 ≥ 日期行基线 + 半行（不压日期），
+      // 且整行必须落在水印区 [vertical.top, vertical.bottom]（距舞台顶）之内。
+      const maxPlaceBottom = layout.height - vertical.top - slotFont;
+      const minPlaceBottom = Math.min(maxPlaceBottom, Math.max(bottom + slotFont, inset));
+      const placeBottom = Math.min(Math.max(wantBottom, minPlaceBottom), maxPlaceBottom);
       lines.push(
         placeLine({
           kind: slotKind,

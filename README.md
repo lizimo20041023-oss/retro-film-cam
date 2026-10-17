@@ -59,6 +59,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [35. v1.8.2：颗粒不再糊成脏云雾（贴图重烤 + 1:1 手工平铺）](#35-v182颗粒不再糊成脏云雾贴图重烤--11-手工平铺)
 - [36. v1.8.3：四模块军规改造（手风琴设置页 / 原生等宽三层发光日期 / 原图零柔焦 / 实色卡纸与暗色相机壳）](#36-v183四模块军规改造手风琴设置页--原生等宽三层发光日期--原图零柔焦--实色卡纸与暗色相机壳)
 - [37. v1.8.4：真机焦段归位（取景盒重几何 / 四档焦段 / 最高分辨率 / 取景器去雾）](#37-v184真机焦段归位取景盒重几何--四档焦段--最高分辨率--取景器去雾)
+- [38. v1.8.5：Dazz #Inst C 立体相纸（内窗黑边根治 / 9 款传奇胶卷 / 135 NEG 齿孔与地名 / 纯净化地名多语言）](#38-v185dazz-inst-c-立体相纸内窗黑边根治--9-款传奇胶卷--135-neg-齿孔与地名--纯净化地名多语言)
 
 ---
 
@@ -4651,6 +4652,243 @@ iOS 的 `resizeMode="repeat"` 不是 `colorWithPatternImage`，而是
 | `src/utils/gradeLayers.ts` | `planFilmLooks('live')` 去雾：滤中性层 + 色彩层 ×0.4 且夹 [0.04, 0.08]；成片路径不动 |
 | `app.json` | version `1.8.3` → `1.8.4` |
 | `README.md` | 本节 §37 + TOC |
+
+---
+
+## 38. v1.8.5：Dazz #Inst C 立体相纸（内窗黑边根治 / 9 款传奇胶卷 / 135 NEG 齿孔与地名 / 纯净化地名多语言）
+
+> 一句话：v1.8.4 把"拍到的画面"钉准了，v1.8.5 把**纸**做成了一件东西 ——
+> 内窗不再漏黑边、相纸有圆角/压边/压痕的实体感、135 NEG 的齿孔与帧号重新画、
+> 胶卷换成 9 款按真实传奇代号命名的基调、水印在窄留白里不再丢地名、地名按语言纯净输出。
+>
+> 五个模块（用户 m02760）：M1 相纸结构 3D 纸感 · M2 传奇胶卷 + 真黑白 + 光学暗角 ·
+> M3 水印排版（stacked 不丢地名 / 地名语言字体） · M4 地名纯净多语言 · M5 内窗黑边根治 + 导出衬底。
+
+### 38.1 五条投诉 → 五条真因链（先看这张表再看代码）
+
+| 模块 | 用户看到的病 | 真因（代码层） | 修法 |
+| --- | --- | --- | --- |
+| M1 | 相纸"像一张贴纸"，没有纸的厚度感；135 NEG 的齿孔/片边丢了 | v1.8.3 的 `FrameSkin` 是 4 条 `opacity:1` 实色带 + 4 条内框线，**整块盖在 PNG 之上**，纸纹/镌刻/孔全被盖死；齿孔是 PNG 里烘死的固定色，暗房纸一上色就穿帮 | 实色带改 `mixBlendMode:'multiply'`（只着色不盖纹理）；删内框线整类；新增 `FrameSpec.skin` 数据 + `buildPaperDetails()` 程序化画圆角/枕形压边/下巴压痕/135 齿孔/帧号 |
+| M2 | 画面发灰发雾、黑白卷不黑白、暗角是一块"黑蒙版" | 泛光 = 把原图模糊 8pt 再 screen 叠回（`halation-glow`）+ 暖色偏两层，模糊副本让全场发软；黑白卷只有 saturation 混合，取景器还会滤掉中性层；旧 `vignette.png` 是黑底贴图 | 删 `bloom`/模糊副本，`halation` 改为**单层暖红纯色 screen ≤0.06、全栈零模糊**；`mono:true` 加满幅 `#808080`+`saturation` 层并在 live 例外放行；暗角重烤成 1024² RGBA 光学径向渐变、`normal` 混合 |
+| M3 | 窄相框/无相框下"地名+日期两行"里的**地名消失**；日文地名用中文字体 | `stacked` 版式放不下时直接丢行；`place`/`code` 行只用一个全局字体 | 改为**钳制不丢弃**（`maxPlaceBottom/minPlaceBottom`）；新增 `watermarkPlaceFont(locale)` 按地名语言换字体，日期行不换 |
+| M4 | 英文界面下地名混中文、中文档里出现 `CHINA` 这种拉丁国名、没有日文档 | 只有 auto/zh-Hans/zh-Hant/en 四档，且 archive/full 没有按**地名语言**分表；国家名靠接口原样透传 | 4 语言 × 2 详情矩阵 + 47 国四语字典；恒 `' · '` 分隔；中/日档禁用拉丁国名；港澳台 full 冠"中国"；新增 ja 档 + `GEO_LOCALES` 持久化 + `localityLanguage()` |
+| M5 | 照片与内窗之间有 1~2px 黑线；成片"像浮在桌面上的截图"不是一张卡纸 | 内窗容器矩形带小数 + 位图整像素 + 容器底色 `#000` + 深色内框线，四件事叠出黑缝；成片相纸顶满画布、无衬底/阴影 | 内窗 `Math.round` 四值取整 + 底色=相纸色 + 1px 高光切边 + 照片外扩 2px；顶部 6pt/左侧 4pt 内阴影；导出衬底（短边 0.026 留白）+ 底部悬浮阴影 + 相纸圆角（三调用点同口径） |
+
+### 38.2 M1：相纸的程序化结构（`FrameSkin.tsx` + `frames.ts` 数据）
+
+`FrameSpec.skin`（`FrameSkinSpec`）是**纯数据**，`FrameSkin` 用三个纯函数画出来：
+
+| 帧 | `skin` 数据 | 全尺寸实测（designSize） |
+| --- | --- | --- |
+| polaroid-600 | `cornerRadius:10, paddedBevel:true, chinCrease:true` | 圆角 39.33、压边厚 7.87、下巴压痕 1403.68/1407.61（下巴 376） |
+| instax-mini | `cornerRadius:6, paddedBevel:true, chinCrease:true` | 圆角 18.1、压痕 1387.08 |
+| neg-135 | `cornerRadius:2, paddedBevel:false, chinCrease:false, sprockets:{…}, frameCode:'▷ 04A'` | 20 个齿孔 + 1 个帧号（见下表） |
+| slide-mount | `cornerRadius:3, paddedBevel:true, chinCrease:false` | 圆角 11.31（开孔上方留白 > 下巴，无药水包） |
+| fp100c | `cornerRadius:6, paddedBevel:true, chinCrease:true` | 圆角/压边/压痕同上口径 |
+| 00 NO FRAME | 无 `skin` | 恒 0 元素（无纸可画） |
+
+**渲染顺序（冻结）**：`tint(4) → bevel → crease → sprocket → frameCode`。不变量：所有元素在纸内、
+与照片窗口 `intersectionArea === 0`、同参数两次调用逐字节相同（预览与成片必须一模一样）。
+`tint` 恒为 `material.base`、`opacity:1`、`blendMode:'multiply'` —— **只着色不盖 PNG**，
+这是"纸纹透出来"的全部秘密。`SkinElementKind` 只许 `'tint'|'bevel'|'crease'|'sprocket'|'frameCode'`（不再有 `'border'`）。
+
+135 NEG 齿孔/帧号是**从 `neg-135.png` 逐像素实测反推**的（PNG 里本来就烘了 10 个透明孔，
+程序化白孔必须逐孔覆盖，否则会出现双孔/错位）：
+
+- 每侧 10 个孔，首孔 `{left:54, top:116.49, width:108, height:72}`，`pitch = 182.78`（= 孔高 × 2.5386），
+  末孔下沿 1833.51，孔中心线距纸边 108，孔圆角 16（= 孔高 × 16/72）；
+- 帧号 `▷ 04A`：字号 1350×0.032 = 43.2、颜色 `rgba(229,169,60,0.88)`、落点 (54, 24.3)，
+  比 PNG 里烘死的 `▷ 12A`（bbox x224..378, y151..205）更靠纸边 —— 两行字**有意并存**（印刷字 vs 结构字）。
+
+**相纸圆角**：`paperCornerRadius(w,h,skin) = snap(skin.cornerRadius × min(w,h)/358)`，夹 `min(w,h)/2`。
+三个调用点（`FilmCompositor` 成片 / `FramePreviewLayer` 取景器 / `FilmDrawer` 抽屉迷你预览）
+都用这个函数，且都要 `borderRadius + overflow:'hidden'` **连 PNG 一起裁**（否则 PNG 直角盖回来）。
+`filmCompositor` 侧圆角挂在"缩放前内容层"上，缩放后视觉半径 = 半径 × `printCushion.scale`，与预览同口径。
+
+### 38.3 M2：9 款传奇胶卷（`presets.ts` 重写）
+
+`DEFAULT_PRESET_ID = 'gd-200'`；旧 10 个持久化 id（`retro-400`/`portra-400`/…）实测走 `findPresetIndex → 0`
+安全回落 gd-200，`resolvePreset` 补默认值不崩（`mono:false`/`halation:0`）。
+
+| id | 名字 | 基调 | temp | tint | sat | contrast | split | grain | vignette | halation | leak | mono |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| gd-200 | GD-200 | 金色日光·暖调通透 | .12 | −.14 | 1 | 1.06 | .13 | .045 | .22 | — | — | — |
+| pt-400 | PT-400 | 柔和人像·肤色微暖 | .10 | −.13 | .95 | 1.0 | .12 | .05 | .18 | — | — | — |
+| um-400 | UM-400 | 浓郁街拍·高反差 | −.10 | .16 | 1.06 | 1.18 | .14 | .055 | .26 | — | — | — |
+| cp-200 | CP-200 | 复古琥珀·黄昏暖调 | .15 | −.16 | 1 | 1.08 | .16 | .05 | .28 | — | .14 | — |
+| fj-400 | FJ-400 | 日系青绿·冷调通透 | −.12 | .21 | .95 | 1.0 | .12 | .05 | .22 | — | — | — |
+| ek-100 | EK-100 | 反转锐利·零雾高对比 | 0 | 0 | 1.04 | 1.20 | .11 | **0（GRAINLESS）** | .32 | — | — | — |
+| cs-800t | CS-800T | 电影钨丝灯·冷蓝+暖红光晕 | −.15 | 0 | 1 | 1.10 | .13 | .05 | .26 | .85 | .18 | — |
+| hp-400-bw | HP-400 BW | 纪实黑白·中灰层次 | 0 | 0 | 0 | 1.12 | — | .055 | .24 | — | — | **true** |
+| tx-400-bw | TX-400 BW | 硬朗银盐·高反差 | 0 | 0 | 0 | 1.25 | — | .055 | .38 | — | — | **true** |
+
+**泛光重写（零模糊）**：删 `bloom` 字段与 `HALATION_BLUR`；`halation` = **一层** `#FF4028` 纯色 `screen`，
+`opacity = clamp01(halation) × 0.06 ≤ 0.06`（screen 会抬暗部 Y=0.4034，0.06 是"能看见光晕但不糊"的上限）。
+全图层栈**零 `blurRadius`、零 `'lighten'`**（旧 `micro-soft-focus`/`halation-glow` 都不再存在）。
+
+**真黑白**：`mono:true` 的卷在彩色层之后、颗粒之前叠 `{kind:'color', color:'#808080', blendMode:'saturation', opacity:1}`；
+`sat:0` 的彩色层对 mono 卷**跳过**（不叠两层冗余去色）。取景器 live 对 `key:'mono'` **例外放行**
+（满幅 opacity 1，不参与 `liveLookOpacity` 缩放）—— 黑白卷取景器所见即所得是用户红线。
+
+**光学暗角**：`assets/textures/vignette.png` 重烤为 1024×1024 RGBA（由 `scripts/generate_vignette.py` 逐像素生成，零依赖）：
+
+- `rho = min(1, dist(pixel, center) / (shortEdge/2))`；
+- `t = clamp((rho − 0.65) / 0.35, 0, 1)`，`alpha = round(255 × smoothstep(t))`（中心 0，65% 以内全透明）；
+- RGB 恒 `(6, 14, 20)`；层 = `{kind:'texture', asset:'vignette', blendMode:'normal', opacity: preset.vignette}`。
+
+实测：rho 0.70/0.75/0.80/0.85/0.90/1.0 → alpha 14/51/100/155/204/255；中心 0、四角/边中点 255；
+sha256 `6b45e862b6c23f30d9c1db97013e5d90bf82f4b49aa6e8dfae3e0a98ef70c79c`（114,530 B）。
+
+### 38.4 M3：水印排版（stacked 钳制 + 地名语言字体）
+
+**stacked 不再丢行**：旧实现"相框留白上下两行放不下就把地名扔掉"，现在改为钳制 ——
+`maxPlaceBottom = H − vertical.top − slotFont`、`minPlaceBottom = min(maxPlaceBottom, max(bottom + slotFont, inset))`，
+地名行底边夹在 `[minPlaceBottom, maxPlaceBottom]` 之间，宁可贴边也不消失（`geometry.ts` stacked 分支）。
+
+**地名语言字体**：`planWatermark` 产出的 piece 带 `kind`（`'place'|'date'|'code'`），`FilmCompositor` 里
+`place`/`code` 行用 `watermarkPlaceFont(placeFontLocaleOf(stage.locale))` 换字体：
+
+| 地名语言 | 字体 |
+| --- | --- |
+| `ja` | `Hiragino Mincho ProN`（iOS 明朝体，写真集韵味） |
+| `en` | `Menlo` |
+| `zh-Hans` / `zh-Hant` | `undefined`（回退预设日期字体 / 系统等宽兜底） |
+
+`placeFontLocaleOf` 只做 `LocaleId → GeoLocale` 的钉边：zh-Hant/ja/en 直通、`fr → en`、其余 `zh-Hans`。
+**日期行不换字体**（日期字形是灯丝管线，换字体=换一套发光几何）。
+
+### 38.5 M4：地名纯净多语言（`placeNames.ts` 重写）
+
+四种语言 × 两档详情，分隔符**恒** `' · '`（U+00B7，两侧各一个半角空格）。以神户为例：
+
+| 语言 | archive（剥行政后缀、从大到小） | full（保/补后缀） |
+| --- | --- | --- |
+| zh-Hans | 日本 · 兵库 · 神户 | 日本 · 兵库县 · 神户市 |
+| zh-Hant | 日本 · 兵庫 · 神戶 | 日本 · 兵庫縣 · 神戶市 |
+| ja | 日本 · 兵庫県 · 神戸市 | 日本 · 兵庫県 · 神戸市（两档同形） |
+| en | KOBE · HYOGO · JAPAN | KOBE · HYOGO · JAPAN（两档同形） |
+
+细则：`COUNTRY_NAMES` 是 47 国四语字典（alpha-2/alpha-3 都收）；中文/日文档**禁止拉丁国名**（红线断言）；
+港澳台 full 冠中国：`中国 · 香港特别行政区` / `中国 · 台湾省 · 台北市`，en 恒 `HONG KONG · CHINA`；
+日文档后缀规则：输入已带 県/都/府/道/市 则原样，无后缀才补（梅州市→梅州市，兵库→兵庫県）；
+行政同名去重（`广东省 广州市` → `广东 · 广州`）。
+`resolveGeoLocale(geoLocale, uiLocale)`：auto 跟界面语言（zh-Hans/zh-Hant/ja/en；仅 fr 退 en）；
+`GEO_LOCALES` 白名单加 `'ja'`（可持久化）；`localityLanguage(GeoLocale): 'zh'|'ja'|'en'` 用于网络反查语言，
+**界面语言不参与**（日文界面 + 英文地名 = Menlo，不是明朝体）。
+
+### 38.6 M5：内窗黑边根治 + 导出衬底（`FilmCompositor.tsx` / `geometry.ts`）
+
+**内窗（四条一起做，少一条就还看得见缝）**：
+
+1. `roundInnerWindow(window)`：四值 `Math.round` —— 位图整像素 vs 容器亚像素的黑缝从结构上消失；
+2. 容器底色 = `findFrameMaterial(frameVariant).base`（**严禁 #000**：万一还有 1px 偏差，漏出的是纸不是黑线）；
+3. 照片向外冗余 2px（`left/top = −1`、宽高 `+2`），任何取整误差都由照片自己盖住；
+4. 深色内框线整类删除，改 1px 极柔和纸张高光切边 `rgba(255,255,255,0.65)`（顶/左/底/右同一圈）。
+
+**内阴影（相纸厚度投在照片上的微阴影）**：设计值顶部 6pt / 左侧 4pt，基准短边 358pt 等比缩放
+（`INNER_SHADOW_DESIGN_TOP=6`、`LEFT=4`、`REFERENCE_SHORT_EDGE=358`），实际尺寸取整后
+`max(3, round(6×scale))` / `max(2, round(4×scale))`；顶部 `rgba(0,0,0,0.28)`、左侧 `rgba(0,0,0,0.16)` 的
+`LinearGradient`，只画在窗口内侧（`fullBleed` 不画）。
+
+**导出衬底（"拿在手里的卡纸"，用户 M5 最后一块）**：`planPrintCushion(width, height)`：
+
+- `margin = round(min(w,h) × 0.026)`（`PRINT_CUSHION_RATIO`），相纸缩到 `min−2m`；
+- 内容层 `transform: scale(scale)` + `transformOrigin: 'left top'`，照片/相框/皮肤/水印**一起缩**；
+- 衬底色 = `mixHexColor(material.base, '#000000', 0.06)`（相纸 base 压暗 6%，不是黑）；
+- 阴影 `offset(0,6) / opacity .28 / radius 10`（相纸"浮"在衬底上）；
+- 例：358×640 → `margin 9`、`scale 340/358`、`left 9`、`top 16.09`。
+- 展示开关：`FilmCompositor` 新增 `presentation?: 'preview' | 'print'`（默认 `'preview'` = v1.8.4 相位），
+  仅 `print` 且 `!fullBleed` 走衬底分支；两个 capture 挂载点（`CameraScreen` 的快门显影、`GalleryScreen` 的导入冲印）
+  显式传 `presentation="print"` —— 它们挂的那棵树就是 ViewShot 的截图目标，也就是成片本身。
+- `00 NO FRAME` 没有相纸：整幅铺满、不套衬底、不裁圆角（v1.8.1 行为保留）。
+
+### 38.7 冻结接口 / 新增导出（给后来改代码的人）
+
+- `types/index.ts`：新增 `FrameSprocketSpec` / `FrameSkinSpec`（`FrameSpec.skin?`）；`ColorGradeConfig.bloom` 删除、
+  改为 `halation?`；`FilmPreset.mono?` / `ResolvedFilmPreset.mono`；`GeoLocale` 增加 `'ja'`。
+- `FrameSkin.tsx`：`buildSkinElements(material,w,h,window)`（4 参，只返 4 条 multiply tint）、
+  `buildPaperDetails(width,height,window,material,skin)`（5 参）、`frameSprocketBoxes(w,h,skin)`、
+  `paperScale(w,h)`、`paperCornerRadius(w,h,skin)`；`FrameSkinProps` 加 `skin?`。
+- `geometry.ts`：`roundInnerWindow`、`planInnerWindowShadows`、`planPrintCushion`（+ `INNER_SHADOW_*`/`PRINT_CUSHION_RATIO`）。
+- `gradeLayers.ts`：`HALATION='#FF4028'`、`mono` 层、`GRAINLESS_PRESET_IDS`（`ek-100`）、live 对 `mono` 例外放行。
+- `placeNames.ts`：`watermarkPlaceFont(GeoLocale)` 导出；`resolveGeoLocale`/`isGeoLocale` 支持 `ja`。
+
+### 38.8 已知缺口
+
+- **仍然没有真机/模拟器验证**：本机跑不了 iOS 真机。3D 纸感、齿孔重合、内阴影浓度都建议装上目视一次。
+- **multiply 色偏是预期行为**：落屏色 = `material.base × PNG纸色 / 255`（PNG 纸底不是纯白，如 polaroid ~#F7F6F2），
+  所以实际比 `frameVariants.ts` 的 base 略暗（archival on polaroid ≈ #EEECE4）。门禁断常量与乘算后取色，不按截图纯色。
+- **fp100c 撕纸毛边**：PNG 最外沿是透明羽化（顶部 ~35–70px、左右 ~1px），4 条矩形 tint 边带会把那圈透明填成纸色，
+  观感上"撕边被拉直"。v1.8.4 的实色带本来就是这个覆盖范围（非本轮引入），本轮**不改**
+（`buildSkinElements` 4 参签名已冻结，要根治需另开一版给 tint 加按 PNG alpha 的内缩）。
+- **135 NEG 双行片边字**：PNG 烘死的 `▷ 12A` 与程序化 `▷ 04A` 并存，有意保留（印刷字 vs 结构字分层）。
+- **繁中网络反查只回简体**：BigDataCloud 的 `'zh'` 不分简繁，真机繁中可能显示简体（仓库无繁简转换表，v1.8.4 同样存在）。
+- **英文罗马字化不完整**：拿不到拉丁写法时保留本地写法，但国家段恒字典国名，不会中英混排。
+- **旧存档 preset id**：10 个旧 id 全部安全回落 gd-200（不崩，但也不保留旧外观 —— 本轮就是换卷）。
+- **颗粒档位全局覆盖**：用户颗粒档位无条件覆盖 `preset.grain`，"每卷颗粒性格"只靠 `GRAINLESS_PRESET_IDS` 区分（既定行为）。
+
+### 38.9 验证清单与门禁
+
+> v1.8.5 门禁（14 道，全部 EXIT 0；工作区根 `node <脚本名>` 直接运行，零依赖、零网络）。
+> 合计 28,538 条探针断言 + 64 条 purity 断言 + 9 预设 haze 审计，0 失败。
+
+| # | 门禁 | 命令（工作区根） | 断言数 / 结果 |
+|---|------|------------------|---------------|
+| 1 | 日期引擎 | `node _probe_date_engine.cjs` | 3810 条 / 0 失败 / EXIT 0 |
+| 2 | 胶片观感（9 卷/去雾/暗角） | `node _probe_film_look.cjs` | 1612 条 / 0 失败 / EXIT 0 |
+| 3 | 合成/导出主链路 | `node _probe_geo_lock.cjs` | 16207 条 / 0 失败 / EXIT 0 |
+| 4 | NO FRAME 几何 | `node _probe_noframe_v181.cjs` | 455 条 / 0 失败 / EXIT 0 |
+| 5 | NO FRAME 水印 | `node _probe_noframe_watermark.cjs` | 458 条 / 0 失败 / EXIT 0 |
+| 6 | 相框皮肤材质（M1） | `node _probe_skin_material.cjs` | 1069 条 / 0 失败 / EXIT 0 |
+| 7 | 取景器/成片分面（M2） | `node _probe_v180_seams.mjs` | 1349 条 / 0 失败 / EXIT 0 |
+| 8 | 集成回归 | `node _probe_lead_integration.mjs` | 315 条 / 0 失败 / EXIT 0 |
+| 9 | 拍摄品质 | `node _probe_capture_quality.mjs` | 78 条 / 0 失败 / EXIT 0 |
+| 10 | 相机焦段/取景（v1.8.4） | `node _probe_v184_camera.cjs` | 938 条 / 0 失败 / EXIT 0 |
+| 11 | 地名多语言（M4） | `node _probe_v185_place.cjs` | 468 条 / 0 失败 / EXIT 0 |
+| 12 | 相框皮肤/内窗/衬底（M1+M5） | `node _probe_v185_frame.cjs` | 1779 条 / 0 失败 / EXIT 0 |
+| 13 | 去雾/白蒙预算审计 | `node _haze_audit.mjs` | 9/9 预设 PASS，结构门禁 0 失败，EXIT 0 |
+| 14 | 纯净度（零 `as any`/零新依赖） | `node _purity_audit.mjs` | 64 条 / 0 失败 / EXIT 0 |
+| T | TypeScript 类型检查 | `cd retro-film-cam && npx tsc --noEmit -p tsconfig.json` | EXIT 0，零输出 |
+| E | iOS 导出 | `cd retro-film-cam && npx expo export --platform ios --no-bytecode` | EXIT 0，bundle `index-8a062966395dd49b396fb1693b5c5afc.js` 1,348,011 B |
+
+环境与自证：
+
+- node v24.18.0；`retro-film-cam/**` 零字节改动（门禁工程师全程只读源码）；零新依赖 / 零 `as any`（purity G 段 git 自证）。
+- `_plate_stats.json` 已用捆绑 Python 刷新：vignette 1024² RGBA `centerAlpha 0` / `edgeAlpha 0.9951` /
+  `alphaProfile 0.65→0、0.70→0.055、0.80→0.392、0.90→0.8、1.00→1`、RGB(6,14,20)；grain 512² center/edge 1；
+  light-leak center 0 / edge 0.1352。
+- 负控制（旧实现必须红）：v1.8.4 的纯黑 vignette 模型、旧 8 元素皮肤、旧 10 卷表喂进新门禁都会红；G02/G10
+  断言数从 1676→1612、979→938 是「通用断言改精确单列」所致，不是覆盖缩减。
+- `_haze_audit.mjs` 的 `satFloor` 用**核心栈（不含 halation）**口径：cs-800t 全栈 `satRatio 0.9347` 是契约保留的
+  halation 暖红 screen 层（opacity 0.051 ≤ 0.06）造成，核心栈 `1.0550` 过线，预算数值未放宽。
+
+原始输出：`_gate_v185_run.out.txt`（末轮 14 道 + tsc）与 `_gate_v185_report.txt`（逐道改动/踩坑/遗留风险）。
+
+### 38.10 产物指纹
+
+<!-- 发布后回填 -->
+
+### 38.11 文件改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/types/index.ts` | `FrameSprocketSpec`/`FrameSkinSpec`、`FrameSpec.skin?`、`bloom`→`halation`、`mono`、`GeoLocale` 加 `ja` |
+| `src/utils/geometry.ts` | 内窗 `roundInnerWindow`、内阴影 `planInnerWindowShadows`、衬底 `planPrintCushion`、`regionVertical` window 锚点改照片真实边界、stacked 钳制不丢行 |
+| `src/components/FrameSkin.tsx` | **重写**：4 条 multiply 边带 + 程序化细节纯函数（压边/压痕/齿孔/帧号/圆角） |
+| `src/components/FramePreviewLayer.tsx` | 相纸层圆角裁剪 + `skin={frame.skin}` 接线 |
+| `src/constants/frames.ts` | 5 款纸框的 `skin` 数据（135 齿孔按 PNG 实测反推） |
+| `src/components/FilmCompositor.tsx` | 内窗取整/纸色底/高光切边/照片外扩/内阴影/导出衬底/相纸圆角；`presentation` prop（`preview` 默认 / `print` 两处 capture 挂载点）；`WatermarkPiece.kind`；地名行按语言换字体 |
+| `src/components/FilmDrawer.tsx` | 迷你相纸圆角裁剪 + `skin={frame.skin}`（与成片同口径） |
+| `src/constants/presets.ts` | **重写**：9 款传奇胶卷 + `GRAINLESS_PRESET_IDS` + `DEFAULT_PRESET_ID='gd-200'` |
+| `src/utils/gradeLayers.ts` | `bloom`/模糊副本删除 → 单层暖红 halation；`mono` 满幅去色层；暗角 normal；live 对 mono 例外 |
+| `src/components/FilmLookLayers.tsx` | EK-100 无白尘点（`GRAINLESS_PRESET_IDS`）；注释口径更新 |
+| `src/utils/placeNames.ts` | **重写**：4 语言 × 2 详情矩阵、47 国四语字典、恒 `' · '`、`watermarkPlaceFont` 导出 |
+| `src/components/SettingsScreen.tsx` / `src/i18n/locales/*.ts`（5 份） / `src/utils/settingsStore.ts` | 地名语言加 `ja` 档（UI 行 + `settings.geoLocale.ja` 文案 + 持久化白名单） |
+| `src/utils/locationStamp.ts` | 新增 `localityLanguage(GeoLocale)`，网络反查语言跟地名语言而非界面语言 |
+| `assets/textures/vignette.png` | 暗角重烤为 1024² RGBA 光学渐变（中心全透明、外缘 RGB(6,14,20)） |
+| `scripts/generate_vignette.py` | 新增零依赖生成脚本（逐像素手写 PNG 编码），可复现重烤 |
+| `app.json` | version `1.8.4` → `1.8.5` |
+| `README.md` | 本节 §38 + TOC |
 
 ---
 

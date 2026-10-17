@@ -10,49 +10,58 @@
  *   temperature  -1..1  暖橙/冷蓝纯色层，'overlay'，opacity = |v| × 0.38（色亮度恰好 0.5）
  *   tint         -1..1  绿/品红纯色层，'overlay'，opacity = |v| × 0.24（同上）
  *   saturation    0..2  < 1：中灰层 'saturation'（去色）；> 1：高饱和色层 'saturation'（加饱和）
+ *                        `mono:true` 的卷这一项不产生图层（由 ⑧ 的满幅去色层接管）
  *   contrast      0..2  > 1：**同一个画面再叠一层** 'soft-light'（自叠即提对比度）
- *                        opacity 硬夹 0.20 —— `_haze_audit.mjs` 的 veilHigh 预算只允许这么多
- *                        < 1：v1.8.0 起**不再产生图层**（中灰 normal 层在暗部平铺一层灰，
- *                        是"白雾/灰雾"最典型的来源；低对比性格改由 fade 托黑 + 低饱和体现）
- *   fade          0..1  深板岩灰 '#545A61' + 'lighten'：只抬**比它更暗**的像素（托黑），
- *                        opacity = min(0.13, fade × 0.30)，0.35 以上一个像素都不动
- *   exposure     -1..1  > 0：v1.8.0 起**不再产生图层**（原来是纯白 'screen'，白雾的第二来源）
+ *                        opacity 硬夹 0.20；**v1.8.5 起这一层没有任何模糊**（不是模糊副本）
+ *                        < 1：v1.8.0 起**不再产生图层**（中灰 normal 层 = 白雾来源）
+ *   fade          0..1  **历史字段**：v1.8.3 起不再产生图层（原 lighten 托黑层已删）
+ *   exposure     -1..1  > 0：v1.8.0 起**不再产生图层**（原纯白 screen 是白雾来源）
  *                        < 0：黑 'multiply' 压暗，opacity = |v| × 0.30
- *   bloom         0..1  两层：模糊 8pt 的原图 'screen'（真泛光，× 0.14）+ 暖红 '#FF4B2D'
- *                        'screen'（光晕色偏，× 0.05）。screen 在纯白上恒等 ⇒ 永不压白
+ *   splitTone     0..1  两层 overlay：暗部青蓝 × 0.35 + 高光暖调 × 0.30
+ *   halation      0..1  **v1.8.5 新语义**：一层暖红 '#FF4028' **纯色** 'screen'
+ *                        （零模糊！），opacity = clamp01(v) × 0.06 ≤ 0.06。
+ *                        旧 `bloom` 的两层（模糊原图 + 暖红色偏）已按用户红线删除
+ *   mono         bool   **v1.8.5 新增**：真黑白。true 时在所有彩色层之后、颗粒/纹理之前
+ *                        叠一层满幅 `#808080` + 'saturation' + opacity 1 ——
+ *                        这是"取颜色的饱和度"混合，数学上输出 R=G=B，是**真去色**，
+ *                        不是半透明灰罩（灰罩只会把画面抬灰，不会去色）。
  *   grain         0..1  grain.png 平铺 + 'overlay'（单色亮度颗粒，无任何色度噪声）
- *                        **v1.8.1 起这一列是"强度"，图层 opacity 由
- *                        `grainLayerOpacity()` 夹进 [0.12, 0.22]（硬上限，不许抬）**
- *   vignette      0..1  vignette.png 拉伸 + 'overlay'（'multiply' 会把纯白压暗 ⇒ 白变形）
+ *                        **v1.8.1 起这一列是"强度"，v1.8.3 起 `grainLayerOpacity()` 把它当
+ *                        绝对不透明度并硬夹进 [0, 0.11]（见 constants/grain.ts）**
+ *                        注意：用户颗粒档位会在运行时覆盖这里（`applyGrainLevel`），
+ *                        所以"某卷颗粒更粗"不能只靠这一列 —— 特例见 `GRAINLESS_PRESET_IDS`
+ *   dust          0..1  **历史字段**：v1.8.3 起不再产生图层（白尘改由成片上 1~2 颗点表现）
+ *   vignette      0..1  vignette.png 拉伸 + **'normal'**（v1.8.5 起，旧版是 overlay）
+ *                        opacity = 预设值 = **边缘最大不透明度**；贴图中心 65% 半径 alpha=0
+ *                        ⇒ 画面中心零遮挡，只有外圈压向深青黑（光学暗角）
  *   lightLeak     0..1  light-leak.png 拉伸 + 'screen'，opacity = min(0.10, × 0.29)
  *                        （lightLeakFlip: true 换到左边）
  *
- *  ── 为什么 grain 的数值看起来这么大（0.42 ~ 0.62）─────────────────────────
- *  v1.8.0 时它是**振幅**：`effAmp(cb) = grain × 2·min(cb,1−cb) × σ_贴图`，
- *  其中 σ_贴图 = 0.2605（`scripts/generate_grain_clump.py` 烘出来的对比度），
- *  这样才落进当时的验收窗 `effAmp(0.5) ∈ [0.10, 0.22]`（老值 0.08~0.15 在 3x 屏上
- *  被插值稀释后几乎看不见 —— 那就是"颗粒像数码噪点"的由来）。
+ *  ── v1.8.5 M2 数值纪律（用户 m02760 + 契约 §3）────────────────────────────
+ *  · 彩色卷**每个 color 层 opacity 必须落在 [0.03, 0.06]**：色温/色调/分离色调/饱和度/
+ *    halation 全部按这个窗配值，靠暗角、阴影倾向、颗粒区分性格，不靠浓遮罩。
+ *  · 严禁任何整幅**浅白/米色**图层，也严禁 `lighten` / `'screen'` 的白色层
+ *    （halation 暖红 screen ≤ 0.06、漏光 screen ≤ 0.10 是仅有的两处例外）。
+ *  · 严禁在原图上叠模糊副本：本代不产生任何 `kind:'photo'` + `blurRadius` 层。
+ *  · 9 支卷：gd-200 金色日光 / pt-400 柔和人像 / um-400 浓郁街拍 / cp-200 复古琥珀 /
+ *    fj-400 日系青绿 / ek-100 反转锐利（无颗粒）/ cs-800t 电影钨丝灯 / hp-400-bw 纪实黑白 /
+ *    tx-400-bw 硬朗银盐。文案 = name（代号）+ description（中文副标题），不改 i18n。
  *
- *  **v1.8.1 起语义变了（用户强制规范）**：这一列现在是**强度**，不再直接是图层 opacity。
- *  真正写进图层的透明度由 `grainLayerOpacity()`（`constants/grain.ts`）夹进
- *  **[0.12, 0.22]**，因为 0.42~0.62 直接当 opacity、再乘「极重」档的 2.2 会变成 1.0 ——
- *  颗粒层就是一整张不透明的中灰贴图，把实时取景画面整个盖住（用户实测图 23/24）。
- *  可见振幅随之变成 `σ_贴图 × [0.12, 0.22]` ≈ **[0.031, 0.057]**：这条列**越大仍然越浓**
- *  （单调映射），但绝对量比 v1.8.0 低约 2.4 倍。想更浓只能重烤更高对比度的贴图，
- *  **不许抬 opacity 上限**。
- *  ⚠️ 这组数值和 `grain.png` 的对比度仍然是**绑死**的：重烤贴图必须回来重算这一列。
+ *  ── 关于 grain 的旧语义（v1.8.0~v1.8.1，仅存档，别再按那个写）───────────────
+ *  v1.8.0 时它是振幅，靠 σ_贴图=0.2605 换算；v1.8.1 夹 [0.12,0.22]；v1.8.3 起
+ *  档位直接给**绝对不透明度**（关 0 / 轻 0.022 / 标 0.045 / 重 0.075 / 极重 0.11），
+ *  `grainLayerOpacity()` 是唯一封顶入口，不要再抬。
  *
- *  中性值不产生图层：temperature/tint/fade/lightLeak = 0、saturation/contrast = 1、
- *  exposure = 0、grain/vignette 不写就有一点点默认值（见 PRESET_DEFAULTS）。
- *  所以"少写几个字段"= 少几层合成 = 更快，不会出错。
- *  颗粒只有 `grain` 这一个旋钮：它铺的是 `grain.png`（三通道逐像素恒等的单色亮度颗粒）。
- *  这里曾经还有一个 `grainChroma`（预烘焙的品红↔绿块状彩噪贴图），已在 2026-10-12 彻底删除。
+ *  中性值不产生图层：temperature/tint/fade/lightLeak/halation = 0、saturation/contrast = 1、
+ *  exposure = 0；grain/vignette 不写就有一点点默认值（见 PRESET_DEFAULTS）。
  *
  * ─────────────────────────────────────────────────────────────────────────
  * 怎么新增一个预设
  * ─────────────────────────────────────────────────────────────────────────
  * 复制下面任意一条，改 id / name / 数值即可。id 建议英文小写短横线。
- * 想试参数？只改数字，热重载后按快门就能看到成片 —— 不用碰任何渲染代码。
+ * 注意保持数值纪律（色层 opacity ∈ [0.03,0.06]，不加白层/模糊层）。
+ * 旧版持久化的 presetId（retro-400 / portra-400 / …）不在表里，`findPresetIndex()`
+ * 会安全回落到 0 = 默认卷，不会崩。
  * ─────────────────────────────────────────────────────────────────────────
  */
 import type {
@@ -71,21 +80,23 @@ export const PRESET_DEFAULTS = {
   contrast: 1,
   fade: 0,
   exposure: 0,
-  /** 分离色调：暗部青蓝 + 高光暖白。0 = 关。 */
+  /** 分离色调：暗部青蓝 + 高光暖调。0 = 关。 */
   splitTone: 0,
-  /** 光晕：高光变暖发亮。0 = 关。 */
-  bloom: 0,
+  /** 光晕（halation）：暖红纯色 screen，opacity ≤ 0.06。0 = 关。 */
+  halation: 0,
   /**
-   * 颗粒**强度**（不再直接是图层 opacity）：默认值 0.52 = 标准档，
-   * 经 `grainLayerOpacity()` 夹进 [0.12, 0.22] 后落到图层上，见文件头
-   * "为什么 grain 的数值看起来这么大"。
+   * 颗粒**强度**（v1.8.3 起 = 图层绝对不透明度，硬上限 0.11）。
+   * 默认 0.045 = 标准档；运行时会先被用户颗粒档位覆盖（applyGrainLevel）。
    */
-  grain: 0.52,
-  /** 灰尘与划痕。0 = 关。 */
+  grain: 0.045,
+  /** 灰尘与划痕（历史字段，v1.8.3 起不再产生图层）。 */
   dust: 0,
+  /** 暗角贴图边缘最大不透明度。 */
   vignette: 0.18,
   lightLeak: 0,
   lightLeakFlip: false,
+  /** 真黑白：饱和度为 0 + 满幅 saturation 去色层。 */
+  mono: false,
   showGuide: true,
   /**
    * 保存前把原图最长边压到多少像素。**0 = 不压缩**（用相机原图，约 12 MP）。
@@ -123,211 +134,165 @@ export const DEFAULT_TIMESTAMP: Omit<ResolvedTimestampConfig, 'fontFamily' | 'an
   insetRatio: 0.028,
 };
 
+/**
+ * v1.8.5 M2 的 9 支卷。顺序 = 胶片抽屉里的卡片顺序，第一支是默认卷。
+ *
+ * 数值只做"性格"：色层全部压在 0.03~0.06（硬上限 0.06），
+ * 画面差异主要来自色相倾向（temperature/tint/splitTone）、反差与暗角。
+ */
 export const PRESETS: FilmPreset[] = [
   {
-    id: 'retro-400',
-    name: 'RT-400',
-    description: '默认。微暖、中等颗粒、明显暗角，橙色液晶日期（YY MM DD）',
-    color: {
-      temperature: 0.28,
-      tint: -0.04,
-      saturation: 0.92,
-      contrast: 1.12,
-      fade: 0.18,
-      exposure: 0.02,
-      splitTone: 0.22,
-    },
-    grain: 0.52,
-    vignette: 0.28,
-    timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
-    showGuide: true,
-  },
-  {
-    id: 'portra-400',
-    name: 'PR-400',
-    description: '柔和人像卷：低对比、暖肤色、细颗粒，几乎不动结构',
-    color: {
-      temperature: 0.2,
-      tint: 0.06,
-      saturation: 0.94,
-      // 0.96 → 1.08（v1.8.0）：托黑在 0.1 处抬亮度会直接压低 satRatio，
-      // 必须由这一层 photo soft-light 提对比把 `(y(0.1)+0.05)` 分母挣回来。
-      contrast: 1.08,
-      fade: 0.2,
-      exposure: 0.06,
-      splitTone: 0.16,
-    },
-    grain: 0.44,
-    vignette: 0.14,
-    timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
-  },
-  {
-    id: 'gold-200',
-    name: 'AU-200',
-    description: '暖黄日光卷 + 右上角漏光，适合下午逆光人像',
-    color: {
-      temperature: 0.42,
-      tint: -0.06,
-      saturation: 1.12,
-      contrast: 1.08,
-      fade: 0.08,
-      exposure: 0.06,
-      splitTone: 0.18,
-    },
-    grain: 0.46,
-    vignette: 0.16,
-    lightLeak: 0.22,
-    lightLeakFlip: false,
-    timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
-  },
-  {
-    id: 'superia-x',
-    name: 'SP-400',
-    description: '冷调偏绿，像阴天街拍；饱和度略降',
-    color: {
-      temperature: -0.24,
-      tint: 0.16,
-      saturation: 0.98,
-      contrast: 1.06,
-      fade: 0.1,
-      exposure: -0.02,
-      splitTone: 0.24,
-    },
-    grain: 0.48,
-    vignette: 0.2,
-    timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
-  },
-  {
-    id: 'velvia-50',
-    name: 'VV-50',
-    description: '反转片：浓艳、暗部结实、颗粒细，适合风景和花',
-    color: {
-      temperature: 0.06,
-      tint: 0.08,
-      saturation: 1.34,
-      // 1.24 → 1.2：引擎在 opacity 0.20 夹平（= veilHigh 预算 ÷ 每单位 0.0893），
-      // 写回夹平点，避免"数值写了 1.24 却没有更多效果"的误导。
-      contrast: 1.2,
-      fade: 0,
-      exposure: -0.04,
-      splitTone: 0.12,
-    },
-    grain: 0.42,
-    vignette: 0.22,
-    timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
-  },
-  {
-    id: 'ccd-cyber',
-    name: 'CCD-CYBER',
-    description: '千禧年 CCD 小 DC：青蓝暗部 + 暖高光 + 重色噪，夜景和闪光灯最像',
-    color: {
-      temperature: -0.12,
-      tint: -0.08,
-      saturation: 1.18,
-      // 1.26 → 1.2：同上，夹平点。CCD 的"重色噪"靠 grain 0.56 表现。
-      contrast: 1.2,
-      fade: 0.08,
-      exposure: -0.06,
-      splitTone: 0.52,
-      bloom: 0.2,
-    },
-    grain: 0.56,
-    vignette: 0.34,
-    timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
-  },
-  {
-    id: 'cinestill-800t',
-    name: '800-T',
-    description: '钨丝灯电影卷：冷调 + 强烈高光晕开（halation），夜里霓虹最出味',
-    color: {
-      temperature: -0.34,
-      tint: 0.04,
-      saturation: 1.06,
-      // 1.12 → 1.2、fade 0.14 → 0.13（v1.8.0）：halation 的 screen 层会抬暗部，
-      // 得由更硬的对比层支付 satRatio（本卷自身 saturation ≥ 1，低饱和不是设计意图）。
-      contrast: 1.2,
-      fade: 0.13,
-      exposure: 0.04,
-      splitTone: 0.34,
-      bloom: 0.52,
-    },
-    grain: 0.52,
-    vignette: 0.22,
-    lightLeak: 0.18,
-    lightLeakFlip: true,
-    timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
-  },
-  {
-    id: 'digicam-2002',
-    name: 'DIGI-02',
-    description: '2002 年的卡片机：发灰、偏绿、色噪和暗角都很重，糊得刚刚好',
+    id: 'gd-200',
+    name: 'GD-200',
+    description: '金色日光 · 暖调通透',
     color: {
       temperature: 0.12,
-      tint: 0.22,
-      saturation: 0.82,
-      // 1.1 → 1.2、fade 0.34 → 0.27（v1.8.0）：本卷本来就该发灰（saturation 0.82 是设计意图），
-      // 但"灰"要靠低饱和 + 托黑表达，不能靠压平对比度 —— 那在门槛里就是白雾。
-      contrast: 1.2,
-      fade: 0.27,
-      exposure: 0.02,
-      splitTone: 0.4,
-      bloom: 0.24,
+      tint: -0.14,
+      saturation: 1,
+      contrast: 1.06,
+      splitTone: 0.13,
     },
-    grain: 0.62,
-    dust: 0.16,
-    vignette: 0.44,
-    timestamp: { enabled: true, format: 'YY MM DD', color: '#FF8A00' },
+    grain: 0.045,
+    vignette: 0.22,
   },
   {
-    id: 'tri-x-400',
-    name: 'TX-400',
-    description: '黑白：饱和度归零 + 高对比 + 重颗粒；日期改浅灰（演示颜色可配）',
+    id: 'pt-400',
+    name: 'PT-400',
+    description: '柔和人像 · 肤色微暖',
+    color: {
+      temperature: 0.1,
+      tint: -0.13,
+      saturation: 0.95,
+      contrast: 1,
+      splitTone: 0.12,
+    },
+    grain: 0.045,
+    vignette: 0.18,
+  },
+  {
+    id: 'um-400',
+    name: 'UM-400',
+    description: '浓郁街拍 · 高反差',
+    color: {
+      temperature: -0.1,
+      tint: 0.16,
+      saturation: 1.06,
+      contrast: 1.18,
+      splitTone: 0.14,
+    },
+    grain: 0.045,
+    vignette: 0.26,
+  },
+  {
+    id: 'cp-200',
+    name: 'CP-200',
+    description: '复古琥珀 · 黄昏暖调',
+    color: {
+      temperature: 0.15,
+      tint: -0.16,
+      saturation: 1,
+      contrast: 1.08,
+      splitTone: 0.16,
+    },
+    grain: 0.045,
+    vignette: 0.28,
+    lightLeak: 0.14,
+  },
+  {
+    id: 'fj-400',
+    name: 'FJ-400',
+    description: '日系青绿 · 冷调通透',
+    color: {
+      temperature: -0.12,
+      tint: 0.21,
+      saturation: 0.95,
+      contrast: 1,
+      splitTone: 0.12,
+    },
+    grain: 0.045,
+    vignette: 0.22,
+  },
+  {
+    id: 'ek-100',
+    name: 'EK-100',
+    description: '反转锐利 · 零雾高对比',
+    color: {
+      temperature: 0,
+      tint: 0,
+      saturation: 1.04,
+      contrast: 1.2,
+      splitTone: 0.11,
+    },
+    // 反转片零颗粒：即使运行时把用户档位覆盖成 0.11，buildGradeLayers 也会按
+    // GRAINLESS_PRESET_IDS 跳过这一层（见 gradeLayers.ts ⑨）。
+    grain: 0,
+    vignette: 0.32,
+  },
+  {
+    id: 'cs-800t',
+    name: 'CS-800T',
+    description: '电影钨丝灯 · 冷蓝 + 暖红光晕',
+    color: {
+      temperature: -0.15,
+      tint: 0,
+      saturation: 1,
+      contrast: 1.1,
+      splitTone: 0.13,
+      // 暖红 halation 纯色 screen：0.85 × 0.06 = 0.051 ≤ 0.06，零模糊。
+      halation: 0.85,
+    },
+    grain: 0.045,
+    vignette: 0.26,
+    lightLeak: 0.18,
+  },
+  {
+    id: 'hp-400-bw',
+    name: 'HP-400 BW',
+    description: 'BW · 纪实黑白 · 中灰层次',
+    mono: true,
     color: {
       temperature: 0,
       tint: 0,
       saturation: 0,
-      // 1.3 → 1.2：夹平点（引擎最多给 0.20）。黑白卷的对比靠 saturation 0 + 重颗粒。
-      contrast: 1.2,
-      fade: 0.06,
-      exposure: 0.02,
-      splitTone: 0.14,
+      contrast: 1.12,
+      splitTone: 0,
     },
-    grain: 0.62,
-    dust: 0.12,
-    vignette: 0.4,
-    timestamp: { enabled: true, format: 'YY MM DD', color: '#E6E6E6' },
-    showGuide: true,
+    grain: 0.045,
+    vignette: 0.24,
   },
   {
-    id: 'expired-64',
-    name: 'EXP-64',
-    description: '过期卷：重褪色 + 漏光 + 紫调，日期格式改成 YY-MM-DD',
+    id: 'tx-400-bw',
+    name: 'TX-400 BW',
+    description: 'BW · 硬朗银盐 · 高反差',
+    mono: true,
     color: {
-      temperature: 0.15,
-      tint: -0.12,
-      saturation: 0.78,
-      // 0.92 → 1.15、fade 0.42 → 0.29（v1.8.0，本卷改动最大的一处）：原来的写法是
-      // "低对比 + 重托黑"，两条叠起来 satRatio 只有 0.847 —— 这正是用户报的"白雾"观感。
-      // 现在改成"托黑 + 等量提对比"：黑场照样抬起来，中间调反而更结实，净观感仍是褪色卷。
-      contrast: 1.15,
-      fade: 0.29,
-      exposure: 0.1,
-      splitTone: 0.3,
+      temperature: 0,
+      tint: 0,
+      saturation: 0,
+      contrast: 1.25,
+      splitTone: 0,
     },
-    grain: 0.58,
-    dust: 0.2,
-    vignette: 0.36,
-    lightLeak: 0.34,
-    lightLeakFlip: true,
-    timestamp: { enabled: true, format: 'YY-MM-DD', color: '#FF8A00' },
+    grain: 0.045,
+    vignette: 0.38,
   },
   // ↓↓↓ 在这里继续加你的预设 ↓↓↓
 ];
 
-/** 冷启动用哪个预设。 */
-export const DEFAULT_PRESET_ID = 'retro-400';
+/**
+ * 该 id 的卷**永不产生颗粒纹理层**（v1.8.5 M2）。
+ *
+ * 为什么不是只把 `grain: 0` 写进数据：用户颗粒档位是全局设置，`applyGrainLevel()`
+ * 会在运行时**无条件覆盖** `preset.grain`（CameraScreen / importPhoto / GalleryScreen
+ * 三个入口都调它），所以"这款卷天生无颗粒"只能按 id 表达。
+ * 消费方：`gradeLayers.buildGradeLayers`（跳过 grain 层）+ `FilmLookLayers.planDustSpecks`
+ *  （跳过白尘点）。
+ */
+export const GRAINLESS_PRESET_IDS: ReadonlySet<string> = new Set(['ek-100']);
 
-/** 按 id 找预设下标；找不到返回 0。 */
+/** 冷启动用哪个预设（= 列表第一项，v1.8.5 起是 GD-200）。 */
+export const DEFAULT_PRESET_ID = 'gd-200';
+
+/** 按 id 找预设下标；找不到返回 0。旧版持久化的 10 个老 id 走的就是这条回落。 */
 export function findPresetIndex(id: string): number {
   const index = PRESETS.findIndex((preset) => preset.id === id);
   return index >= 0 ? index : 0;
@@ -356,7 +321,7 @@ export function resolvePreset(preset: FilmPreset): ResolvedFilmPreset {
     fade: color.fade ?? PRESET_DEFAULTS.fade,
     exposure: color.exposure ?? PRESET_DEFAULTS.exposure,
     splitTone: color.splitTone ?? PRESET_DEFAULTS.splitTone,
-    bloom: color.bloom ?? PRESET_DEFAULTS.bloom,
+    halation: color.halation ?? PRESET_DEFAULTS.halation,
   };
 
   const timestamp = preset.timestamp;
@@ -385,6 +350,7 @@ export function resolvePreset(preset: FilmPreset): ResolvedFilmPreset {
     vignette: preset.vignette ?? PRESET_DEFAULTS.vignette,
     lightLeak: preset.lightLeak ?? PRESET_DEFAULTS.lightLeak,
     lightLeakFlip: preset.lightLeakFlip ?? PRESET_DEFAULTS.lightLeakFlip,
+    mono: preset.mono ?? PRESET_DEFAULTS.mono,
     timestamp: resolvedTimestamp,
     showGuide: preset.showGuide ?? PRESET_DEFAULTS.showGuide,
     normalizeMaxLongEdge: preset.normalizeMaxLongEdge ?? PRESET_DEFAULTS.normalizeMaxLongEdge,

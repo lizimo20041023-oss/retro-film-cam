@@ -36,6 +36,11 @@
  *      watermark: { anchor: 'window', tone: 'amber', align: 'right' } }
  *    （`name` 直接写中文也行 —— 只有内置相框会配 `nameKey` 走多语言翻译。）
  *
+ * 4. （v1.8.5，可选）给相纸加**程序化细节**：在条目里写 `skin` —— 外框圆角 /
+ *    四周枕形压边 / 宽下巴药水包压痕 / 135 齿孔阵列 / 左上角帧号。字段定义见
+ *    `types/index.ts` 的 `FrameSkinSpec`。原则：PNG 只负责纸纹与固定颜色的印刷细节，
+ *    "换纸色会穿帮"的结构（齿孔、压边）必须走 `skin`，由 `FrameSkin` 按材质现画。
+ *
  * ⚠️ 改了相框以后，相机取景窗口和成片画幅会自动跟着变 —— 因为两者都由这一份数据算出来
  *    （见 `src/utils/geometry.ts` 的 computeFrameLayout）。
  *
@@ -203,6 +208,9 @@ export const FRAMES: FrameSpec[] = [
     photoFit: 'cover',
     // 下巴默认纯留白（真的拍立得是留给你写字的）→ 水印走灰色打字机体、贴左
     watermark: { anchor: 'frame', tone: 'graphite', align: 'left', uppercase: true },
+    // v1.8.5 程序化相纸细节（由 `FrameSkin` 画在 PNG 之上）：外框圆角 10px（600 系
+    // 相纸的倒角）+ 四周 2px 枕形压边 + 下巴药水包压痕。PNG 继续负责纸纹与铭文。
+    skin: { cornerRadius: 10, paddedBevel: true, chinCrease: true },
     designSize: { width: 1408, height: 1712 },
     // 横版 1712×1408：**同一张纸转 90°**（不是照横版重画一张），所以纸纹、留白、
     // 压痕、下巴的水印位都和竖版是同一份材质。窗口跟着转：1264×1264 是正方形，
@@ -233,6 +241,9 @@ export const FRAMES: FrameSpec[] = [
     window: { x: 0.075, y: 0.052326, width: 0.85, height: 0.711628 },
     photoFit: 'cover',
     watermark: { anchor: 'frame', tone: 'amber', align: 'right' },
+    // v1.8.5：迷你相纸同样是薄卡纸 —— 圆角 6px（与画面区 6px 圆角同一档）+ 枕形压边
+    // + 下巴压痕。
+    skin: { cornerRadius: 6, paddedBevel: true, chinCrease: true },
     designSize: { width: 1080, height: 1720 },
     // 横版 1720×1080：画面区转成 1224×918（4:3 横构图）。
     // ⚠️ 圆角窗在横版要**重切一次**圆角 —— 四个圆角是从窗口往外啃的，
@@ -262,6 +273,35 @@ export const FRAMES: FrameSpec[] = [
     photoFit: 'cover',
     // 片边已经印满了字（齿孔代号 / PROCESS C-41），日期改烧画面内部右下角，谁也不挤谁
     watermark: { anchor: 'window', tone: 'amber', align: 'right' },
+    /*
+     * v1.8.5 程序化细节（用户报："04 款 135 NEG 的齿孔和片边地名丢了"）。
+     *
+     * 齿孔不再烘死在 PNG 里：PNG 是固定颜色，暗房纸一上色洞就跟着变黑。
+     * 下面这组数字是**从 neg-135.png 实测反推**的（1350×1950）：
+     *   · 左右各 10 个透明齿孔，孔 108×72px（横长孔，与 PNG 完全重合，避免"双孔/错位"）；
+     *   · 首孔上沿 116px、末孔下沿 1833px → 平均中心距 182.78px = 孔高 72 × 2.5386；
+     *   · 孔中心线距纸边 108px = 宽度 × 0.08；孔圆角实测约 16px = 孔高 × 0.222；
+     *   · 整列在相纸上垂直居中（FrameSkin 按公式居中后与 PNG 逐孔重合）。
+     *
+     * 帧号：PNG 顶部片边本来烘了 `▷ 12A` 一列琥珀字，这里再按 `FrameSkinSpec.frameCode`
+     * 在**纸左上角**印一枚程序化帧号（用户点名要的"左上角琥珀色 `▷ 04A`"）；
+     * 位置比 PNG 那列字更靠纸边，两者不会叠字。
+     */
+    skin: {
+      cornerRadius: 2,
+      paddedBevel: false,
+      chinCrease: false,
+      sprockets: {
+        side: 'left-right',
+        count: 10,
+        holeWidth: 108 / 1350,
+        holeHeight: 72 / 1350,
+        pitchRatio: 2.5386,
+        insetRatio: 108 / 1350,
+        cornerRatio: 16 / 72,
+      },
+      frameCode: '▷ 04A',
+    },
     designSize: { width: 1350, height: 1950 },
     // 横版 1950×1350：画面区转成 1389×926（36×24mm 横拍，正是 135 的标准横幅）。
     // 齿孔带从左右两侧转到上下两边。
@@ -291,6 +331,9 @@ export const FRAMES: FrameSpec[] = [
     window: { x: 0.131852, y: 0.298519, width: 0.735556, height: 0.49037 },
     photoFit: 'cover',
     watermark: { anchor: 'frame', tone: 'graphite', align: 'right' },
+    // v1.8.5：幻灯卡是厚卡纸，只给轻微圆角 + 枕形压边；开孔上方留白比下巴大，
+    // 没有"药水包"结构，所以 chinCrease 关掉。
+    skin: { cornerRadius: 3, paddedBevel: true, chinCrease: false },
     designSize: { width: 1350, height: 1350 },
     // 横版 1350×1350：卡纸是正方形，转 90° 之后画布还是 1350×1350，
     // 但开孔从"993 宽 × 662 高"变成"662 宽 × 993 高"（3:2 横孔 → 2:3 竖孔）。
@@ -319,6 +362,10 @@ export const FRAMES: FrameSpec[] = [
     photoFit: 'cover',
     // 下巴最宽（696px）、实测没有印字（真撕拉片的卡纸就是空白的），水印走 frame 锚点
     watermark: { anchor: 'frame', tone: 'amber', align: 'right' },
+    // v1.8.5：撕拉片卡纸边缘圆角 6px + 枕形压边 + 696px 宽下巴上的药水包压痕。
+    // ⚠️ 这款 PNG 的最外沿是**撕纸毛边**（透明羽化），multiply 边带会把那圈透明区
+    // 填成纸色，观感上等于把毛边拉直 —— 留给质量门禁做截图对比（见 M1 报告遗留项）。
+    skin: { cornerRadius: 6, paddedBevel: true, chinCrease: true },
     designSize: { width: 1080, height: 1416 },
     // ⚠️ **只有这一款没有横版**：现有 5 款里其余 4 款（`polaroid-600` / `instax-mini` /
     //   `neg-135` / `slide-mount`）都有 `landscape` 变体；`half-frame` 与 `sheet8x10`
@@ -373,8 +420,9 @@ export function wrapIndex(index: number, length: number = FRAMES.length): number
 /**
  * 相框皮肤（`FrameSkin`）的图案种子。
  *
- * v1.8.3 起皮肤只剩 4 块实色边带 + 4 条 1px 压痕内框线，**不再有随机花纹**，
- * 组件也不再读这个种子（`FrameSkinProps.seed` 保留只为不动调用契约）。
+ * v1.8.5 起皮肤 = 4 条 multiply 边带 + 按 `FrameSpec.skin` 现画的程序化相纸细节
+ * （圆角 / 压边 / 压痕 / 齿孔 / 帧号），**没有随机花纹**，组件也不再读这个种子
+ * （`FrameSkinProps.seed` 保留只为不动调用契约）。
  * 函数本身保留，理由不变：
  *   1. **只此一处**。将来若要给某款相框加回做旧/花纹，种子只在这里算，
  *      取景器预览与成片不会分叉。

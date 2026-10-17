@@ -351,6 +351,28 @@ async function fetchWithAbortTimeout(url: string, ms: number): Promise<Response 
 }
 
 /**
+ * 地名语言 → BigDataCloud 的 `localityLanguage` 取值。
+ *
+ * 接口只认 `'zh'` / `'ja'` / `'en'` 三种写法（实测可用）。映射是**一对一直译**：
+ * `'zh-Hans'` / `'zh-Hant'` → `'zh'`（接口不做简繁区分，香港简繁回的都是「油尖旺區」），
+ * `'ja'` → `'ja'`，`'en'` → `'en'`。
+ *
+ * ⚠️ **不许用界面语言推**：界面 ja + 地名 en 是合法组合，反查结果要的是英文词条；
+ * 这个函数只吃 `GeoLocale`（`resolveGeoLocale` 收口后的值），别把 `LocaleId` 传进来。
+ */
+function localityLanguage(language: GeoLocale): 'zh' | 'ja' | 'en' {
+  switch (language) {
+    case 'zh-Hans':
+    case 'zh-Hant':
+      return 'zh';
+    case 'ja':
+      return 'ja';
+    case 'en':
+      return 'en';
+  }
+}
+
+/**
  * 把 BigDataCloud 的响应体变成 `PlaceGeocodeAddress`；一个可用地名都没有时返回 `undefined`。
  *
  * ⚠️ **不做任何"猜"的降级**：这个接口给的字段就那五个，缺了就是缺了。
@@ -407,9 +429,11 @@ async function reverseGeocodeViaNetwork(
   const url =
     `${BIGDATACLOUD_ENDPOINT}?latitude=${encodeURIComponent(String(coords.latitude))}` +
     `&longitude=${encodeURIComponent(String(coords.longitude))}` +
-    // `localityLanguage` 只收两种写法（实测可用：'zh' / 'en'）；'zh-Hans' / 'zh-Hant'
-    // 统一折成 'zh'，因为接口不做简繁区分（香港那次简繁回的都是「油尖旺區」）。
-    `&localityLanguage=${language === 'en' ? 'en' : 'zh'}`;
+    // `localityLanguage` 只收 'zh' / 'ja' / 'en' 三种写法（实测可用）；地名语言到接口
+    // 语言的映射是**一对一直译**：'zh-Hans' / 'zh-Hant' → 'zh'（接口不做简繁区分，
+    // 香港简繁回的都是「油尖旺區」），'ja' → 'ja'，'en' → 'en'。
+    // ⚠️ 不能用界面语言推：界面 ja + 地名 en 时，反查结果要的是英文词条。
+    `&localityLanguage=${localityLanguage(language)}`;
 
   let response: Response | null;
   try {

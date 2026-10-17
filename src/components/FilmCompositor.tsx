@@ -10,9 +10,10 @@
  *   ②b 相框皮肤（`FrameSkin`）：画在相框 PNG **之上**、水印**之下** —— 它是"相纸上的
  *      痕迹"，该压住纸面，但不该压住日期和地名。取景器里的实时预览挂的是**同一个组件**
  *      （只是画幅小），所以预览与成片等比。
- *      v1.8.3 起皮肤只剩 **4 块平整实色边带 + 4 条 1px 压痕内框线**（每帧恒 8 个元素，
- *      与材质/画幅无关）：做旧斑点、涂鸦波点、渐变条带那些"多色块拼接"全部删掉 ——
- *      用户要的就是一张干净卡纸，导出图上下边带不许再出现百叶窗横纹。
+ *      v1.8.3 起删光"多色块拼接"（做旧斑点 / 涂鸦 / 渐变条带），导出图上下边带不许再有百叶窗横纹。
+ *      v1.8.5（用户 m02760 · M1）起皮肤 = **4 块 multiply 实色边带**（只着色，不盖 PNG 的
+ *      纸纹与印刷细节）+ 程序化相纸结构（枕形压边 / 下巴压痕 / 135 齿孔 / 帧号），
+ *      数据来自 `FrameSpec.skin`；相纸圆角由 `paperCornerRadius` 在三个调用点裁在组合层上。
  *   ③ 水印。日期和定位**一起**排在最后：
  *      烧在画面内部时画在照片之上，烧在相框留白里时必须盖在相框之上，
  *      两种锚点都是"最后画"最安全 —— 所以它们共用一个 `pieces` 数组、一次渲染。
@@ -50,29 +51,35 @@ import type {
   FrameLayout,
   FrameSpec,
   FrameVariant,
+  GeoLocale,
   PlaceDetail,
   ResolvedPlace,
   ResolvedTimestampConfig,
   WatermarkLayout,
 } from '../types';
-import { compactPlace, formatResolvedPlace } from '../utils/placeNames';
+import { compactPlace, formatResolvedPlace, watermarkPlaceFont } from '../utils/placeNames';
 import { planCapture } from '../utils/captureOptions';
 import {
   computeWatermarkPlan,
   formatExposureCode,
   frameOrientationOfLayout,
   frameSourceOf,
+  planInnerWindowShadows,
+  planPrintCushion,
   resolveDateSpot,
+  roundInnerWindow,
   shouldCompactPlaceText,
   splitGutterOf,
   splitPlaceAvailableWidth,
 } from '../utils/geometry';
-import type { DateSpotPlacement, WatermarkQuartz } from '../utils/geometry';
+import type { DateSpotPlacement, WatermarkLineKind, WatermarkQuartz } from '../utils/geometry';
 import { DEFAULT_SETTINGS } from '../utils/settingsStore';
 import { DateStamp } from './DateStamp';
 import { glyphHeight } from './DateGlyphs';
 import { FilmLookLayers } from './FilmLookLayers';
-import { FrameSkin } from './FrameSkin';
+import { FrameSkin, mixHexColor, paperCornerRadius } from './FrameSkin';
+import { LinearGradient } from 'expo-linear-gradient';
+import { findFrameMaterial } from '../constants/frameVariants';
 
 export interface FilmCompositorProps {
   /** 要合成的一切数据（由 `useFilmStage` 提供）。 */
@@ -112,6 +119,19 @@ export interface FilmCompositorProps {
    * 不传 = `0`（老调用方的确定性兜底：同一支卷永远同一套纹理，不用 `Math.random()`）。
    */
   lookSeed?: number;
+  /**
+   * 展示模式（v1.8.5 模块一 · 用户 m02760「3D 实体相纸」的导出衬底）。
+   *
+   * - `'preview'`（默认）= v1.8.4 行为：相纸顶满画布，无衬底、无悬浮阴影。
+   *   取景器 / 抽屉的预览都不经过本组件（那边是 `FramePreviewLayer`），
+   *   能走到这里的 `'preview'` 只有老调用方与裸探针。
+   * - `'print'` = 成片导出：相纸内容整体等比缩进一圈窄边衬底（纸色压暗 6%），
+   *   底部加真实悬浮阴影。`CameraScreen` 的快门显影与 `GalleryScreen` 的导入
+   *   两个挂载点传 `'print'` —— 它们挂的这棵树**就是**要被截图存盘的成片。
+   *
+   * `00 NO FRAME` 没有相纸，`print` 也不套衬底（否则全幅画面被缩一圈）。
+   */
+  presentation?: 'preview' | 'print';
   style?: StyleProp<ViewStyle>;
 }
 
@@ -120,8 +140,27 @@ export interface FilmCompositorProps {
  * ========================================================================== */
 
 /** 一块要印的字：印什么、印在哪、什么颜色。 */
+/**
+ * 地名行的字体语言（v1.8.5 模块四）。
+ *
+ * `stage.locale` 在 `useFilmStage` 里已经过一次 `resolveGeoLocale(geoLocale, uiLocale)`，
+ * 正常情况就是 GeoLocale 四值之一；这里只是把 `LocaleId` 里多出来的 `'fr'` 等钉回 `'en'`，
+ * 保证**永远不会把界面语言当地名语言**去挑字体（日文界面 + 英文地名 = Menlo，不是明朝体）。
+ */
+function placeFontLocaleOf(locale: LocaleId | undefined): GeoLocale {
+  if (locale === 'zh-Hant' || locale === 'ja' || locale === 'en') return locale;
+  if (locale === 'fr') return 'en';
+  return 'zh-Hans';
+}
+
 export interface WatermarkPiece {
   key: string;
+  /**
+   * 行种类（v1.8.5）。`place` / `code` 行要按**地名语言**换字体
+   * （日文 `Hiragino Mincho ProN`、英文 `Menlo`），`date` 行保持日期字体 ——
+   * 两类字体的来源不同，渲染层不能再"一个 fontFamily 画到底"。
+   */
+  kind: WatermarkLineKind;
   text: string;
   /** 距舞台左沿（不填 = 由 `right` 决定水平位置）。 */
   left?: number;
@@ -346,6 +385,8 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
   return plan.lines.map((line) => ({
     // 四种版式里同一份 plan 不会出现两个同 kind 的行，所以 kind 本身就是稳定的 key
     key: line.kind,
+    // v1.8.5：行种类带到渲染层 —— 地名 / 代号行要按地名语言换字体，日期行不换。
+    kind: line.kind,
     text: line.text,
     ...(line.align.left === undefined ? {} : { left: line.align.left }),
     ...(line.align.right === undefined ? {} : { right: line.align.right }),
@@ -480,6 +521,7 @@ export function FilmCompositor({
    * （绝不用 `Math.random()` 兜底 —— 那会让同一张照片每次显影都不一样）。
    */
   lookSeed = 0,
+  presentation = 'preview',
   style,
 }: FilmCompositorProps) {
   const { layout, preset, frame, rawUri, capturedAt } = stage;
@@ -506,6 +548,72 @@ export function FilmCompositor({
    * 否则每次快门都白等到 `READY_TIMEOUT_MS`。
    */
   const fullBleed = frame.fullBleed === true;
+
+  /*
+   * ── v1.8.5 模块一（用户 m02760）：黑边根治 / 内窗立体投影 / 成片导出衬底 ──────
+   *
+   * 1. `innerWindow`：内窗容器矩形**取整**。照片是整像素位图，容器带小数时
+   *    iOS 的亚像素布局会让右侧 / 底侧漏出容器底色 1~2px —— 老实现底色是黑，
+   *    成片上就是一条突兀的黑线。取整 + 图片外扩 2px + 纸色底，三件事一起做。
+   * 2. `innerShadows`：相纸厚度投在照片上的微阴影（顶部 6px / 左侧 4px，358pt 基准等比）。
+   * 3. `printCushion` + `cushionColor`：成片导出时相纸外围的窄边衬底与底部悬浮阴影，
+   *    让相纸"像一张真正拿在手里的塑料卡纸"（颜色 = 相纸 base 压暗 6%）。
+   */
+  const frameMaterial = useMemo(() => findFrameMaterial(frameVariant), [frameVariant]);
+  const innerWindow = roundInnerWindow(windowRect);
+  const innerShadows = planInnerWindowShadows(Math.min(layout.width, layout.height));
+  const printCushion = planPrintCushion(layout.width, layout.height);
+  const cushionColor = mixHexColor(frameMaterial.base, '#000000', 0.06);
+  /*
+   * 展示模式（v1.8.5 模块一）：只有成片导出（'print'）才套衬底 + 悬浮阴影。
+   * 缺省 'preview' 保持 v1.8.4 观感（相纸顶满画布）——老调用方与裸探针逐像素不变；
+   * `00 NO FRAME` 没有相纸，print 也不套（否则全幅画面被缩一圈）。
+   */
+  const printMode = presentation === 'print' && !fullBleed;
+  /**
+   * 相纸圆角（v1.8.5 模块一）：`FrameSpec.skin.cornerRadius` 按短边 358pt 基准换算，
+   * 内层内容层（缩放前坐标系）与外层衬底（缩放后坐标系）各算一次 ——
+   * 等比缩放不改变「圆角随短边等比」的观感，两层算出来的视觉半径一致。
+   * `00 NO FRAME` / 非 print 展示没有衬底，半径恒 0。
+   */
+  const paperRadius = printMode ? paperCornerRadius(layout.width, layout.height, frame.skin) : 0;
+  const paperOuterRadius = printMode
+    ? paperCornerRadius(printCushion.width, printCushion.height, frame.skin)
+    : 0;
+  /** 相纸包装层的定位与阴影；非 print 展示只是铺满画布的透明容器（不改任何相位）。 */
+  const paperBoxStyle: ViewStyle = printMode
+    ? {
+        left: printCushion.left,
+        top: printCushion.top,
+        width: printCushion.width,
+        height: printCushion.height,
+        // 阴影需要一层不透明背景才在 iOS 上成立：这里铺衬底色，纸 PNG 盖在上面。
+        backgroundColor: cushionColor,
+        // 衬底的圆角跟着纸走（缩放后坐标系），否则纸角是圆的、垫底的方角露在下面。
+        borderRadius: paperOuterRadius,
+        shadowColor: '#000000',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.28,
+        shadowRadius: 10,
+      }
+    : { left: 0, top: 0, width: layout.width, height: layout.height };
+  /** 相纸内容层：print 时按 `printCushion.scale` 绕左上角等比缩放，其它情况原样铺满。 */
+  const paperContentStyle: ViewStyle = printMode
+    ? {
+        width: layout.width,
+        height: layout.height,
+        transform: [{ scale: printCushion.scale }],
+        transformOrigin: 'left top',
+        /*
+         * 圆角必须**连相框 PNG 一起**裁：只给外层衬底圆角，PNG 的直角会从上面盖回来，
+         * 成片四角仍是方的。内容层（缩放前坐标）带圆角 + overflow:hidden，
+         * 缩放后视觉半径正好再乘 `printCushion.scale`，与取景器 `FramePreviewLayer`
+         * 同一口径（两边都调 `paperCornerRadius`）。
+         */
+        borderRadius: paperRadius,
+        overflow: 'hidden',
+      }
+    : { width: layout.width, height: layout.height };
 
   // 截图尺寸：预设的 captureLongEdge 决定成片长边有多少像素。
   /*
@@ -579,24 +687,71 @@ export function FilmCompositor({
       options={captureOptions}
       // 不用也不能传 collapsable：ViewShot 组件内部已经写死 collapsable={false}
       // （防止 Android 展平这个视图导致截不到），而且它不透传任何未声明的 props。
-      style={[styles.stage, { width: layout.width, height: layout.height }, style]}
+      style={[
+        styles.stage,
+        {
+          width: layout.width,
+          height: layout.height,
+          // 成片导出的"桌面"：相纸外圈衬底色（相纸 base 压暗 6%）。
+          // 无相框（00 NO FRAME）与 preview 展示仍是 v1.8.1 的黑舞台。
+          backgroundColor: printMode ? cushionColor : '#000000',
+        },
+        style,
+      ]}
       onLayout={onLayout}
     >
+      {/*
+        ④ 导出衬底包装层（v1.8.5，用户 m02760「3D 实体相纸」的最后一块）：
+        相纸不再顶满画布 —— 外面留一圈窄边衬底，底部打真实悬浮阴影。
+        用**等比缩放整张相纸内容**（照片窗口 / 相框 PNG / 皮肤 / 水印全在里面）实现，
+        所以照片与文字的相位一起缩放，不会出现"纸小了、字没跟着小"。
+      */}
+      <View pointerEvents="box-none" style={[styles.paper, paperBoxStyle]}>
+        <View style={paperContentStyle}>
       {/* ① 画面：照片铺进相框的镂空窗口，调色 / 颗粒 / 暗角都关在这个窗口里 */}
       <View
         style={[
           styles.window,
           {
-            left: windowRect.left,
-            top: windowRect.top,
-            width: windowRect.width,
-            height: windowRect.height,
+            /*
+             * v1.8.5 内窗黑边根治（用户 m02760 第一条投诉）：
+             * · 四值取整 —— 位图整像素 vs 容器亚像素的黑缝从结构上消失；
+             * · 底色 = 相纸色（**严禁 #000**）—— 万一还有 1px 偏差，漏出的是纸不是黑线；
+             * · 1px 极柔和纸张高光切边（顶/左/底/右同一圈），删除深色内框线。
+             * `fullBleed`（00 NO FRAME）没有相纸：不铺相纸色、不画切边、不取整。
+             */
+            left: fullBleed ? windowRect.left : innerWindow.left,
+            top: fullBleed ? windowRect.top : innerWindow.top,
+            width: fullBleed ? windowRect.width : innerWindow.width,
+            height: fullBleed ? windowRect.height : innerWindow.height,
+            ...(fullBleed
+              ? null
+              : {
+                  backgroundColor: frameMaterial.base,
+                  borderWidth: 1,
+                  borderColor: 'rgba(255, 255, 255, 0.65)',
+                }),
           },
         ]}
       >
         <Image
           source={{ uri: rawUri }}
-          style={styles.fill}
+          style={{
+            /*
+             * 照片向外冗余 2px（left/top −1、宽高 +2）：与内窗容器取整后的边界叠 1px，
+             * 保证任何取整误差都由照片自己覆盖，而不是漏出容器底 —— 黑边的第二道保险。
+             * `fullBleed`（00 NO FRAME）没有内窗，照片照旧铺满舞台。
+             */
+            ...(fullBleed
+              ? styles.fill
+              : {
+                  position: 'absolute',
+                  left: -1,
+                  top: -1,
+                  width: innerWindow.width + 2,
+                  height: innerWindow.height + 2,
+                }),
+          }}
           resizeMode={frame.photoFit === 'contain' ? 'contain' : 'cover'}
           onLoad={onImageLoad}
           fadeDuration={0}
@@ -643,6 +798,31 @@ export function FilmCompositor({
           photoFit={frame.photoFit === 'contain' ? 'contain' : 'cover'}
           onPlateLoad={onImageLoad}
         />
+        {!fullBleed ? (
+          <>
+            {/*
+              内窗立体投影（v1.8.5，用户 m02760 §一.2）：相纸厚度投在照片上的微阴影。
+              顶部 6px 从 rgba(0,0,0,0.28) 渐到透明、左侧 4px 从 rgba(0,0,0,0.16) 渐到透明，
+              按 358pt 参考短边等比缩放（`planInnerWindowShadows`）。画在窗口容器最上层 ——
+              它是"纸压着照片"的光，不是滤镜，所以必须在调色/颗粒之后。
+              没有相纸（00 NO FRAME）就没有这道投影。
+            */}
+            <LinearGradient
+              pointerEvents="none"
+              colors={['rgba(0, 0, 0, 0.28)', 'rgba(0, 0, 0, 0)']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 0, y: 1 }}
+              style={[styles.innerShadowTop, { height: innerShadows.top }]}
+            />
+            <LinearGradient
+              pointerEvents="none"
+              colors={['rgba(0, 0, 0, 0.16)', 'rgba(0, 0, 0, 0)']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={[styles.innerShadowLeft, { width: innerShadows.left }]}
+            />
+          </>
+        ) : null}
       </View>
 
       {/*
@@ -678,12 +858,14 @@ export function FilmCompositor({
           />
 
           {/*
-            ②b 相框皮肤（v1.7.0）。挂在相框 PNG **之后** = 盖在纸面上；水印在它之后画，
-            所以日期与地名永远压在皮肤之上（不会被斑点糊掉）。
-            · `window` 必须是 `layout.window`（不是相框数据里的归一化窗口）——
+            ②b 相框皮肤（v1.7.0；v1.8.5 扩成程序化相纸）。挂在相框 PNG **之后** = 盖在纸面上；
+            水印在它之后画，所以日期与地名永远压在皮肤之上。
+            · `window` 必须是 `windowRect`（不是相框数据里的归一化窗口）——
               皮肤要严格对齐**已经取整过的**那一个矩形，否则边上会露半像素照片。
-            · `seed` 仍按 `frameSkinSeedOf(frame)` 传，但 v1.8.3 起皮肤是**确定的**实色带，
-              组件不再读这个 prop（保留是为了不动调用契约，将来要回花纹也不用改这里）。
+            · `seed` 仍按 `frameSkinSeedOf(frame)` 传，但 v1.8.3 起皮肤不读随机；v1.8.5 仍不读，
+              保留是为了不动三个调用点的冻结契约。
+            · `skin` 是 v1.8.5 的程序化数据（圆角 / 枕形压边 / 下巴压痕 / 齿孔 / 帧号）。
+              预览 `FramePreviewLayer` 与抽屉 `FilmDrawer` 喂的是同一份 `frame.skin`。
             · v1.8.1：`fullBleed` 下与相纸一起不画 —— 没有纸，皮肤画上去就是
               "花纹印在画面上"。同一个渲染门，不另开一处判断。
           */}
@@ -693,6 +875,9 @@ export function FilmCompositor({
             window={windowRect}
             variant={frameVariant}
             seed={frameSkinSeedOf(frame)}
+            /* v1.8.5：程序化相纸细节（圆角 / 枕形压边 / 下巴压痕 / 135 齿孔 / 帧号）。
+               与 `FramePreviewLayer` 喂同一份 `frame.skin`，预览与成片共用同一批纯函数。 */
+            skin={frame.skin}
           />
         </>
       )}
@@ -701,12 +886,22 @@ export function FilmCompositor({
       {pieces.map((piece) => {
         const fontFamily = preset.timestamp.fontFamily ?? timestampFontFamily;
         /*
+         * v1.8.5 模块四：地名 / 代号行按**地名语言**换字体 —— 日文 = iOS 明朝体
+         * `Hiragino Mincho ProN`（写真集韵味）、英文 = `Menlo`、中文 = 日期字体
+         * `undefined`（走预设 / 系统等宽兜底）。日期行**不换**：日期字形是灯丝管线，
+         * 换字体等于换一套发光几何，不能跟着地名语言走。
+         */
+        const pieceFontFamily =
+          piece.kind === 'place' || piece.kind === 'code'
+            ? watermarkPlaceFont(placeFontLocaleOf(stage.locale)) ?? fontFamily
+            : fontFamily;
+        /*
          * 文字行的辉光仍看预设那一栏（`preset.timestamp.glow`）：它管的是**地名 / 代号**
          * 压照片时要不要发同色光。日期的发光色**不在这里** —— 那是日期引擎的 `glow`
          * （`dateEngine.glow`，5 档灯丝配方），由 `<DateStamp/>` 自己读，
          * 两种"发光"是两件事：一个是文字投影，一个是像素字形的灯丝 / 晕染层。
          */
-        const text = stampTextStyle(piece, fontFamily, preset.timestamp.glow);
+        const text = stampTextStyle(piece, pieceFontFamily, preset.timestamp.glow);
 
         // 纯文字行（地名 / 摄影代号 / 日期关掉时的纯文字）
         if (piece.quartz === undefined) {
@@ -841,6 +1036,8 @@ export function FilmCompositor({
           box={{ left: inPhotoDate.placement.box.left, top: inPhotoDate.placement.box.top }}
         />
       ) : null}
+        </View>
+      </View>
     </ViewShot>
   );
 }
@@ -917,6 +1114,24 @@ function QuartzPiece({
 }
 
 const styles = StyleSheet.create({
+  /** 导出衬底包装层（v1.8.5）：位置/尺寸/阴影由 `paperBoxStyle` 给，这里只给定位。 */
+  paper: {
+    position: 'absolute',
+  },
+  /** 内窗顶部内阴影的定位盒（高度由 `planInnerWindowShadows` 给）。 */
+  innerShadowTop: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    right: 0,
+  },
+  /** 内窗左侧内阴影的定位盒（宽度由 `planInnerWindowShadows` 给）。 */
+  innerShadowLeft: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+  },
   stage: {
     overflow: 'hidden',
     // 相框透明处（例如胶片齿孔）露出的就是这层黑，观感更像真实胶片

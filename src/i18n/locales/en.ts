@@ -224,6 +224,7 @@ export const en: Messages = {
   'settings.geoLocale.auto': 'Match interface',
   'settings.geoLocale.zhHans': '简体中文',
   'settings.geoLocale.zhHant': '繁體中文',
+  'settings.geoLocale.ja': '日本語',
   'settings.geoLocale.en': 'English',
   'settings.geoLocale.note': 'Affects only the place name on the print, not the interface',
   'camera.bar.temp': 'Temp',

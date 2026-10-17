@@ -2152,6 +2152,12 @@ export function CameraScreen() {
             viewShotRef={filmStage.viewShotRef}
             onLayout={filmStage.handleStageLayout}
             onImageLoad={filmStage.handleStageImageLoad}
+            /*
+             * v1.8.5 模块一：这棵树就是 ViewShot 的截图目标（**要被存盘的成片**），
+             * 所以走 'print' 展示 —— 相纸缩进一圈衬底 + 底部悬浮阴影。
+             * 默认值 'preview' 是给老调用方兜底的，这里不能省。
+             */
+            presentation="print"
             timestampFontFamily={fonts.fontFamily}
             /*
              * 相框风格变体（v1.7.0 · 模块二）**必须**从设置里传下去。

@@ -16,12 +16,10 @@
  *      · `color` 层 = 纯 `<View>`，**没有**加载回调
  *      · `photo` 层 = 传了 `photoUri` 才渲染，每个恰好一张 `<Image>` + 一次 `onPlateLoad`
  *        （`kind:'photo'` 是"同一张原图再叠一层"，没有第二个 URI 就画不出来）
- * 2. **photo 层只能由一边渲染**。宿主有两条合法接法：
- *      a) 把 `rawUri` 当 `photoUri` 传进来（推荐 —— 本组件会正确应用
- *         `blurRadius`/`offsetX/offsetY`，那是"真泛光"的**全部**实现）；
- *      b) 宿主自己渲染 photo 层 —— 那么它必须自己挂 `blurRadius`/`offsetX/offsetY`
- *         和 `onLoad`（`FilmCompositor` 现有的 `GradeLayerView` 这两样都没有）。
- *    两边都渲染 = 白白多等 `READY_TIMEOUT_MS`（1500ms）超时；少一张 = `captureRef` 可能截到半张。
+ * 2. **photo 层只能由一边渲染**。v1.8.5 起 `kind:'photo'` 只剩**无模糊**的对比度自叠
+ *    （0~1 层，`buildGradeLayers` 不再写 `blurRadius`/`offset`）；宿主照旧把 `rawUri`
+ *    当 `photoUri` 传进来最省事。两边都渲染 = 白白多等 `READY_TIMEOUT_MS`（1500ms）超时；
+ *    少一张 = `captureRef` 可能截到半张。
  * 3. `seed`：颗粒板的**镜像相位**与微尘的位置都由它决定，且必须在取景器与成片之间传同一个值
  *    （`CameraScreen` 里是模块常量 `LOOK_SEED`）。同一个 seed 下两边的颗粒与微尘逐点相同。
  *    为什么只做镜像而不做平移：无缝贴图镜像之后仍然无缝，平移会在边缘露白边。
@@ -32,7 +30,9 @@
  * · `mixBlendMode` 只声明在 `ViewStyle` 上（RN 0.86 的 `ImageStyle` 没有），
  *   所以每个叠图都要外面包一层 `<View>` 承载混合模式与透明度。
  * · `<Image blurRadius>` 在 iOS 上是真模糊 UIImage（`RCTImageView.mm:158`），
- *   能被 `captureRef` 截进成片 —— 真泛光靠它（v1.8.3 起这是栈里**唯一**的模糊层）。
+ *   能被 `captureRef` 截进成片 —— 但 v1.8.5（用户 m02760 · M2）起**图层栈里没有任何
+ *   模糊层**（泛光的 8pt 模糊副本已删，halation 只剩暖红纯色）。本组件仍保留
+ *   `blurRadius` 透传（`GradeLayer.photo` 类型字段），只是当前没有构建路径会写它。
  *
  * ── 为什么平铺不用 `resizeMode="repeat"`（v1.8.2 的根因修正）─────────────
  * iOS 的 repeat 由 `RCTImageComponentView.mm:148-150` 的
@@ -50,6 +50,7 @@ import { memo, useMemo } from 'react';
 import { Image, StyleSheet, View } from 'react-native';
 import { textureSource } from '../constants/textures';
 import { dustSpecAlpha, dustSpecCountForGrain } from '../constants/grain';
+import { GRAINLESS_PRESET_IDS } from '../constants/presets';
 import { planFilmLooks } from '../utils/gradeLayers';
 import type { GradeLayer, ResolvedFilmPreset } from '../types';
 import type { ViewStyle } from 'react-native';
@@ -63,8 +64,9 @@ export interface FilmLookLayersProps {
   width: number;
   height: number;
   /**
-   * `'composite'` = 成片（含 photo 层、颗粒层与微尘）；
-   * `'live'` = 取景器实时预览（v1.8.3 起滤掉 photo 层与颗粒层，只剩色层 + 暗角 + 漏光）。
+   * `'composite'` = 成片（含 photo 层、mono 去色层、颗粒层与微尘）；
+   * `'live'` = 取景器实时预览（v1.8.3 起滤掉 photo 层与颗粒层；v1.8.4 起再滤中性层并
+   * 把色层压到 [0.04,0.08]；v1.8.5 的 halation 色层保留、mono 去色层被滤掉）。
    */
   surface: FilmLookSurface;
   /** 颗粒相位 / 微尘位置的种子。取景器与成片必须传同一个值。 */
@@ -126,7 +128,9 @@ function makeRandom(seed: number, salt: number): () => number {
  * 位置避开最外圈 14%（暗角最重的地方），半径按短边比例 —— 成片可能只有几百 pt。
  */
 export function planDustSpecks(preset: ResolvedFilmPreset, seed: number): DustSpeck[] {
-  const count = dustSpecCountForGrain(preset.grain);
+  // v1.8.5：无颗粒卷（EK-100 反转片）连白尘点都不给 —— `preset.grain` 会被用户档位
+  // 覆盖成 HV/MAX，所以必须按 id 判（与 `buildGradeLayers` ⑨ 共用同一份名单）。
+  const count = GRAINLESS_PRESET_IDS.has(preset.id) ? 0 : dustSpecCountForGrain(preset.grain);
   const specks: DustSpeck[] = [];
   for (let i = 0; i < count; i += 1) {
     const rand = makeRandom(seed, 0x51 + i);
@@ -265,6 +269,8 @@ function FilmLookLayersImpl({
         // 只有**颗粒板**走手工 1:1 方格（见文件头）。v1.8.3 起 `dust` 纹理层已从图层栈
         // 删除（白尘改成成片上 1~2 颗 specks，见 `planDustSpecks`）；剩下的纹理层
         // （`vignette` / `lightLeak`）都是 `resizeMode='stretch'`，走不到 repeat 分支。
+        // v1.8.5：`vignette.png` 换成 1024×1024 中心透明的光学暗角贴图、层混合改 `normal`，
+        // 渲染侧仍是"一张拉伸 Image"，无需特殊处理。
         const tiled = layer.resizeMode === 'repeat' && layer.textureId === 'grain';
         const tiles = tiled ? planTextureTiles(width, height) : [];
         const source = textureSource(layer.textureId);

@@ -80,7 +80,7 @@ import { useSettings } from '../hooks/useSettings';
 import { useI18n } from '../i18n';
 import { computeFrameLayout, frameSourceOf } from '../utils/geometry';
 import { FilmCard, withAlpha } from './FilmCard';
-import { FrameSkin } from './FrameSkin';
+import { FrameSkin, paperCornerRadius } from './FrameSkin';
 
 export interface FilmDrawerProps {
   visible: boolean;
@@ -192,7 +192,7 @@ function clampVariantDrag(dx: number): number {
 
 /**
  * `memo` 的意义有限（父组件只在开关时重渲染它），保留是为了让"这个组件的 props
- * 全是基本类型"这件事在类型上成立 —— 里面那十张卡才是真正需要 `memo` 的地方。
+ * 全是基本类型"这件事在类型上成立 —— 里面那九张卡才是真正需要 `memo` 的地方。
  */
 export const FilmDrawer = memo(function FilmDrawer({
   visible,
@@ -242,6 +242,15 @@ export const FilmDrawer = memo(function FilmDrawer({
   const previewPaper = useMemo(
     () => ({ width: previewLayout.width, height: previewLayout.height }),
     [previewLayout],
+  );
+  /*
+   * v1.8.5：迷你相纸也要圆角（`FrameSpec.skin.cornerRadius`），并且要**连 PNG 一起裁**
+   * —— 只给外框圆角的话，相框 PNG 的直角会盖回来。半径走与取景器 / 成片同一个
+   * `paperCornerRadius`，短边 358pt 基准；没写 `skin` 的相框（00 NO FRAME / 自定义）恒 0。
+   */
+  const previewPaperRadius = useMemo(
+    () => paperCornerRadius(previewLayout.width, previewLayout.height, frame.skin),
+    [previewLayout, frame],
   );
   /*
     v1.8.1 无相框（`00 NO FRAME`）：这一档没有纸，相纸 PNG 与材质一个都不画。
@@ -451,7 +460,7 @@ export const FilmDrawer = memo(function FilmDrawer({
 
   /**
    * 网格内容整体 memo：`PRESETS` 是模块级常量，`presetIndex` 只在换卷时变，
-   * 所以打开抽屉、下拉滚动都不会重建这十张卡（`FilmCard` 自己也 memo 了）。
+   * 所以打开抽屉、下拉滚动都不会重建这九张卡（`FilmCard` 自己也 memo 了）。
    */
   const grid = useMemo(
     () => (
@@ -566,7 +575,7 @@ export const FilmDrawer = memo(function FilmDrawer({
         >
           {/*
             「相框」行（v1.7.0）。放在列表**最上面**而不是钉在标题下方：面板高度是
-            固定的（0.58 × 屏高），钉住等于再从十张卡里吃掉一行；放进滚动内容里，
+            固定的（0.58 × 屏高），钉住等于再从九张卡里吃掉一行；放进滚动内容里，
             用户往下翻胶卷时它自然让位。
 
             这里的"三档"是**同一款相框的三套卡纸材质**（经典原白 / 岁月暖黄 / 暗房雅黑），
@@ -631,7 +640,13 @@ export const FilmDrawer = memo(function FilmDrawer({
                   */}
                   {fullBleed ? null : (
                     <>
-                      <View style={previewPaper}>
+                      <View
+                        style={[
+                          previewPaper,
+                          // v1.8.5：圆角必须裁到 PNG 上（只给外框圆角，图片直角会盖回来）。
+                          { borderRadius: previewPaperRadius, overflow: 'hidden' },
+                        ]}
+                      >
                         <Image
                           source={frameSourceOf(frame, 'portrait')}
                           style={previewPaper}
@@ -644,6 +659,7 @@ export const FilmDrawer = memo(function FilmDrawer({
                           window={previewLayout.window}
                           variant={settings.frameVariant}
                           seed={frameSkinSeedOf(frame)}
+                          skin={frame.skin}
                         />
                       </View>
                     </>

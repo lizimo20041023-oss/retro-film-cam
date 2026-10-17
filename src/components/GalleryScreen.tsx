@@ -726,6 +726,11 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
               viewShotRef={filmStage.viewShotRef}
               onLayout={filmStage.handleStageLayout}
               onImageLoad={filmStage.handleStageImageLoad}
+              /*
+               * v1.8.5 模块一：与相机快门同一个口径 —— 导入冲印也是「截图存盘」，
+               * 走 'print' 展示（衬底 + 悬浮阴影），否则拍出来的有衬底、导进来的没有。
+               */
+              presentation="print"
               timestampFontFamily={fonts.fontFamily}
               /*
                * 相框风格变体（v1.7.0 · 模块二）。相册导入冲印走的是**同一个**合成舞台，

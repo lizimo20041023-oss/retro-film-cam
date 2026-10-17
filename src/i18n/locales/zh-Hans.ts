@@ -224,6 +224,7 @@ export const zhHans = {
   'settings.geoLocale.auto': '跟随界面',
   'settings.geoLocale.zhHans': '简体中文',
   'settings.geoLocale.zhHant': '繁體中文',
+  'settings.geoLocale.ja': '日本語',
   'settings.geoLocale.en': 'English',
   'settings.geoLocale.note': '只影响成片上那一行地名，和界面语言互不干扰',
   'camera.bar.temp': '色温',

@@ -93,8 +93,8 @@ const WATERMARK_LAYOUTS: readonly WatermarkLayout[] = [
 ];
 const PLACE_DETAILS: readonly PlaceDetail[] = ['archive', 'full'];
 const GRAIN_IDS: readonly GrainLevelId[] = GRAIN_LEVELS.map((level) => level.id);
-/** 地名语言只有三种，外加一个"跟界面语言走"。 */
-const GEO_LOCALES: readonly (GeoLocale | 'auto')[] = ['auto', 'zh-Hans', 'zh-Hant', 'en'];
+/** 地名语言四种（v1.8.5 起含 ja），外加一个"跟界面语言走"。 */
+const GEO_LOCALES: readonly (GeoLocale | 'auto')[] = ['auto', 'zh-Hans', 'zh-Hant', 'ja', 'en'];
 /**
  * 画质档与相框风格变体的白名单。
  *

@@ -219,6 +219,7 @@ export const ja: Messages = {
   'settings.geoLocale.auto': '画面に合わせる',
   'settings.geoLocale.zhHans': '簡体字中国語',
   'settings.geoLocale.zhHant': '繁体字中国語',
+  'settings.geoLocale.ja': '日本語',
   'settings.geoLocale.en': 'English',
   'settings.geoLocale.note': '仕上がりの地名だけに効きます。画面の言語とは別です',
   'camera.bar.temp': '色温度',

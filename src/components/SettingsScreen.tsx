@@ -903,11 +903,12 @@ const PLACE_DETAIL_ROWS: readonly {
 ];
 
 /**
- * 地名语言四档的顺序 = 从"交给系统"到越来越具体。
+ * 地名语言五档的顺序 = 从"交给系统"到越来越具体。
  *
  * 为什么「跟随界面」排第一：它和上面两段一样，默认档必须排在最前 ——
  * 用户打开这一栏时，当前档位就在第一行，"我现在是不是在跟随系统"一眼可见。
- * 后三档按使用人数排，中文两档在英文之前（这个 App 的界面语言里中文占多数）。
+ * 后四档按使用人数排：中文两档 → 日文（v1.8.5 新增，紧挨中文之后，汉字圈连排、
+ * 也符合"日本是第二大拍摄地"的产品假设）→ 英文。
  */
 const GEO_LOCALE_ROWS: readonly {
   geoLocale: GeoLocale | 'auto';
@@ -915,11 +916,13 @@ const GEO_LOCALE_ROWS: readonly {
     | 'settings.geoLocale.auto'
     | 'settings.geoLocale.zhHans'
     | 'settings.geoLocale.zhHant'
+    | 'settings.geoLocale.ja'
     | 'settings.geoLocale.en';
 }[] = [
   { geoLocale: 'auto', labelKey: 'settings.geoLocale.auto' },
   { geoLocale: 'zh-Hans', labelKey: 'settings.geoLocale.zhHans' },
   { geoLocale: 'zh-Hant', labelKey: 'settings.geoLocale.zhHant' },
+  { geoLocale: 'ja', labelKey: 'settings.geoLocale.ja' },
   { geoLocale: 'en', labelKey: 'settings.geoLocale.en' },
 ];
 

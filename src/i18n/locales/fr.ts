@@ -227,6 +227,7 @@ export const fr: Messages = {
   'settings.geoLocale.auto': 'Suivre l\'interface',
   'settings.geoLocale.zhHans': '简体中文',
   'settings.geoLocale.zhHant': '繁體中文',
+  'settings.geoLocale.ja': '日本語',
   'settings.geoLocale.en': 'English',
   'settings.geoLocale.note': 'N\'affecte que le lieu imprimé sur la photo, pas l\'interface',
   'camera.bar.temp': 'Tempé.',
