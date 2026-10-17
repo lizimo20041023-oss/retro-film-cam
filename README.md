@@ -60,6 +60,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [36. v1.8.3：四模块军规改造（手风琴设置页 / 原生等宽三层发光日期 / 原图零柔焦 / 实色卡纸与暗色相机壳）](#36-v183四模块军规改造手风琴设置页--原生等宽三层发光日期--原图零柔焦--实色卡纸与暗色相机壳)
 - [37. v1.8.4：真机焦段归位（取景盒重几何 / 四档焦段 / 最高分辨率 / 取景器去雾）](#37-v184真机焦段归位取景盒重几何--四档焦段--最高分辨率--取景器去雾)
 - [38. v1.8.5：Dazz #Inst C 立体相纸（内窗黑边根治 / 9 款传奇胶卷 / 135 NEG 齿孔与地名 / 纯净化地名多语言）](#38-v185dazz-inst-c-立体相纸内窗黑边根治--9-款传奇胶卷--135-neg-齿孔与地名--纯净化地名多语言)
+- [39. v1.8.6：真机发热五条投诉的逐条核查（按需合成 / 硬件光栅化 / 零 SVG / 六节点隔离 / 画质档与 GPS 去重）](#39-v186真机发热五条投诉的逐条核查按需合成--硬件光栅化--零-svg--六节点隔离--画质档与-gps-去重)
 
 ---
 
@@ -4903,6 +4904,253 @@ v1.8.5 发布指纹（2026-10-17，Asia/Shanghai）：
 | `scripts/generate_vignette.py` | 新增零依赖生成脚本（逐像素手写 PNG 编码），可复现重烤 |
 | `app.json` | version `1.8.4` → `1.8.5` |
 | `README.md` | 本节 §38 + TOC |
+
+---
+
+## 39. v1.8.6：真机发热五条投诉的逐条核查（按需合成 / 硬件光栅化 / 零 SVG / 六节点隔离 / 画质档与 GPS 去重）
+
+> 本版**零新依赖、零 `as any`、成片像素零回归**；`planCapture` / `planPhotoCrop` / `takePictureAsync`
+> 参数 / 画质三档长边（2048 / 3024 / 4032）/ JPEG 0.98 一行未动。
+>
+> 先说结论：五条投诉里有三条在 v1.8.5 的代码里**本来就不成立**——离屏合成器不常驻、全仓零 SVG、
+> 胶囊动画本来就是 `useNativeDriver: true`。本版把这三件事从"现状如此"升级成**结构性不可回退**
+> （组件早退 + 门禁断言），把剩下两条里四条真实的高频路径真正修掉。
+
+### 39.1 五条投诉 → 代码事实 → 本版动作
+
+| # | 投诉（要点） | v1.8.5 冻结树的实测事实 | 本版动作 |
+|---|-------------|------------------------|---------|
+| ① | 离屏 `Composer` 常驻挂载、`left:-9999` | **不常驻**：`<FilmCompositor>` 全仓只有 2 个挂载点（`CameraScreen.tsx` / `GalleryScreen.tsx`），都按 `filmStage.stage !== null` 门控；`left:-9999` 全仓 0 命中；`processFilmPhoto.ts` 是 `mount → whenReady → capture → finally unmount` | 新增 `FilmStageComposer`：`stage === null` 直接 `return null`，两处挂载点改用它；`useFilmStage` 加挂载互斥与幂等卸载。**"不常驻"从调用约定变成组件结构**，任何路径都回退不回去 |
+| ② | 实时相框预览要 `shouldRasterizeIOS` | 全仓 `shouldRasterizeIOS` / `renderToHardwareTextureAndroid` **0 命中**；`FramePreviewLayer` 根是 `pointerEvents="none"` 的绝对定位 View，子树全是静态 PNG + `FrameSkin` | 根 View 加两属性；`FilmDrawer` 静态相纸组同加。附零损失论证与"四类禁区"注释（见 §39.3） |
+| ③ | 颗粒 / `FeColorMatrix` / SVG 节点过多 | 全仓**零** `react-native-svg` / `<Svg>` / `<Circle>` / `FeColorMatrix`；颗粒是预烘 `grain.png` 一张 `<Image>`（`FilmLookLayers` 的 `texture` 层）；`GrainOverlay` / `LiveFramePreviewOverlay` 这两个名字不存在 | 不引入 SVG；补 `OpticalDateText` 的 `memo`；新门禁把"零 SVG / 零新依赖"锁成断言（见 §39.4） |
+| ④ | 参数栏 3 秒隐现 / 滑动 / 对焦坐标导致整屏重绘 | 胶囊动画**已经**是 `Animated.Value` + `useNativeDriver: true`（`useCapsuleAutoHide.ts`），没有逐帧 `setState`；真因是 `temperature` **25ms** 直写顶层、`exposure` / `zoom` 同类，顶层 37 个 state，且相机块/取景框/相框预览/控制台**没有 memo** | ① 上报节流 25ms → **50ms**（松手补发最后一档）；② 六个 `useMemo` 渲染节点挡住静态子树；③ 对焦脉冲改**显式令牌**，搓焦段/捏合不再打硬件 autofocus 往返（见 §39.5） |
+| ⑤ | 分辨率策略 + 硬件/GPS 防抖 | `pictureSize` effect 依赖含 `lens`（搓一次焦段就发一次原生往返）；`focusPulse` effect 依赖 `[cameraReady, stop.id, lens, facing]`（每档都打 50ms `autofocus='on'`）；定位每张照片重取一次 fix | `pictureSize` 改画质档驱动 + 4:3 取景不变量、effect 去掉 `lens`；对焦脉冲依赖只剩令牌；定位加 **60s TTL** 缓存 + in-flight 去重（见 §39.6） |
+
+**关于「48MP（8064×6048）」**：expo-camera 57.0.6 iOS 的 `PictureSize` 只有 9 个枚举串
+（`CameraRecordingOptions.swift:56-88`：`3840x2160 / 1920x1080 / 1280x720 / 640x480 / 352x288 / Photo / High / Medium / Low`），
+每个都映射到一个 `AVCaptureSession.Preset`；`CameraPhotoCapture.swift:93` 写死
+`photoSettings.maxPhotoDimensions = photoOutput.maxPhotoDimensions`，没有 48MP 通道。
+`'Photo'` 就是 4:3 全幅（12MP，4032×3024），三档画质只改**导出画布长边**（2048 / 3024 / 4032），
+不伪造 48MP、也不降低成片。`captureQualityCapNote()` 早已如实写明"真 48MP 需原生相机模块"。
+
+### 39.2 模块一：离屏合成器"按需瞬时挂载"
+
+新增 `src/components/FilmStageComposer.tsx`（93 行）：
+
+```tsx
+export interface FilmStageComposerProps {
+  stage: FilmStageInput | null;
+  viewShotRef: RefObject<ViewShotRef | null>;
+  onLayout: () => void;
+  onImageLoad: () => void;
+  timestampFontFamily?: string;
+  frameVariant: FrameVariant;
+  dateEngine: DateEngineConfig;
+  lookSeed?: number;
+}
+
+export const FilmStageComposer = memo(function FilmStageComposer(props) {
+  if (props.stage === null) return null;   // ← 不挂载任何原生节点
+  return <FilmCompositor … presentation="print" />;
+});
+```
+
+- `CameraScreen` 与 `GalleryScreen` 的 `<FilmCompositor>` 全部换成 `<FilmStageComposer>`，
+  `presentation="print"` 由组件内部写死；两屏的渲染树里不再出现直接的 `<FilmCompositor>`（门禁 S1 断言）。
+- `GalleryScreen` 刻意**不传** `lookSeed`，保持 `FilmCompositor` 缺省值 0，成片颗粒与 v1.8.5 逐像素一致。
+- `DevelopOverlay` / `FilmCompositor` 用 `memo` 包一层（**函数体一行未改**，`FilmCompositorImpl` 仍含
+  `function FilmCompositor` 文本前缀以兼容旧探针的文本锚点）；`useFilmStage` 的计数三函数一行未动。
+- `useFilmStage` 加固：`mount()` 发现上一轮未卸载先幂等收掉；`unmount()` 可重复调用；
+  1500ms 兜底超时改为 `__DEV__` 下 `console.warn` 后仍然放行；`capture()` 在 `stage` 为空时抛错；
+  截图前补**两帧 `requestAnimationFrame`**（等 iOS 图层提交后再 `capture()`）。
+
+### 39.3 模块二：iOS 硬件光栅化（静态相纸整棵烘成一张纹理）
+
+`FramePreviewLayer` 根 View（`pointerEvents="none"` 之后）追加：
+
+```tsx
+shouldRasterizeIOS
+renderToHardwareTextureAndroid
+```
+
+`FilmDrawer` 的迷你成片窗加在内层**纯静态相纸组** `framePreviewPaperLayer` 上（PNG + `FrameSkin`），
+**不是**外层 `framePreviewBox`——后者含可点的 `00` 角标。
+
+- **零损失论证**：幕布是全不透明的，相纸层 0.82 的透明度在子树**内部**已经合成完毕，
+  所以烘成位图后 alpha 不变；整组在两次烘焙之间完全静态。
+- **不会变糊**：RN 0.86 Fabric 在 `RCTViewComponentView.mm:339-343` 里给
+  `layer.rasterizationScale = shouldRasterize ? traitCollection.displayScale : 1.0`，
+  按屏幕倍率烘焙，不是按逻辑点。
+- **重烘时机**：`frame/layout/left/top/variant/pieces/fontFamily/glow` 变化，以及 30s 地名心跳
+  （`FRAME_PREVIEW_REFRESH_MS`）——约 2 次/分钟，可接受。
+- **四类禁区**（注释与门禁双保险）：`FilmCompositor`（成片走 `drawViewHierarchyInRect` 按点尺寸重绘放大，
+  栅格化会糊）、`Animated.View`（`lensScale` spring 子树）、`CameraView`、`FilmLookLayers`
+  （层上是 `mixBlendMode`，离屏后混合语义会变）。
+
+### 39.4 模块三：零 SVG + memo（颗粒本来就是一张 PNG）
+
+- 颗粒没有 80~100 个 `<Circle>`：全仓零 `react-native-svg`，取景器/成片的颗粒都是
+  `assets/textures/grain.png` 一张 `<Image>` 贴图 + 混合模式。一张预烘 512² PNG 比上百个矢量节点省得多，
+  **本版不为了"优化"引入 SVG**，只把"零 SVG"变成门禁断言，防止以后有人加回来。
+- `OpticalDateText` 补 `memo`（`OpticalDateTextImpl` + `export const OpticalDateText = memo(...)`，
+  导出名与 props 不变）；`FramePreviewLayer` / `FilmLookLayers` / `FrameSkin` / `DateStamp` /
+  `ParameterScrubBar` / `ViewfinderBar` / `ToolRow` / `FrameBadge` / `FilmDrawer` 的既有 `memo` 全部保持。
+- 依赖白名单由探针逐字断言：dependencies **18 项**、devDependencies **5 项**，`package.json` /
+  `package-lock.json` 零改动；`src/**` 递归扫描 `react-native-svg` / `<Svg` / `<Circle` / `<Path` /
+  `feColorMatrix` 命中文件数为 0。
+
+### 39.5 模块四：六个 `useMemo` 渲染节点（高频 state 不再穿透整屏）
+
+`CameraScreen` 顶层仍有 37 个 state（不改语义），但把渲染树拆成六个依赖冻结的元素缓存节点。
+元素引用不变时 React 直接 bailout，不会重建子树：
+
+| 节点 | 内容 | 关键依赖（逐字冻结进门禁 S8） | 明确不含 |
+|------|------|-----------------------------|----------|
+| `cameraClipNode` | `<Animated.View styles.cameraClip>` + `<CameraView>` | `cameraGranted` / `previewBox` / `viewfinderWindow` / `lensScale` / `cameraKey` / `cameraLayer` / `facing` / `cameraFocusProps` / `flashMode` / `lens` / `zoom` / `pictureSize` / `focusPulse` / 三个回调 | `exposure` / `temperatureOverride` / `resolved` / `exposureCount` / `doubleExposure` |
+| `liveLookNode` | `styles.liveLook` + `<FilmLookLayers surface="live">` | `previewBox` / `viewfinderWindow` / `resolved` | — |
+| `viewfinderNode` | `<ViewfinderWindow>` | `previewBox` / `viewfinderWindow` / `resolved.showGuide` | — |
+| `framePreviewNode` | `framePreviewVisible` 门控的 `<FramePreviewLayer>` | `previewPieces` / `previewLayout` / `frameOffset.left/top` / `resolvedFrame` / `settings.frameVariant` / `fonts.fontFamily` / `resolved.timestamp.glow` | — |
+| `controlNode` | 顶栏 `LiquidGlassView`（帧徽标/计数/画质/设置）+ 控制台 `LiquidGlassView`（ToolRow + coreRow） | 交互回调 / `developing` / `albumKey` / `cameraReady` / `interactive` / `t` / `preset.name` 等 | 高频调色值 |
+| `overlayNode` | flash/focus hint、倒计时、banner、胶囊行、`DevelopOverlay` + `<FilmStageComposer>` | `flashHint` / `countdown` / `bannerMessage` / `consoleHeight` / 胶囊回调 / `status` / `filmStage.stage` 等 | — |
+
+- 顶栏与控制台共 2 个 `LiquidGlassView`：控制台在 `controlNode` 里，**顶栏刻意不 memo**
+  （帧徽标、胶卷计数、画质 chip 要每渲染拿最新 props），门禁按"2 个、只有 1 个在 memo 内"断言。
+- `FrameSwitcher` / `FocusExposure` **刻意不 memo**：命中区要最新的 `handleTapFocus`，
+  对焦框动画在组件内部走 native driver。
+- 对焦脉冲：新增 `focusPulseToken` state，effect 依赖只剩 `[cameraReady, focusPulseToken]`；
+  自增点恰好 2 处 —— `applyStop`（按档位/循环焦段最终都落到它）与 `handleFlipCamera`（换朝向要重新锁焦）。
+  搓焦段（`handleFocalScrub`）与捏合**不再**触发 `autofocus='on'` 的原生往返；原生 `'on'` 语义正好是
+  "对一次焦然后锁定"，所以手感不变。
+- `ParameterScrubBar` 上报节流 `EMIT_INTERVAL_MS = 25 → 50`（20Hz），松手时 `state.pending`
+  补发被压住的最后一档，降频不吞值；尺子动画仍走 `Animated.Value`，不进 React。
+- 胶囊自动隐现**本来就是** `Animated.timing(..., useNativeDriver: true)`，本版不改，
+  只加门禁断言防止有人改成逐帧 `setState`。
+
+### 39.6 模块五：画质档驱动 `pictureSize` + 镜头/定位去重
+
+`pickPictureSize(sizes, targetLongEdge)` 的决策顺序（纯函数，门禁用 9 条真实枚举串跑表）：
+
+1. 空列表 / 解析失败 → `undefined`；
+2. 广告项里 **4:3 比例**（宽高比 4/3 ± 0.02）且"按 4:3 裁切后的长边" ≥ 目标长边的最小者；
+3. 否则 `'Photo'`（iOS 唯一的 4:3 全幅预设）；
+4. 否则满足 4:3 裁切长边 ≥ 目标的最大 `WxH`；
+5. 否则 `'High'` / `undefined`。
+
+- **永不选 16:9**（`3840x2160` / `1920x1080` / `1280x720`）：`pictureSize` 是**全局 sessionPreset**，
+  16:9 会同时打破 `planCameraLayer` 的 3:4 sensor 假设、`planPhotoCrop` 的裁切与
+  `captureQuality.ts:29-31`「画质档只买清晰度，不买取景范围」的约定。
+- `targetLongEdge` 来自 `findCaptureQualitySpec(settings.captureQuality).longEdge`（2048 / 3024 / 4032），
+  `refreshPictureSize` 依赖它；effect 依赖去掉 `lens`，改为
+  `[cameraReady, facing, cameraKey, refreshPictureSize]` —— 换镜头不再重拉 sessionPreset。
+- 结果用 `setPictureSize(prev => prev === next ? prev : next)` 去重；
+  `getAvailableLensesAsync` 加 in-flight 去重，`handleLensesChanged` 同值 bailout。
+- 定位：`LOCATION_CACHE_TTL_MS = 60_000`，缓存键 `${mode}|${geoLocale}|${detail}|${localeId}`，
+  只缓存 `outcome.ok` 的成功结果（失败不缓存）；`resolveForShot()` 命中缓存直接返回，
+  快门最多等 2500ms；`refresh()` 先清缓存再自增 `probeToken`（手动刷新绕缓存）。
+  全仓仍然没有 `watchPositionAsync(` —— 只取单次 fix，不订阅连续定位。
+
+### 39.7 已知缺口与如实说明
+
+- **48MP 不存在**：见 §39.1 末尾。本版不伪造 48MP，也不为了"看起来更高清"去选 16:9 高分辨率预设。
+- **离屏合成器本来就不常驻**：本版不是修一个"常驻 bug"，而是把"只在显影时挂载"从调用约定
+  升级成组件结构（`stage === null` 直接 `return null`），并用门禁锁死。真正的问题从来不是常驻，
+  而是挂载点分散、`presentation` 靠 prop 传、卸载路径依赖调用方自觉。
+- **零 SVG 是既成事实，不是本版成果**：颗粒一直是预烘 PNG。本版只做"防回退"，不引入矢量颗粒。
+- **胶囊动画本来就是 native driver**：3 秒隐现没有走 React state 逐帧重绘，本版未改。
+- **本版真正修掉的发热源**（四条，全部有门禁对应）：
+  1. `pictureSize` 每次换镜头都发一次 `getAvailablePictureSizesAsync` + 重配 sessionPreset；
+  2. 对焦脉冲 `autofocus='on'` 每换一档镜头/每拖一格行程就打一次原生对焦；
+  3. 每张照片都重新取一次 GPS fix（无 TTL、无并发去重）；
+  4. 顶层高频 state（色温 25ms / 曝光 / 变焦）触发整屏重渲染，静态子树每次重建。
+- **仍未解决的**：`zoom` 的 60Hz 值仍要穿过一次顶层 state（`cameraLayer` 的 `digitalFactor` 需要它），
+  只是已被 `cameraClipNode` 之外的节点挡住；相框预览的栅格化纹理每 30s 地名心跳会重烘一次（约 2 次/分钟）。
+- **不改的东西**：`takePictureAsync` 参数、`planPhotoCrop`、`planCapture`、`centerCropOrigin`、
+  画质三档长边、JPEG 0.98、i18n 文案与设置项——一行未动。
+
+### 39.8 验证清单与门禁
+
+> v1.8.6 门禁（15 道，全部 EXIT 0；工作区根 `node <脚本名>` 直接运行，零依赖、零网络）。
+> 合计 **28,926 条断言**（含 haze 81 + purity 64），0 失败。
+
+| # | 门禁 | 命令（工作区根） | 断言数 / 结果 |
+|---|------|------------------|---------------|
+| 1 | 日期引擎 | `node _probe_date_engine.cjs` | 3810 条 / 0 失败 / EXIT 0 |
+| 2 | 胶片观感（9 卷/去雾/暗角） | `node _probe_film_look.cjs` | 1612 条 / 0 失败 / EXIT 0 |
+| 3 | 合成/导出主链路 | `node _probe_geo_lock.cjs` | 16207 条 / 0 失败 / EXIT 0 |
+| 4 | NO FRAME 几何 | `node _probe_noframe_v181.cjs` | 455 条 / 0 失败 / EXIT 0 |
+| 5 | NO FRAME 水印 | `node _probe_noframe_watermark.cjs` | 458 条 / 0 失败 / EXIT 0 |
+| 6 | 相框皮肤材质（M1） | `node _probe_skin_material.cjs` | 1069 条 / 0 失败 / EXIT 0 |
+| 7 | 取景器/成片分面（M2） | `node _probe_v180_seams.mjs` | 1349 条 / 0 失败 / EXIT 0 |
+| 8 | 集成回归 | `node _probe_lead_integration.mjs` | 315 条 / 0 失败 / EXIT 0 |
+| 9 | 拍摄品质 | `node _probe_capture_quality.mjs` | 78 条 / 0 失败 / EXIT 0 |
+| 10 | 相机焦段/取景（v1.8.4） | `node _probe_v184_camera.cjs` | 938 条 / 0 失败 / EXIT 0 |
+| 11 | 地名多语言（M4） | `node _probe_v185_place.cjs` | 468 条 / 0 失败 / EXIT 0 |
+| 12 | 相框皮肤/内窗/衬底（M1+M5） | `node _probe_v185_frame.cjs` | 1781 条 / 0 失败 / EXIT 0 |
+| 13 | 去雾/白蒙预算审计 | `node _haze_audit.mjs` | 9/9 预设 PASS，结构门禁 0 失败，EXIT 0 |
+| 14 | 纯净度（零 `as any`/零新依赖） | `node _purity_audit.mjs` | 64 条 / 0 失败 / EXIT 0 |
+| 15 | **性能改造（v1.8.6 新增）** | `node _probe_v186_perf.cjs` | 241 条 / 0 失败 / EXIT 0 |
+| T | TypeScript 类型检查 | `cd retro-film-cam && npx tsc --noEmit -p tsconfig.json` | EXIT 0，零输出 |
+| E | iOS 导出 | `cd retro-film-cam && npx expo export --platform ios --no-bytecode` | EXIT 0，bundle `index-977478d678e54a43493327ab2445eca9.js` 1,350,807 B（754 modules） |
+
+新探针 `_probe_v186_perf.cjs` 的九节（全部为源码形态 + 纯函数实测，不 require 业务模块）：
+
+1. **S1 按需挂载**：读 `FilmStageComposer` / `CameraScreen` / `GalleryScreen` / `useFilmStage` 的 AST，
+   断言 `stage === null` 早退、两屏不直接渲染 `<FilmCompositor>`、`presentation="print"` 只在组件内部、
+   挂载互斥/幂等卸载/两帧 rAF/超时 warning；`countStageImages` / `countExtraStageImages` /
+   `countMissingStageImages` 三函数用 `new Function` **真跑**（`overlayUri` 有/空/缺 → 1/0/0，
+   `fullBleed` true/false/缺 → 1/0/0）。
+2. **S2 栅格化**：两文件各恰 1 处两属性 + 位置断言；`FilmCompositor` / `FilmLookLayers` / `CameraScreen` /
+   `GalleryScreen` 里合计 0 次。
+3. **S3 零 SVG / 零新依赖**：递归扫 `src/**`；依赖白名单 18 + 5 逐字对拍。
+4. **S4 节流**：AST 实测 `EMIT_INTERVAL_MS = 50`；松手补发 `emit(dial, state.pending)`；
+   `useCapsuleAutoHide` 的 `useNativeDriver: true` 存在且没有 `false`。
+5. **S5 对焦脉冲**：effect 依赖逐字冻结；`setFocusPulseToken` 恰 2 处、owner 排序 =
+   `['applyStop','handleFlipCamera']`；`handleCycleFocal` 经 `applyStop`。
+6. **S6 `pickPictureSize` 跑表**：9 条真实枚举串 × 多个 target（2048/3024/4032/8064），
+   断言 4:3 优先、16:9 永不选中、`'Photo'` 兜底、空列表 `undefined`、确定性。
+7. **S7 定位**：TTL=60000、缓存键、命中/失效、in-flight 去重、`refresh` 先清缓存、
+   `SHOT_DEADLINE_MS = 2500`、全仓无 `watchPositionAsync(`。
+8. **S8 六节点**：节点存在、`useMemo` 包裹、依赖数组**逐字冻结**；
+   `cameraClipNode` 不含 `exposure` / `temperatureOverride` / `resolved` / `exposureCount` / `doubleExposure`。
+9. **S9 旧探针更新**：`_probe_v185_frame.cjs` 改断 `FilmStageComposer`、`_probe_noframe_v181.cjs`
+   指向 `OpticalDateTextImpl`（带原名兜底），语义断言全部保留。
+
+环境与自证：
+
+- node v24.18.0；15 道探针全部在仓库外只读源码/纯函数，`retro-film-cam/**` 里除本节与 §39.10 列出的文件外零改动。
+- 零新依赖 / 零 `as any` / `package.json`、`package-lock.json` 零改动（purity G 段 git 自证）。
+- 探针首轮 5 个红全部是探针自身缺陷（同模块多条 import 覆盖、注释里的 `target.capture()` 抢先、
+  `flushPending` 只存在于注释、顶栏 `LiquidGlassView` 实际 2 个、自指断言写反），已逐条修正；
+  业务实现未因探针改过一行。
+- 旧探针与新实现冲突的两处（`_probe_v185_frame.cjs` 的 `presentation` 计数、
+  `_probe_noframe_v181.cjs` 的 `OpticalDateText` 函数体）只改代码形态匹配，语义断言原样保留。
+
+原始输出：`_gate_v186_run.out.txt`（15 道全量输出）、`_gate_v186_lead.txt`（15 道 EXIT 码汇总）。
+
+### 39.9 产物指纹
+
+<!-- v1.8.6 发布后回填：本地/远端提交、CI run/job、artifact、IPA 体积/SHA256、Release id/asset、下载地址、核验结果、export 冒烟、本地 IPA 副本 -->
+
+### 39.10 文件改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/components/FilmStageComposer.tsx` | **新增**（93 行）：`memo` + `stage === null` 早退 + `presentation="print"` 写死 |
+| `src/hooks/useFilmStage.ts` | 挂载互斥、幂等卸载、超时 warning、`capture()` 前两帧 rAF；计数三函数未改 |
+| `src/components/DevelopOverlay.tsx` | 实现体改名 `DevelopOverlayImpl` + `memo` 导出（逻辑零改动） |
+| `src/components/FilmCompositor.tsx` | 实现体改名 `FilmCompositorImpl` + `memo` 导出（函数体零改动） |
+| `src/components/GalleryScreen.tsx` | 挂载点换 `FilmStageComposer`（不传 `lookSeed`，成片颗粒不变） |
+| `src/components/CameraScreen.tsx` | 六个 `useMemo` 渲染节点、`pickPictureSize` 画质档驱动、`focusPulseToken`、`sameLensList`、effect 依赖收紧 |
+| `src/components/ParameterScrubBar.tsx` | `EMIT_INTERVAL_MS` 25→50，注释同步 |
+| `src/hooks/useLocationStamp.ts` | 60s TTL 缓存 + in-flight 去重 + `refresh()` 清缓存 |
+| `src/components/FramePreviewLayer.tsx` | 根 View 加 `shouldRasterizeIOS` / `renderToHardwareTextureAndroid` + 零损失论证注释 |
+| `src/components/FilmDrawer.tsx` | 静态相纸组加同两属性 |
+| `src/components/DateGlyphs.tsx` | `OpticalDateText` 改 `memo`（导出名/props 不变） |
+| `app.json` | version `1.8.5` → `1.8.6` |
+| `README.md` | 本节 §39 + TOC |
+
+工作区根（不进仓库）：`_probe_v186_perf.cjs`（新增第 15 道门禁）、`_gate_v186_run.out.txt`、
+`_gate_v186_lead.txt`、`_gate_v186_report.txt`、`_v186_contract.md`。
 
 ---
 

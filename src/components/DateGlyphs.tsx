@@ -36,6 +36,7 @@
  * `constants/dateEngine.ts` 的 `dateEngineTextWidth()` 逐项同源（0.6 em advance + 字距 + 余量），
  * 任何人改了字体都必须同时改那两处。
  */
+import { memo } from 'react';
 import type { ReactElement } from 'react';
 import { Platform, StyleSheet, Text, View } from 'react-native';
 import type { TextStyle, ViewStyle } from 'react-native';
@@ -188,7 +189,7 @@ export interface OpticalDateTextProps {
  * 返回 `null` 的条件：没字 / 字号非正 / 宽度非正 —— 这些是"排版层还没准备好"的情形，
  * 渲染一个空 `View` 会让父级的"这一行有没有日期"判断误判。
  */
-export function OpticalDateText({
+function OpticalDateTextImpl({
   text,
   style,
   fontPx,
@@ -252,6 +253,17 @@ export function OpticalDateText({
     </View>
   );
 }
+
+/**
+ * `memo`（v1.8.6）：这一行日期会在三处被父级重排带着重建 —— 成片合成的 `DateStamp`、
+ * 取景器预览 `FramePreviewLayer`、抽屉/相册里的迷你成片。七个 props 全是标量
+ * （`text` / `style` / `fontPx` / `width` / `letterSpacing` / `glow` / `rotationDeg`），
+ * 父级重渲染而日期没变时应当整棵 bailout，不必把三层 `<Text>` + 三次阴影重新提交。
+ *
+ * 导出名与 props 接口名都不变（`DateStamp.tsx:47/203` 零改动）；实现体改名
+ * `OpticalDateTextImpl` 只是让"带 memo 的导出"与"裸实现"一眼可分。
+ */
+export const OpticalDateText = memo(OpticalDateTextImpl);
 
 const styles = StyleSheet.create({
   /**

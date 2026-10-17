@@ -219,6 +219,39 @@ function FramePreviewLayerImpl({
    */
   const paperRadius = paperCornerRadius(layout.width, layout.height, frame.skin);
 
+  /*
+   * ── v1.8.6：把这一整棵「幕布 + 相纸 + 皮肤 + 水印」烘成一张 GPU 纹理 ──────────
+   *
+   * 为什么这里烘是**零损失**（不是"差不多"，是同一批像素）：
+   *   · 幕布是全不透明的 `CURTAIN_COLOR`（没有任何 alpha），相纸层是
+   *     `FRAME_PREVIEW_OPACITY` 的 0.82 —— 这两层都在**本子树内部**就合成完了。
+   *     栅格化只把本子树压平成一张位图，不改它与父级/下方实时画面之间的合成关系，
+   *     0.82 的 alpha 原样留在位图里，叠到实时画面上的结果一个像素都不差。
+   *   · 整组是静态的：`frame` / `layout` / `left` / `top` / `variant` / `pieces` /
+   *     `fontFamily` / `glow` 不变时，这棵子树的绘制参数一个都不变。`shouldRasterize`
+   *     干的就是"同一批 draw 调用只跑一次"：缓存有效期间，取景器每帧重绘都不用再走
+   *     这几百个绘制调用（幕布 + PNG + `FrameSkin` 的齿孔/压痕/帧号 + 三层日期字）。
+   *   · 缓存按屏幕倍率烘：RN 0.86 Fabric 在打开 `shouldRasterize` 时把
+   *     `rasterizationScale` 设成 `traitCollection.displayScale`（见
+   *     `RCTViewComponentView.mm` 的 `shouldRasterize` 分支），不是 1x 位图放大，
+   *     所以相纸纹理与文字不会变糊。
+   *   · `pointerEvents="none"` 已经写在这个根节点上，栅格化不改命中测试。
+   *
+   * 什么时候会重新烘（都是"用户真的改了东西"，不是每帧）：换相框 / 换材质档 /
+   * 版式或几何变（旋转、切比例、取景器 `onLayout`）/ 水印排版变（含 **30s 地名心跳**
+   * 刷新地名、切语言、换日期引擎）/ 字体族或辉光开关变。这些 props 一变，React 重提交，
+   * 图层内容随之变化，系统自动作废缓存并重烘一次；两次变化之间全是复用。
+   *
+   * ⚠️ 这两个属性**只许留在这里**，绝不能下放到下面这些"会动"的子树：
+   *   · `FilmCompositor`：成片走 `drawViewHierarchyInRect` 按**点尺寸**重绘、再按成片
+   *     长边放大导出。底下若是烘过的位图，等于先按屏幕倍率降采样再放大 —— 成片会糊，
+   *     「画质零回归」当场破。
+   *   · `Animated.View`（`lensScale` 那支 spring）：transform 每帧都在变，栅格化缓存
+   *     每帧作废、每帧重烘，比不烘更贵（还可能闪半帧旧纹理）。
+   *   · `CameraView`：实时画面由原生相机会话自己刷新，压平只会得到一张冻结的图。
+   *   · `FilmLookLayers`：颗粒/暗角是多层 `mixBlendMode` 合成，压平后"与下层相乘"
+   *     的语义就没了（混合需要下层的像素还在），颜色会变 —— 那是视觉回归，不是省电。
+   */
   return (
     <View
       /*
@@ -226,6 +259,9 @@ function FramePreviewLayerImpl({
        * 不关掉命中测试，它会把下面那层 `focusCatcher` 的"点哪对哪"整个吞掉。
        */
       pointerEvents="none"
+      // v1.8.6：整棵静态子树烘焙（零损失的论证见上方注释）。
+      shouldRasterizeIOS
+      renderToHardwareTextureAndroid
       style={[styles.root, { width: containerWidth, height: containerHeight }]}
     >
       {/*

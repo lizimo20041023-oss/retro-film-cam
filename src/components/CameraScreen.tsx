@@ -84,7 +84,8 @@ import { processAndSaveFilmPhoto } from '../utils/processFilmPhoto';
 import { AlbumThumb } from './AlbumThumb';
 import { DevelopOverlay, computeDevelopStageBox } from './DevelopOverlay';
 import { DialButton } from './DialButton';
-import { FilmCompositor, planWatermark } from './FilmCompositor';
+import { planWatermark } from './FilmCompositor';
+import { FilmStageComposer } from './FilmStageComposer';
 import { FilmLookLayers } from './FilmLookLayers';
 import { FilmDrawer } from './FilmDrawer';
 import { FocusExposure } from './FocusExposure';
@@ -242,44 +243,88 @@ function clamp01(value: number): number {
 }
 
 /**
- * 从 `getAvailablePictureSizesAsync()` 的结果里挑**最高分辨率**的照片档（v1.8.4）。
+ * 从 `getAvailablePictureSizesAsync()` 的结果里挑**当前画质档需要、且不改变取景范围**的
+ * 照片档（v1.8.6 重写，v1.8.4 只挑"最大"）。
  *
  * iOS 返回的不是像素尺寸，而是 `AVCaptureSession.Preset` 的枚举串（实测
  * `["3840x2160","1920x1080","1280x720","640x480","352x288","Photo","High","Medium","Low"]`）。
- * 最大照片档就是 `'Photo'`（也是 expo 的默认值，但用户要求**显式绑定**，
- * 免得将来某个版本改了默认值就把画质悄悄降下去）：
- *   1. 有 `'Photo'` 就用它；
- *   2. 否则把 `WxH` 解析出来按面积降序取最大（Android 返回的才是像素尺寸）；
- *   3. 再否则退回 `'High'`（最后一个有"高质量"语义的枚举值）；
- *   4. 空列表 / 认不出来 → `undefined`，即不传 `pictureSize`，让 expo 用自己的默认。
+ * 其中只有 `'Photo'` 是 4:3（传感器原生比例）；`3840x2160 / 1920x1080 / 1280x720` 全是 16:9，
+ * `High/Medium/Low` 语义上也是视频档。`pictureSize` 是**全局 sessionPreset**
+ * （`CameraView.swift:296-303` → `updateSessionPreset`），选 16:9 的代价不是"小一点"，
+ * 而是预览流与画幅比例一起跳：`planCameraLayer` 的 3:4 传感器假设、`planPhotoCrop` 的
+ * 成片裁切、以及 `captureQuality.ts:29-31` 那句「画质档只买清晰度，不买焦距、不买取景范围」
+ * 会同时被打破。
+ *
+ * 判据因此是**先保 4:3 取景范围，再谈长边**（用户 m03551 第五条"分辨率策略"）：
+ *   1. 广告列表里找到 **4:3**（宽高比 4/3 ±0.02）且按 3:4 居中裁切后长边仍 ≥ `targetLongEdge`
+ *      的**最小**一项 —— 将来系统若给出 4:3 中间档，这里会自动用上，不必改代码；
+ *   2. 否则 `'Photo'`（传感器 4:3 全幅，`AVCaptureSession.Preset.photo`）；
+ *   3. 否则 `'High'`；最后 `undefined`（不传 prop，退回 expo 默认）。
+ *
+ * 为什么 `'Photo'` 同时满足三档：它是 4032×3024（4:3，长边 4032），而 2048 / 3024 / 4032
+ * 三档只是**导出画布**的长边（`resolveCaptureLongEdge`），源图始终是 4032×3024 ——
+ * 不降画质，也**不伪造 48MP**（iOS 上不存在 8064×6048 的通道，见 `captureQuality.ts` 头注释）。
  */
-function pickPictureSize(sizes: readonly string[]): string | undefined {
+function pickPictureSize(sizes: readonly string[], targetLongEdge: number): string | undefined {
   if (sizes.length === 0) {
     return undefined;
   }
-  if (sizes.includes('Photo')) {
-    return 'Photo';
-  }
+  const target = Math.max(0, Math.round(targetLongEdge));
   let best: string | undefined;
-  let bestArea = 0;
+  let bestLong = Number.POSITIVE_INFINITY;
   for (const size of sizes) {
     const match = /^(\d+)x(\d+)$/.exec(size);
     if (match === null) {
       continue;
     }
-    const area = Number(match[1]) * Number(match[2]);
-    if (Math.max(0, area) > bestArea) {
-      bestArea = area;
+    const width = Number(match[1]);
+    const height = Number(match[2]);
+    if (width <= 0 || height <= 0) {
+      continue;
+    }
+    const long = Math.max(width, height);
+    const short = Math.min(width, height);
+    const isFourThree =
+      Math.abs(width / height - 4 / 3) <= 0.02 || Math.abs(height / width - 4 / 3) <= 0.02;
+    if (!isFourThree) {
+      // 16:9 / 其它比例：绝不能喂 sessionPreset（会改取景范围，见上），直接跳过
+      continue;
+    }
+    // 居中裁到 4:3 之后，长边最多只剩短边 × 4/3
+    const croppedLong = Math.min(long, Math.round(short * (4 / 3)));
+    if (croppedLong >= target && croppedLong < bestLong) {
+      bestLong = croppedLong;
       best = size;
     }
   }
   if (best !== undefined) {
     return best;
   }
+  /*
+   * iOS 唯一的 4:3 全幅档。注意这里**不是**"最大分辨率就选它"：標準档也用它，
+   * 因为换任何更小的 4:3 档都会让取景范围缩水，而标准/高清买的是成片长边、
+   * 不是传感器面积（见 `captureQuality.ts` 头注释）。
+   */
+  if (sizes.includes('Photo')) {
+    return 'Photo';
+  }
   if (sizes.includes('High')) {
     return 'High';
   }
   return undefined;
+}
+
+/** 镜头列表逐项比较：原生事件与 effect 会重复给同一份列表，同值不写 state */
+function sameLensList(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** 底片计数后缀：后摄 A 卷、前摄 B 卷 */
@@ -469,6 +514,18 @@ export function CameraScreen() {
    */
   const [focusPulse, setFocusPulse] = useState(false);
   /**
+   * 手动切焦段的**单调令牌**（v1.8.6 性能）。
+   *
+   * 对焦脉冲只跟这个数走，不跟 `stop.id / lens / facing` 走 —— 以前那三个依赖意味着
+   * **搓一次刻度尺**从 13mm 扫到 52mm，每跨一个档就打一次原生 `autofocus='on'`
+   * （单次对焦后锁定），镜头对焦马达在整个行程里来回抽，是真机发热与"画面抽一下"
+   * 的主要来源之一。连续行程本来就该由连续 AF（`autofocus='off'`）负责。
+   *
+   * 自增点只有三处：`applyStop`（点档位 / 短按循环）、`handleFlipCamera`（换光学系统）、
+   * 以及将来任何"用户显式要求重锁"的入口。渲染周期里**不许**碰它。
+   */
+  const [focusPulseToken, setFocusPulseToken] = useState(0);
+  /**
    * 刻度尺搓出来的**连续**焦段（读数 + 当前真正挂着的那支镜头）。
    *
    * 为什么另开一份 state，而不是只把 `stopIndex` 对齐到最近的档：`stopIndex` 是"档位"
@@ -557,6 +614,8 @@ export function CameraScreen() {
   const shotLockRef = useRef(false);
   const askedCameraRef = useRef(false);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** `getAvailableLensesAsync` 的 in-flight 去重（v1.8.6）：同一时刻只允许一次原生往返 */
+  const lensesInFlightRef = useRef(false);
   const lensScale = useRef(new Animated.Value(1)).current;
 
   const frame = FRAMES[frameIndex] ?? FRAMES[0];
@@ -895,22 +954,35 @@ export function CameraScreen() {
     setPreviewBox((current) => (current.width === width && current.height === height ? current : { width, height }));
   }, []);
 
+  /**
+   * 拉一次可用镜头列表（v1.8.6 加 in-flight 去重）。
+   *
+   * `getAvailableLensesAsync()` 是一次原生往返：相机就绪、翻面、`onAvailableLensesChanged`
+   * 事件都会走到这里，而 effect 里的依赖又可能在同一次提交里重复触发。同一时刻只允许
+   * 一个请求在飞，回来就用（同值不写 state，避免一次原生往返变成一次整屏重渲染）。
+   */
   const refreshLenses = useCallback(async () => {
+    if (lensesInFlightRef.current) {
+      return;
+    }
     const camera = cameraRef.current;
     if (!camera) {
       return;
     }
+    lensesInFlightRef.current = true;
     try {
       const available = await camera.getAvailableLensesAsync();
-      setLenses(available);
+      setLenses((current) => (sameLensList(current, available) ? current : available));
     } catch {
       // 拿不到镜头列表不该拦住拍照：档位退化成"只改 zoom，不指定镜头"
-      setLenses([]);
+      setLenses((current) => (current.length === 0 ? current : []));
+    } finally {
+      lensesInFlightRef.current = false;
     }
   }, []);
 
   const handleLensesChanged = useCallback(({ lenses: available }: { lenses: string[] }) => {
-    setLenses(available);
+    setLenses((current) => (sameLensList(current, available) ? current : available));
   }, []);
 
   const handleCameraReady = useCallback(() => {
@@ -931,11 +1003,24 @@ export function CameraScreen() {
   }, []);
 
   /**
-   * 拉一次「这台相机支持哪些照片尺寸」，并绑上其中**最大**的那一档（v1.8.4）。
+   * 当前画质档要买到的**成片长边**（v1.8.6）。
    *
-   * expo-camera 默认的 `pictureSize` 其实就是 `'Photo'`，但用户要求**显式绑定**：
-   * 万一将来默认值变了、或者某台设备给的是另一组枚举，画质不该跟着悄悄降。
-   * 拿不到就保持现状（`pictureSize` 为 `undefined` ⇒ 不传这个 prop，用 expo 默认）。
+   * 三档只是导出画布的长边：2048 / 3024 / 4032（`captureQuality.ts`）。它同时是
+   * `pickPictureSize` 的判据（源图长边必须 ≥ 它，才谈得上"不减画质"）与
+   * `pictureSize` effect 的依赖 —— 换画质档要重新挑一次预设，换镜头则**不**需要。
+   */
+  const targetLongEdge = useMemo(
+    () => findCaptureQualitySpec(settings.captureQuality).longEdge,
+    [settings.captureQuality],
+  );
+
+  /**
+   * 拉一次「这台相机支持哪些照片尺寸」，并按当前画质档绑定 4:3 的照片预设（v1.8.6）。
+   *
+   * 与 v1.8.4 的区别：以前是"永远挑最大"，于是每换一次镜头都重拉一遍并对同一份
+   * 枚举串重新 setState。现在挑出来的结果由画质档决定（见 `pickPictureSize` 的
+   * 判据），同值直接 bailout —— 少掉的是原生往返与一次整树重渲染，画质一分不降。
+   * 拿不到尺寸就保持现状（`pictureSize` 为 `undefined` ⇒ 不传这个 prop，用 expo 默认）。
    */
   const refreshPictureSize = useCallback(async () => {
     const camera = cameraRef.current;
@@ -944,25 +1029,27 @@ export function CameraScreen() {
     }
     try {
       const sizes = await camera.getAvailablePictureSizesAsync();
-      setPictureSize(pickPictureSize(sizes));
+      const next = pickPictureSize(sizes, targetLongEdge);
+      setPictureSize((current) => (current === next ? current : next));
     } catch {
       // 拿不到尺寸不该拦住拍照：退回"不传 pictureSize"，让 expo 用自己的默认值
     }
-  }, []);
+  }, [targetLongEdge]);
 
   /**
-   * `pictureSize` 的刷新时机（v1.8.4）：相机就绪、以及每次换镜头 / 前后摄 / 重建视图之后。
+   * `pictureSize` 的刷新时机（v1.8.6 收紧）：相机就绪、前后摄切换、重建视图、换画质档。
    *
-   * 为什么必要：每个镜头会话能支持的照片尺寸并不完全相同（前摄与后摄尤其不同），
-   * 换镜头后不重拉就可能把后摄的 `'Photo'` 塞给前摄。`cameraReady` 一进来就一起
-   * 覆盖了 `onCameraReady` 那条路（`handleCameraReady` 会 `setCameraReady(true)`）。
+   * **不再依赖 `lens`**：`pictureSize` 是全局 sessionPreset，与"当前挂哪支镜头"无关；
+   * 以前把 `lens` 放进依赖，意味着搓一次焦段刻度尺（13→52mm 会跨好几档）就发一次
+   * `getAvailablePictureSizesAsync()` 原生往返，然后可能再触发一次 `sessionPreset`
+   * 重配置 —— 相机在发热，而画面没有任何变化。
    */
   useEffect(() => {
     if (!cameraReady) {
       return;
     }
     void refreshPictureSize();
-  }, [cameraReady, lens, facing, cameraKey, refreshPictureSize]);
+  }, [cameraReady, facing, cameraKey, refreshPictureSize]);
 
   /**
    * 翻过面之后补拉一次镜头列表（v1.8.4 修 bug）。
@@ -978,12 +1065,17 @@ export function CameraScreen() {
   }, [cameraReady, facing, refreshLenses]);
 
   /**
-   * 切档 / 换镜头后的**对焦重锁**（v1.8.4）：`autofocus` 打一个 50ms 的 `'on'` 脉冲。
+   * **用户手动**切焦段后的对焦重锁（v1.8.4 起，v1.8.6 收紧触发面）：`autofocus` 打一个
+   * 50ms 的 `'on'` 脉冲。
    *
    * 为什么不是一直 `'on'`：原生 `'on'` = 单次对焦后**锁定**，一直开着等于关了连续 AF，
-   * 用户稍微换个角度画面就不追焦了。所以常态 `'off'`（连续 AF），只在"焦段变了、
-   * 画面尺度和景深都变了"的这一刻重锁一次。依赖里的 `stop.id` / `lens` / `facing`
-   * 把三种会改变取景几何的事件都覆盖了。
+   * 用户稍微换个角度画面就不追焦了。所以常态 `'off'`（连续 AF），只在"用户真的换了
+   * 焦段、画面尺度和景深都变了"的这一刻重锁一次。
+   *
+   * 依赖**只有令牌**：以前是 `[cameraReady, stop.id, lens, facing]`，搓一次刻度尺
+   * 13→52mm 每跨一档就重锁一次，对焦马达全程来回抽 —— 真机发热、取景器画面一抽一抽
+   * 都是这个原因。现在只有点档位 / 短按循环（`applyStop`）或翻面（`handleFlipCamera`）
+   * 才自增令牌；连续行程交给连续 AF。渲染周期里绝不触发。
    */
   useEffect(() => {
     if (!cameraReady) {
@@ -992,7 +1084,7 @@ export function CameraScreen() {
     setFocusPulse(true);
     const timer = setTimeout(() => setFocusPulse(false), FOCUS_PULSE_MS);
     return () => clearTimeout(timer);
-  }, [cameraReady, stop.id, lens, facing]);
+  }, [cameraReady, focusPulseToken]);
 
   const handleFrameChange = useCallback((next: number) => {
     setFrameIndex(wrapIndex(next));
@@ -1047,6 +1139,8 @@ export function CameraScreen() {
     setStopIndex(DEFAULT_STOP_INDEX);
     // 换镜头等于换了一支光学系统，搓出来的读数一律作废
     setScrubFocal(null);
+    // 翻面换掉整套光学系统 → 显式请求一次对焦重锁（v1.8.6 令牌，见 focusPulseToken 注释）
+    setFocusPulseToken((current) => current + 1);
   }, []);
 
   const handleZoomChange = useCallback(
@@ -1110,6 +1204,8 @@ export function CameraScreen() {
       setDigitalFactor(resolution.digitalFactor);
       // 档位是"离散的权威"：点了档，搓出来的读数就该让位给档位
       setScrubFocal(null);
+      // 用户真的点了档位 / 短按循环焦段 → 请求一次对焦重锁（v1.8.6 令牌）
+      setFocusPulseToken((current) => current + 1);
       // 推拉只作用在画面容器上：参考线和对焦层跟着缩的话，等于告诉用户"画幅变了"
       lensScale.setValue(LENS_PUSH_SCALE);
       Animated.spring(lensScale, {
@@ -1663,6 +1759,355 @@ export function CameraScreen() {
   const bannerMessage = saveIssue ?? notice;
   const focusHintVisible = !focusSeen && interactive && focusTarget === null;
 
+  /*
+   * ── v1.8.6 · 高频渲染隔离 ──────────────────────────────────────────────────
+   *
+   * 这个屏幕有三个每秒 20~60 次改写顶层 state 的手势：捏合变焦（`zoom`）、对焦框上下
+   * 拖动（`exposure`）、刻度尺 / 色温搓动（`scrubFocal` / `temperatureOverride`）。
+   * 它们每次 setState 都会让本组件整个函数体重跑 —— 本身很便宜，**贵的是重建元素树**：
+   * 未 memo 的 `FramePreviewLayer`、`ViewfinderWindow`、`DevelopOverlay` 都会跟着重新
+   * reconcile 一遍（相框层里还有 PNG + 幕布 + 相纸 + 水印一整套）。
+   *
+   * 下面六个 `useMemo` 把元素树切成稳定块：只要某一块的依赖没变，React 拿到的就是
+   * **同一个元素引用**，整块子树直接跳过 reconcile。隔离粒度按"谁真的会变"来切：
+   *
+   *   cameraClipNode    ← 相机几何 / 硬件参数（捏合只改 zoom，会进来；色温不会）
+   *   liveLookNode      ← 实时滤镜（色温、曝光档、胶片预设会进来）
+   *   viewfinderNode    ← 镂空窗 + 九宫格（只有几何/辅助线开关会进来）
+   *   framePreviewNode  ← 相框实时预览（换框、换相框材质、日期水印会进来）
+   *   controlNode       ← 底部控制台（工具行状态、底片计数、缩略图）
+   *   overlayNode       ← 取景器内的瞬时字幕/横幅/胶囊行（倒计时每秒一次只动这里）
+   *
+   * 刻意**不**进 memo 的：`FrameSwitcher`（里面装着"点哪对哪"的 `focusCatcher`，
+   * 手势命中区必须每次都能拿到最新的 `handleTapFocus`）与 `FocusExposure`（对焦框
+   * 自己的动画在内部 native driver 跑，props 也只跟 `focusTarget/exposure` 有关）。
+   *
+   * 注意：`cameraFocusProps` 里含 `exposure`，所以 EV 变化会重建 `cameraClipNode` ——
+   * 这是**必须**的（`exposure` 是 `CameraView` 的原生 prop），但重建范围只有相机这一块，
+   * 相框/颗粒/控制台都不会再跟着重画。
+   */
+  const cameraClipNode = useMemo(
+    () =>
+      cameraGranted && previewBox.width > 1 && previewBox.height > 1 ? (
+        <Animated.View
+          style={[
+            styles.cameraClip,
+            {
+              left: viewfinderWindow.left,
+              top: viewfinderWindow.top,
+              width: viewfinderWindow.width,
+              height: viewfinderWindow.height,
+            },
+            { transform: [{ scale: lensScale }] },
+          ]}
+        >
+          <CameraView
+            key={cameraKey}
+            ref={cameraRef}
+            style={{
+              position: 'absolute',
+              left: cameraLayer.offset.x,
+              top: cameraLayer.offset.y,
+              width: cameraLayer.box.width,
+              height: cameraLayer.box.height,
+            }}
+            facing={facing}
+            mode="picture"
+            {...cameraFocusProps}
+            flash={facing === 'back' ? flashMode : 'off'}
+            selectedLens={lens}
+            onAvailableLensesChanged={handleLensesChanged}
+            zoom={zoom}
+            pictureSize={pictureSize}
+            autofocus={focusPulse ? 'on' : 'off'}
+            animateShutter
+            onCameraReady={handleCameraReady}
+            onMountError={handleMountError}
+          />
+        </Animated.View>
+      ) : null,
+    [
+      cameraGranted,
+      previewBox.width,
+      previewBox.height,
+      styles,
+      viewfinderWindow,
+      lensScale,
+      cameraKey,
+      cameraLayer,
+      facing,
+      cameraFocusProps,
+      flashMode,
+      lens,
+      handleLensesChanged,
+      zoom,
+      pictureSize,
+      focusPulse,
+      handleCameraReady,
+      handleMountError,
+    ],
+  );
+
+  const liveLookNode = useMemo(
+    () =>
+      previewBox.width > 1 && previewBox.height > 1 ? (
+        <View
+          style={[
+            styles.liveLook,
+            {
+              left: viewfinderWindow.left,
+              top: viewfinderWindow.top,
+              width: viewfinderWindow.width,
+              height: viewfinderWindow.height,
+            },
+          ]}
+          pointerEvents="none"
+        >
+          <FilmLookLayers
+            preset={resolved}
+            width={viewfinderWindow.width}
+            height={viewfinderWindow.height}
+            surface="live"
+            seed={LOOK_SEED}
+          />
+        </View>
+      ) : null,
+    [previewBox.width, previewBox.height, styles, viewfinderWindow, resolved],
+  );
+
+  const viewfinderNode = useMemo(
+    () =>
+      previewBox.width > 1 && previewBox.height > 1 ? (
+        <ViewfinderWindow window={viewfinderWindow} grid={resolved.showGuide} />
+      ) : null,
+    [previewBox.width, previewBox.height, viewfinderWindow, resolved.showGuide],
+  );
+
+  const framePreviewNode = useMemo(
+    () =>
+      framePreviewVisible && previewBox.width > 1 && previewBox.height > 1 ? (
+        <FramePreviewLayer
+          frame={resolvedFrame}
+          layout={previewLayout}
+          left={frameOffset.left}
+          top={frameOffset.top}
+          variant={settings.frameVariant}
+          pieces={previewPieces}
+          fontFamily={fonts.fontFamily}
+          glow={resolved.timestamp.glow}
+        />
+      ) : null,
+    [
+      framePreviewVisible,
+      previewBox.width,
+      previewBox.height,
+      resolvedFrame,
+      previewLayout,
+      frameOffset.left,
+      frameOffset.top,
+      settings.frameVariant,
+      previewPieces,
+      fonts.fontFamily,
+      resolved.timestamp.glow,
+    ],
+  );
+
+  const controlNode = useMemo(
+    () => (
+      <LiquidGlassView
+        radius={0}
+        rim={false}
+        onLayout={(event) => setConsoleHeight(event.nativeEvent.layout.height)}
+        style={[styles.console, styles.overlayChrome, { paddingBottom: Math.max(insets.bottom, 10) }]}
+      >
+        <ToolRow
+          doubleExposure={doubleExposure}
+          timerSeconds={timerSeconds}
+          flashMode={flashMode}
+          flashDisabled={facing !== 'back'}
+          framePreview={framePreview}
+          busy={developing}
+          onImport={handleImportPress}
+          onToggleDouble={handleToggleDouble}
+          onCycleTimer={handleCycleTimer}
+          onCycleFlash={handleCycleFlash}
+          onFlip={handleFlipCamera}
+          onToggleFramePreview={handleToggleFramePreview}
+        />
+        <View style={styles.coreRow}>
+          <View style={styles.coreSide}>
+            <AlbumThumb refreshKey={albumKey} size={CORE_THUMB_SIZE} onPress={handleOpenGalleryScreen} />
+          </View>
+          <ShutterButton onPress={handleShutterPress} busy={developing} disabled={!cameraReady || !cameraGranted} />
+          <View style={[styles.coreSide, styles.coreSideRight]}>
+            <DialButton
+              glyph={(color) => <FilmGlyph size={FILM_GLYPH} color={color} />}
+              onPress={handleOpenFilmDrawer}
+              disabled={!interactive}
+              accessibilityLabel={t('camera.preset.a11y', { name: preset.name })}
+              size={CORE_ENTRY_SIZE}
+            />
+            <Text
+              style={[styles.filmName, { color: ink.paperDim }]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.7}
+              allowFontScaling={false}
+            >
+              {preset.name}
+            </Text>
+          </View>
+        </View>
+      </LiquidGlassView>
+    ),
+    [
+      styles,
+      insets.bottom,
+      ink.paperDim,
+      doubleExposure,
+      timerSeconds,
+      flashMode,
+      facing,
+      framePreview,
+      developing,
+      handleImportPress,
+      handleToggleDouble,
+      handleCycleTimer,
+      handleCycleFlash,
+      handleFlipCamera,
+      handleToggleFramePreview,
+      albumKey,
+      cameraReady,
+      cameraGranted,
+      handleShutterPress,
+      handleOpenGalleryScreen,
+      handleOpenFilmDrawer,
+      interactive,
+      t,
+      preset.name,
+    ],
+  );
+
+  const overlayNode = useMemo(
+    () => (
+      <>
+        {flashHint !== null ? (
+          <View
+            style={[styles.flashHint, pendingExposureUri !== null ? styles.flashHintTucked : null]}
+            pointerEvents="none"
+            accessible
+            accessibilityLiveRegion="polite"
+          >
+            <View style={styles.focusHintChip}>
+              <Text style={[styles.flashHintText, { color: ink.amber }]} allowFontScaling={false}>
+                {t(FLASH_STATE_KEY[flashHint])}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+        {focusHintVisible ? (
+          <View style={styles.focusHint} pointerEvents="none">
+            <View style={styles.focusHintChip}>
+              <Text style={[styles.focusHintText, { color: ink.paper }]} allowFontScaling={false}>
+                {t('camera.focus.hint')}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+        {countdown !== null ? (
+          <View
+            style={styles.countdownLayer}
+            pointerEvents="none"
+            accessible
+            accessibilityLabel={t('camera.timer.counting', { seconds: countdown })}
+          >
+            <Text style={[styles.countdownDigit, { color: ink.paper }]} allowFontScaling={false}>
+              {String(countdown)}
+            </Text>
+          </View>
+        ) : null}
+        {pendingExposureUri !== null ? (
+          <View style={styles.doubleHint} pointerEvents="none">
+            <View style={styles.focusHintChip}>
+              <Text style={[styles.doubleHintText, { color: ink.amber }]} allowFontScaling={false}>
+                {t('camera.tool.double.hint')}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+        {bannerMessage !== null ? (
+          <View style={[styles.banner, { backgroundColor: theme.panel, borderColor: ink.amberDeep }]}>
+            <Text style={[styles.bannerText, { color: ink.paper }]}>{bannerMessage}</Text>
+            <View style={styles.bannerActions}>
+              {saveIssue !== null ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('banner.openSettings')}
+                  onPress={handleOpenSystemSettings}
+                  hitSlop={8}
+                >
+                  <Text style={[styles.bannerAction, { color: ink.amber }]}>{t('banner.openSettings')}</Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('banner.dismiss')}
+                onPress={handleDismissBanner}
+                hitSlop={8}
+              >
+                <Text style={[styles.bannerAction, { color: ink.amber }]}>{t('banner.dismiss')}</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+        <View
+          style={[styles.barLayer, { bottom: consoleHeight + BAR_LAYER_GAP }]}
+          pointerEvents="box-none"
+        >
+          <ParameterScrubBar
+            temperature={resolved.color.temperature}
+            focalMm={focalMm}
+            exposure={exposure}
+            focalRole={focalRole}
+            focalMinMm={focalMinMm}
+            focalMaxMm={focalMaxMm}
+            onTemperature={handleTemperatureChange}
+            onFocal={handleFocalScrub}
+            onExposure={handleExposureChange}
+            onCycleFocal={handleCycleFocal}
+            wakeSignal={capsuleWake}
+          />
+        </View>
+      </>
+    ),
+    [
+      styles,
+      theme.panel,
+      ink.amberDeep,
+      flashHint,
+      pendingExposureUri,
+      focusHintVisible,
+      countdown,
+      bannerMessage,
+      saveIssue,
+      handleOpenSystemSettings,
+      handleDismissBanner,
+      t,
+      consoleHeight,
+      resolved.color.temperature,
+      focalMm,
+      exposure,
+      focalRole,
+      focalMinMm,
+      focalMaxMm,
+      handleTemperatureChange,
+      handleFocalScrub,
+      handleExposureChange,
+      handleCycleFocal,
+      capsuleWake,
+    ],
+  );
+
   let noticeNode: ReactNode = null;
   if (cameraPermission === null) {
     noticeNode = <ActivityIndicator color={ink.amber} />;
@@ -1780,67 +2225,7 @@ export function CameraScreen() {
         onLayout={handlePreviewLayout}
         {...pinchHandlers}
       >
-        {cameraGranted && previewBox.width > 1 && previewBox.height > 1 ? (
-          /*
-           * 相机层（v1.8.4）：**裁剪容器** = 镂空取景窗，里面的 `CameraView` 是一个
-           * 宽高比恒为 4:3、被 `digitalFactor` 等比放大、居中于窗口的盒子。
-           *
-           * 为什么必须这样：expo-camera 的 `takePictureAsync` 会把成片裁成**预览层**
-           * 的宽高比（`CameraPhotoCapture.swift:187-190`）。上一版 CameraView 铺满整屏，
-           * 4:3 传感器被裁成竖条，成片与取景一起被放大约 1.6~1.9 倍 —— 这就是
-           * 「0.5× 像 1×、1× 像 2×」的根因。盒子比例 = 传感器比例时那道裁切变成恒等。
-           *
-           * `key` 恒定：切焦段只改 props（`selectedLens` / `zoom` / 布局 style），
-           * 原生会话不重建，不会有黑一下。
-           */
-          <Animated.View
-            style={[
-              styles.cameraClip,
-              {
-                left: viewfinderWindow.left,
-                top: viewfinderWindow.top,
-                width: viewfinderWindow.width,
-                height: viewfinderWindow.height,
-              },
-              { transform: [{ scale: lensScale }] },
-            ]}
-          >
-            <CameraView
-              key={cameraKey}
-              ref={cameraRef}
-              style={{
-                position: 'absolute',
-                left: cameraLayer.offset.x,
-                top: cameraLayer.offset.y,
-                width: cameraLayer.box.width,
-                height: cameraLayer.box.height,
-              }}
-              facing={facing}
-              mode="picture"
-              {...cameraFocusProps}
-              /*
-                前摄没有硬件闪光灯，一律按 'off' 下发：`flashDisabled` 只是把按钮画灰，
-                真正决定硬件行为的是这里。三档原样透传，'auto' 就是原生测光那一档。
-                注意这里是 **JSX 属性位置**，注释必须写成裸块注释（本行上下这两行的形式）；
-                写成花括号包起来的 JSX 注释会被解析器当成展开语法，报 TS1005。
-              */
-              flash={facing === 'back' ? flashMode : 'off'}
-              selectedLens={lens}
-              onAvailableLensesChanged={handleLensesChanged}
-              zoom={zoom}
-              /* 显式绑定最高分辨率照片档（v1.8.4）：空列表时 undefined = 不传 */
-              pictureSize={pictureSize}
-              /*
-                autofocus 语义（`CameraEnums.swift:48/50`）：'on' = 单次对焦后**锁定**，
-                'off' = 连续 AF。常态必须是连续 AF，切档那 50ms 才打一次 'on' 重锁。
-              */
-              autofocus={focusPulse ? 'on' : 'off'}
-              animateShutter
-              onCameraReady={handleCameraReady}
-              onMountError={handleMountError}
-            />
-          </Animated.View>
-        ) : null}
+        {cameraClipNode}
 
         {/*
           胶片色彩实时预览（v1.8.0 · 模块一）。
@@ -1858,36 +2243,7 @@ export function CameraScreen() {
           色调、洗出来是另一个色调"。种子也用同一个 `LOOK_SEED`：微尘与颗粒分布
           必须与成片逐点一致，"所见即所得"优先于"每张随机换个心情"。
         */}
-        {previewBox.width > 1 && previewBox.height > 1 ? (
-          <View
-            style={[
-              styles.liveLook,
-              {
-                left: viewfinderWindow.left,
-                top: viewfinderWindow.top,
-                width: viewfinderWindow.width,
-                height: viewfinderWindow.height,
-              },
-            ]}
-            pointerEvents="none"
-          >
-            {/*
-              实时胶片滤镜（v1.8.0 · 模块一）。
-            
-              `preset` 必须与**按快门那次**用的是同一份解析结果：拍摄走 `gradedPreset`
-              （含用户拖过的色温），而 `resolved` 就是 `resolvePreset(gradedPreset)`。
-              传 `effectivePreset` 会少一层色温覆盖 —— 用户拖完色温看到"取景器暖了、
-              洗出来还是原色"，正是这一轮要消灭的那种对不上。
-            */}
-            <FilmLookLayers
-              preset={resolved}
-              width={viewfinderWindow.width}
-              height={viewfinderWindow.height}
-              surface="live"
-              seed={LOOK_SEED}
-            />
-          </View>
-        ) : null}
+        {liveLookNode}
 
         {/*
           镂空取景窗是**取景器的直接子层**，故意不放进下面 `FrameSwitcher` 里。
@@ -1898,12 +2254,7 @@ export function CameraScreen() {
           九宫格交给它的 `grid` prop（设置页那个"构图辅助线"开关直接接过来），
           本地那套 `GuideGrid` 已经删掉，理由见它原来所在的模块级注释。
         */}
-        {previewBox.width > 1 && previewBox.height > 1 ? (
-          <ViewfinderWindow
-            window={viewfinderWindow}
-            grid={resolved.showGuide}
-          />
-        ) : null}
+        {viewfinderNode}
 
         {/*
           相框实时预览（v1.7.0 · 模块三）。
@@ -1920,23 +2271,7 @@ export function CameraScreen() {
           注释）。`previewLayout.window` 是窗口相对**相纸**的位置，正好是 `FrameSkin`
           要的坐标系。
         */}
-        {framePreviewVisible && previewBox.width > 1 && previewBox.height > 1 ? (
-          /*
-           * v1.8.1：传**解析后**的相框 —— 无相框那一档的画幅比来自设置
-           * （`resolveFrame`），而这一层现在会在 `fullBleed` 时整组跳过幕布/相纸/材质，
-           * 它必须看得见那张"全铺"的标志位。
-           */
-          <FramePreviewLayer
-            frame={resolvedFrame}
-            layout={previewLayout}
-            left={frameOffset.left}
-            top={frameOffset.top}
-            variant={settings.frameVariant}
-            pieces={previewPieces}
-            fontFamily={fonts.fontFamily}
-            glow={resolved.timestamp.glow}
-          />
-        ) : null}
+        {framePreviewNode}
 
         {previewBox.width > 1 && previewBox.height > 1 ? (
           <FrameSwitcher
@@ -1973,117 +2308,14 @@ export function CameraScreen() {
         />
 
         {/*
-          闪光灯档位的瞬态提示：取景框**顶部中央**，0.8 秒后自己消失（`FLASH_HINT_MS`）。
-          `pointerEvents="none"` 是必须的 —— 它盖在实时画面上，不关掉命中测试就会把
-          点对焦的那一下吞掉。`accessibilityLiveRegion="polite"` 让读屏也念一遍：
-          视力用户看这行字，读屏用户靠它知道档位变了。
+          取景器内所有瞬时字幕 / 横幅 / 悬浮胶囊行（v1.8.6 收进 `overlayNode`）：
+          闪光灯档位提示、对焦提示、倒计时数字、重曝提示、错误横幅、胶囊行。
+
+          它们各自都 `pointerEvents="none"`（胶囊行是 `box-none`），不会吞掉点对焦
+          那一下；`accessibilityLiveRegion="polite"` 让读屏也念一遍。
+          倒计时每秒一次 `setState` 只重建这一个元素 —— 相机层、相框层、控制台一概不动。
         */}
-        {flashHint !== null ? (
-          <View
-            style={[styles.flashHint, pendingExposureUri !== null ? styles.flashHintTucked : null]}
-            pointerEvents="none"
-            accessible
-            accessibilityLiveRegion="polite"
-          >
-            <View style={styles.focusHintChip}>
-              <Text style={[styles.flashHintText, { color: ink.amber }]} allowFontScaling={false}>
-                {t(FLASH_STATE_KEY[flashHint])}
-              </Text>
-            </View>
-          </View>
-        ) : null}
-
-        {focusHintVisible ? (
-          <View style={styles.focusHint} pointerEvents="none">
-            <View style={styles.focusHintChip}>
-              <Text style={[styles.focusHintText, { color: ink.paper }]} allowFontScaling={false}>
-                {t('camera.focus.hint')}
-              </Text>
-            </View>
-          </View>
-        ) : null}
-
-        {/* 倒计时：画面里只有数字，读屏才念"3 秒后拍摄" */}
-        {countdown !== null ? (
-          <View
-            style={styles.countdownLayer}
-            pointerEvents="none"
-            accessible
-            accessibilityLabel={t('camera.timer.counting', { seconds: countdown })}
-          >
-            <Text style={[styles.countdownDigit, { color: ink.paper }]} allowFontScaling={false}>
-              {String(countdown)}
-            </Text>
-          </View>
-        ) : null}
-
-        {/* 重曝两下之间的轻提示（不走 DevelopOverlay：那层会挡住取景器） */}
-        {pendingExposureUri !== null ? (
-          <View style={styles.doubleHint} pointerEvents="none">
-            <View style={styles.focusHintChip}>
-              <Text style={[styles.doubleHintText, { color: ink.amber }]} allowFontScaling={false}>
-                {t('camera.tool.double.hint')}
-              </Text>
-            </View>
-          </View>
-        ) : null}
-
-        {bannerMessage !== null ? (
-          <View style={[styles.banner, { backgroundColor: theme.panel, borderColor: ink.amberDeep }]}>
-            <Text style={[styles.bannerText, { color: ink.paper }]}>{bannerMessage}</Text>
-            <View style={styles.bannerActions}>
-              {saveIssue !== null ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t('banner.openSettings')}
-                  onPress={handleOpenSystemSettings}
-                  hitSlop={8}
-                >
-                  <Text style={[styles.bannerAction, { color: ink.amber }]}>{t('banner.openSettings')}</Text>
-                </Pressable>
-              ) : null}
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t('banner.dismiss')}
-                onPress={handleDismissBanner}
-                hitSlop={8}
-              >
-                <Text style={[styles.bannerAction, { color: ink.amber }]}>{t('banner.dismiss')}</Text>
-              </Pressable>
-            </View>
-          </View>
-        ) : null}
-
-        {/*
-          悬浮胶囊行。它的 `bottom` **必须**跟着控制台的高度走 —— 见 `barLayer` 的注释。
-          `consoleHeight` 为 0（首帧还没量到）时退回 0，胶囊会被控制台挡住一帧，
-          比"先停在屏幕底再跳上来"更不容易被看见。
-        */}
-        <View
-          style={[styles.barLayer, { bottom: consoleHeight + BAR_LAYER_GAP }]}
-          pointerEvents="box-none"
-        >
-          {/*
-            三颗胶囊**无条件渲染**：`ParameterScrubBar` → `ViewfinderBar` 里没有任何
-            "镜头列表为空就把变焦胶囊藏起来"的门控（本轮逐行核实过）。上一轮那份报告
-            把"胶囊看不见"归因于 `availableLenses` 为空 —— 那是**误诊**，真实原因未定
-            （本轮没有真机，无法复现）。所以这里不许补任何可用性门控：镜头列表回来之前
-            （`lenses` 为空）也该看得见胶囊，藏起来只会让同一个 bug 换个形式复发。
-          */}
-          <ParameterScrubBar
-            temperature={resolved.color.temperature}
-            focalMm={focalMm}
-            exposure={exposure}
-            focalRole={focalRole}
-            focalMinMm={focalMinMm}
-            focalMaxMm={focalMaxMm}
-            onTemperature={handleTemperatureChange}
-            onFocal={handleFocalScrub}
-            onExposure={handleExposureChange}
-            onCycleFocal={handleCycleFocal}
-            wakeSignal={capsuleWake}
-          />
-        </View>
+        {overlayNode}
       </View>
 
       {/*
@@ -2092,97 +2324,51 @@ export function CameraScreen() {
         和顶栏同一套处理：换玻璃、删皮革底纹与 `styles.panelPlate`。
         `paddingBottom` 依旧按 home indicator 让位 —— 玻璃要一直铺到屏幕最下沿，
         那圈安全区是玻璃自己的内边距，不是外面垫的一块留白。
-      */}
-      <LiquidGlassView
-        radius={0}
-        rim={false}
-        onLayout={(event) => setConsoleHeight(event.nativeEvent.layout.height)}
-        style={[styles.console, styles.overlayChrome, { paddingBottom: Math.max(insets.bottom, 10) }]}
-      >
-        <ToolRow
-          doubleExposure={doubleExposure}
-          timerSeconds={timerSeconds}
-          flashMode={flashMode}
-          flashDisabled={facing !== 'back'}
-          framePreview={framePreview}
-          busy={developing}
-          onImport={handleImportPress}
-          onToggleDouble={handleToggleDouble}
-          onCycleTimer={handleCycleTimer}
-          onCycleFlash={handleCycleFlash}
-          onFlip={handleFlipCamera}
-          onToggleFramePreview={handleToggleFramePreview}
-        />
-        <View style={styles.coreRow}>
-          <View style={styles.coreSide}>
-            <AlbumThumb refreshKey={albumKey} size={CORE_THUMB_SIZE} onPress={handleOpenGalleryScreen} />
-          </View>
-          {/* 倒计时期间不传 busy：ShutterButton 内部是 `disabled || busy`，
-              传了它按钮就点不动了，"再点一次取消"这条规则会失效 */}
-          <ShutterButton
-            onPress={handleShutterPress}
-            busy={developing}
-            disabled={!cameraReady || !cameraGranted}
-          />
-          <View style={[styles.coreSide, styles.coreSideRight]}>
-            <DialButton
-              glyph={(color) => <FilmGlyph size={FILM_GLYPH} color={color} />}
-              onPress={handleOpenFilmDrawer}
-              disabled={!interactive}
-              accessibilityLabel={t('camera.preset.a11y', { name: preset.name })}
-              size={CORE_ENTRY_SIZE}
-            />
-            <Text
-              style={[styles.filmName, { color: ink.paperDim }]}
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.7}
-              allowFontScaling={false}
-            >
-              {preset.name}
-            </Text>
-          </View>
-        </View>
-      </LiquidGlassView>
 
+        v1.8.6：整块收进 `controlNode`。底片计数、缩略图钥匙、工具行档位这些
+        "每张照片才变一次"的东西都在这里，不该跟着捏合/对焦的 60Hz 手势重画。
+      */}
+      {controlNode}
+
+      {/*
+        冲印舞台（v1.8.6 · 按需瞬时挂载）。
+
+        这里过去是一个「stage 非空才渲染合成器」的内联三元 —— 门控本身是对的，但它是
+        **调用方的自觉**：任何一次重构去掉条件，就会多挂一棵常驻的合成树
+        （`ViewShot` + 相框 PNG + 整条图层栈）。现在门控收进 `FilmStageComposer`：
+        `stage === null` 时它直接 `return null`，一个原生节点都不挂；`stage` 只在一张
+        照片真的要走存盘流程时由 `useFilmStage.mount()` 填上，`unmount()`（`processFilmPhoto`
+        的 finally）随后清空 —— 洗完就彻底卸掉。
+      */}
       <DevelopOverlay status={status} onDismiss={handleDismiss}>
-        {filmStage.stage !== null ? (
-          <FilmCompositor
-            stage={filmStage.stage}
-            viewShotRef={filmStage.viewShotRef}
-            onLayout={filmStage.handleStageLayout}
-            onImageLoad={filmStage.handleStageImageLoad}
-            /*
-             * v1.8.5 模块一：这棵树就是 ViewShot 的截图目标（**要被存盘的成片**），
-             * 所以走 'print' 展示 —— 相纸缩进一圈衬底 + 底部悬浮阴影。
-             * 默认值 'preview' 是给老调用方兜底的，这里不能省。
-             */
-            presentation="print"
-            timestampFontFamily={fonts.fontFamily}
-            /*
-             * 相框风格变体（v1.7.0 · 模块二）**必须**从设置里传下去。
-             *
-             * 漏了这一行的后果不是"少个装饰"，而是**预览与成片对不上**：取景器里的
-             * `FramePreviewLayer` 拿的是 `settings.frameVariant`，而这里默认 `'classic'`，
-             * 用户会看到"取景器里是泛黄的老相纸，洗出来却是干净白卡纸" —— 那正是模块三
-             * 「所见即所得」要消灭的东西。FilmCompositor 的默认值是给老调用方兜底的，
-             * 不是给这里用的。
-             */
-            frameVariant={settings.frameVariant}
-            /*
-             * 日期引擎（v1.8.0 · 模块四）与胶片外观种子（v1.8.0 · 模块一）。
-             *
-             * `dateEngine` 是**全局设置**而不是预设字段：日期长得像什么与"这卷胶片
-             * 是什么性格"是两件事，混进 `presets.ts` 会让同一支卷在不同地区印出
-             * 不同格式的日期。取景器预览、成片合成、设置页三处都读它。
-             *
-             * `lookSeed` 与取景器实时预览用**同一个常量** —— 颗粒与微尘的分布要
-             * 逐点重合，否则"所见即所得"就是假的。
-             */
-            dateEngine={settings.dateEngine}
-            lookSeed={LOOK_SEED}
-          />
-        ) : null}
+        <FilmStageComposer
+          stage={filmStage.stage}
+          viewShotRef={filmStage.viewShotRef}
+          onLayout={filmStage.handleStageLayout}
+          onImageLoad={filmStage.handleStageImageLoad}
+          /*
+           * 相框风格变体（v1.7.0 · 模块二）**必须**从设置里传下去。
+           *
+           * 漏了这一行的后果不是"少个装饰"，而是**预览与成片对不上**：取景器里的
+           * `FramePreviewLayer` 拿的是 `settings.frameVariant`，而默认是 `'classic'`，
+           * 用户会看到"取景器里是泛黄的老相纸，洗出来却是干净白卡纸" —— 那正是模块三
+           * 「所见即所得」要消灭的东西。
+           */
+          frameVariant={settings.frameVariant}
+          /*
+           * 日期引擎（v1.8.0 · 模块四）与胶片外观种子（v1.8.0 · 模块一）。
+           *
+           * `dateEngine` 是**全局设置**而不是预设字段：日期长得像什么与"这卷胶片
+           * 是什么性格"是两件事，混进 `presets.ts` 会让同一支卷在不同地区印出
+           * 不同格式的日期。取景器预览、成片合成、设置页三处都读它。
+           *
+           * `lookSeed` 与取景器实时预览用**同一个常量** —— 颗粒与微尘的分布要
+           * 逐点重合，否则"所见即所得"就是假的。
+           */
+          dateEngine={settings.dateEngine}
+          lookSeed={LOOK_SEED}
+          timestampFontFamily={fonts.fontFamily}
+        />
       </DevelopOverlay>
 
       <FilmDrawer

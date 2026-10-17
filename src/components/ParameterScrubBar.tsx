@@ -72,10 +72,18 @@ const COLLAPSE_DELAY_MS = 350;
  */
 const FOCAL_COLLAPSE_DELAY_MS = 500;
 /**
- * 上报节流 25ms：40Hz。相机参数（曝光补偿/色温覆盖）在原生侧本来就跟不上 60fps 的
- * 写入，25ms 让每帧最多一次 setState，同时保证读数跟手。
+ * 上报节流 50ms：20Hz（v1.8.6 · 契约 §5）。
+ *
+ * v1.8.5 及以前是 25ms / 40Hz。那次节流只挡住了"每帧多次 setState"，却没挡住
+ * "每 25ms 就重渲染一次**整个相机屏**"——曝光/色温这两个值住在 `CameraScreen` 顶层，
+ * 每报一次就带着取景器、相框预览、控制台一起走一遍 React render。原生侧
+ * （`exposure` prop / 色温矩阵）本来就跟不上 60fps 的写入，40Hz 里有一半是白渲染。
+ *
+ * 20Hz 仍然高于人眼对"读数跟手"的分辨阈值（拖动时数字看起来是连续的），
+ * 而每秒的整屏渲染次数直接减半。松手时 `flushPending` 会把最后一档补发出去
+ * —— 所以降频**不会**吞掉最终值，只是拖动途中的中间帧少了一半。
  */
-const EMIT_INTERVAL_MS = 25;
+const EMIT_INTERVAL_MS = 50;
 /**
  * 色温每像素 0.02/6、曝光每像素 0.1/8：这两个数是"一格刻度 = 多少值"定的 ——
  * 色温一格 0.02（两位小数的最小可视单位）、曝光一格 0.1 EV（1/3 档的 0.3 倍，
@@ -529,7 +537,7 @@ function ParameterScrubBarInner({
     [emit],
   );
 
-  /** 把位移换算成值：尺子走 `Animated`（不进 React），值走 25ms 节流（进父级 state）。 */
+  /** 把位移换算成值：尺子走 `Animated`（不进 React），值走 50ms 节流（进父级 state）。 */
   const applyScrub = useCallback(
     (dial: ExtractableDial, offset: number) => {
       const state = gesture.current;

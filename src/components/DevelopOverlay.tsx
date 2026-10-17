@@ -11,6 +11,7 @@
  * 尺寸约定：`computeDevelopStageBox` 给出的盒子 = 合成舞台能用的逻辑尺寸，
  * 也是 `processFilmPhoto({ stage })` 应该传的尺寸 —— 两边用同一个函数，保证"所见即所得"。
  */
+import { memo } from 'react';
 import type { ReactNode } from 'react';
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useI18n } from '../i18n';
@@ -51,7 +52,20 @@ const STAGE_TEXT: Record<DevelopStage, MessageKey> = {
   saving: 'develop.stage.saving',
 };
 
-export function DevelopOverlay({ status, onDismiss, children }: DevelopOverlayProps) {
+/**
+ * v1.8.6 · 契约 §2/§4：`memo` 包装。
+ *
+ * 为什么值得包：相机屏顶层有 37 个 state（曝光 / 色温 / 变焦都在上面），
+ * 参数条一动就整屏重渲染；而显影遮罩的 `status` 在一张照片洗完之后**不会再变**
+ * （`done` 等着用户点掉），它底下的 `children` 就是合成视图。没有 memo 的话，
+ * 用户只是在显影完成页上拖动一下，这棵覆盖层也跟着重渲染一遍。
+ *
+ * 导出名不变（`DevelopOverlay`），调用方（`CameraScreen`）一行不用改。
+ * 注意：`memo` 只挡"props 引用没变"的重渲染 —— `status` 是对象、`children` 是
+ * React 元素，父级若每次渲染都新建它们，memo 自然失效（这属于调用方的稳定性问题，
+ * 契约 §5.2 用 `overlayNode` 的 `useMemo` 解决）。
+ */
+function DevelopOverlayImpl({ status, onDismiss, children }: DevelopOverlayProps) {
   const { t } = useI18n();
 
   if (status.kind === 'idle') {
@@ -104,6 +118,8 @@ export function DevelopOverlay({ status, onDismiss, children }: DevelopOverlayPr
     </Pressable>
   );
 }
+
+export const DevelopOverlay = memo(DevelopOverlayImpl);
 
 const styles = StyleSheet.create({
   layer: {

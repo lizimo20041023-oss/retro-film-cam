@@ -62,7 +62,7 @@ import { describeError } from '../utils/describeError';
 import { importAndDevelop } from '../utils/importPhoto';
 import type { GalleryShot } from '../utils/galleryStore';
 import { computeDevelopStageBox } from './DevelopOverlay';
-import { FilmCompositor } from './FilmCompositor';
+import { FilmStageComposer } from './FilmStageComposer';
 import { Lightbox, type LightboxToast } from './Lightbox';
 import { StripView } from './StripView';
 import { useFilmFonts } from '../hooks/useFilmFonts';
@@ -715,35 +715,54 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
         `view-shot` 抓的是这棵视图树，它在屏幕上的位置不重要，但"在不在屏幕上"很重要。
         顺序是「幕布 → 合成视图 → 转圈文字」：幕布先画（压暗底下的相册），
         合成视图画在它之上（用户看得见照片在被冲印），转圈在最上面。
-        转圈和幕布都在 `FilmCompositor` 之外，所以不会被截进成片。
+        转圈和幕布都在合成视图之外，所以不会被截进成片。
+
+        v1.8.6 · 契约 §2：挂载点换成 `FilmStageComposer` —— 它内部在 `stage === null`
+        时直接 `return null`，从结构上保证"没在显影就绝不挂合成视图"
+        （比这里再写一次三元更硬，两处挂载点共用同一道门）。
       */}
       {importing || filmStage.stage !== null ? (
         <View style={styles.stageLayer}>
           <View style={styles.stageVeil} pointerEvents="auto" />
-          {filmStage.stage !== null ? (
-            <FilmCompositor
-              stage={filmStage.stage}
-              viewShotRef={filmStage.viewShotRef}
-              onLayout={filmStage.handleStageLayout}
-              onImageLoad={filmStage.handleStageImageLoad}
-              /*
-               * v1.8.5 模块一：与相机快门同一个口径 —— 导入冲印也是「截图存盘」，
-               * 走 'print' 展示（衬底 + 悬浮阴影），否则拍出来的有衬底、导进来的没有。
-               */
-              presentation="print"
-              timestampFontFamily={fonts.fontFamily}
-              /*
-               * 相框风格变体（v1.7.0 · 模块二）。相册导入冲印走的是**同一个**合成舞台，
-               * 所以这里也得带上 —— 否则同一个相框设置下，"拍出来的"和"导进来的"
-               * 会洗出两种相纸，用户只会觉得 App 坏了。
-               *
-               * 刻意读**当前设置**而不是这一张拍摄时记下的值：`galleryStore` 里没有
-               * 存过变体（历史成片也没有这个概念），而且用户按下"导入"这一刻的意图，
-               * 就是他此刻在设置里选的那一档。
-               */
-              frameVariant={settings.frameVariant}
-            />
-          ) : null}
+          <FilmStageComposer
+            stage={filmStage.stage}
+            viewShotRef={filmStage.viewShotRef}
+            onLayout={filmStage.handleStageLayout}
+            onImageLoad={filmStage.handleStageImageLoad}
+            /*
+             * v1.8.5 模块一：与相机快门同一个口径 —— 导入冲印也是「截图存盘」，
+             * 走 'print' 展示（衬底 + 悬浮阴影），否则拍出来的有衬底、导进来的没有。
+             * v1.8.6 起 `presentation` 固定为 print，由 `FilmStageComposer` 写死，
+             * 这里不再（也不该）重复传。
+             */
+            timestampFontFamily={fonts.fontFamily}
+            /*
+             * 相框风格变体（v1.7.0 · 模块二）。相册导入冲印走的是**同一个**合成舞台，
+             * 所以这里也得带上 —— 否则同一个相框设置下，"拍出来的"和"导进来的"
+             * 会洗出两种相纸，用户只会觉得 App 坏了。
+             *
+             * 刻意读**当前设置**而不是这一张拍摄时记下的值：`galleryStore` 里没有
+             * 存过变体（历史成片也没有这个概念），而且用户按下"导入"这一刻的意图，
+             * 就是他此刻在设置里选的那一档。
+             */
+            frameVariant={settings.frameVariant}
+            /*
+             * 日期引擎同理（v1.8.0 · 模块四）：这里在 v1.8.5 是靠 `FilmCompositor`
+             * 的缺省值（= `DEFAULT_SETTINGS.dateEngine`），用户改了日期机位/字形之后，
+             * "拍的"和"导的"会印出两种日期。`FilmStageComposer` 的 `dateEngine`
+             * 是必填项，正好把这条隐式缺省变成显式的"跟当前设置"——与本处的
+             * `frameVariant` / `importPreset`（颗粒跟当前设置）同一个口径。
+             *
+             * ⚠️ 这是本页**唯一**一处有意的行为对齐：只有用户把日期引擎改离缺省值时，
+             * 导入成片的日期才会变（变成他当前选的那一档）。v1.8.6 不动日期引擎本身。
+             */
+            dateEngine={settings.dateEngine}
+            /*
+             * `lookSeed` 刻意**不传**（用 `FilmCompositor` 的缺省 0）：
+             * 本处 v1.8.5 就是缺省 0，传相机屏的 `LOOK_SEED`（=1）会改变每一张
+             * 导入成片的颗粒/微尘像素 —— 那属于"视觉零回归"范围外，本版不做。
+             */
+          />
           <ActivityIndicator color={darkroom.ink.amberSoft} />
           <Text style={styles.stageBusy} numberOfLines={1}>
             {t('gallery.import.busy')}

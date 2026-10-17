@@ -627,10 +627,26 @@ export const FilmDrawer = memo(function FilmDrawer({
                 {/*
                   纸 / 材质那一层单独包一层：它整层对触控与读屏都是隐形的
                   （`pointerEvents="none"` 只作用在这一层，角标要能点、能读）。
+
+                  v1.8.6：与 `FramePreviewLayer` **同一思路** —— 只烘这组**静态相纸**
+                  （相框 PNG + 同一个 `FrameSkin`），不烘外面的滚动网格、标题文字，
+                  也不烘下面那排药丸。两条理由：
+                  1. 这组内容只在换相框 / 换材质 / 抽屉宽度变时才重提交；滚动列表、
+                     面板升降、药丸滑动时它一个绘制参数都不变 —— 正是栅格化最划算的形状；
+                  2. `shouldRasterize` 会把**整棵子树**一起压平，所以它必须只包住这组
+                     静态内容：包住滚动网格就等于每次滚动都重烘一整屏，反而更慢。
+                  它是 `Animated.View` 面板内部一个纯静态 `View`（面板那支 spring 只动
+                  `translateY`，不下传到这一层），烘出来的纹理只被搬位置、不会被重绘；
+                  RN 打开 `shouldRasterize` 时按屏幕倍率设 `rasterizationScale`，
+                  96×72 的小窗不会变糊。`00` 角标在这层**外面**，所以它的点按/选中态
+                  不触发重烘。
                 */}
                 <View
                   style={styles.framePreviewPaperLayer}
                   pointerEvents="none"
+                  // v1.8.6：静态相纸组整组烘焙（与 FramePreviewLayer 同一条理由）。
+                  shouldRasterizeIOS
+                  renderToHardwareTextureAndroid
                   accessibilityElementsHidden
                   importantForAccessibility="no-hide-descendants"
                 >

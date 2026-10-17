@@ -13,9 +13,30 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from '../i18n';
 import { useSettings } from './useSettings';
 import { fetchLocationStamp, trimLocationText } from '../utils/locationStamp';
-import type { LocationStampState, ResolvedPlace } from '../types';
+import type { LocationStampOutcome, LocationStampState, ResolvedPlace } from '../types';
 
 const IDLE_STATE: LocationStampState = { kind: 'off' };
+
+/**
+ * 定位结果的复用窗口（v1.8.6 · 契约 §5）。60 秒。
+ *
+ * 为什么以前"每张都重新取一次 fix"是发热源：`fetchLocationStamp` 在 `mode === 'place'`
+ * 时会走 CoreLocation 取坐标 + MapKit 反查（最多 2 次重试、总预算 10s），
+ * 连拍五张就是五轮 GPS 无线电唤醒 + 五次网络请求 —— 而 200ms 前刚拿到的坐标，
+ * 和下一张照片需要的那个地方，通常就是同一个点（用户没长腿）。
+ *
+ * 60 秒是权衡：短于这个数，连拍/重曝的第二张还要再起一次 GPS；长于这个数，
+ * 用户走出一个街区后水印还印着老地方，比没地名更糟。这个窗口**只影响烧进照片的
+ * 地名**，不影响 LCD 上的显示（LCD 仍按设置变化即时刷新）。
+ */
+const LOCATION_CACHE_TTL_MS = 60_000;
+
+/** 一次定位结局的缓存条目：键里带全部会改变取数结果的设置。 */
+interface LocationFixCache {
+  key: string;
+  at: number;
+  outcome: LocationStampOutcome;
+}
 
 /**
  * 按快门时最多为定位等多久。
@@ -79,6 +100,19 @@ export function useLocationStamp(): LocationStampController {
   const [state, setState] = useState<LocationStampState>(IDLE_STATE);
   const [probeToken, setProbeToken] = useState(0);
 
+  /**
+   * 最近一次成功定位（v1.8.6 · 契约 §5）。**只缓存成功**：失败路径必须每次重试，
+   * 否则用户刚走出地下室、打开 App 想拍一张，会被 60 秒前那次 `no-network`
+   * 一直挡着。
+   */
+  const fixCacheRef = useRef<LocationFixCache | null>(null);
+  /**
+   * 在途请求复用（v1.8.6）：LCD 探测和快门几乎同时发起时（进屏 400ms 内按快门），
+   * 两次 `fetchLocationStamp` 会各自唤醒一遍 GPS。同 key 的第二次调用直接等第一次 ——
+   * 返回的结局对两者都成立，因为它只取决于设置与设备位置。
+   */
+  const inflightRef = useRef<{ key: string; promise: Promise<LocationStampOutcome> } | null>(null);
+
   // 关掉定位时，任何在途的结果都不许再改状态。
   const aliveRef = useRef(true);
   useEffect(() => {
@@ -87,6 +121,46 @@ export function useLocationStamp(): LocationStampController {
       aliveRef.current = false;
     };
   }, []);
+
+  /**
+   * 取一次定位结局，带 60s 缓存 + 在途复用（v1.8.6 · 契约 §5）。
+   *
+   * `force` 只在用户主动"重新探测"时用（设置页打开定位 / 手动刷新）：
+   * 那条路径的语义是"我不信你手里的旧坐标，现在就重取"。
+   *
+   * 缓存键带上 `localeId` / `geoLocale` / `detail`：这三个一变，反查出来的
+   * **字符串**就完全不同（换语言/换详细度），不能拿旧结局顶替。
+   */
+  const fetchFix = useCallback(
+    (force: boolean): Promise<LocationStampOutcome> => {
+      const key = `${mode}|${geoLocale}|${detail}|${localeId}`;
+      const now = Date.now();
+      const cached = fixCacheRef.current;
+      if (!force && cached !== null && cached.key === key && now - cached.at < LOCATION_CACHE_TTL_MS) {
+        return Promise.resolve(cached.outcome);
+      }
+      const inflight = inflightRef.current;
+      if (!force && inflight !== null && inflight.key === key) {
+        return inflight.promise;
+      }
+
+      const promise = fetchLocationStamp(mode, geoLocale, detail, localeId).then((outcome) => {
+        if (outcome.ok) {
+          fixCacheRef.current = { key, at: Date.now(), outcome };
+        }
+        return outcome;
+      });
+      inflightRef.current = { key, promise };
+      const clear = (): void => {
+        if (inflightRef.current?.promise === promise) {
+          inflightRef.current = null;
+        }
+      };
+      void promise.then(clear, clear);
+      return promise;
+    },
+    [mode, geoLocale, detail, localeId],
+  );
 
   /**
    * 总开关关掉就立刻复位；打开时先显示"定位中"，再异步探测一次用于 LCD 预览。
@@ -105,7 +179,7 @@ export function useLocationStamp(): LocationStampController {
     let cancelled = false;
     setState({ kind: 'locating' });
 
-    void fetchLocationStamp(mode, geoLocale, detail, localeId).then((outcome) => {
+    void fetchFix(false).then((outcome) => {
       if (cancelled || !aliveRef.current) return;
       if (outcome.ok) {
         setState({ kind: 'ready', text: trimLocationText(outcome.text) });
@@ -117,17 +191,15 @@ export function useLocationStamp(): LocationStampController {
     return () => {
       cancelled = true;
     };
-  }, [mode, geoLocale, localeId, detail, probeToken]);
+  }, [mode, geoLocale, localeId, detail, probeToken, fetchFix]);
 
   const resolveForShot = useCallback(async (): Promise<ResolvedPlace | null> => {
     if (mode === 'off') {
       return null;
     }
     // 到这里才带截止线：LCD 上那次探测可以慢慢等，按快门这次不行。
-    const outcome = await withinDeadline(
-      fetchLocationStamp(mode, geoLocale, detail, localeId),
-      SHOT_DEADLINE_MS,
-    );
+    // v1.8.6：走 fetchFix 的 60s 缓存 —— 连拍第二张不再重新唤醒 GPS（契约 §5）。
+    const outcome = await withinDeadline(fetchFix(false), SHOT_DEADLINE_MS);
     if (outcome === null) {
       return null;
     }
@@ -139,9 +211,13 @@ export function useLocationStamp(): LocationStampController {
       }
     }
     return outcome.ok ? outcome.place : null;
-  }, [mode, geoLocale, localeId, detail]);
+  }, [fetchFix, mode]);
 
-  const refresh = useCallback(() => setProbeToken((n) => n + 1), []);
+  const refresh = useCallback(() => {
+    // 手动刷新必须绕开缓存：用户点这个按钮的语义就是"现在就重取一次"。
+    fixCacheRef.current = null;
+    setProbeToken((n) => n + 1);
+  }, []);
 
   return { state, resolveForShot, refresh };
 }

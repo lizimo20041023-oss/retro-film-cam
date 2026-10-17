@@ -30,7 +30,7 @@
  * 而 `overflow: 'hidden'` 本身就建立了裁剪与合成边界：混合只发生在窗口内部、
  * 只跟底下的照片混，既不会溢出到相框上，也不会混到取景器背景。
  */
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import type { RefObject } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
 import type { StyleProp, TextStyle, ViewStyle } from 'react-native';
@@ -504,7 +504,21 @@ function overlayOpacityOf(value: number | undefined): number {
   return Math.min(1, Math.max(0, value));
 }
 
-export function FilmCompositor({
+/*
+ * v1.8.6 · 契约 §2：组件本体改名 `FilmCompositorImpl`，外面用 `memo` 导出同名
+ * `FilmCompositor`（**导出名不变**，调用方一行不用改；`FilmCompositorProps` /
+ * `planWatermark` / `planInPhotoDate` 等导出也保持原样）。
+ *
+ * 为什么必须改名：`memo()` 包的是"组件实现"，导出的是"记忆化后的组件"，
+ * 两者是两个值，得分开命名 —— 否则只能 `export function` 之后再 `export const`
+ * 重名赋值，类型上绕不过去。
+ *
+ * **函数体一行没动**：本版只在外面加这一层包装（父级重渲染时 `stage` 等 props
+ * 引用没变就整棵合成树 bailout）。注意既有探针里有按文本搜
+ * `function FilmCompositor` 的锚点 —— `FilmCompositorImpl` 仍然包含这个前缀，
+ * 但如果哪天改成别的名字，那些探针会一起报红。
+ */
+function FilmCompositorImpl({
   stage,
   viewShotRef,
   onLayout,
@@ -1041,6 +1055,16 @@ export function FilmCompositor({
     </ViewShot>
   );
 }
+
+/**
+ * v1.8.6 · 契约 §2：导出的就是这层 `memo`（默认浅比较）。
+ *
+ * 浅比较意味着：只有 `stage` 引用、`viewShotRef`、`onLayout` / `onImageLoad`、
+ * 那几个配置项（字体族 / 相框变体 / 日期引擎 / 种子 / 展示模式 / style）里
+ * 任何**一个引用**变了才会重渲染。`stage` 每次 mount 都是新对象（必须重渲染）；
+ * 三个回调来自 `useFilmStage` 的稳定 `useMemo`，不会白白让 memo 失效。
+ */
+export const FilmCompositor = memo(FilmCompositorImpl);
 
 /*
  * v1.4.1 删掉了 `TEXT_DESCENT_RATIO`（0.21）。
