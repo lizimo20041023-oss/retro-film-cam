@@ -4625,7 +4625,17 @@ iOS 的 `resizeMode="repeat"` 不是 `colorWithPatternImage`，而是
 
 ### 37.9 产物指纹（全部为本次实测值）
 
-<!-- 发布后回填 -->
+| 项目 | 实测值 |
+| --- | --- |
+| 本地提交 | `1b09d6b`（13 files changed, +1089 / −250，含新增 `src/utils/cameraGeometry.ts`） |
+| 推送 | 远端 `master` = `ae84743d3aa3231e5657e35125e107a7460128ac`，tree `00b365301e1197de5dbc22c9838045707d1062d7`，131 blobs，`TREE MATCH = True` |
+| CI | run `39021455715`（job `117363934615`，`build-ipa`），**CONCLUSION = success** |
+| artifact | `12097396157`（`FretroCam-unsigned-ipa`，10,384,207 B，zip 内 1 个 `.ipa`） |
+| IPA | `FretroCam-v1.8.4-unsigned.ipa`，**10,498,948 B**，sha256 `a1bce74a82f3c3f37f1c3496e0af13ee4a870a6a2b161973cff52955849509f1`（115 entries，jsbundle `main.jsbundle` 2,038,900 B） |
+| 核验（CI 产物） | `python _verify_ipa_v184.py 12097396157` → 全段通过：PRESENT（`planCameraLayer`/`planPhotoCrop`/`focusPointInCamera`/`clampDigitalFactor`、四档 id `ultra13`/`wide26`/`wide35`/`wide52`、`pictureSize`/`autofocus`/`getAvailablePictureSizesAsync`/`cameraClip` 全在）、ABSENT（旧五档 id `ultraWide05`/`wide20`、旧 7seg/点阵/柔焦/渐变/旧纸色/旧 i18n 键全为 0）、grain 贴图 249,201 B + sha256 `2d30d077…` + 频带 `<8=65.7% / 24–64=5.0%`、10 张 frame 与 19 个非 frame 素材、`Info.plist` 版本 `1.8.4`；**`RESULT: OK`**。本地导包 `--local` 亦 `RESULT(local): OK` |
+| Release | tag `v1.8.4`，id `415711264`，asset id `650101437`（远端 size/digest 与本地双匹配） |
+| 打包前 export 冒烟 | `npx expo export --platform ios --no-bytecode` **EXIT=0**，bundle `index-1a56d2de705876f48e93ab5416f1b5c0.js` 1,336,677 B，dist 20 文件 / 2,852,532 B |
+| 下载 | `https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.8.4/FretroCam-v1.8.4-unsigned.ipa` |
 
 ### 37.10 文件改动
 
