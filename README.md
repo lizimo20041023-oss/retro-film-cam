@@ -5842,8 +5842,33 @@ Kodak Tri-X 400』且必须每个换名字成新代号，以防侵权纠纷，�
 
 ### 43.6 产物指纹
 
-（发布后回填：本地提交 / 远端 master / CI run+job / artifact / IPA 体积+sha256 / Release id+asset / 下载地址 /
-IPA 回读核验明细。）
+| 项目 | 值 |
+| --- | --- |
+| 本地提交 | `d6afa4fab7533ca3f5f154de424118f01e532967`（「v1.8.10：底片库整套重做（九支新代号 + 仿色 + 旧照片兼容，用户 m06500）」，6 files +290/−122） |
+| 远端 master | `4dc05cd0d6841be0361d3d909d86f67dd8ba90cf`（TREE MATCH True，133 blobs 全一致） |
+| CI run / job | `39061313006` / `117479687713`（`build-ipa`，各 step 全 success） |
+| Artifact | `12111990741`（`FretroCam-unsigned-ipa`，10,481,732 B） |
+| IPA | `FretroCam-v1.8.10-unsigned.ipa` **10,596,362 B**，sha256 `05f00b53afe61394f7a3ca7080243683ab739aa2edc43829dddaccea386f7ebe` |
+| Release | tag `v1.8.10`，id `416012139`，asset id `651369518`（回读 size / digest 双 MATCH） |
+| 下载 | `https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.8.10/FretroCam-v1.8.10-unsigned.ipa` |
+
+IPA 回读核验（`python _verify_ipa_v1810.py 12111990741` → **`RESULT: OK`**，原始输出
+`_gate_v1810_ipa_verify.txt`）：
+
+- `ipa entries = 115`，`Payload/FretroCam.app/main.jsbundle` **2,067,908 B**（v1.8.9 为 2,067,653 B，
+  +255 B 正是九支新代号的字符串差）；
+- 「应该存在」全部命中（x2/x3），**零 `missing:`**；16 条 `x0` 全部是 `EXPLAINED_ABSENT` / 跳过
+  登记的兜底/内联符号（如 `COUNTRY_NAMES`、`hashSeed`、`buildSprocketDetails`、`stockBadgeOf` 等）；
+- 九支新 id（`su-200` … `sl-400-bw`）与九支新代号（`SU-200` … `SL-400 BW`）全部命中；
+  旧商品名（`GD-200` … `TX-400 BW`）、旧副标题与商标词（`Kodak` / `Portra` / `Ektar` /
+  `UltraMax` / `ColorPlus` / `CineStill` / `Ilford` / `Fujifilm` / `HP5` / `Tri-X`）全部 `x0`；
+- Info.plist 2470 B，`1.8.10` **FOUND**、`com.canyerylee.fretrocam` **FOUND**；
+- 颗粒贴图 249,201 B / sha256 `2d30d07745e2863d…`、光学暗角 117,094 B / sha256 `e02d6c6ba3b6b9a3…`
+  （与 v1.8.9 同一份，换底片库没动成片管线的像素）；10 张相框素材齐全。
+
+export 冒烟：`npx expo export --platform ios --no-bytecode` → EXIT 0，bundle
+`index-0dad5ac75ca2456c53c8ca0cbc362b0b.js` **1,359,374 B**（v1.8.9 为 1,359,121 B）；
+`npx tsc --noEmit -p tsconfig.json` → EXIT 0。
 
 ### 43.7 文件改动
 
