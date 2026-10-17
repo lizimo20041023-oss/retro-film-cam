@@ -5698,8 +5698,30 @@ const cameraActive = cameraGranted && !covered && appActive;
 
 ### 42.7 产物指纹
 
-（发布后回填：本地提交 / 远端 master / CI run+job / artifact / IPA 体积与 sha256 / Release id+asset /
-核验结论 / export 冒烟）
+| 项目 | 值 |
+| --- | --- |
+| 本地提交 | `5be5daec3b8b8fdca5b7f6f94eee984bc92cd957`（「v1.8.9：修闪光灯拍摄被停机打断（用户 m06262）」，3 files +152/−3） |
+| 远端 master | `01b42f73b2c9d9625cdf4b466603c36860b59275`（TREE MATCH True，133 blobs 全一致） |
+| CI run / job | `39058923298` / `117472663936`（`build-ipa`，各 step 全 success） |
+| Artifact | `12111011715`（`FretroCam-unsigned-ipa`，10,481,341 B） |
+| IPA | `FretroCam-v1.8.9-unsigned.ipa` **10,596,096 B**，sha256 `e5eac2f26fc7f96b1e161cd7b717fd5b75bc92930aa9124f9f7c3d6e8f73114c` |
+| Release | tag `v1.8.9`，id `415997408`，asset id `651288459`（回读 size / digest 双 MATCH） |
+| 下载 | `https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.8.9/FretroCam-v1.8.9-unsigned.ipa` |
+
+IPA 回读核验（`python _verify_ipa_v189.py 12111011715` → **`RESULT: OK`**，原始输出
+`_gate_v189_ipa_verify.txt`）：
+
+- `ipa entries = 115`，`Payload/FretroCam.app/main.jsbundle` **2,067,653 B**；
+- 「应该存在」**244 行全命中**（x2/x3），无缺项；16 条 `x0` 全部是 `EXPLAINED_ABSENT` 里预先登记的
+  兜底/内联符号（如 `COUNTRY_NAMES`、`hashSeed`、`buildSprocketDetails`、`GradeLayerView` 等）；
+- Info.plist 2469 B，`1.8.9` **FOUND**、`com.canyerylee.fretrocam` **FOUND**；
+- 颗粒贴图 249,201 B / sha256 `2d30d07745e2863d…` / 512×512 / std 0.2616 / `<8px` 频带 65.7%（门禁 0.60）；
+- 光学暗角 117,094 B / sha256 `e02d6c6ba3b6b9a3…`（v1.8.7 重烤、v1.8.9 未动）/ 中心 α=0 / 四角 α=255；
+- 10 张相框素材齐全，`no-frame.png`、`grain/light-leak/vignette/dust` 四张贴图齐全。
+
+export 冒烟：`npx expo export --platform ios --no-bytecode` → EXIT 0，bundle
+`index-48a8a051a6b55afc6a8ddfbffbf873c3.js` **1,359,121 B**（v1.8.8 为 1,359,126 B）；
+`npx tsc --noEmit -p tsconfig.json` → EXIT 0。
 
 ### 42.8 文件改动
 
