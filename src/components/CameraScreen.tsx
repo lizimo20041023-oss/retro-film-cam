@@ -37,6 +37,7 @@ import type { ComponentRef, ReactNode } from 'react';
 import {
   ActivityIndicator,
   Animated,
+  AppState,
   Linking,
   Pressable,
   StyleSheet,
@@ -126,6 +127,16 @@ const LOOK_SEED = 1;
  * 调小它没有收益：跨零点最多晚 30 秒翻页，而用户不会举着手机盯到零点。
  */
 const FRAME_PREVIEW_REFRESH_MS = 30_000;
+
+/**
+ * 取景器水印里"地名"的最短刷新间隔（v1.8.8 · 用户 m05280 降发热）。
+ *
+ * 心跳是 30 秒一次（日期要跨零点翻页），但**地点几乎不会在十分钟内变一次**。
+ * v1.8.7 及以前每次心跳都调 `locationStamp.resolveForShot()`，而 `useLocationStamp`
+ * 的缓存 TTL 只有 60 秒 —— 于是举着手机不动，也变成"每 60 秒醒一次 GPS + 反向地理
+ * 编码网络请求"。现在 30 秒心跳只更新日期，地名走这个窗口，首次仍立刻取一次。
+ */
+const PREVIEW_LOCATION_REFRESH_MS = 10 * 60_000;
 
 /**
  * 闪光灯的三档循环顺序：关 → 开 → 自动 → 关。
@@ -578,6 +589,14 @@ export function CameraScreen() {
   const [previewClock, setPreviewClock] = useState<Date>(() => new Date());
   const [previewPlace, setPreviewPlace] = useState<ResolvedPlace | null>(null);
   /**
+   * App 是否在前台（v1.8.8 · 用户 m05280 降发热）。
+   *
+   * 退到后台时：取景器心跳停、定位轮询停、相机会话也停（`CameraView active={false}`
+   * 在 iOS 上直接 `AVCaptureSession.stopRunning()`）。回到前台自动恢复 —— 用户不会
+   * 觉得"回来黑一下"，因为后台本来就看不见取景器。
+   */
+  const [appActive, setAppActive] = useState(true);
+  /**
    * 底部胶囊的"唤醒信号"（v1.8.0 · 模块三）。
    *
    * 胶囊的自动隐藏由 `useCapsuleAutoHide` 在 `ParameterScrubBar` **内部**管，
@@ -614,6 +633,8 @@ export function CameraScreen() {
   const shotLockRef = useRef(false);
   const askedCameraRef = useRef(false);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** 上一次真正去取定位的时刻（v1.8.8：地名不再跟着 30 秒心跳走，见 `PREVIEW_LOCATION_REFRESH_MS`） */
+  const lastPreviewPlaceAtRef = useRef(0);
   /** `getAvailableLensesAsync` 的 in-flight 去重（v1.8.6）：同一时刻只允许一次原生往返 */
   const lensesInFlightRef = useRef(false);
   const lensScale = useRef(new Animated.Value(1)).current;
@@ -843,6 +864,21 @@ export function CameraScreen() {
   const framePreviewVisible = framePreview && !covered;
 
   /**
+   * 相机会话是否该跑着（v1.8.8 · 用户 m05280 降发热）。
+   *
+   * `expo-camera` 的 `active` prop 在 iOS 上直接映射到 `AVCaptureSession.stopRunning()` /
+   * `startRunning()`（`node_modules/expo-camera/ios/Current/CameraSessionManager.swift` 的
+   * `updateCameraIsActive`）。相框设置、相册、胶片抽屉盖住取景器时，预览看不见却还在
+   * 满帧出图 —— 那是真机持续发热的固定大头。这里让它只在"取景器真的看得见"时跑：
+   *   · 面板打开（`covered`）/ 正在冲印（`developing`）→ 停采集；
+   *   · 退到后台（`appActive === false`）→ 停采集；
+   *   · 相机权限没给时本来就没挂载，这里恒 false 也无害。
+   *
+   * 注意 `CameraView` **不卸载**（卸载会重建采集会话、回来黑一下）：只是 `active` 开关。
+   */
+  const cameraActive = cameraGranted && !covered && !developing && appActive;
+
+  /**
    * 预览要画的水印片段（v1.7.0 · 模块三）。
    *
    * **一行都不能自己算**：`planWatermark` 就是 `FilmCompositor` 用来排成片水印的那个
@@ -929,12 +965,24 @@ export function CameraScreen() {
    * 网络/卫星，回来再补。两件事都成功才更新会让日期也跟着晚 300ms 跳一下。
    */
   useEffect(() => {
-    if (!framePreview || covered) {
+    if (!framePreview || covered || !appActive) {
       return;
     }
     let alive = true;
     const tick = () => {
       setPreviewClock(new Date());
+      /*
+       * v1.8.8（用户 m05280 降发热）：地名不再跟着 30 秒心跳走。
+       *
+       * 以前这里每 30 秒调一次 `resolveForShot()`，而 `useLocationStamp` 的缓存 TTL
+       * 只有 60 秒 ⇒ 等于每 60 秒真的醒一次 GPS + 反向地理编码网络请求，举着手机
+       * 不动也一直在耗电发热。地点十分钟都不会变一次，所以只有到了刷新窗口才去取；
+       * 首次进入预览仍立刻取一次（ref 初值 0）。日期照旧每 30 秒翻（跨零点用）。
+       */
+      if (!alive || Date.now() - lastPreviewPlaceAtRef.current < PREVIEW_LOCATION_REFRESH_MS) {
+        return;
+      }
+      lastPreviewPlaceAtRef.current = Date.now();
       void locationStamp.resolveForShot().then((place) => {
         if (alive) {
           setPreviewPlace(place);
@@ -947,11 +995,27 @@ export function CameraScreen() {
       alive = false;
       clearInterval(timer);
     };
-  }, [framePreview, covered, resolveForShot]);
+  }, [framePreview, covered, appActive, resolveForShot]);
 
   const handlePreviewLayout = useCallback((event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
     setPreviewBox((current) => (current.width === width && current.height === height ? current : { width, height }));
+  }, []);
+
+  /**
+   * 前后台监听（v1.8.8 · 用户 m05280 降发热）。
+   *
+   * 只区分 `'active'` 与其余状态（`'background'` / `'inactive'`）：`'inactive'` 是来电
+   * 横幅、下拉控制中心这类短暂打断，那几秒里取景器同样看不见，没有理由还在跑采集。
+   * 回到 `'active'` 会同时恢复相机会话（`cameraActive` 变 true）和上面那个心跳 effect。
+   */
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (next) => {
+      setAppActive(next === 'active');
+    });
+    return () => {
+      subscription.remove();
+    };
   }, []);
 
   /**
@@ -1821,6 +1885,8 @@ export function CameraScreen() {
             pictureSize={pictureSize}
             autofocus={focusPulse ? 'on' : 'off'}
             animateShutter
+            /* v1.8.8（用户 m05280 降发热）：看不见时就停采集，别在后台空转出图 */
+            active={cameraActive}
             onCameraReady={handleCameraReady}
             onMountError={handleMountError}
           />
@@ -1845,6 +1911,7 @@ export function CameraScreen() {
       focusPulse,
       handleCameraReady,
       handleMountError,
+      cameraActive,
     ],
   );
 

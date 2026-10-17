@@ -33,7 +33,7 @@
 import { memo, useMemo } from 'react';
 import type { RefObject } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
-import type { StyleProp, TextStyle, ViewStyle } from 'react-native';
+import type { ImageStyle, StyleProp, TextStyle, ViewStyle } from 'react-native';
 import ViewShot from 'react-native-view-shot';
 import type { ViewShotRef } from 'react-native-view-shot';
 import { frameSkinSeedOf } from '../constants/frames';
@@ -584,6 +584,30 @@ function FilmCompositorImpl({
    * `00 NO FRAME` 没有相纸，print 也不套（否则全幅画面被缩一圈）。
    */
   const printMode = presentation === 'print' && !fullBleed;
+  /*
+   * ── v1.8.8（用户 m05280「成片糊」）：底板照片的渲染盒，必须由照片与自叠层共用 ────
+   *
+   * `kind:'photo'` 的调色层（对比度自叠 / S-Curve）是"同一张原图再画一遍 + 混合"，
+   * 所以副本与底板必须逐点重合。以前副本直接用 `StyleSheet.absoluteFill`（= 窗口容器
+   * 内容盒，比照片盒小 1pt、少 2px），两层之间就有了 ≈1.2% 的缩放差：在 2268px 的成片
+   * 画布上，窗口边缘的重影约 10px。v1.8.7 的 S-Curve 在 9 卷全开（0.24~0.42），
+   * 于是每个预设的成片都糊成一片；取景器滤掉 photo 层，所以看着还是锐的。
+   * 现在两边共用同一个 style 对象 —— 一个像素都不许差。
+   * `00 NO FRAME` 没有内窗，照片照旧铺满舞台，自叠层也铺满。
+   *
+   * 照片向外冗余 2px（left/top −1、宽高 +2）是 v1.8.5 的防黑边保险
+   * （内窗容器取整后的亚像素误差由照片自己盖住），这里原样保留；自叠层跟着同盒，
+   * 所以它也同样盖住那 1px —— 不会再出现"副本比底板小一圈"的重影。
+   */
+  const photoBoxStyle: ImageStyle = fullBleed
+    ? { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0 }
+    : {
+        position: 'absolute',
+        left: -1,
+        top: -1,
+        width: innerWindow.width + 2,
+        height: innerWindow.height + 2,
+      };
   /**
    * 相纸圆角（v1.8.5 模块一）：`FrameSpec.skin.cornerRadius` 按短边 358pt 基准换算，
    * 内层内容层（缩放前坐标系）与外层衬底（缩放后坐标系）各算一次 ——
@@ -750,22 +774,7 @@ function FilmCompositorImpl({
       >
         <Image
           source={{ uri: rawUri }}
-          style={{
-            /*
-             * 照片向外冗余 2px（left/top −1、宽高 +2）：与内窗容器取整后的边界叠 1px，
-             * 保证任何取整误差都由照片自己覆盖，而不是漏出容器底 —— 黑边的第二道保险。
-             * `fullBleed`（00 NO FRAME）没有内窗，照片照旧铺满舞台。
-             */
-            ...(fullBleed
-              ? styles.fill
-              : {
-                  position: 'absolute',
-                  left: -1,
-                  top: -1,
-                  width: innerWindow.width + 2,
-                  height: innerWindow.height + 2,
-                }),
-          }}
+          style={photoBoxStyle}
           resizeMode={frame.photoFit === 'contain' ? 'contain' : 'cover'}
           onLoad={onImageLoad}
           fadeDuration={0}
@@ -779,7 +788,13 @@ function FilmCompositorImpl({
         {overlayUri !== null ? (
           <Image
             source={{ uri: overlayUri }}
-            style={[styles.fill, { opacity: overlayOpacity }]}
+            /*
+             * v1.8.8（用户 m05280）：第二张底片与第一张用**同一个盒**。
+             * 以前这里是 `styles.fill`（窗口容器的内容盒，比照片盒小 2pt），
+             * 两张底片叠在一起时就会有 ≈1.2% 的缩放差 —— 重曝成片整体发虚。
+             * 语义上它本来就是"两张底片叠在同一格上晒一次"，盒必须逐点相同。
+             */
+            style={[photoBoxStyle, { opacity: overlayOpacity }]}
             resizeMode={frame.photoFit === 'contain' ? 'contain' : 'cover'}
             onLoad={onImageLoad}
             fadeDuration={0}
@@ -810,6 +825,12 @@ function FilmCompositorImpl({
           seed={lookSeed}
           photoUri={rawUri}
           photoFit={frame.photoFit === 'contain' ? 'contain' : 'cover'}
+          /*
+           * v1.8.8（用户 m05280）：自叠副本必须与底板照片同盒 —— 传照片自己的样式，
+           * 而不是让它退回 `StyleSheet.absoluteFill`（那会差 ≈1.2% 缩放 + 1pt 偏移，
+           * 在成片上就是窗口边缘 ≈10px 的重影 = "成片糊"）。
+           */
+          photoBoxStyle={photoBoxStyle}
           onPlateLoad={onImageLoad}
         />
         {!fullBleed ? (

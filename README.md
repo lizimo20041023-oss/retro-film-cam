@@ -62,6 +62,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [38. v1.8.5：Dazz #Inst C 立体相纸（内窗黑边根治 / 9 款传奇胶卷 / 135 NEG 齿孔与地名 / 纯净化地名多语言）](#38-v185dazz-inst-c-立体相纸内窗黑边根治--9-款传奇胶卷--135-neg-齿孔与地名--纯净化地名多语言)
 - [39. v1.8.6：真机发热五条投诉的逐条核查（按需合成 / 硬件光栅化 / 零 SVG / 六节点隔离 / 画质档与 GPS 去重）](#39-v186真机发热五条投诉的逐条核查按需合成--硬件光栅化--零-svg--六节点隔离--画质档与-gps-去重)
 - [40. v1.8.7：字形档四档真正分家（STAMP FONT 实时穿透 / 自混合 S-Curve / 9 卷重调 / 胶片卡渐变与无框日期暗影）](#40-v187字形档四档真正分家stamp-font-实时穿透--自混合-s-curve--9-卷重调--胶片卡渐变与无框日期暗影)
+- [41. v1.8.8：成片糊的根因（错位自叠层）与真机发热三刀](#41-v188成片糊的根因错位自叠层与真机发热三刀)
 
 ---
 
@@ -5409,6 +5410,148 @@ alpha 剖面实测 `ρ=0.65 → 0`、`0.70 → 3`、`0.75 → 31`、`0.80 → 81
 工作区根（不进仓库）：`_probe_date_engine.cjs` / `_probe_film_look.cjs` / `_haze_audit.mjs` /
 `_probe_v186_perf.cjs` / `_probe_v180_seams.mjs` / `_probe_v185_frame.cjs` / `_probe_noframe_v181.cjs`
 （本版口径更新）、`_gate_v187_*.out.txt`、`_plate_stats.json` / `_plate_stats.py`。
+
+---
+
+## 41. v1.8.8：成片糊的根因（错位自叠层）与真机发热三刀
+
+> 用户原话（m05280）：「为什么这么糊啊，之前还不会的，而且还是会发热。能不能再优化一下」
+> 附两张成片：城市彩虹（1856×2257）与雪地日本（1857×2258），都是 `polaroid-600` 相纸。
+> 硬约束沿用：**成片画质与观感不许降、不新增依赖、零 `as any`、CI 全绿**。
+
+### 41.1 两条投诉 → 取证 → 根因
+
+**取证一：到底哪里糊。** 把两张样张放大 2×~4× 后按行/列取亮度剖面（脚本在 workspace 根
+`_v188_probe/`，零依赖 PIL+numpy）：
+
+- 相纸内窗边界在 x=138 / x=1711 处是**单样本跳变**（img1 y=420 x=138：`217→105`；
+  x=1711：`41→162→180`）⇒ 相框 PNG、日期字形、地名文字在成片里是**锐的**；
+- 照片内部强竖边的 10–90% 过渡宽度是 **4–14px**（img1 x=967 为 6px、x=1033 为 7px、
+  x=1097 为 7px），而 img2 近景建筑边只有 1px ⇒ **只有照片内容发虚，且是"重影式"发虚**。
+
+**取证二：为什么"之前不会"。** `git show eb2971d:src/constants/presets.ts` 与 v1.8.7 逐字对比：
+九支卷的 `contrast` 值**完全相同** ⇒ 「同源照片再画一遍」的对比度自叠在 v1.8.6 就存在。
+v1.8.7 真正新增的是 **九支卷全开的 `sCurveIntensity` 0.24~0.42（第二条自叠）** + 两条
+`shadow-tint`/`highlight-tint` 色层 + 提高的暗角 —— 新增的错位自叠就是"之前不会、现在糊"的来由。
+
+**根因（一个 4pt 的盒差）。** `kind:'photo'` 的调色层是"同一张原图再画一遍 + 混合"：
+
+- 底板照片的盒（`FilmCompositor`）：`left:-1, top:-1, width: innerWindow.width+2, height: innerWindow.height+2`
+  （v1.8.5 防内窗黑边的 2px overscan，语义必须是"比窗口大"）；
+- 自叠副本的盒（`FilmLookLayers` 里的 `StyleSheet.absoluteFill`）：取的是窗口容器的**内容盒**，
+  窗口有 `borderWidth: 1` ⇒ 副本盒 = `innerWindow − 2`（比底板小 4pt）。
+
+两个盒**同心但不同尺度**：324pt 的窗口上，底板 326、副本 322，缩放差 `326/322 ≈ 1.24%`；
+窗口边缘的错位 = `(326−322)/2 = 2pt`；在 2268px 的成片画布上（361pt 舞台宽，约 6.28px/pt）
+就是 **≈12.6px 的重影**。取景器把 `kind:'photo'` 层全滤掉了，所以**取景器看着仍然锐** ——
+用户"之前还不会"的直觉完全正确，糊只发生在成片。
+
+另外 `overlayUri`（重曝第二张底片）当时也用 `styles.fill`（容器内容盒），两张底片叠在一起
+也有同样的 1.2% 尺度差 —— 重曝场景会额外发虚。
+
+### 41.2 模块一：`photoBoxStyle` —— 底板 / 自叠副本 / 重曝共用同一个盒
+
+- `FilmCompositor.tsx` 里把底板照片的盒抽成一个 `ImageStyle` 常量 `photoBoxStyle`：
+  - 非 fullBleed：`{ position:'absolute', left:-1, top:-1, width: innerWindow.width+2, height: innerWindow.height+2 }`；
+  - fullBleed（`00 NO FRAME`）：显式 `{ position:'absolute', left:0, right:0, top:0, bottom:0 }`
+    （RN 0.86 的类型里已没有 `StyleSheet.absoluteFillObject`，这里不依赖它）。
+- 底板照片 `<Image source={{uri: rawUri}} style={photoBoxStyle}>`、重曝底片
+  `style={[photoBoxStyle, { opacity: overlayOpacity }]}`、自叠副本经
+  `<FilmLookLayers photoBoxStyle={photoBoxStyle}>` 原样传下去 —— **三个渲染使用的就是同一个 style
+  对象，缩放差恒 0，不是"调小到差不多"**。
+- `FilmLookLayers.tsx` 的 `FilmLookLayersProps` 新增 `photoBoxStyle?: StyleProp<ViewStyle>`：
+  photo 层渲染为 `[photoBoxStyle ?? StyleSheet.absoluteFill, overlayStyle(layer)]`；
+  不传时退回旧口径（其它调用点零改动）。
+- 为什么不是"把 overscan 去掉"：2px 是 v1.8.5 为内窗黑边留的保险，且它属于**底板语义**；
+  让副本跟着底板走，既修糊又保住防黑边。
+
+### 41.3 模块二：真机发热三刀（不改任何成片参数）
+
+1. **相机会话可暂停**：`CameraScreen` 新增
+   `const cameraActive = cameraGranted && !covered && !developing && appActive;`，
+   `<CameraView active={cameraActive}>`。iOS 侧 `active` 直接落到
+   `CameraSessionManager.updateCameraIsActive()`：`active=false` 会 `session.stopRunning()`，
+   **真的停 AVCaptureSession**（不是停渲染）；面板打开 / 相册 / 胶片抽屉 / 冲印中 / 退后台
+   都会停采集，回到取景再 `startRunning()`。`cameraClipNode` 的依赖数组补 `cameraActive`。
+2. **前后台门控 + 地名节奏**：新增 `AppState.addEventListener('change', …)` 维护 `appActive`
+   （只有 `'active'` 算前台）；取景器心跳 effect 在「没开预览 / 被面板盖住 / 退后台」时
+   **直接不挂定时器**。地名刷新窗口从"30 秒心跳里每 60 秒真的醒一次 GPS"改成
+   `PREVIEW_LOCATION_REFRESH_MS = 10 * 60_000`（十分钟），并用 `lastPreviewPlaceAtRef` 记录
+   上次取定位的时刻；30 秒心跳从此只翻日期，不再碰定位与逆地理编码。
+3. **取景器不再画两条全屏染色层**：`gradeLayers.ts` 新增
+   `LIVE_DROPPED_COLOR_LAYER_KEYS = new Set(['shadow-tint','highlight-tint'])`，
+   `planFilmLooks(preset,'live')` 过滤链增一步剔除；成片 `'composite'` 面**一条都不少**
+   （分离色调原本就是成片观感的一部分）。每帧省两次全屏 `mixBlendMode` 混合。
+
+全仓仍然零 `watchPositionAsync`（定位只取一次 + 10 分钟窗口），`CameraView` 仍然只挂一处
+（`active` 只是停/启采集，不卸载重建会话，避免回来黑一下）。
+
+### 41.4 验证清单与门禁
+
+16 道探针全部 EXIT 0（workspace 根，`node <probe>` 直跑；原始输出 `_gate_v188_*.out.txt`）：
+
+| # | 门禁 | 本版实测 |
+| --- | --- | --- |
+| 1 | `_probe_date_engine.cjs` | 3372 条 / 0 失败 |
+| 2 | `_probe_film_look.cjs` | 1752 条 / 0 失败（新增"live 面零分离染色层、composite 面保留"断言） |
+| 3 | `_probe_geo_lock.cjs` | 16207 通过 / 0 失败 |
+| 4 | `_probe_noframe_v181.cjs` | 455 条 / 0 失败 |
+| 5 | `_probe_noframe_watermark.cjs` | 458 条 / 0 失败 |
+| 6 | `_probe_skin_material.cjs` | 1069 条 / 0 失败 |
+| 7 | `_probe_v180_seams.mjs` | 1358 条 / 0 失败（live 面 `tintLive=0` 断言） |
+| 8 | `_probe_lead_integration.mjs` | 315 条 / 0 失败 |
+| 9 | `_probe_capture_quality.mjs` | 78 条 / 0 失败 |
+| 10 | `_probe_v184_camera.cjs` | 947 条 / 0 失败（live 面 `expectedKeys` 过滤掉被剔除的染色层） |
+| 11 | `_probe_v185_place.cjs` | 468 条 / 0 失败 |
+| 12 | `_probe_v185_frame.cjs` | 1781 条 / 0 失败 |
+| 13 | `_haze_audit.mjs` | 9/9 卷 PASS；超预算 0/9、结构门禁 0 失败、暗角问题 0 |
+| 14 | `_purity_audit.mjs` | 64 条 / 0 失败，`RESULT: PURE` |
+| 15 | `_probe_v186_perf.cjs` | 241 条 / 0 失败（`cameraClipNode` 依赖追加 `cameraActive`） |
+| 16 | `_probe_v188_sharp.cjs` | 79 条 / 0 失败（**本版新探针**：糊的源码接线 + 独立算法量化 + 发热三刀 + 不回归） |
+
+`_probe_v188_sharp.cjs` 的量化部分不 import 被测模块的常量，而是用 `computeFrameLayout` /
+`roundInnerWindow` 自己算：324pt 窗口 → 底板盒 326 / 旧副本盒 322 → 缩放差 >1%、
+边缘错位恰 2pt、2268px 画布上 >10px；并断言九支卷 `color.sCurveIntensity > 0`（证明"新增的
+错位自叠确实全卷生效"）、photo 层零 `blurRadius`。
+
+- `npx tsc --noEmit -p tsconfig.json` → **EXIT 0**。
+- `npx expo export --platform ios --no-bytecode` → **EXIT 0**，bundle
+  `index-96674eca2a23f03819953db9d70675b7.js` **1,359,126 B**。
+
+### 41.5 已知缺口与如实说明
+
+- **没有真机复测**：糊的根因是源码几何 + 样张剖面推导，修复是"三个渲染共用同一个盒"的
+  结构性不变量，探针用独立算法量化了修复前后的错位量；但"用户手上确实变锐了"仍需真机确认。
+- **发热只能降、不能归零**：expo-camera 57.0.6 iOS 的取景 session preset 是 `.photo` 全幅，
+  这是原生侧常量；本版能做的是"不取景时真的停采集 + 不轮询 GPS + 每帧少两层混合"。
+  预览缓冲区的像素量没有变，持续取景时的功耗不会变成"不热"，只是明显下降。
+- **重曝场景**：两张底片现在同盒，但因为 `opacity` 混合本身，重曝的"叠影"仍在（那是功能），
+  不会再额外多出一层 1.2% 的尺度差。
+- **取景器与成片的色差**：live 面去掉分离染色层后，取景器会比成片少一点冷暖分离感 ——
+  这是用"每帧省两次全屏混合"换来的，成片观感不受影响。
+- **`mixBlendMode` 仍可能被系统降级**（v1.8.7 §40.7 同口径）；即便降级，自叠层现在与底板
+  逐点同盒，退化结果只是"同源图叠同源图"，不会再有额外重影。
+- **48MP 不存在**、`pictureSize` 只映射 9 个枚举 —— 与 §39.1 / §40.7 结论一致，本版未动。
+
+### 41.6 产物指纹
+
+（发布后回填：本地/远端提交、CI run、artifact、IPA 体积与 sha256、Release id 与下载地址、
+`_verify_ipa_v188.py` 核验结果、export 冒烟、环境。）
+
+### 41.7 文件改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/components/FilmCompositor.tsx` | 新增 `photoBoxStyle: ImageStyle`（非 fullBleed = `innerWindow+2`/`-1`，fullBleed = 显式四边 0）；底板照片、重曝底片、`FilmLookLayers` 三处共用 |
+| `src/components/FilmLookLayers.tsx` | props 新增 `photoBoxStyle?: StyleProp<ViewStyle>`，photo 层盒优先用它 |
+| `src/components/CameraScreen.tsx` | `CameraView active={cameraActive}`；AppState 监听 + `appActive`；心跳门控与 `PREVIEW_LOCATION_REFRESH_MS = 10 * 60_000` + `lastPreviewPlaceAtRef`；`cameraClipNode` 依赖加 `cameraActive` |
+| `src/utils/gradeLayers.ts` | `LIVE_DROPPED_COLOR_LAYER_KEYS`（`shadow-tint`/`highlight-tint`），live 面剔除、composite 面保留 |
+| `app.json` | version `1.8.7` → `1.8.8` |
+| `README.md` | 本节 §41 + TOC |
+
+工作区根（不进仓库）：`_probe_v188_sharp.cjs`（新）、`_probe_film_look.cjs` / `_probe_v180_seams.mjs` /
+`_probe_v184_camera.cjs` / `_probe_v186_perf.cjs`（口径跟随）、`_v188_probe/`（样张取证脚本与裁切图）、
+`_gate_v188_*.out.txt`。
 
 ---
 

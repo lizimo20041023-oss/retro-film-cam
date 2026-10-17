@@ -20,6 +20,8 @@
  *    （0~1 层，`buildGradeLayers` 不再写 `blurRadius`/`offset`）；宿主照旧把 `rawUri`
  *    当 `photoUri` 传进来最省事。两边都渲染 = 白白多等 `READY_TIMEOUT_MS`（1500ms）超时；
  *    少一张 = `captureRef` 可能截到半张。
+ *    **v1.8.8 起宿主还必须传 `photoBoxStyle`**（底板照片的真实渲染盒）：自叠副本与底板照片
+ *    必须逐点同盒，否则成片会出现窗口边缘的重影（详见 `FilmLookLayersProps.photoBoxStyle`）。
  * 3. `seed`：颗粒板的**镜像相位**与微尘的位置都由它决定，且必须在取景器与成片之间传同一个值
  *    （`CameraScreen` 里是模块常量 `LOOK_SEED`）。同一个 seed 下两边的颗粒与微尘逐点相同。
  *    为什么只做镜像而不做平移：无缝贴图镜像之后仍然无缝，平移会在边缘露白边。
@@ -53,7 +55,7 @@ import { dustSpecAlpha, dustSpecCountForGrain } from '../constants/grain';
 import { GRAINLESS_PRESET_IDS } from '../constants/presets';
 import { planFilmLooks } from '../utils/gradeLayers';
 import type { GradeLayer, ResolvedFilmPreset } from '../types';
-import type { ViewStyle } from 'react-native';
+import type { StyleProp, ViewStyle } from 'react-native';
 
 export type FilmLookSurface = 'composite' | 'live';
 
@@ -81,6 +83,22 @@ export interface FilmLookLayersProps {
   photoUri?: string;
   /** photo 层的缩放方式，与底板照片保持一致（`frame.photoFit`）。 */
   photoFit?: 'cover' | 'contain';
+  /**
+   * photo 层**自叠副本**的渲染盒（v1.8.8 · 用户 m05280「成片糊」根治）。
+   *
+   * 自叠层是"同一张原图再画一遍 + soft-light/overlay/对比度混合"，
+   * 所以它必须与底板照片**逐点重合**：同一个 `left/top/width/height`、
+   * 同一个 `resizeMode`，一个像素的偏差都会在成片上放大成重影。
+   *
+   * 不传时退回 `StyleSheet.absoluteFill`（= 本组件根节点的盒子）。成片合成里根节点是
+   * 「内窗容器内容盒」（`innerWindow` 去掉 1px 边框），而底板照片是
+   * `left:-1/top:-1/宽高+2` 的冗余盒 —— 两者中心对齐、缩放差 ≈1.2%，
+   * 在 2268px 画布上窗口边缘就是 ≈10px 的重影。v1.8.7 新加的 S-Curve
+   * （9 卷全开、opacity 0.24~0.42）把这个重影变成"整片发虚"，
+   * 而取景器（live）滤掉 photo 层所以看着锐 —— 正是用户这张投诉的形状。
+   * 宿主必须把底板照片的 style 原样传进来。
+   */
+  photoBoxStyle?: StyleProp<ViewStyle>;
 }
 
 /** 一颗微尘：位置与半径都是**比例**，渲染时再乘宽高。 */
@@ -210,6 +228,7 @@ function FilmLookLayersImpl({
   onPlateLoad,
   photoUri,
   photoFit = 'cover',
+  photoBoxStyle,
 }: FilmLookLayersProps) {
   const layers = useMemo(() => planFilmLooks(preset, surface), [preset, surface]);
   const grainFlipped = useMemo(() => hashSeed(seed, 0x9d) % 2 === 1, [seed]);
@@ -246,8 +265,13 @@ function FilmLookLayersImpl({
           }
           const offsetX = layer.offsetX ?? 0;
           const offsetY = layer.offsetY ?? 0;
+          // v1.8.8：自叠副本必须与底板照片同盒（宿主传 `photoBoxStyle`），
+          // 否则 1px 偏差会在成片上变成窗口边缘 ≈10px 的重影（见 props 注释）。
           return (
-            <View key={layer.key} style={[StyleSheet.absoluteFill, overlayStyle(layer)]}>
+            <View
+              key={layer.key}
+              style={[photoBoxStyle ?? StyleSheet.absoluteFill, overlayStyle(layer)]}
+            >
               <Image
                 source={{ uri: photoUri }}
                 style={[

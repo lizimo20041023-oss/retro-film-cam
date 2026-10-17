@@ -490,6 +490,20 @@ const LIVE_NEUTRAL_LAYER_KEYS: ReadonlySet<string> = new Set([
 /** 中性层的载体色：saturation 混合用的中灰 / 高饱和红，出现即代表"降通透"层。 */
 const LIVE_NEUTRAL_CARRIERS: ReadonlySet<string> = new Set([NEUTRAL_GRAY, SATURATE_ACCENT]);
 
+/**
+ * 取景器必须滤掉的「分离染色层」key（v1.8.8 · 用户 m05280 降发热）。
+ *
+ * `shadow-tint` / `highlight-tint` 是 v1.8.7 新增的分离色调：每条都是**一层全屏
+ * `mixBlendMode` 纯色 View**，要盖在相机预览上把整块画面重新混合一遍。取景器里它们被
+ * `liveLookOpacity()` 压到 0.04~0.08 —— 肉眼几乎看不出色差，却让实时预览每帧多两次
+ * 全屏混合（GPU 一直在算 = 真机发热的固定开销之一）。取景器保留色温 / 暗角 / 漏光
+ * 这三类"能看出差别"的色层就够了，分离染色只在**成片合成**时上（`buildGradeLayers` 不动）。
+ */
+const LIVE_DROPPED_COLOR_LAYER_KEYS: ReadonlySet<string> = new Set([
+  'shadow-tint',
+  'highlight-tint',
+]);
+
 /** 某一层是不是「中性灰/降对比」层（live 必须滤掉）。 */
 function isLiveNeutralLayer(layer: GradeLayer): boolean {
   if (LIVE_NEUTRAL_LAYER_KEYS.has(layer.key)) {
@@ -520,6 +534,9 @@ function isLiveNeutralLayer(layer: GradeLayer): boolean {
  *   · **中性灰/降对比层**（v1.8.4 · 用户 m02103 C3）—— `desaturate` / `saturate` /
  *     `contrast-boost` 这类以 NEUTRAL_GRAY / SATURATE_ACCENT 为载体、靠 saturation /
  *     soft-light 拉低通透度的层。用户真机反馈"取景器有雾感"，它们就是那层灰白纱。
+ *   · **分离染色层**（v1.8.8 · 用户 m05280 降发热）—— `shadow-tint` / `highlight-tint`
+ *     这两条全屏 `mixBlendMode` 纯色叠加在取景器里被压到 0.04~0.08（看不出色差），
+ *     却是每帧两次额外的全屏混合；取景器不再画它们，只在成片上色。
  *   · **例外：`mono` 真黑白去色层不滤**（v1.8.5 · M2，用户要所见即所得）—— 满幅
  *     `#808080` + saturation 是成片观感本身，不带来色偏、不压对比；滤掉它黑白卷取景器
  *     就会看到彩色。它同样**不参与** `liveLookOpacity()` 缩放，保持 opacity 1（预览是
@@ -547,6 +564,11 @@ export function planFilmLooks(preset: ResolvedFilmPreset, surface: FilmLookSurfa
       }
       // ③ 中性灰/降对比层：v1.8.4 去雾的核心 —— 取景器绝不允许出现灰白色纱。
       if (isLiveNeutralLayer(layer)) {
+        return false;
+      }
+      // ④ 分离染色层（v1.8.8）：取景器里被压到 0.04~0.08 几乎看不见，
+      //    却每帧多两次全屏混合；只在成片上色（见 LIVE_DROPPED_COLOR_LAYER_KEYS）。
+      if (LIVE_DROPPED_COLOR_LAYER_KEYS.has(layer.key)) {
         return false;
       }
       return true;
