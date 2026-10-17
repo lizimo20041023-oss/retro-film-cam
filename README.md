@@ -4866,7 +4866,21 @@ sha256 `6b45e862b6c23f30d9c1db97013e5d90bf82f4b49aa6e8dfae3e0a98ef70c79c`（114,
 
 ### 38.10 产物指纹
 
-<!-- 发布后回填 -->
+v1.8.5 发布指纹（2026-10-17，Asia/Shanghai）：
+
+| 项 | 值 |
+| --- | --- |
+| 本地提交 | `66d1f4b8e08738cf8bbf2bae1b9745d0fff38e63`（25 files changed, +2112 −576；含 `scripts/generate_vignette.py` 新增） |
+| 远端提交 | `1f32c711eb812f62fca353922ce2ef64a0830035`（父 `430a33fb…` = v1.8.4 docs 回填） |
+| CI run | `39041345069`（job `117421311943` · build-ipa · 全 step success） |
+| artifact | `12104516110`（`FretroCam-unsigned-ipa`，10,474,194 B zip） |
+| IPA | `FretroCam-v1.8.5-unsigned.ipa`，**10,587,553 B** |
+| SHA256 | `c6ab8c88ff2ea2db165f9f348e987f7f2a7b7cd43695ff84715442f52005d2c7` |
+| Release | id `415865660`（tag `v1.8.5`）；asset id `650756725`（远端 size/digest 与本地一致） |
+| 下载 | https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.8.5/FretroCam-v1.8.5-unsigned.ipa |
+| 核验 | `_verify_ipa_v185.py 12104516110` = `RESULT: OK`：应存在 250+ 字面量/导出名全过、应删清单全 0（旧卷 id / `halation-glow` / `#FF4B2D` / 旧字形 / 旧皮肤废名全 0）、vignette PNG 内容 sha256 `6b45e862…` + 中心 alpha 0 + R/G/B 恒 (6,14,20)、grain PNG 频带门 `<8px 65.7%` / `24–64px 5.0%`、Info.plist 版本 `1.8.5`、10 张相框 + `no-frame.png` 全在包 |
+| export 冒烟 | `_export_v185_lead` → `index-8a062966395dd49b396fb1693b5c5afc.js` 1,348,011 B（CI 内 `main.jsbundle` 2,053,389 B，压缩/预构建口径不同属正常） |
+| 本地 IPA 副本 | 工作区根 `FretroCam-v1.8.5-unsigned.ipa`（10,587,553 B，与 Release 资产同 sha256） |
 
 ### 38.11 文件改动
 
