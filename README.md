@@ -5129,7 +5129,17 @@ renderToHardwareTextureAndroid
 
 ### 39.9 产物指纹
 
-<!-- v1.8.6 发布后回填：本地/远端提交、CI run/job、artifact、IPA 体积/SHA256、Release id/asset、下载地址、核验结果、export 冒烟、本地 IPA 副本 -->
+- 本地提交 `eb2971d`（13 files changed，1229 insertions / 396 deletions）→ 远端 `e0f920d316742629db4c233d9c240f5229ebdacb`（经 `_push_v180_api.py` 建树提交，本地/远端 tree 一致）。
+- CI run `39046576765`（job `117436392897`，`build-ipa` 全绿）；artifact `12105923462`（`FretroCam-unsigned-ipa`，10,476,521 B）。
+- IPA：**10,590,352 B**，sha256 `fb1bcc61c3ef77d9a8d76afa22d9d4f4912b24ff6f30b5761278c38171bea00b`（Release 回读 digest 与本地一致）。
+- Release `v1.8.6` id `415910247`，asset id `650899519`（`FretroCam-v1.8.6-unsigned.ipa`）；
+  下载 <https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.8.6/FretroCam-v1.8.6-unsigned.ipa>。
+- 核验：`python _verify_ipa_v186.py --local dist/_expo/static/js/ios/index-977478d678e54a43493327ab2445eca9.js` → `RESULT(local): OK`；
+  `python _verify_ipa_v186.py 12105923462` → `RESULT: OK`（包内 `FilmStageComposer` / `shouldRasterizeIOS` / `renderToHardwareTextureAndroid` 均命中，
+  `FilmCompositorImpl` / `DevelopOverlayImpl` / `pickPictureSize` 在 canary 下命中，颗粒/暗角 sha256 与 v1.8.2/v1.8.5 一致，Info.plist 版本 `1.8.6`，10 张相框齐全，bundle 2,059,280 B）。
+- export 冒烟：`npx expo export --platform ios --no-bytecode` EXIT 0 → `index-977478d678e54a43493327ab2445eca9.js` 1,350,807 B（754 modules）。
+- 本地 IPA 副本：workspace 根 `FretroCam-v1.8.6-unsigned.ipa`（10,590,352 B）。
+- 环境：node v24.18.0；日期 2026-10-17。
 
 ### 39.10 文件改动
 
