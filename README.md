@@ -63,6 +63,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [39. v1.8.6：真机发热五条投诉的逐条核查（按需合成 / 硬件光栅化 / 零 SVG / 六节点隔离 / 画质档与 GPS 去重）](#39-v186真机发热五条投诉的逐条核查按需合成--硬件光栅化--零-svg--六节点隔离--画质档与-gps-去重)
 - [40. v1.8.7：字形档四档真正分家（STAMP FONT 实时穿透 / 自混合 S-Curve / 9 卷重调 / 胶片卡渐变与无框日期暗影）](#40-v187字形档四档真正分家stamp-font-实时穿透--自混合-s-curve--9-卷重调--胶片卡渐变与无框日期暗影)
 - [41. v1.8.8：成片糊的根因（错位自叠层）与真机发热三刀](#41-v188成片糊的根因错位自叠层与真机发热三刀)
+- [42. v1.8.9：闪光灯拍摄被停机打断（v1.8.8 发热改动的回归）与修法](#42-v189闪光灯拍摄被停机打断v188-发热改动的回归与修法)
 
 ---
 
@@ -5575,6 +5576,142 @@ v1.8.7 真正新增的是 **九支卷全开的 `sCurveIntensity` 0.24~0.42（第
 工作区根（不进仓库）：`_probe_v188_sharp.cjs`（新）、`_probe_film_look.cjs` / `_probe_v180_seams.mjs` /
 `_probe_v184_camera.cjs` / `_probe_v186_perf.cjs`（口径跟随）、`_v188_probe/`（样张取证脚本与裁切图）、
 `_gate_v188_*.out.txt`。
+
+---
+
+## 42. v1.8.9：闪光灯拍摄被停机打断（v1.8.8 发热改动的回归）与修法
+
+### 42.1 用户报告与取证
+
+用户 m06262（附图）：「使用闪光灯拍照拍不了，出现底下这行提示」。截图里取景页底部是红色错误卡，
+原文 `顯影失敗 CameraImageCaptureException: Image could not be captured (at
+ExpoCamera/CameraPhotoCapture.swift:130)`，提示「輕觸畫面繼續拍攝」；**关键细节：取景画面是冻结的**
+—— 这说明 `AVCaptureSession` 已经被停掉了，不是测光/闪光灯硬件的问题。
+
+原生代码取证（`node_modules/expo-camera/ios/Current/`，57.0.6）：
+
+- `CameraSessionManager.swift:119-130` `func updateCameraIsActive()`：`delegate.active` 为假时直接
+  `self.session.stopRunning()`；为真时 `if hasAvailableCameraDevice && !self.session.isRunning { self.session.startRunning() }`；
+- `CameraView.swift:183-189` `var active = true { didSet { sessionQueue.async { self.sessionManager.updateCameraIsActive() } } }`
+  —— 改 `active` 就是异步停机/开机；
+- `CameraView.swift:349-361` `takePictureRef` / `takePicturePromise` 直接调
+  `photoCapture.takePicturePromise(...)`，**不经过 `sessionQueue`**；
+- `CameraPhotoCapture.swift:107` 把请求交给 `photoOutput.capturePhoto(with:delegate:)`，回调
+  `didFinishProcessingPhoto` 的 `if error != nil` 分支（`:129-131`）抛 `CameraImageCaptureException()`，
+  错误串定义在 `Common/CameraExceptions.swift:23`（`"Image could not be captured"`）。
+
+也就是说：**停机请求与在飞的拍摄请求没有任何互斥**，停会话会把 `capturePhoto` 中止掉。
+
+### 42.2 根因链条（v1.8.8 引入）
+
+v1.8.8 为降发热加了 `CameraView active={cameraActive}`，表达式是
+`cameraGranted && !covered && !developing && appActive`；而 `handleShutter` 的顺序是
+**先** `setStatus({ kind: 'developing', stage: 'normalizing' })`、**再** `await camera.takePictureAsync(...)`：
+
+1. 快门按下 → `developing` 提交 → 下一帧 `cameraActive` 变 `false`；
+2. expo-camera 在 `sessionQueue` 上异步 `stopRunning()`；
+3. 此时 `capturePhoto` 正在飞（静态全幅拍摄要几百毫秒）→ 被中止 → 错误分支抛异常；
+4. 闪光灯拍摄要**预闪 + 测光**，耗时比普通拍摄更长，几乎 100% 输掉这次竞态；普通拍摄偶尔输，
+   所以现象看起来像「只有开闪光灯才拍不了」。
+
+`developing` 这个依赖是 v1.8.8 发热改造里唯一"能动到拍摄"的部分，回归面 100% 对得上用户症状。
+
+### 42.3 修法：冲印期不再停会话
+
+```ts
+// v1.8.8 的写法（回归）
+const cameraActive = cameraGranted && !covered && !developing && appActive;
+// v1.8.9
+const cameraActive = cameraGranted && !covered && appActive;
+```
+
+- 拍摄链路优先：快门按下后到 `takePictureAsync` 完成期间，会话**任何状态都不许去停**；
+- 面板盖住（`covered`）/ 退后台（`appActive === false`）这两个真正的耗电大头继续停采集 ——
+  它们不会与拍摄并发（面板打开时快门被 UI 遮住，退后台时没有按下动作）；
+- 冲印期多跑几秒采集的耗电，远小于"把一次拍摄打断"的代价（冲印本身只有几秒，且取景器已被冲印层盖住）。
+
+### 42.4 为什么不干脆把 `active` 整个关掉
+
+`active` 是 v1.8.8 降发热的主力（面板浏览 / 退后台时真的停采集），关掉它等于退回 v1.8.7 的发热水平；
+这次要修的是"依赖了错误的维度"（冲印状态），不是"停机这个手段"本身。修完的表达式只剩
+**面板可见性**与**前台**两个不会与快门并发的条件。
+
+### 42.5 17 道门禁（全部 EXIT 0）
+
+| # | 门禁 | 本版实测 |
+| --- | --- | --- |
+| 1 | `_probe_date_engine.cjs` | 3372 条 / 0 失败 |
+| 2 | `_probe_film_look.cjs` | 1752 条 / 0 失败 |
+| 3 | `_probe_geo_lock.cjs` | 16207 通过 / 0 失败 |
+| 4 | `_probe_noframe_v181.cjs` | 455 条 / 0 失败 |
+| 5 | `_probe_noframe_watermark.cjs` | 458 条 / 0 失败 |
+| 6 | `_probe_skin_material.cjs` | 1069 条 / 0 失败 |
+| 7 | `_probe_v180_seams.mjs` | 1358 条 / 0 失败 |
+| 8 | `_probe_lead_integration.mjs` | 315 条 / 0 失败 |
+| 9 | `_probe_capture_quality.mjs` | 78 条 / 0 失败 |
+| 10 | `_probe_v184_camera.cjs` | 947 条 / 0 失败 |
+| 11 | `_probe_v185_place.cjs` | 468 条 / 0 失败 |
+| 12 | `_probe_v185_frame.cjs` | 1781 条 / 0 失败 |
+| 13 | `_haze_audit.mjs` | 9/9 卷 PASS；超预算 0/9、结构门禁 0 失败 |
+| 14 | `_purity_audit.mjs` | 64 条 / 0 失败，`RESULT: PURE` |
+| 15 | `_probe_v186_perf.cjs` | 241 条 / 0 失败 |
+| 16 | `_probe_v188_sharp.cjs` | 80 条 / 0 失败（S3.3 同步新表达式 + 新增 S3.3b「`cameraActive` 不得含 `developing`」） |
+| 17 | `_probe_v189_flash.cjs` | 51 条 / 0 失败（**本版新探针**） |
+
+`_probe_v189_flash.cjs` 分六组钉不变式：
+
+- S1：**原生侧机制冻结** —— 直接读 `node_modules/expo-camera/ios/Current/*.swift`，断言
+  `active.didSet → updateCameraIsActive → stopRunning`、`takePicturePromise` 不经过 `sessionQueue`、
+  `didFinishProcessingPhoto` 的 error 分支抛 `CameraImageCaptureException`（这条因果链是"为什么必须
+  有这个修复"的证据，不许被后人当成多余的防御删掉）；
+- S2：`cameraActive` 表达式**不得**出现 `developing` / `status`（含一个专门抓 `status.kind` 的正则），
+  且 `covered` / `appActive` / `cameraGranted` 三个门控一个不许丢；注释里必须带
+  `CameraPhotoCapture.swift:130` 与用户单号 `m06262`（可追溯）；
+- S3：停机开关接线 —— `CameraView` 单挂载、`active={cameraActive}` 唯一、`cameraClipNode` 依赖含
+  `cameraActive` 与 `handleCameraReady`、`AppState` 监听仍在、无"条件渲染 CameraView"；
+- S4：**拍摄顺序与闪灯链路** —— `setStatus(developing)` 仍在 `takePictureAsync` 之前（顺序不变，
+  修的是 `cameraActive` 不再跟它）、快门入口守卫 `!camera || !cameraReady || developing` 仍在、
+  `shotLockRef` 仍在入口置位、`takePictureAsync` 全屏只一处且参数仍是
+  `quality: 1 / skipProcessing: false / exif: false`、闪灯三档 `off/on/auto` 与
+  `flash={facing === 'back' ? flashMode : 'off'}`、`handleCycleFlash` 依赖 `[facing, flashMode]` 全部未变；
+- S5：降发热其余两刀（心跳门控 / 10 分钟地名窗口 / live 面剔除分离染色层）**不许被顺手回退**
+  —— 修 bug 不许用"把优化全关掉"的方式；
+- S6：成片质量链路零回归（`photoBoxStyle` 三处共用、`presentation="print"`、JPEG 0.98、
+  零 `as any`）与版本号 `1.8.9`。
+
+- `npx tsc --noEmit -p tsconfig.json` → **EXIT 0**。
+- `npx expo export --platform ios --no-bytecode` → **EXIT 0**，bundle
+  `index-48a8a051a6b55afc6a8ddfbffbf873c3.js` **1,359,121 B**；
+  `python _verify_ipa_v189.py --local ...` → `RESULT(local): OK`。
+
+### 42.6 已知缺口与如实说明
+
+- **没有真机复测**：修复依据是"停机会中止在飞拍摄"这条原生因果链 + 用户截图里冻结的取景画面；
+  装上后建议**连续拍 10 张闪光灯照片**再确认，并顺手试一次开闪光灯连拍。
+- **冲印期会话保持运行**：相比 v1.8.8 会多一点功耗，但那只有冲印的几秒，且这段时间取景器画面被
+  冲印层盖住；持续取景 / 面板浏览 / 退后台的停机策略都没变。
+- **面板关闭后立刻按快门仍有极小的"会话重启中"窗口**（`startRunning()` 是异步的，iOS 没有
+  "会话已就绪"的 JS 回调）。这个窗口在 v1.8.8 之前的版本同样存在（面板掩盖时并不停会话，所以
+  从未暴露）；本版没有新增该风险，也不打算用"永远不停会话"去绕开它。
+- 其余缺口与 §41.6 一致：没有真机、解析不了 `.photo` preset 的预览缓冲成本、`mixBlendMode` 仍可能
+  被系统降级等。
+
+### 42.7 产物指纹
+
+（发布后回填：本地提交 / 远端 master / CI run+job / artifact / IPA 体积与 sha256 / Release id+asset /
+核验结论 / export 冒烟）
+
+### 42.8 文件改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/components/CameraScreen.tsx` | `cameraActive` 去掉 `!developing`（冲印期不再停会话）；注释补 v1.8.9 回归因果链（原生行号 + 错误串） |
+| `app.json` | version `1.8.8` → `1.8.9` |
+| `README.md` | 本节 §42 + TOC |
+
+工作区根（不进仓库）：`_probe_v189_flash.cjs`（新）、`_probe_v188_sharp.cjs`（S3.3/S3.3b 口径跟随）、
+`_verify_ipa_v189.py` / `_release_v189.py` / `_commit_v189_msg.txt`、`_gate_v189_run.out.txt`、
+`_export_v189_lead/`。
 
 ---
 

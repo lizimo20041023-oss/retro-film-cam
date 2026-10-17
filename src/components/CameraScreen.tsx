@@ -870,13 +870,25 @@ export function CameraScreen() {
    * `startRunning()`（`node_modules/expo-camera/ios/Current/CameraSessionManager.swift` 的
    * `updateCameraIsActive`）。相框设置、相册、胶片抽屉盖住取景器时，预览看不见却还在
    * 满帧出图 —— 那是真机持续发热的固定大头。这里让它只在"取景器真的看得见"时跑：
-   *   · 面板打开（`covered`）/ 正在冲印（`developing`）→ 停采集；
+   *   · 面板打开（`covered`）→ 停采集；
    *   · 退到后台（`appActive === false`）→ 停采集；
    *   · 相机权限没给时本来就没挂载，这里恒 false 也无害。
    *
+   * **v1.8.9 · 用户 m06262 修掉 v1.8.8 引入的一处回归：这里原来还带着 `!developing`。**
+   * `handleShutter` 的顺序是先 `setStatus({ kind: 'developing' })`、紧接着 `takePictureAsync`；
+   * 状态一提交，这里立刻变 `false` → `session.stopRunning()`，而正在飞的静态拍摄会被
+   * AVFoundation 中止，原生在 `didFinishProcessingPhoto(error:)` 里走
+   * `CameraPhotoCapture.swift:130` 分支，直接抛
+   * `CameraImageCaptureException: Image could not be captured`
+   * —— 用户在真机上看到的就是「顯影失敗」+ 冻结的取景画面。
+   * 闪光灯拍摄要预闪 + 测光、耗时明显更长，几乎 100% 输给这次停机；不带闪光灯时只是
+   * 偶尔输，所以才表现成"只有开闪光灯才拍不了"。
+   * 现在冲印期不再停会话：成片阶段取景器已被冲印层盖住画面，多跑几秒采集的耗电远小于
+   * "把一次拍摄打断"的代价；真正的大头（面板盖住 / 退后台）继续停。
+   *
    * 注意 `CameraView` **不卸载**（卸载会重建采集会话、回来黑一下）：只是 `active` 开关。
    */
-  const cameraActive = cameraGranted && !covered && !developing && appActive;
+  const cameraActive = cameraGranted && !covered && appActive;
 
   /**
    * 预览要画的水印片段（v1.7.0 · 模块三）。
