@@ -89,6 +89,7 @@
  */
 import { grainLayerOpacity } from '../constants/grain';
 import { GRAINLESS_PRESET_IDS } from '../constants/presets';
+import { applyAdaptiveColor, buildSceneLayers, planAdaptiveGrade } from './adaptiveGrade';
 import type { GradeLayer, ResolvedFilmPreset } from '../types';
 
 /*
@@ -134,7 +135,18 @@ function round2(value: number): number {
  */
 export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
   const layers: GradeLayer[] = [];
-  const color = preset.color;
+  /*
+   * v1.8.11 场景自适应（用户 m06849）：先按"这场光线下测到的分区统计"算一份有界补偿，
+   * 再把补偿落进调色数值后走下面**一条都不改**的图层公式。
+   *
+   *   · `preset.scene` 只有成片链路会填（`processFilmPhoto` 采样底片后挂上去）；
+   *     取景器实时预览 / 纯函数探针 / `resolvePreset()` 直接产物都没有它。
+   *   · `plan === null` ⇒ `applyAdaptiveColor` 原样返回 `preset.color` 同一个引用、
+   *     `buildSceneLayers` 返回空数组 ⇒ 图层栈与 v1.8.10 **逐字节相同**。
+   *     这是 18 道旧门禁"数值不许漂"的机械保证，不要改成"补偿量为 0 也建层"。
+   */
+  const adaptive = planAdaptiveGrade(preset.scene, preset);
+  const color = applyAdaptiveColor(preset.color, adaptive);
 
   // ① 色温：暖橙 / 冷蓝。overlay + Y=0.5 的色 ⇒ 只转色相，不动亮度（见文件头）
   if (Math.abs(color.temperature) > 0.01) {
@@ -351,6 +363,17 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
       opacity: clamp01(color.highlightTintOpacity),
     });
   }
+
+  // ⑧.7 场景分区补偿（v1.8.11，用户 m06849）：暗部提升 + 高光收敛两层。
+  //
+  //      ⚠️ 这是**唯一**会随"这张照片拍成什么样"变化的图层。图层有无与不透明度都由
+  //      `planAdaptiveGrade()` 从底片实测分区算出（暗部占比 / 高光占比 / 溢出占比），
+  //      不是固定色偏。预算与 `_haze_audit` 的色层纪律同一条：opacity ∈ [0.03, 0.06]，
+  //      零模糊、零 `kind:'photo'`、不做任何"叠模糊副本"的事。
+  //      `adaptive === null`（没有 scene）时这里 push 的是 0 层 —— 旧行为逐字节不变。
+  //      位置：必须在 ⑧.6 分离染色之后（补偿的是完整调色结果）、⑨ 颗粒之前
+  //      （颗粒是物理质感，不该被"曝光补偿层"再洗一遍）。
+  layers.push(...buildSceneLayers(adaptive));
 
   // ⑨ 颗粒：PNG 平铺 + overlay（overlay 在中间调最强、暗部高光自然变弱，和胶片一致）
   //

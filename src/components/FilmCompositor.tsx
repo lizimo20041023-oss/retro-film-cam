@@ -55,7 +55,9 @@ import type {
   PlaceDetail,
   ResolvedPlace,
   ResolvedTimestampConfig,
+  WatermarkAlign,
   WatermarkLayout,
+  WatermarkZone,
 } from '../types';
 import { compactPlace, formatResolvedPlace, watermarkPlaceFont } from '../utils/placeNames';
 import { planCapture } from '../utils/captureOptions';
@@ -207,6 +209,13 @@ export interface WatermarkPlanInput {
   place: ResolvedPlace | null;
   locale: LocaleId;
   watermarkLayout: WatermarkLayout;
+  /**
+   * 水印纵向位置（v1.8.11）。`'auto'` = 相框自己决定（旧行为）。
+   * 非 auto 时原样交给 `computeWatermarkPlan` 的 `zone` 参数。
+   */
+  watermarkZone: WatermarkZone;
+  /** 水印横向对齐（v1.8.11）。`'auto'` = 旧行为。 */
+  watermarkAlign: WatermarkAlign;
   placeDetail: PlaceDetail;
   /** 这一卷用的预设代号（`PR-400` / `CCD-CYBER`…），关闭定位时印在原本地名那一行。 */
   presetName: string;
@@ -307,6 +316,13 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
     input.watermarkLayout,
     codeText,
     dateEngine.glyphStyle,
+    /*
+     * v1.8.11 水印位置（用户 m06849 第二条）：纵向 zone / 横向 align 是**新增的最后两个参数**，
+     * 默认 `'auto'` + `'auto'` 时 `computeWatermarkPlan` 内部逐字节走旧分支 ——
+     * 所以老调用方（不传这两个 prop 的探针 / 存档重放）不需要改一行。
+     */
+    input.watermarkZone,
+    input.watermarkAlign,
   );
 
   /*
@@ -369,6 +385,8 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
             input.watermarkLayout,
             codeText,
             dateEngine.glyphStyle,
+            input.watermarkZone,
+            input.watermarkAlign,
           );
         }
       }
@@ -690,6 +708,10 @@ function FilmCompositorImpl({
       // 也不要出现"英文界面下地名是中文"这种半对的状态。
       locale: stage.locale ?? 'zh-Hans',
       watermarkLayout: stage.watermarkLayout ?? 'split',
+      // v1.8.11：水印位置两个轴。宿主（`processFilmPhoto`）已经在 stageInput 里补过
+      // 默认值，这里再 `?? 'auto'` 只服务"裸探针 / 老存档重放"这种没有宿主的调用。
+      watermarkZone: stage.watermarkZone ?? 'auto',
+      watermarkAlign: stage.watermarkAlign ?? 'auto',
       placeDetail: stage.placeDetail ?? 'archive',
       // 关闭定位时印摄影代号：代号取预设名，第几张取 `exposureIndex`（1 起数）
       presetName: preset.name,
@@ -706,6 +728,8 @@ function FilmCompositorImpl({
       stage.place,
       stage.locale,
       stage.watermarkLayout,
+      stage.watermarkZone,
+      stage.watermarkAlign,
       stage.placeDetail,
       // ⚠️ 这一项必须留着：`processFilmPhoto` 的注释里还写着"全项目没有任何组件读
       // `exposureIndex`"，那是因为当时 `planWatermark` 既不读它、依赖表里也没有它 ——

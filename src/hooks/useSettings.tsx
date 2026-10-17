@@ -21,7 +21,9 @@ import type {
   LocationMode,
   NoFrameAspect,
   PlaceDetail,
+  WatermarkAlign,
   WatermarkLayout,
+  WatermarkZone,
 } from '../types';
 import { DEFAULT_SETTINGS, loadSettings, persistSettings } from '../utils/settingsStore';
 
@@ -33,6 +35,12 @@ export interface SettingsContextValue {
   setLocationMode: (next: LocationMode) => void;
   /** 水印版式（四选一）。 */
   setWatermarkLayout: (next: WatermarkLayout) => void;
+  /** 水印纵向落点（v1.8.11，四选一）：auto / 相纸留白 / 画面顶部 / 画面底部。 */
+  setWatermarkZone: (next: WatermarkZone) => void;
+  /** 水印横向对齐（v1.8.11，四选一）：auto / 左 / 中 / 右。 */
+  setWatermarkAlign: (next: WatermarkAlign) => void;
+  /** 场景自适应冲印（v1.8.11）：按画面统计自动微调冲印参数。 */
+  setAdaptiveGrade: (next: boolean) => void;
   /** 地名详细度（精简 / 完整）。 */
   setPlaceDetail: (next: PlaceDetail) => void;
   /** 颗粒档位。原来在取景器底部那条横向滑块上，现在归设置页管。 */
@@ -106,6 +114,21 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     [update],
   );
 
+  const setWatermarkZone = useCallback(
+    (next: WatermarkZone) => update({ watermarkZone: next }),
+    [update],
+  );
+
+  const setWatermarkAlign = useCallback(
+    (next: WatermarkAlign) => update({ watermarkAlign: next }),
+    [update],
+  );
+
+  const setAdaptiveGrade = useCallback(
+    (next: boolean) => update({ adaptiveGrade: next }),
+    [update],
+  );
+
   const setPlaceDetail = useCallback(
     (next: PlaceDetail) => update({ placeDetail: next }),
     [update],
@@ -148,6 +171,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setLocalePreference,
       setLocationMode,
       setWatermarkLayout,
+      setWatermarkZone,
+      setWatermarkAlign,
+      setAdaptiveGrade,
       setPlaceDetail,
       setGrainLevel,
       setGeoLocale,
@@ -162,6 +188,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setLocalePreference,
       setLocationMode,
       setWatermarkLayout,
+      setWatermarkZone,
+      setWatermarkAlign,
+      setAdaptiveGrade,
       setPlaceDetail,
       setGrainLevel,
       setGeoLocale,

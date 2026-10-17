@@ -65,6 +65,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [41. v1.8.8：成片糊的根因（错位自叠层）与真机发热三刀](#41-v188成片糊的根因错位自叠层与真机发热三刀)
 - [42. v1.8.9：闪光灯拍摄被停机打断（v1.8.8 发热改动的回归）与修法](#42-v189闪光灯拍摄被停机打断v188-发热改动的回归与修法)
 - [43. v1.8.10：底片库整套重做（九支新代号 + 仿色 + 旧照片兼容）](#43-v1810底片库整套重做九支新代号--仿色--旧照片兼容)
+- [44. v1.8.11：场景自适应冲印（按光线测光补偿）与水印位置两轴可设](#44-v1811场景自适应冲印按光线测光补偿与水印位置两轴可设)
 
 ---
 
@@ -5885,6 +5886,204 @@ export 冒烟：`npx expo export --platform ios --no-bytecode` → EXIT 0，bund
 `_probe_v189_flash.cjs`（S6.8 版本号跟随）、`_haze_audit.mjs`（零颗粒数据源改读 presets.ts）、
 `_make_v1810_scripts.py`、`_verify_ipa_v1810.py` / `_release_v1810.py` / `_commit_v1810_msg.txt`、
 `_gate_v1810_run.out.txt`、`_export_v1810_lead/`。
+
+## 44. v1.8.11：场景自适应冲印（按光线测光补偿）与水印位置两轴可设
+
+### 44.1 用户需求（m06849）
+
+两条，都是「设置里那个开关其实没用 / 调色是假的」这一类：
+
+> ①「不要简单的调个色，而是深入底层代码，去修改这个滤镜的底层逻辑，而不是简简单单换个色调，
+> 使得这个照片的质感很假很虚，要更换成那种可以根据光线变化而改变的，明部暗部也是要根据拍摄
+> 场景自己去计算而不是简简单单换个色调和饱和度」
+>
+> ②「设置里『水印版式』需要修改，设置这一栏无法地名或者坐标在整个图片里的位置」
+
+对应到代码就是两件事：
+
+- 九支卷此前只有**静态曲线**（`buildGradeLayers` 的 ①–⑪ 层是常数），同一支卷在逆光、夜景、
+  室内暖光下给出的补偿完全一样 —— 所以"换色调和饱和度"的观感是结构性的，不是数值没调好；
+- 水印版式只有 `split / stacked / centered / dateOnly` 四种**排法**，纵向永远钉在相纸下留白
+  （或压照片时的窗口下缘），用户没有任何办法把地名/坐标挪到别处。
+
+这一版的做法是**先真的测光，再在预设曲线上做有界补偿**；水印则把「纵向位置」与「横向对齐」
+拆成两个独立设置项，`auto + auto` 时逐字节保留旧行为。
+
+### 44.2 测量层：只解 DC 系数的场景统计
+
+新增三个纯 JS 模块（零依赖、零 RN 引用，Node 探针可直接装载）：
+
+- `src/utils/sceneProbe.ts` —— 成片时唯一的对外入口 `probeScene(uri)`。它用
+  `expo-file-system` 的 `File.bytes()` 把**裁切后的底片字节**读进来：不缩放、不重编码
+  （再走一次 ImageManipulator 既慢又可能改直方图）。超过 `SCENE_PROBE_MAX_BYTES = 6MB`
+  直接放弃，任何异常都 `return null`，**绝不抛** —— 采样是锦上添花，不能挡住出片。
+- `src/utils/jpegSample.ts` —— 纯 JS baseline-JPEG 解码器，**只解 DC 系数**：不反量化成
+  像素、不做 IDCT、不解 AC、不建全尺寸位图。输出是 MCU 网格的分块均值
+  （`SampledLuma`：亮度 + Cb/Cr 同网格）：
+  - 4:4:4 / 灰度：一格 8×8px，`cols = ceil(width/8)`、`rows = ceil(height/8)`；
+  - 4:2:0：一格 16×16px；4:2:2 等非方形 MCU 报长边 16（`blockPx` 只是标量，
+    统计单位是"格"不是像素）；
+  - 格数上限 `MAX_CELLS = 1 << 22`，防畸形尺寸申请超大数组。
+  - **接受**：SOF0/SOF1、8-bit、1 或 3 分量、采样因子 1–4（4:4:4 / 4:2:2 / 4:2:0 及通用 h/v）、
+    DQT（8/16 位）、DHT（DC+AC）、单扫描 SOS、DRI + RSTn（每 interval 重置 DC 预测）、
+    APPn/COM/DNL 跳过、灰度 JPEG（cb/cr 全 128）。
+  - **一律返回 null 且不抛**：渐进式（SOF2）、SOF9+ 算术编码/DAC、SOF3 无损、差分/分层
+    （SOF5/6/7/13/14/15）、precision ≠ 8（含 12-bit）、分量数非 1/3（CMYK）、多扫描
+    （第二个 SOS）、非交错扫描、`height=0`（DNL 延迟解码，不实现）、非法 Huffman 码表/码字、
+    `q0=0`、段/熵数据越界与截断、非法标记。
+- `src/utils/sceneStats.ts` —— `analyzeScene(sample)` 把网格换算成 `SceneStats`
+  （BT.601 full-range YCbCr → RGB，电平偏移 128，RGB 各自 clamp 0–255）：
+  - `meanLuma = mean(l)`，`l = (0.299r + 0.587g + 0.114b)/255`；
+  - `contrast = √mean((l − meanLuma)²)`（**两遍**算，不用 `E[l²]−mean²` 展开式，
+    避免纯灰面方差≈0 时的相消误差）；
+  - 分区：shadow `l < 0.25` / mid `0.25 ≤ l < 0.70` / highlight `0.70 ≤ l < 0.995` /
+    clip `l ≥ 0.995`；
+  - `warmth = (meanR − meanB)/(meanR + meanB + 1e-6)`、
+    `tintBias = (meanG − (meanR+meanB)/2)/(meanLuma + 1e-6)`、`saturation = mean((max−min)/max)`；
+  - 全部 `round4`，`samples` = 实际参与的格数（< 12 视为统计噪声太大，不启用自适应）。
+  - 夹具 `_v1811_fixtures/`（12 张 JPEG + `truth.json`，Pillow 真值）由
+    `_v1811_make_fixtures.py` 生成；`_probe_v1811_scene.mjs` 实测误差远低于契约阈值
+    （meanLuma ≤ 0.0008、warmth ≤ 0.0028、saturation ≤ 0.0020）。
+
+**为什么取景器里不做**：v1.8.6 的发热纪律（用户 m03551）把实时预览的每帧开销卡死了 ——
+取景器只允许"已烘焙的静态层 + 一次截图"。场景分析**只在按下快门 / 导入之后**对裁切底片
+跑一次，是"每张成片一次"的量级，不是每帧。
+
+### 44.3 决策层：有界场景补偿（`src/utils/adaptiveGrade.ts`）
+
+`planAdaptiveGrade(scene, preset)` 把测量值换成四类补偿，**每一项都有硬上下限**，
+最坏情况也洗不掉一支卷的性格。公式（`_probe_v1811_adaptive.cjs` 逐条断言）：
+
+| 补偿 | 公式 | 边界 |
+| --- | --- | --- |
+| 白平衡 | `clamp((0.06 − warmth) × 0.35, ±0.14)` 加到 `color.temperature` | `WB_SHIFT_MAX = 0.14` |
+| 色调（绿-品红） | `clamp((0 − tintBias) × 0.20, ±0.08)` 加到 `color.tint` | `TINT_SHIFT_MAX = 0.08` |
+| 反差 | `clamp(1 + (0.16 − contrast) × 1.00, 0.90, 1.10)` 乘 `color.contrast` | `[0.90, 1.10]` |
+| 饱和度 | `clamp(1 + (0.22 − saturation) × 0.30, 0.92, 1.08)` 乘 `color.saturation` | `[0.92, 1.08]` |
+| 中调 S 曲线 | `clamp((0.48 − meanLuma) × 0.12, ±0.06)` 加到 `color.sCurveIntensity` | `[0, 0.42]` 表上限 |
+| 暗部提亮层 | `clamp((shadowShare − 0.26) × 0.45, 0, 0.05)`，< 0.03 不生成 | `[0.03, 0.05]` |
+| 高光收敛层 | `clamp((highlightShare + 2×clipShare − 0.20) × 0.50, 0, 0.06)`，< 0.03 不生成 | `[0.03, 0.06]` |
+
+- **黑白卷**：`mono === true` 时白平衡/色调补偿恒为 0（反正会被满幅去色层抽掉色度），
+  但反差、S 曲线、暗部、高光**照常**补偿 —— 黑白卷同样要按场景光比调整。
+- **落地**：①②③ 是**改数值再走原有图层公式**（不新增层、不改公式）；④ 追加两层
+  `kind:'color'`，排在 ⑧.6 分离染色之后、⑨ 颗粒之前（属于"按场景算的曝光/反差补偿"，
+  必须作用在完整调色结果上，又不能盖到颗粒/暗角/漏光这些物理质感之上）：
+  - 暗部提亮 `scene-shadow-lift`：`screen` 混合 + 场景色的**补色**
+    （warmth > 0.04 用冷白 `#DCE8FF`，否则暖白 `#FFE9D6`），opacity ∈ [0.03, 0.05]；
+  - 高光收敛 `scene-highlight-rolloff`：`multiply` 混合 + 近白
+    （warmth > 0.08 用 `#FFEFE2`，否则 `#F4F7FF`），opacity ∈ [0.03, 0.06]；
+  - label 里带实测原因（`场景 · 暗部提亮 4%（暗部占比 35%）` /
+    `场景 · 高光收敛 5%（高光 18% / 溢出 2%）`），冲印日志能看出"为什么加这一层"。
+- **可退化（硬保证）**：`scene` 缺失（取景器实时预览、纯函数探针、旧存档重放）或
+  `samples < 12` 时 `plan === null` —— `applyAdaptiveColor` **返回同一个引用**、
+  `buildSceneLayers` 返回空数组，图层栈逐字节回到 v1.8.10 静态曲线（18 道旧门禁数值不许漂）。
+- **不把画面弄虚的具体理由**：不产生任何 `kind:'photo'` 层、不碰 `blurRadius`（v1.8.3/v1.8.5
+  红线）；screen 层 opacity ≤ 0.05 且色值 Y ≥ 0.85（最坏白场损失 ≈ 0.0075）、multiply 层
+  色值 ≥ `#F2` 级别，白场损失 ≤ 0.005 —— 都在 `_haze_audit` 的 0.02 预算内。
+- **开关**：设置「场景自适应」默认开；关掉后 `processFilmPhoto` 直接不采样，
+  与旧版本逐字节一致（`adaptiveGrade !== false` 才启用）。
+
+### 44.4 水印位置：纵向 `watermarkZone` + 横向 `watermarkAlign`
+
+**结构性零漂移**：`computeWatermarkPlan` 末尾追加两个可选参数
+（`zone: WatermarkZone = 'auto'`、`align: WatermarkAlign = 'auto'`）；当两者都是 `auto` 时
+`placement === null`，下面整段走 v1.8.10 的原实现 —— 这是**分支结构**保证，不是"把两套公式
+调成一样"。`_probe_v1811_watermark.cjs` 用 8 组夹具 × 4 版式与 v1.8.10 快照 `deepEqual`。
+
+- 纵向四档（`resolveWatermarkPlacement`，:1103）：
+  - `auto`：`bottom` / `region` 与旧 `resolveBaselineAndRegion` 逐字段相等；
+    无相框（`00 NO FRAME`）仍用整块画布（`{top: inset, bottom: h − inset}`），
+    否则"只改横向对齐"会连垂直位置一起挪掉；
+  - `paper`：相纸下留白档，`bottom = clamp(round(下留白/2 − 日期字号×0.62), inset,
+    max(inset, 下留白 − round(日期字号×1.05)))`，即旧 `frame` 分支公式，锚点强制 `frame`；
+  - `photo-top`：照片窗口上缘一条 `round(日期字号×2.6)` 高的带，基线换算回"距舞台底"后
+    落在带下沿，锚点强制 `window`；
+  - `photo-bottom`：公式与旧 `window` 分支完全一致（`bottom = 下留白 + inset`），
+    只是纸框用户选它时锚点也强制 `window`（墨色转浅色系）。
+  - **锚点换了颜色必须跟着换**：`ink` / `placeInk` / `glowRadius` / `quartzShadow` 全部读
+    `effectiveAnchor` —— 压照片用画面浅色 + 投影/辉光，印留白用纸系墨色（漏切一处就会出现
+    白纸上的隐形字）。
+- 横向四档：`auto` = 跟随相框 `watermark.align`（缺省右）；`left` / `right` 直接换边；
+  `center` 时 `split` 版式降级成 `stacked` 才能"两行同侧堆叠"居中（`centered` 保留自身的
+  整体行移动，`dateOnly` / `stacked` 不降级）。
+- 设置接线：`settingsStore` 默认 `watermarkZone:'auto'` / `watermarkAlign:'auto'` /
+  `adaptiveGrade:true`，白名单 `WATERMARK_ZONES` / `WATERMARK_ALIGNS` + `pickBoolean` 容错；
+  `useSettings` 三个 setter；`SettingsScreen` 手风琴 **12 → 15 栏**（新增三栏紧接
+  「水印版式」之后）；五个语言文件各 +17 键。
+- 数据链：`FilmStageInput` / `ProcessFilmPhotoInput` / `ImportAndDevelopOptions` 各加
+  `watermarkZone?` / `watermarkAlign?`（缺省 `auto`），`FilmCompositor` 的
+  `WatermarkPlanInput` 改为必填两轴，`CameraScreen`（预览 / 快门 / 导入三处）与
+  `GalleryScreen`（导入）全部接线。
+
+### 44.5 门禁与验证
+
+- `npx tsc --noEmit -p tsconfig.json` → **EXIT 0**。
+- **22 道门禁全绿、0 失败**（`_gate_v1811_run2.out.txt`）：G01 3372 / G02 1754 / G03 16207 /
+  G04 455 / G05 458 / G06 1069 / G07 1358 / G08 315 / G09 78 / G10 947 / G11 468 / G12 1781 /
+  G13（9 卷超预算 0）/ G14 64 / G15 241 / G16 80 / G17 51 / G18 204 /
+  **G19 503 / G20 441 / G21 1497 / G22 79**，合计 **31,422 条断言 + `_haze_audit` 9/9**。
+- 四个新探针（零依赖、`ts.transpileModule` 装真源码）：
+  - `_probe_v1811_scene.mjs`（441）：解码器装载、12 组夹具与 Pillow 真值误差、网格行列一致性、
+    `blockPx ∈ {8,16}`、拒绝清单（渐进式/算术编码/12-bit/CMYK/多扫描/截断/坏表/随机字节，
+    全部 null 且不 throw）；
+  - `_probe_v1811_watermark.cjs`（1497）：auto 与 v1.8.10 快照逐字段相等（8 夹具 × 4 版式 +
+    参数个数兼容）、四 zone 的 bottom/vertical/region/anchor 公式重算、四 align 的
+    `lines.left/right/maxWidth/textAlign`、`forceLayout` 只在 base split 生效、墨色系、
+    坐标有限性；
+  - `_probe_v1811_adaptive.cjs`（503）：缺省退化（无 scene / 样本不足 → 图层顺序 = v1.8.10
+    基线）、七项补偿公式与边界、`applyAdaptiveColor` 的同一引用契约、场景层 id/颜色/混合模式、
+    图层顺序（⑧.6 之后 ⑨ 之前）、色层 opacity ∈ [0.03,0.06]；
+  - `_probe_v1811_wiring.cjs`（79）：S0 版本/依赖 → S15 零 `as any` / 无 `watchPositionAsync`，
+    把「设置 → 场景统计 → 自适应冲印 → 水印位置 → 合成器」整条接线逐文件钉住。
+- 旧探针只改数据不改逻辑：`_probe_lead_integration.mjs` 手风琴 12 → 15 栏（SECTION_IDS +
+  两处文案）、`_probe_v188_sharp.cjs` / `_probe_v189_flash.cjs` / `_probe_v1810_stocks.cjs`
+  的 `app.json` 版本钉跟随到 1.8.11。
+- `_probe_preset_tune.mjs` 仍是**非门禁**的临时设计工具（文件头自述），它 import 的
+  `constants/captureQuality` 早已不存在而报 `ERR_MODULE_NOT_FOUND` —— 不计入门禁，保留原状。
+- `npx expo export --platform ios --no-bytecode` → **EXIT 0**，bundle
+  `index-ca6d773d92a2b18a6e3365a358aad5fa.js` **1,381,274 B**（v1.8.10 为 1,359,374 B，
+  +21,900 B 来自解码器/统计/自适应/水印位置四处新代码）；
+  `python _verify_ipa_v1811.py --local ...` → `RESULT(local): OK`（新增 needle 全部命中）。
+- 仍**没有真机复测**：建议分别在逆光、夜景、室内暖光三种光线各拍一张，对比「场景自适应」
+  开 / 关的成片；再在带水印版式下把纵向四档、横向四档各过一遍，重点看「画面顶部/底部」
+  压在照片上时地名是否自动转成浅色墨、以及 `center` 是否把 split 降级成两行同侧。
+
+### 44.6 产物指纹
+
+（发布后回填：本地提交 / 远端 master / CI run+job / artifact / IPA 体积与 sha256 /
+Release id+asset / 下载链接 / IPA 回读核验摘要。）
+
+### 44.7 文件改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/types/index.ts` | 新增 `WatermarkZone` / `WatermarkAlign` / `SceneStats`；`ResolvedFilmPreset.scene?`；`AppSettings` 加三字段；`FilmStageInput` 加两轴 |
+| `src/utils/jpegSample.ts` | **新增**（616 行）：只解 DC 系数的 baseline-JPEG 解码器 |
+| `src/utils/sceneStats.ts` | **新增**（138 行）：格网格 → `SceneStats`（BT.601 + 分区 + 两遍反差） |
+| `src/utils/sceneProbe.ts` | **新增**（64 行）：`probeScene(uri)`，6MB 上限、失败即 null |
+| `src/utils/adaptiveGrade.ts` | **新增**（245 行）：`planAdaptiveGrade` / `applyAdaptiveColor` / `buildSceneLayers` |
+| `src/utils/gradeLayers.ts` | 接入 ①②③（改数值）+ ④（⑧.7 两层场景补偿层） |
+| `src/utils/processFilmPhoto.ts` | 4.5 场景统计（裁切后采样一次）+ zone/align/adaptive 选项 |
+| `src/utils/importPhoto.ts` | `ImportAndDevelopOptions` 加三选项并透传（导入也逐张采样） |
+| `src/utils/geometry.ts` | 新增 `WatermarkPlacement` / `resolveWatermarkPlacement`；`computeWatermarkPlan` 末尾两个可选参数；auto 路径保持旧公式 |
+| `src/components/FilmCompositor.tsx` | `WatermarkPlanInput` 必填两轴；两处 `computeWatermarkPlan` 调用与 `watermarkInput` 接线 |
+| `src/components/CameraScreen.tsx` | 预览 / 快门 / 导入三处接线 + 三个 deps 数组 |
+| `src/components/GalleryScreen.tsx` | 导入调用与 deps 接线 |
+| `src/components/SettingsScreen.tsx` | 手风琴 12 → 15 栏（watermark_zone / watermark_align / adaptive_grade） |
+| `src/hooks/useSettings.tsx` | 三个 setter |
+| `src/utils/settingsStore.ts` | 三默认值 + 两份白名单 + `pickBoolean` 容错 |
+| `src/i18n/locales/*.ts` | 五语各 +17 键（zh-Hans / zh-Hant / ja / en / fr） |
+| `app.json` | version `1.8.10` → `1.8.11` |
+| `README.md` | 本节 §44 + TOC |
+
+工作区根（不进仓库）：`_probe_v1811_scene.mjs` / `_probe_v1811_watermark.cjs` /
+`_probe_v1811_adaptive.cjs` / `_probe_v1811_wiring.cjs`（四个新探针）、
+`_v1811_make_fixtures.py` + `_v1811_fixtures/`（12 张夹具 + truth.json）、
+`_make_v1811_scripts.py`、`_verify_ipa_v1811.py` / `_release_v1811.py` /
+`_commit_v1811_msg.txt`、`_gate_v1811_run2.out.txt`、`_export_v1811_lead/`；
+另改了 `_probe_lead_integration.mjs`（12 → 15 栏）、`_probe_v188_sharp.cjs`、
+`_probe_v189_flash.cjs`、`_probe_v1810_stocks.cjs`（版本钉跟随）。
 
 ---
 

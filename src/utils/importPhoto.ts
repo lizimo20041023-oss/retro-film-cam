@@ -96,7 +96,9 @@ import type {
   PlaceDetail,
   ResolvedPlace,
   Size,
+  WatermarkAlign,
   WatermarkLayout,
+  WatermarkZone,
 } from '../types';
 import { addShot } from './galleryStore';
 // 反查（含超时 / 重试 / 网络兜底 / 失败措辞）从 `locationStamp.ts` 引：相机页和相册导入
@@ -154,6 +156,17 @@ export interface ImportAndDevelopOptions {
   locale?: LocaleId;
   /** 水印版式；不传 = `'split'`。 */
   watermarkLayout?: WatermarkLayout;
+  /** 水印纵向位置（v1.8.11）；不传 = `'auto'`（= v1.8.10 行为）。 */
+  watermarkZone?: WatermarkZone;
+  /** 水印横向对齐（v1.8.11）；不传 = `'auto'`（旧行为）。 */
+  watermarkAlign?: WatermarkAlign;
+  /**
+   * 场景自适应调色（v1.8.11）；不传 = **开**。
+   *
+   * 导入的照片同样要"按这张照片的光线自己算"：`processFilmPhoto` 会对每张底片各采样一次
+   * （一张一次，不是每帧），所以一批导入里有夜景有日景，各自拿到各自的补偿。
+   */
+  adaptiveGrade?: boolean;
   /** 地名详细度；不传 = `'archive'`。 */
   placeDetail?: PlaceDetail;
   /**
@@ -631,6 +644,9 @@ export async function importAndDevelop(
         place,
         locale: options.locale,
         watermarkLayout: options.watermarkLayout,
+        watermarkZone: options.watermarkZone,
+        watermarkAlign: options.watermarkAlign,
+        adaptiveGrade: options.adaptiveGrade,
         placeDetail: options.placeDetail,
         exposureIndex: exposureBase + index,
       });

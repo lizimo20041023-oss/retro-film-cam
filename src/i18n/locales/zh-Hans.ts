@@ -183,6 +183,25 @@ export const zhHans = {
   'settings.watermark.centered': '合成一行 · 居中',
   'settings.watermark.dateOnly': '只打日期',
 
+  'settings.watermarkZone': '水印纵向位置',
+  'settings.watermarkZone.a11y': '水印纵向位置：{label}',
+  'settings.watermarkZone.auto': '跟随相框',
+  'settings.watermarkZone.paper': '落在相纸留白',
+  'settings.watermarkZone.photoTop': '画面顶部',
+  'settings.watermarkZone.photoBottom': '画面底部',
+  'settings.watermarkAlign': '水印横向对齐',
+  'settings.watermarkAlign.a11y': '水印横向对齐：{label}',
+  'settings.watermarkAlign.auto': '跟随版式',
+  'settings.watermarkAlign.left': '居左',
+  'settings.watermarkAlign.center': '居中',
+  'settings.watermarkAlign.right': '居右',
+  'settings.adaptiveGrade': '场景自适应',
+  'settings.adaptiveGrade.a11y': '场景自适应：{label}',
+  'settings.adaptiveGrade.on': '开',
+  'settings.adaptiveGrade.off': '关',
+  'settings.adaptiveGrade.hint':
+    '按画面亮度、对比与色偏自动微调冲印参数；关掉则始终用预设的默认冲印。',
+
   /* ---------------- 定位 ---------------- */
   'location.denied': '定位权限被拒绝，请到 系统设置 → 隐私与安全性 → 定位服务 里打开。',
   'location.failed': '定位失败',

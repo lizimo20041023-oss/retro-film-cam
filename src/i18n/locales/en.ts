@@ -181,6 +181,25 @@ export const en: Messages = {
   'settings.watermark.centered': 'One line · centred',
   'settings.watermark.dateOnly': 'Date only',
 
+  'settings.watermarkZone': 'Watermark vertical position',
+  'settings.watermarkZone.a11y': 'Watermark vertical position: {label}',
+  'settings.watermarkZone.auto': 'Follow frame',
+  'settings.watermarkZone.paper': 'On the paper margin',
+  'settings.watermarkZone.photoTop': 'Top of the image',
+  'settings.watermarkZone.photoBottom': 'Bottom of the image',
+  'settings.watermarkAlign': 'Watermark alignment',
+  'settings.watermarkAlign.a11y': 'Watermark alignment: {label}',
+  'settings.watermarkAlign.auto': 'Follow layout',
+  'settings.watermarkAlign.left': 'Left',
+  'settings.watermarkAlign.center': 'Centre',
+  'settings.watermarkAlign.right': 'Right',
+  'settings.adaptiveGrade': 'Scene-adaptive grade',
+  'settings.adaptiveGrade.a11y': 'Scene-adaptive grade: {label}',
+  'settings.adaptiveGrade.on': 'On',
+  'settings.adaptiveGrade.off': 'Off',
+  'settings.adaptiveGrade.hint':
+    'Fine-tunes the development from the shot’s brightness, contrast and colour cast. Turn it off to always use the preset’s default grade.',
+
   /* ---------------- location ---------------- */
   'location.denied':
     'Location permission was denied. Open Settings → Privacy & Security → Location Services and allow it.',

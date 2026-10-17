@@ -66,8 +66,11 @@ import type {
   ResolvedFilmPreset,
   ResolvedPlace,
   SaveOutcome,
+  SceneStats,
   Size,
+  WatermarkAlign,
   WatermarkLayout,
+  WatermarkZone,
 } from '../types';
 import type { LocaleId } from '../i18n/types';
 import { planPhotoCrop } from './cameraGeometry';
@@ -76,6 +79,7 @@ import { describeError } from './describeError';
 import { computeFrameLayout, resolveFrameOrientation } from './geometry';
 import { buildGradeLayers } from './gradeLayers';
 import { normalizePhoto } from './normalizePhoto';
+import { probeScene } from './sceneProbe';
 import { saveToLibrary } from './saveToLibrary';
 
 export interface ProcessFilmPhotoInput {
@@ -148,6 +152,21 @@ export interface ProcessFilmPhotoInput {
   locale?: LocaleId;
   /** 水印版式（四选一）；不传 = `'split'`。 */
   watermarkLayout?: WatermarkLayout;
+  /**
+   * 水印纵向位置（v1.8.11）；不传 = `'auto'`（相框自己决定，= v1.8.10 行为）。
+   * 非 auto 时合成层按它覆盖默认 baseline / region（见 `computeWatermarkPlan` 的 `zone`）。
+   */
+  watermarkZone?: WatermarkZone;
+  /** 水印横向对齐（v1.8.11）；不传 = `'auto'`（旧行为）。 */
+  watermarkAlign?: WatermarkAlign;
+  /**
+   * 场景自适应调色（v1.8.11）；不传 = **开**。
+   *
+   * 打开时会在这里把裁切后的底片送去 `probeScene` 采样（一次 DC 扫描），把 `SceneStats`
+   * 挂到 `preset.scene` 上；关掉则完全不采样，图层栈逐字节回到 v1.8.10 的静态曲线。
+   * 采样失败（非 baseline JPEG / 文件读不了）也等于"没有数据"，同样退化，不抛。
+   */
+  adaptiveGrade?: boolean;
   /** 地名详细度；不传 = `'archive'`。只影响 `place` 的渲染，不影响经纬度档。 */
   placeDetail?: PlaceDetail;
   /**
@@ -459,8 +478,38 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     warnings.push(cropped.note);
   }
 
+  /*
+   * 4.5) 场景统计（v1.8.11，用户 m06849 第一条）：「明部暗部要根据拍摄场景自己计算」。
+   *
+   *      为什么放在**裁切之后**：取样的是"这张成片真正会用的那块画面"——相框窗口裁掉的
+   *      边角不参与测光，否则一张天空过曝的照片会因为角落的阴影被算成"暗部多"。
+   *      为什么放在**挂载之前**：`SceneStats` 要钉进 `stageInput.preset.scene`，合成层
+   *      拿到的必须已经是"带场景数据的那一版预设"；挂载之后再补就是两套数据。
+   *
+   *      采样本身是 `probeScene(uri)`：读 JPEG 字节 → 只解 DC 系数 → MCU 格亮度 →
+   *      `SceneStats`。整条链**不缩放、不重编码、不建全尺寸位图**，一张 12MP 底片几毫秒。
+   *
+   *      失败/关闭 = `scene === null`：`scenePreset` 就是 `preset` **同一个引用**，
+   *      `planAdaptiveGrade` 返回 null，`applyAdaptiveColor` 原样返回、`buildSceneLayers`
+   *      返回空数组 —— 图层栈与 v1.8.10 逐字节相同。这是"缺省即旧行为"的机械保证。
+   *
+   *      取景器实时预览**不跑**这一步（v1.8.6 发热纪律：预览每帧开销已被卡死）。
+   */
+  const adaptiveEnabled = input.adaptiveGrade !== false;
+  const scene: SceneStats | null = adaptiveEnabled ? await probeScene(cropped.uri) : null;
+  const scenePreset: ResolvedFilmPreset = scene === null ? preset : { ...preset, scene };
+  /*
+   * 采样成功**不进 warnings**：这不是"降级提示"，是正常路径。真正决定观感的证据在
+   * `layers` 里（⑧.7 的两层 label 自带「暗部占比 / 高光占比 / 溢出」实测值），
+   * 每次拍照往用户面前的提示区塞一行"平均亮度 43%"反而是噪音。
+   */
+
   // 5) 调色图层：这里就决定了成片长什么样（纯数据，可断言）
-  const layers = buildGradeLayers(preset).map((layer) => layer.label);
+  /*
+   * 注意传的是 `scenePreset` 而不是 `preset`：`ProcessedPhoto.layers` 是回报给调用方/
+   * 日志的"这张到底上了哪些层"，必须包含 ⑧.7 的场景补偿层（有场景数据时）。
+   */
+  const layers = buildGradeLayers(scenePreset).map((layer) => layer.label);
 
   /*
    * 5.5) 尺寸规划：画质档（`captureQuality.ts`）最终就是在**这里**变成成片像素的。
@@ -479,16 +528,16 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
   const capture = planCapture({
     width: layout.width,
     height: layout.height,
-    targetLongEdge: preset.captureLongEdge,
+    targetLongEdge: scenePreset.captureLongEdge,
     sourceLongEdge,
   });
   const capturePreset: ResolvedFilmPreset =
-    capture.clampedToSource && capture.targetLongEdge !== preset.captureLongEdge
-      ? { ...preset, captureLongEdge: capture.targetLongEdge }
-      : preset;
+    capture.clampedToSource && capture.targetLongEdge !== scenePreset.captureLongEdge
+      ? { ...scenePreset, captureLongEdge: capture.targetLongEdge }
+      : scenePreset;
   if (capture.clampedToSource) {
     warnings.push(
-      `底片长边只有 ${sourceLongEdge}px（相框窗口裁切后），不再请求 ${preset.captureLongEdge}px 的画布：有效目标 ${capture.targetLongEdge}px（若仍低于屏幕原生尺寸，就按屏幕原生出图）`,
+      `底片长边只有 ${sourceLongEdge}px（相框窗口裁切后），不再请求 ${scenePreset.captureLongEdge}px 的画布：有效目标 ${capture.targetLongEdge}px（若仍低于屏幕原生尺寸，就按屏幕原生出图）`,
     );
   }
 
@@ -503,6 +552,13 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     place: input.place ?? null,
     locale: input.locale ?? 'zh-Hans',
     watermarkLayout: input.watermarkLayout ?? 'split',
+    /*
+     * v1.8.11 水印位置的两个新轴（用户 m06849 第二条）。同样**只在这里抄一次、默认值
+     * 在合成层解析**：这里补 `'auto'` 是为了让 `FilmStageInput` 的类型收窄，
+     * 合成层拿到的永远是具体值，不需要再判 undefined。
+     */
+    watermarkZone: input.watermarkZone ?? 'auto',
+    watermarkAlign: input.watermarkAlign ?? 'auto',
     placeDetail: input.placeDetail ?? 'archive',
     /*
      * ⚠️ 这两行是**全项目最容易漏的一步**。上面 `ProcessFilmPhotoInput` 里的字段

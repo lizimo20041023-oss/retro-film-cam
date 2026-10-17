@@ -72,6 +72,30 @@ export type TimestampAnchor = 'window' | 'frame';
 export type WatermarkLayout = 'split' | 'stacked' | 'centered' | 'dateOnly';
 
 /**
+ * 水印的**纵向位置**（v1.8.11，用户 m06849 第二条：「设置里水印版式无法改地名/坐标在整幅图里的位置」）。
+ *
+ * 版式（`WatermarkLayout`）只决定"地名和日期在同一块区域里怎么排"；区域本身以前是**相框写死的**
+ * （纸框在相纸下留白、全铺帧在画面内下缘），用户没有任何旋钮。这里补的就是"区域"这一维：
+ * - `auto`         跟随相框原有的 `watermark.anchor`（= v1.8.10 及以前的行为，逐字节不变）
+ * - `paper`        相纸下留白（纸框才有高度；全铺帧退化成画面下缘）
+ * - `photo-top`    照片窗口上缘（压在画面上，ink 自动换成画面上的浅色）
+ * - `photo-bottom` 照片窗口下缘（压在画面上，ink 同上）
+ *
+ * ⚠️ 字符串是真源：持久化字面量 + i18n 键名后缀（`settings.watermarkZone.*`）都靠它，别改。
+ */
+export type WatermarkZone = 'auto' | 'paper' | 'photo-top' | 'photo-bottom';
+
+/**
+ * 水印的**横向对齐**（v1.8.11）。
+ * - `auto`   跟随相框 `watermark.align`（= 旧行为）
+ * - `left` / `right` 贴左 / 贴右
+ * - `center` 居中（`split` 版式会降级成 `stacked`，否则左右分列永远对齐不成居中）
+ *
+ * ⚠️ 字符串同样是持久化与 i18n 键名（`settings.watermarkAlign.*`）的真源。
+ */
+export type WatermarkAlign = 'auto' | 'left' | 'center' | 'right';
+
+/**
  * 地名详细度：
  * - `archive` 精简档案风 —— `上海 · CHN`（城市 + 三字母代码，克制）
  * - `full`    完整行政层级 —— `上海市 · 中国`（省/州 + 国家全称）
@@ -396,6 +420,43 @@ export interface ColorGradeConfig {
 /** 填满默认值之后的调色参数。 */
 export type ResolvedColorGrade = Required<ColorGradeConfig>;
 
+/**
+ * 场景统计（v1.8.11，用户 m06849 第一条：调色要「根据光线变化改变、明部暗部按拍摄场景
+ * 自己计算」，而不是给固定色偏）。
+ *
+ * 来源：**成片链路**在归一化 + 裁切之后，把底片缩到 512px 交给 `utils/sceneStats.ts`
+ * 的 baseline-JPEG DC 解码器采样（不做 IDCT、不跑滤镜，一次快门只算一次），
+ * 结果挂在 `ResolvedFilmPreset.scene` 上传给 `utils/adaptiveGrade.ts`。
+ *
+ * ⚠️ 取景器实时预览**没有**这份数据（也不许为了它去解码原图 —— 发热纪律 v1.8.6），
+ * 所以 `scene === undefined | null` 时调色必须逐字节回到 v1.8.10 的静态曲线。
+ *
+ * 全部字段都是「测量值」，不在这层做任何补偿；怎么补偿是 `planAdaptiveGrade()` 的事。
+ */
+export interface SceneStats {
+  /** 平均亮度 0~1（BT.601 亮度权重 0.299/0.587/0.114，对 0~255 RGB 归一化）。 */
+  meanLuma: number;
+  /** 亮度标准差 0~1（场景反差：低 = 平光，高 = 硬光/大光比）。 */
+  contrast: number;
+  /** 暗部占比 0~1（亮度 < 0.25 的采样块比例）。 */
+  shadowShare: number;
+  /** 中间调占比 0~1（0.25 ≤ 亮度 < 0.70）。 */
+  midShare: number;
+  /** 高光占比 0~1（0.70 ≤ 亮度 < 0.995）。 */
+  highlightShare: number;
+  /** 高光溢出占比 0~1（亮度 ≥ 0.995，即已成片该处是死白）。 */
+  clipShare: number;
+  /** 色温倾向 -1~1（(meanR-meanB)/(meanR+meanB)，正 = 暖 / 负 = 冷）。 */
+  warmth: number;
+  /** 绿-品红倾向 -1~1（正 = 偏绿，负 = 偏品红）。 */
+  tintBias: number;
+  /** 平均饱和度 0~1（mean((max-min)/max)）。 */
+  saturation: number;
+  /** 实际参与统计的采样块数（≥ 1）。 */
+  samples: number;
+}
+
+
 /** 日期水印配置。 */
 export interface TimestampConfig {
   /** 是否烧录日期。 */
@@ -503,6 +564,13 @@ export interface ResolvedFilmPreset {
   showGuide: boolean;
   normalizeMaxLongEdge: number;
   captureLongEdge: number;
+  /**
+   * 场景统计（v1.8.11 自适应调色）：**只有成片链路**会填 —— `processFilmPhoto` 在裁切后
+   * 采样底片、把结果挂到这里，`buildGradeLayers()` 据此补偿白平衡/反差/暗部与高光。
+   * 取景器实时预览、`resolvePreset()` 直接产物、18 道零依赖探针都没有它，
+   * 缺省（`undefined`）或 `null` = 静态曲线，逐字节回到 v1.8.10 的渲染结果。
+   */
+  scene?: SceneStats | null;
 }
 
 /** 颗粒强度档位 id（数据在 `src/constants/grain.ts`）。 */
@@ -670,6 +738,17 @@ export interface FilmStageInput {
   locale?: LocaleId;
   /** 水印版式（四选一）。不填 = `'split'`。 */
   watermarkLayout?: WatermarkLayout;
+  /**
+   * 水印纵向落在哪里（v1.8.11）：`'auto'` = 相框自己决定（旧行为）。
+   * 用户在设置里选 `'paper'` / `'photo-top'` / `'photo-bottom'` 时，合成层按它覆盖
+   * 默认的 baseline / region（`computeWatermarkPlan` 的 `zone` 参数）。
+   */
+  watermarkZone?: WatermarkZone;
+  /**
+   * 水印横向怎么排（v1.8.11）：`'auto'` = 旧行为（split 左地名右日期 / stacked 跟相框 side）。
+   * 非 auto 时两行整体贴左 / 居中 / 贴右。
+   */
+  watermarkAlign?: WatermarkAlign;
   /** 地名详细度。不填 = `'archive'`。 */
   placeDetail?: PlaceDetail;
   /**
@@ -901,6 +980,38 @@ export interface AppSettings {
   locationMode: LocationMode;
   /** 成片水印版式（四选一），默认 `'split'`。 */
   watermarkLayout: WatermarkLayout;
+  /**
+   * 水印**纵向位置**（v1.8.11，用户 m06849 第二条：设置里改不了地名/坐标在整幅图里的位置）。
+   *
+   *   · `'auto'`（默认）—— 完全交给相框自己决定：纸框印在底边纸上、全铺帧印在照片底部。
+   *     这就是 v1.8.10 的行为，升级上来视觉不变；
+   *   · `'paper'`    —— 强制纸下巴（无纸的全铺帧退回照片底部，没有纸就没有纸下巴）；
+   *   · `'photo-top'` / `'photo-bottom'` —— 印在**画面内**的顶/底（叠在照片上，走 window
+   *     锚点的浅色墨水 + 投影，读得清又不抢画面）。
+   *
+   * 为什么要"纵向"和"横向"拆成两个设置，而不是给八个角各一个档：用户说的痛点是
+   * "地名/坐标在整幅图里的位置动不了"，真正需要独立控制的只有**贴哪条边**（纵）和
+   * **靠哪边**（横）。两个四档拆开 = 4×4 种落点，但每栏只有四个选项，翻起来不累。
+   */
+  watermarkZone: WatermarkZone;
+  /**
+   * 水印**横向对齐**（v1.8.11）：`'auto'`（默认）= 旧行为（split 左地名右日期、
+   * stacked 跟相框 side）；`'left'` / `'center'` / `'right'` 把两行整体按这个方向排。
+   * `'center'` 时 split 会自动退化成 stacked（左右分列没法居中），理由见 geometry 的
+   * `computeWatermarkPlan`。
+   */
+  watermarkAlign: WatermarkAlign;
+  /**
+   * 场景自适应调色（v1.8.11，用户 m06849 第一条），默认 **true**。
+   *
+   * 打开：成片链路会用 `sceneProbe` 采样这张底片的亮度分区/反差/色温/饱和度，
+   * 再让 `adaptiveGrade` 在预设曲线之上做**有界**补偿（白平衡、反差、S 曲线、暗部提升、
+   * 高光收敛）。关闭：完全不采样、`preset.scene` 为 null，图层栈逐字节回到 v1.8.10。
+   *
+   * 为什么给一个开关而不是默认强制：自适应是"按这张照片算"，同一卷在不同光线下
+   * 出片会有**可控的**差异。老用户如果就是要"支支一模一样"的固定数字，必须能关。
+   */
+  adaptiveGrade: boolean;
   /** 地名详细度，默认 `'archive'`。只影响 `locationMode === 'place'`。 */
   placeDetail: PlaceDetail;
   /** 颗粒档位（原来在取景器底部那条横向滑块上，现在挪进设置）。 */

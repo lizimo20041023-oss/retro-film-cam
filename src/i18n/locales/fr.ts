@@ -184,6 +184,25 @@ export const fr: Messages = {
   'settings.watermark.centered': 'Une ligne · centré',
   'settings.watermark.dateOnly': 'Date seule',
 
+  'settings.watermarkZone': 'Position verticale du filigrane',
+  'settings.watermarkZone.a11y': 'Position verticale du filigrane : {label}',
+  'settings.watermarkZone.auto': 'Suivre le cadre',
+  'settings.watermarkZone.paper': 'Sur la marge du papier',
+  'settings.watermarkZone.photoTop': 'Haut de l’image',
+  'settings.watermarkZone.photoBottom': 'Bas de l’image',
+  'settings.watermarkAlign': 'Alignement horizontal',
+  'settings.watermarkAlign.a11y': 'Alignement horizontal : {label}',
+  'settings.watermarkAlign.auto': 'Suivre la disposition',
+  'settings.watermarkAlign.left': 'À gauche',
+  'settings.watermarkAlign.center': 'Centré',
+  'settings.watermarkAlign.right': 'À droite',
+  'settings.adaptiveGrade': 'Étalonnage adaptatif',
+  'settings.adaptiveGrade.a11y': 'Étalonnage adaptatif : {label}',
+  'settings.adaptiveGrade.on': 'Activé',
+  'settings.adaptiveGrade.off': 'Désactivé',
+  'settings.adaptiveGrade.hint':
+    "Ajuste le développement d’après la luminosité, le contraste et la dominante de la photo. Désactivé, le développement reste celui du preset.",
+
   /* ---------------- localisation ---------------- */
   'location.denied':
     "L'autorisation de localisation a été refusée. Ouvrez Réglages → Confidentialité et sécurité → Service de localisation et autorisez-la.",

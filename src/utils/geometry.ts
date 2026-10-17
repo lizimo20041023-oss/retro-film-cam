@@ -70,7 +70,9 @@ import type {
   Size,
   TimestampAnchor,
   TimestampLayout,
+  WatermarkAlign,
   WatermarkLayout,
+  WatermarkZone,
 } from '../types';
 
 function clamp(value: number, min: number, max: number): number {
@@ -608,6 +610,15 @@ export interface WatermarkPlan {
    * 数组空 = 这张不烧水印。
    */
   lines: WatermarkLine[];
+  /**
+   * 回显：这次生效的水印**纵向位置**（v1.8.11）。不传 = `'auto'`（旧行为）。
+   *
+   * 回显的是**入参**，不是"最终落到哪个区域"——`auto` 在纸框与全铺帧上落点不同，
+   * 但"用户选的是 auto"这个事实必须能被调试/探针看见。
+   */
+  zone?: WatermarkZone;
+  /** 回显：这次生效的**横向对齐**（v1.8.11）。不传 = `'auto'`（旧行为）。 */
+  align?: WatermarkAlign;
 }
 
 /**
@@ -765,7 +776,7 @@ const QUARTZ_EDGE_RADIUS = 1;
  * 完全是两回事：前者上界是照片顶边，后者上界是相框顶边。混用会让 35mm 那种
  * 上下都留白的相框算错。
  */
-interface RegionVertical {
+export interface RegionVertical {
   top: number;
   bottom: number;
   height: number;
@@ -1026,6 +1037,167 @@ function quartzShadow(
  */
 const NO_FRAME_INSET_RATIO = 0.045;
 
+/* ==========================================================================
+ * 水印位置覆盖（v1.8.11 模块三，用户 m06849 第二条）
+ *
+ * 用户原话：「设置里『水印版式』无法（改）地名或坐标在整个图片里的位置」。
+ * 版式（`WatermarkLayout`）决定的是"两行字在一小块区域里怎么排"；区域本身以前
+ * 完全由相框写死。本轮把"区域"这一维单独拆出来，做成两个设置项：
+ *   - `WatermarkZone`  纵向：auto / paper / photo-top / photo-bottom；
+ *   - `WatermarkAlign` 横向：auto / left / center / right。
+ *
+ * 这一节只做**纯几何**：把"用户选的 zone/align"翻译成基线、水印区矩形、垂直区间
+ * 与锚点。墨色、字号、辉光仍归 `computeWatermarkPlan` —— 但它会拿这里返回的
+ * `anchor` 重新解一次 `ink` / `placeInk` / `quartzShadow`，因为"压在照片上"与
+ * "印在相纸留白上"要的是两套颜色。
+ * ========================================================================== */
+
+/**
+ * 一次水印位置覆盖的计算结果（v1.8.11）。
+ *
+ * 字段语义与 `computeWatermarkPlan` 内部变量一一对应，替换时是**整体替换**：
+ * `bottom` / `region` / `vertical` 三个数必须来自同一套公式，混用两套会让
+ * `stacked` 的"放不下就钳制"判据落在错误的区间里。
+ */
+export interface WatermarkPlacement {
+  /** 水印区矩形（相对合成舞台左上角）。 */
+  region: Rect;
+  /** 行基线：距舞台底部的距离（语义同 `computeWatermarkPlan` 里的 `bottom`）。 */
+  bottom: number;
+  /** 水印区的垂直几何（`stacked` 版式拿它做"放不下就钳制"的判据）。 */
+  vertical: RegionVertical;
+  /**
+   * 生效的横向对齐。
+   *
+   * ⚠️ `align='auto'` 时固定回填 `'right'`：本函数拿不到相框自带的 side
+   * （`frame.watermark?.align`），回填一个具体值会**篡改**旧行为，所以调用方
+   * 对 `align='auto'` 的返回值必须忽略它、继续用原来的 side。
+   */
+  align: 'left' | 'center' | 'right';
+  /** 覆盖后的锚点（决定 `ink` / `placeInk` / `glowRadius` / `quartzShadow` 用哪一套）。 */
+  anchor: TimestampAnchor;
+  /** 非 auto 横向对齐时，`split` 版式降级成 `stacked` 才对齐得动（其它版式不 force）。 */
+  forceLayout?: WatermarkLayout;
+}
+
+/**
+ * 把"纵向位置 + 横向对齐"翻译成一组可替换的排版输入（v1.8.11，纯函数）。
+ *
+ * 逐 zone 公式（**冻结**，探针逐条钉住）：
+ * - `auto`：`bottom` / `region` 与旧 `resolveBaselineAndRegion` 逐字段相等；
+ *   `vertical` = `regionVertical(layout, 原 anchor, inset)`；唯一例外是无相框
+ *   （`frame.noFrame`）—— 那里旧实现把水印区换成整块画布，这里必须同样处理，
+ *   否则"只改横向对齐"会连垂直位置一起改掉。
+ * - `paper`：相纸下留白档。`bottom = clamp(round(下留白/2 − 日期字号×0.62), inset,
+ *   max(inset, 下留白 − round(日期字号×1.05)))`，即旧 `frame` 分支公式；
+ *   `vertical = regionVertical(layout,'frame',inset)`；`anchor='frame'`（墨色转相纸系）。
+ * - `photo-top`：照片窗口上缘一条 `round(日期字号×2.6)` 高的带；基线换算成
+ *   "距舞台底"后落在带的下沿；`anchor='window'`（墨色转画面浅色系）。
+ * - `photo-bottom`：照片窗口下缘，公式与旧 `window` 分支完全一致，只是锚点强制
+ *   `window`（纸框用户选"贴在照片下缘"时墨色也要转成浅色）。
+ *
+ * `canvasWidth` / `placeFont` 目前只用于接口完整性（横向排版的宽度上限在
+ * `computeWatermarkPlan` 里算），保留它们是因为"位置方案"将来若要按地名长度
+ * 做避让，信息必须已经在这里。
+ */
+export function resolveWatermarkPlacement(
+  layout: FrameLayout,
+  config: ResolvedTimestampConfig,
+  frame: {
+    /** 原有 `resolveTimestampAnchor` 的结果。 */
+    anchor: TimestampAnchor;
+    noFrame: boolean;
+    inset: number;
+    canvasWidth: number;
+    dateFont: number;
+    placeFont: number;
+  },
+  zone: WatermarkZone,
+  align: WatermarkAlign,
+): WatermarkPlacement {
+  const inset = frame.inset;
+  const regionLeft = layout.window.left + inset;
+  const regionWidth = Math.max(1, layout.width - regionLeft - (layout.rightMargin + inset));
+  const frameVertical = regionVertical(layout, 'frame', inset);
+  const windowVertical = regionVertical(layout, 'window', inset);
+  /**
+   * 水印区矩形。左右口径两种锚点相同（见 `resolveBaselineAndRegion`），
+   * 只有 `top` / `height` 跟着锚点分支走 —— 这里把那条分支公式抄成一份局部实现，
+   * 让每个 zone 都能用"自己那套 vertical + bottom"算出一致的矩形。
+   */
+  const regionOf = (vertical: RegionVertical, bottom: number, fontSize: number): Rect => ({
+    left: regionLeft,
+    top: vertical.top,
+    width: regionWidth,
+    height: Math.max(0, bottom + fontSize - vertical.top),
+  });
+
+  let bottom: number;
+  let region: Rect;
+  let vertical: RegionVertical;
+  let anchor: TimestampAnchor = frame.anchor;
+
+  if (zone === 'paper') {
+    // 旧 `frame` 分支公式：在下留白里垂直居中，再用 0.62 修正数码管字面的偏高。
+    const rawBottom = Math.round(layout.bottomStripHeight / 2 - frame.dateFont * BASELINE_CORRECTION);
+    const minBottom = inset;
+    const maxBottom = Math.max(inset, layout.bottomStripHeight - Math.round(frame.dateFont * 1.05));
+    bottom = clamp(rawBottom, minBottom, maxBottom);
+    vertical = frameVertical;
+    region = regionOf(vertical, bottom, frame.dateFont);
+    anchor = 'frame';
+  } else if (zone === 'photo-top') {
+    // 压在照片窗口上缘的一条带：上界 = 窗口顶 + inset，高度 = 2.6 个日期字号。
+    const band = Math.round(frame.dateFont * 2.6);
+    vertical = {
+      top: layout.window.top + inset,
+      bottom: layout.window.top + inset + band,
+      height: band,
+    };
+    // 基线换算回"距舞台底"（`stacked` / 渲染层统一用这个口径）。
+    bottom = layout.height - (layout.window.top + inset) - Math.round(frame.dateFont * 1.05);
+    // region 同旧 window 分支（单行文字带的矩形口径）。
+    region = regionOf(windowVertical, layout.bottomStripHeight + inset, frame.dateFont);
+    anchor = 'window';
+  } else if (zone === 'photo-bottom') {
+    // 旧 `window` 分支：纸框的下留白高度就是"窗口底 → 画布底"，全铺帧时退化成 inset。
+    bottom = layout.bottomStripHeight + inset;
+    vertical = windowVertical;
+    region = regionOf(vertical, bottom, frame.dateFont);
+    anchor = 'window';
+  } else {
+    // zone === 'auto'：逐字段复刻 v1.8.10 的路径（探针 deepEqual 一组夹具）。
+    const baseline = resolveBaselineAndRegion(layout, config, frame.anchor, frame.dateFont, inset);
+    bottom = baseline.bottom;
+    region = baseline.region;
+    vertical = frame.noFrame
+      ? {
+          top: inset,
+          bottom: layout.height - inset,
+          height: Math.max(0, layout.height - inset * 2),
+        }
+      : regionVertical(layout, frame.anchor, inset);
+    anchor = frame.anchor;
+  }
+
+  let nextAlign: 'left' | 'center' | 'right';
+  let forceLayout: WatermarkLayout | undefined;
+  if (align === 'auto') {
+    // 拿不到相框 side，固定回填 'right'；调用方对 auto 必须忽略这个字段。
+    nextAlign = 'right';
+  } else if (align === 'center') {
+    nextAlign = 'center';
+    // `split` 是左右分列，居中永远对不齐 —— 降级成 stacked 才有"两行同侧堆叠"可居中。
+    forceLayout = 'stacked';
+  } else {
+    nextAlign = align;
+  }
+
+  return forceLayout === undefined
+    ? { region, bottom, vertical, align: nextAlign, anchor }
+    : { region, bottom, vertical, align: nextAlign, anchor, forceLayout };
+}
+
 /**
  * 四种版式的排版方案 —— 合成层只需要照着 `lines` 画。
  *
@@ -1059,21 +1231,20 @@ export function computeWatermarkPlan(
    * 缺省 `'quartz_led'` = `DEFAULT_SETTINGS.dateEngine.glyphStyle` = v1.7.0 观感。
    */
   glyphStyle: DateGlyphStyleId = 'quartz_led',
+  /**
+   * 水印**纵向位置**（v1.8.11 设置项）。不传 = `'auto'` = v1.8.10 及以前的行为。
+   *
+   * 只追加在参数表末尾：旧调用点一个都不用改，而"auto + auto 整条路径逐字节不变"
+   * 由这里的分支结构保证 —— 见下面 `placement` 的计算。
+   */
+  zone: WatermarkZone = 'auto',
+  /** 水印**横向对齐**（v1.8.11 设置项）。不传 = `'auto'` = 跟随相框 `watermark.align`。 */
+  align: WatermarkAlign = 'auto',
 ): WatermarkPlan {
   const anchor = resolveTimestampAnchor(frame, config);
   const tone: 'amber' | 'graphite' = frame.watermark?.tone ?? 'amber';
   const toneStyle = TONE_STYLE[tone];
   const tracking = timestampTracking(locale, tone === 'graphite', frame.watermark?.uppercase === true);
-  const ink = resolveInk(tone, config, anchor);
-  /**
-   * 地名 / 代号那一行的墨色。
-   *
-   * ⚠️ 压在照片上时**一律**换成浅灰白（规格 §六.4 的墨色规则）：日期是液晶，可以按
-   * `tone` 走琥珀橙；地名是"印在画面上的字"，照片亮部会把橙色吃掉。
-   * 印在相纸留白上时两行同色 —— 纸是白的，深色一定看得见，没必要分开。
-   */
-  const placeInk =
-    anchor === 'window' ? { color: OVER_PHOTO_INK, fontWeight: TONE_STYLE.graphite.fontWeight } : ink;
 
   /*
    * 字号与全部"文字像素"度量：**唯一**入口在 `watermarkTypography.ts`，
@@ -1118,19 +1289,63 @@ export function computeWatermarkPlan(
   const inset = noFrame
     ? Math.max(2, Math.round(Math.min(layout.width, layout.height) * NO_FRAME_INSET_RATIO))
     : Math.max(2, Math.round(layout.width * config.insetRatio));
-  const { bottom, region } = resolveBaselineAndRegion(layout, config, anchor, dateFont, inset);
   /*
-   * 无相框的水印区 = **整块画布四周各留 `inset`**，不是相纸那一档的"下留白条"。
+   * v1.8.11 水印位置覆盖（用户 m06849 第二条）。
    *
-   * 为什么不能沿用 `regionVertical(layout, anchor, inset)`：它的 `'window'` 分支返回的是
-   * `{top: 0, bottom: layout.bottomStripHeight}`（= 下留白那一条），无相框下
-   * `bottomStripHeight === 0` ⇒ 高度 0 ⇒ `stacked` 的"放不下就丢掉地名行"判据
-   * （`vertical.top + placeTop <= vertical.bottom`）永远失败，地名会被**静默丢掉**，
-   * 面板上那个"地区 + 日期两行右对齐"就只剩日期。
+   * `zone==='auto' && align==='auto'` 时 `placement` 为 null ⇒ 下面整段走 v1.8.10 的
+   * 原实现，这是"旧观感逐字节不变"的**结构性**保证，不是把两套公式调成一样。
+   *
+   * 非 auto 时才真的算覆盖方案；`effectiveAnchor` 也可能被换掉（paper → frame，
+   * photo-* → window），ok / placeInk / glowRadius / quartzShadow 全部要跟着锚点走 ——
+   * "压照片"与"印留白"是两套相反的颜色，漏切一处就会出现白纸上的隐形字。
    */
-  const vertical = noFrame
-    ? { top: inset, bottom: layout.height - inset, height: Math.max(0, layout.height - inset * 2) }
-    : regionVertical(layout, anchor, inset);
+  const placement: WatermarkPlacement | null =
+    zone === 'auto' && align === 'auto'
+      ? null
+      : resolveWatermarkPlacement(
+          layout,
+          config,
+          { anchor, noFrame, inset, canvasWidth, dateFont, placeFont },
+          zone,
+          align,
+        );
+  const effectiveAnchor: TimestampAnchor = placement === null ? anchor : placement.anchor;
+  let bottom: number;
+  let region: Rect;
+  let vertical: RegionVertical;
+  if (placement === null) {
+    const baseline = resolveBaselineAndRegion(layout, config, anchor, dateFont, inset);
+    bottom = baseline.bottom;
+    region = baseline.region;
+    /*
+     * 无相框的水印区 = **整块画布四周各留 `inset`**，不是相纸那一档的"下留白条"。
+     *
+     * 为什么不能沿用 `regionVertical(layout, anchor, inset)`：它的 `'window'` 分支返回的是
+     * `{top: 0, bottom: layout.bottomStripHeight}`（= 下留白那一条），无相框下
+     * `bottomStripHeight === 0` ⇒ 高度 0 ⇒ `stacked` 的"放不下就丢掉地名行"判据
+     * （`vertical.top + placeTop <= vertical.bottom`）永远失败，地名会被**静默丢掉**，
+     * 面板上那个"地区 + 日期两行右对齐"就只剩日期。
+     */
+    vertical = noFrame
+      ? { top: inset, bottom: layout.height - inset, height: Math.max(0, layout.height - inset * 2) }
+      : regionVertical(layout, anchor, inset);
+  } else {
+    bottom = placement.bottom;
+    region = placement.region;
+    vertical = placement.vertical;
+  }
+  const ink = resolveInk(tone, config, effectiveAnchor);
+  /**
+   * 地名 / 代号那一行的墨色。
+   *
+   * ⚠️ 压在照片上时**一律**换成浅灰白（规格 §六.4 的墨色规则）：日期是液晶，可以按
+   * `tone` 走琥珀橙；地名是"印在画面上的字"，照片亮部会把橙色吃掉。
+   * 印在相纸留白上时两行同色 —— 纸是白的，深色一定看得见，没必要分开。
+   */
+  const placeInk =
+    effectiveAnchor === 'window'
+      ? { color: OVER_PHOTO_INK, fontWeight: TONE_STYLE.graphite.fontWeight }
+      : ink;
   /** 水印区右沿（距舞台右沿的距离）。文字行要补一个尾字距，数码管不补。 */
   const regionRight = layout.rightMargin + inset;
 
@@ -1150,7 +1365,7 @@ export function computeWatermarkPlan(
   // ⚠️ 这一支是**文字行**的规则（`centered` 版式里那半行文字仍然用它）；
   // 数码管的阴影是另一套，见 `quartzShadow`。
   const glowRadius =
-    anchor === 'window'
+    effectiveAnchor === 'window'
       ? Math.max(2, config.glow && tone === 'amber' ? Math.round(dateFont * 0.45) : 0)
       : 0;
 
@@ -1181,7 +1396,7 @@ export function computeWatermarkPlan(
      * 缺省档 `quartz_led` 的 700 正是 v1.7.0 日期行的字重，观感不变。
      */
     fontWeight: DATE_GLYPH_STYLES[glyphStyle].fontWeight,
-    ...quartzShadow(anchor, tone, config),
+    ...quartzShadow(effectiveAnchor, tone, config),
   };
   /*
    * 日期块的底沿 = 文字行的底沿，不再有"把管子从行盒中心挪下来"的修正。
@@ -1231,8 +1446,8 @@ export function computeWatermarkPlan(
        *   所以半径小、颜色是黑的 —— 一发光就变成"第二块液晶"了。
        * - 印在相纸留白上：不投影。白纸上围一圈阴影看着像蹭脏了。
        */
-      glowRadius: anchor === 'window' ? Math.max(1, Math.round(size * 0.35)) : 0,
-      ...(anchor === 'window' ? { shadowColor: OVER_PHOTO_SHADOW } : {}),
+      glowRadius: effectiveAnchor === 'window' ? Math.max(1, Math.round(size * 0.35)) : 0,
+      ...(effectiveAnchor === 'window' ? { shadowColor: OVER_PHOTO_SHADOW } : {}),
       ...overrides,
     };
   };
@@ -1254,6 +1469,15 @@ export function computeWatermarkPlan(
   const slotFont = hasPlace ? placeFont : codeFontOf(canvasWidth);
   // 相框说贴哪边。`centered` 不看它（居中本身就是"两边都不贴"）。
   const side: 'left' | 'right' = frame.watermark?.align ?? 'right';
+  /*
+   * v1.8.11 横向对齐覆盖（用户 m06849 第二条）。
+   *
+   * 只有用户**显式**选了 left/center/right 才覆盖相框自带的 side；`align='auto'`
+   * 时 `placement.align` 固定回填 'right'（函数拿不到相框 side），必须忽略它 ——
+   * 否则"只改纵向位置"会把拍立得这种 align:'left' 的相框偷偷改成右对齐。
+   */
+  const horizontal: 'left' | 'center' | 'right' =
+    placement !== null && align !== 'auto' ? placement.align : side;
 
   /*
    * 无相框下 `split`（默认版式）改走 `stacked`：地名在上、日期在下、两行贴同一边（默认右）。
@@ -1267,20 +1491,48 @@ export function computeWatermarkPlan(
    * 为什么不新写一种版式：`stacked` 的语义**就是**"两行同侧堆叠"，复用还顺带白拿了
    * 它的两条现成规则：行距 `STACKED_LEADING`、以及"两行放不下时先丢地名"的退化处理。
    */
-  const planLayoutId: WatermarkLayout = noFrame && layoutId === 'split' ? 'stacked' : layoutId;
+  const baseLayoutId: WatermarkLayout = noFrame && layoutId === 'split' ? 'stacked' : layoutId;
+  /*
+   * v1.8.11 横向居中的降级：`align='center'` 时 placement 会带 `forceLayout:'stacked'`。
+   * 只在**生效版式本来就是 split** 时才采纳 —— 其它三种是用户明确选出来的排列，
+   * 不许因为"改个对齐"被悄悄换掉（`centered` 本来就能居中，`dateOnly`/`stacked` 也对得动）。
+   */
+  const planLayoutId: WatermarkLayout =
+    placement !== null && placement.forceLayout !== undefined && baseLayoutId === 'split'
+      ? placement.forceLayout
+      : baseLayoutId;
 
   if (planLayoutId === 'dateOnly') {
     if (hasDate) {
       // 没有地名可贴，"贴哪边"就由相框说了算：左对齐的相框（拍立得下巴）日期也在左。
-      lines.push(
-        dateLine(
-          side === 'left'
-            ? { align: { left: region.left, maxWidth: quartz.width } }
-            : { align: { right: regionRight, maxWidth: quartz.width } },
-        ),
-      );
+      /*
+       * v1.8.11：`horizontal` 在 auto 时恒等于 `side`，所以下面这一支对旧调用完全等价；
+       * 只有用户显式选了 center 才会多出一条"按水印区居中"的位置。
+       */
+      const dateAlign: WatermarkTextAlign =
+        horizontal === 'center'
+          ? {
+              left: region.left + Math.round((region.width - quartz.width) / 2),
+              maxWidth: quartz.width,
+            }
+          : horizontal === 'left'
+            ? { left: region.left, maxWidth: quartz.width }
+            : { right: regionRight, maxWidth: quartz.width };
+      lines.push(dateLine({ align: dateAlign }));
     }
   } else if (planLayoutId === 'centered') {
+    /*
+     * v1.8.11 横向覆盖：`centered` 本来就把整行摆在水印区正中，所以 `align='auto'`
+     * 时这一支一个字节都不变（旧行为就是无条件 `textAlign:'center'`）。
+     * 只有用户**显式**选了 left/right，才把这一行整体挪到水印区的对应边、并去掉居中。
+     */
+    const centeredAlign: WatermarkTextAlign =
+      placement !== null && align !== 'auto' && horizontal !== 'center'
+        ? horizontal === 'left'
+          ? { left: region.left, maxWidth: region.width }
+          : { right: regionRight, maxWidth: region.width }
+        : // 居中：给满水印区宽度，让文字自行居中（不给宽度的话长地名会按内容撑开、冲出相框）。
+          { left: region.left, maxWidth: region.width, textAlign: 'center' };
     if (hasDate) {
       /*
        * 底部正中等宽单行：`[ 地名 · 'YY MM DD ]`。
@@ -1294,7 +1546,7 @@ export function computeWatermarkPlan(
         text: hasSlot ? `${slotText}${CENTERED_SEPARATOR}` : '',
         bottom,
         // 居中的行不贴边，必须给宽度，否则长地名会按内容撑开、冲出相框。
-        align: { left: region.left, maxWidth: region.width, textAlign: 'center' },
+        align: centeredAlign,
         fontSize: hasSlot ? slotFont : dateFont,
         letterSpacing: hasSlot ? slotSpacing : 0,
         color: ink.color,
@@ -1310,7 +1562,7 @@ export function computeWatermarkPlan(
           text: slotText,
           fontSize: slotFont,
           letterSpacing: spacingOf(slotFont),
-          align: { left: region.left, maxWidth: region.width, textAlign: 'center' },
+          align: centeredAlign,
         }),
       );
     }
@@ -1340,19 +1592,32 @@ export function computeWatermarkPlan(
           text: slotText,
           fontSize: slotFont,
           bottom: placeBottom,
+          /*
+           * v1.8.11 横向覆盖：auto 时 `horizontal` 恒等于 `side`，下面两支与旧实现逐字节相同；
+           * center 才换成"占满水印区宽度 + 文字居中"，绝不继承相框的贴边。
+           */
           align:
-            side === 'left'
-              ? { left: Math.round((region.left - letterSpacing) * 100) / 100 }
-              : { right: flushRightOffset(letterSpacing) },
+            horizontal === 'center'
+              ? { left: region.left, maxWidth: region.width, textAlign: 'center' }
+              : horizontal === 'left'
+                ? { left: Math.round((region.left - letterSpacing) * 100) / 100 }
+                : { right: flushRightOffset(letterSpacing) },
         }),
       );
     }
     if (hasDate) {
       lines.push(
         dateLine(
-          side === 'left'
-            ? { align: { left: region.left, maxWidth: quartz.width } }
-            : { align: { right: regionRight, maxWidth: quartz.width } },
+          horizontal === 'center'
+            ? {
+                align: {
+                  left: region.left + Math.round((region.width - quartz.width) / 2),
+                  maxWidth: quartz.width,
+                },
+              }
+            : horizontal === 'left'
+              ? { align: { left: region.left, maxWidth: quartz.width } }
+              : { align: { right: regionRight, maxWidth: quartz.width } },
         ),
       );
     }
@@ -1402,7 +1667,12 @@ export function computeWatermarkPlan(
   }
 
   return {
-    anchor,
+    /*
+     * 回**生效的**锚点，不是相框自带的那个：`zone='paper'` 会把 `window` 的相框强制
+     * 转成相纸系，`zone='photo-*'` 反过来把相纸系压到画面浅色系。回原 anchor 会让
+     * "这张水印到底压没压照片"在调试/探针里永远看不出真相。
+     */
+    anchor: effectiveAnchor,
     /*
      * 回**生效的**版式，不是用户选的那一项：无相框下 `layoutId` 可能是 `split`，
      * 而这里真的按 `stacked` 排了。消费方（`FilmCompositor.planWatermark` 的
@@ -1414,6 +1684,14 @@ export function computeWatermarkPlan(
     uppercase: tracking.uppercase,
     region,
     lines,
+    /*
+     * v1.8.11 水印位置回显：只在用户真的覆盖时才出现。
+     *
+     * 用条件展开而不是无条件写两个字段，是为了保住"auto 时水印方案对象与 v1.8.10
+     * 逐字段 deepEqual"这条旧探针契约 —— 老探针把整个 plan 拿去深比较的写法不能因为
+     * 多了两个 undefined 之外的键就红。
+     */
+    ...(zone === 'auto' && align === 'auto' ? {} : { zone, align }),
   };
 }
 

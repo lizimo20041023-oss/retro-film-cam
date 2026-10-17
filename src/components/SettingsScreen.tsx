@@ -5,15 +5,17 @@
  * v1.8.2 之前这一屏是**全部展开**的：语言 7 行 + 定位 4 行 + 详细度 2 行 +
  * 地名语言 4 行 + 水印版式 4 行 + 日期引擎 31 行（13 格式 + 5 字形 + 8 机位 +
  * 5 发光）+ 画质 3 行 + 颗粒 5 行 + 无相框 3 行 ≈ 60+ 行。
- * 手机上要滑三四屏，而用户看到的其实只有 12 个"大类"。
+ * 手机上要滑三四屏，而用户看到的其实只有十几个"大类"。
  * 更糟的是 31 个日期选项平铺在同一栏里，格式/字形/机位/颜色这四条**正交的轴**
  * 混成一片 —— 用户想改"日期颜色"要在一堆日期样例里找，找不到是正常的。
  *
- * 所以改成 **12 个单行折叠栏**（Accordion）：
+ * 所以改成 **单行折叠栏**（Accordion）：
  *   lang / loc_mode / loc_detail / loc_lang / watermark_layout /
+ *   watermark_zone / watermark_align / adaptive_grade /
  *   date_format / date_style / date_pos / date_color /
  *   quality / grain / frameless_ratio
- * 默认全部收起 ⇒ 一屏就能看全 12 行，每行右侧是"当前选中的那一档"。
+ * 默认全部收起 ⇒ 15 行接近一屏（iPhone 13 上最底部一栏要轻滑一下），
+ * 每行右侧是"当前选中的那一档"。
  *
  * ── 状态机（只有一条真源）────────────────────────────────────────────────
  * `const [expandedKey, setExpandedKey] = useState<SectionKey | null>(null)`
@@ -70,7 +72,9 @@ import type {
   LocationStampState,
   NoFrameAspect,
   PlaceDetail,
+  WatermarkAlign,
   WatermarkLayout,
+  WatermarkZone,
 } from '../types';
 
 /**
@@ -84,10 +88,10 @@ import type {
 const SUMMARY_GOLD = '#C86418';
 
 /**
- * 12 个折叠栏的稳定 key（顺序 = 界面顺序）。
+ * 15 个折叠栏的稳定 key（顺序 = 界面顺序）。
  *
  * 单独列一个联合类型而不是 `string`：
- * ① `expandedKey` 只允许装这 12 个值，写错立刻编译报错；
+ * ① `expandedKey` 只允许装这 15 个值，写错立刻编译报错；
  * ② 展开体用 `switch (key)` 渲染，联合类型能让 tsc 检查"每一栏都有实现"。
  */
 type SectionKey =
@@ -96,6 +100,9 @@ type SectionKey =
   | 'loc_detail'
   | 'loc_lang'
   | 'watermark_layout'
+  | 'watermark_zone'
+  | 'watermark_align'
+  | 'adaptive_grade'
   | 'date_format'
   | 'date_style'
   | 'date_pos'
@@ -107,11 +114,13 @@ type SectionKey =
 /**
  * 界面顺序 = 「越常改的越靠上」+「有从属关系的必须相邻」：
  * 语言 → 定位 → 地名详细度（只在"地名"档生效，紧跟定位）→ 地名语言（只影响地名那行）
- * → 水印版式（地名与日期怎么排）→ 日期四轴（格式 → 字形 → 机位 → 颜色，
+ * → 水印三轴（版式 → 纵向落点 → 横向对齐；先决定怎么排、再决定落在哪）
+ * → 场景自适应（冲印要不要看画面统计）→ 日期四轴（格式 → 字形 → 机位 → 颜色，
  * 先决定印什么、再决定怎么长、印在哪、发什么光）→ 画质 → 颗粒 → 无相框画幅。
  *
  * 日期四轴为什么各自独立成栏：用户明确要求"严禁把格式、字形、位置、颜色混在一起"。
  * 四者两两正交 —— 换颜色不该看见格式列表，换格式也不该看见机位。
+ * 水印三轴同理（v1.8.11 新增后两轴）：换版式不该顺带改纵/横落点。
  */
 const SECTION_ORDER: readonly SectionKey[] = [
   'lang',
@@ -119,6 +128,9 @@ const SECTION_ORDER: readonly SectionKey[] = [
   'loc_detail',
   'loc_lang',
   'watermark_layout',
+  'watermark_zone',
+  'watermark_align',
+  'adaptive_grade',
   'date_format',
   'date_style',
   'date_pos',
@@ -142,6 +154,9 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
     settings,
     setLocationMode,
     setWatermarkLayout,
+    setWatermarkZone,
+    setWatermarkAlign,
+    setAdaptiveGrade,
     setPlaceDetail,
     setGrainLevel,
     setGeoLocale,
@@ -154,11 +169,11 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   const styles = useMemo(() => createStyles(theme), [theme]);
 
   /**
-   * 唯一展开状态：`null` = 12 栏全部收起（打开设置页时的默认视图）。
+   * 唯一展开状态：`null` = 15 栏全部收起（打开设置页时的默认视图）。
    *
    * 为什么不是 `Record<SectionKey, boolean>`：手风琴只允许同时展开一栏，
-   * 一个 `SectionKey | null` 就把"哪一栏开着"这件事表达完了；用 12 个布尔
-   * 就得在每次 toggle 时手写"把其它 11 个置 false"，那是最容易漏的地方。
+   * 一个 `SectionKey | null` 就把"哪一栏开着"这件事表达完了；用 15 个布尔
+   * 就得在每次 toggle 时手写"把其它 14 个置 false"，那是最容易漏的地方。
    */
   const [expandedKey, setExpandedKey] = useState<SectionKey | null>(null);
 
@@ -229,7 +244,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   /**
    * 每次"打开"设置页都回到全收起。
    *
-   * 为什么不是"记住上次展开哪一栏"：这一屏的定位是"一眼看全 12 类"，
+   * 为什么不是"记住上次展开哪一栏"：这一屏的定位是"一眼看全 15 类"，
    * 记住展开态等于下次打开直接跳到半屏列表，反而丢了设计意图。
    * 在 `visible` 变 true 时复位，也顺带清掉上次关页时挂起的定时器。
    */
@@ -273,7 +288,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   const dateEngine = settings.dateEngine;
 
   /**
-   * 下面十一个 handler 都只做两件事：一次选择触感 + 落设置。
+   * 下面这些 handler 都只做两件事：一次选择触感 + 落设置。
    *
    * 为什么都走 `useCallback`：`OptionRow` 是纯展示组件，但它在 `map` 里被创建，
    * handler 每次渲染换新会让每一行都白重渲染一次；也顺便让依赖关系显式可见。
@@ -321,6 +336,30 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
       setWatermarkLayout(next);
     },
     [setWatermarkLayout],
+  );
+
+  const handleWatermarkZone = useCallback(
+    (next: WatermarkZone): void => {
+      void Haptics.selectionAsync();
+      setWatermarkZone(next);
+    },
+    [setWatermarkZone],
+  );
+
+  const handleWatermarkAlign = useCallback(
+    (next: WatermarkAlign): void => {
+      void Haptics.selectionAsync();
+      setWatermarkAlign(next);
+    },
+    [setWatermarkAlign],
+  );
+
+  const handleAdaptiveGrade = useCallback(
+    (next: boolean): void => {
+      void Haptics.selectionAsync();
+      setAdaptiveGrade(next);
+    },
+    [setAdaptiveGrade],
   );
 
   const handleDateFormat = useCallback(
@@ -399,7 +438,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   }
 
   /**
-   * 12 栏的标题与摘要。
+   * 15 栏的标题与摘要。
    *
    * 摘要口径 = 「当前选中的那一档，用和展开列表里**一模一样**的文字」——
    * 收起时看到的是"標準"，展开后对勾就在"標準"那一行，两者不会对不上。
@@ -410,6 +449,18 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   const placeDetailRow = findOrFirst(PLACE_DETAIL_ROWS, (row) => row.detail === settings.placeDetail);
   const geoLocaleRow = findOrFirst(GEO_LOCALE_ROWS, (row) => row.geoLocale === settings.geoLocale);
   const watermarkRow = findOrFirst(WATERMARK_ROWS, (row) => row.layout === settings.watermarkLayout);
+  const watermarkZoneRow = findOrFirst(
+    WATERMARK_ZONE_ROWS,
+    (row) => row.zone === settings.watermarkZone,
+  );
+  const watermarkAlignRow = findOrFirst(
+    WATERMARK_ALIGN_ROWS,
+    (row) => row.align === settings.watermarkAlign,
+  );
+  const adaptiveGradeRow = findOrFirst(
+    ADAPTIVE_GRADE_ROWS,
+    (row) => row.adaptiveGrade === settings.adaptiveGrade,
+  );
   const formatRow = findOrFirst(DATE_FORMAT_ROWS, (row) => row.format === dateEngine.format);
   const glyphRow = findOrFirst(DATE_GLYPH_ROWS, (row) => row.glyphStyle === dateEngine.glyphStyle);
   const spotRow = findOrFirst(DATE_SPOT_ROWS, (row) => row.spot === dateEngine.spot);
@@ -435,6 +486,18 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
     watermark_layout: {
       title: t('settings.watermark.title'),
       summary: t(watermarkRow.labelKey),
+    },
+    watermark_zone: {
+      title: t('settings.watermarkZone'),
+      summary: t(watermarkZoneRow.labelKey),
+    },
+    watermark_align: {
+      title: t('settings.watermarkAlign'),
+      summary: t(watermarkAlignRow.labelKey),
+    },
+    adaptive_grade: {
+      title: t('settings.adaptiveGrade'),
+      summary: t(adaptiveGradeRow.labelKey),
     },
     date_format: {
       title: t('settings.section.dateFormat'),
@@ -472,11 +535,11 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   };
 
   /**
-   * 展开体：`switch` 保证 12 栏都有实现（`SectionKey` 是联合类型，
+   * 展开体：`switch` 保证 15 栏都有实现（`SectionKey` 是联合类型，
    * 少写一栏 tsc 会报"函数缺少返回"）。
    *
    * 每台选项列表都复用旧的 `OptionRow`；提示句（hint）放在**展开后**的
-   * 列表下方，不再常驻 —— 收起态每栏只有一行，正是"一屏看清 12 大类"的前提。
+   * 列表下方，不再常驻 —— 收起态每栏只有一行，正是"一屏看清 15 大类"的前提。
    */
   const renderBody = (key: SectionKey) => {
     switch (key) {
@@ -590,6 +653,57 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
               />
             ))}
           </View>
+        );
+
+      case 'watermark_zone':
+        // 纵向落点（v1.8.11）：`auto` 跟版式自带的落点，其余三档是显式覆盖。
+        return (
+          <View style={styles.group}>
+            {WATERMARK_ZONE_ROWS.map((row) => (
+              <OptionRow
+                key={row.zone}
+                label={t(row.labelKey)}
+                selected={settings.watermarkZone === row.zone}
+                onPress={() => pickAfter(() => handleWatermarkZone(row.zone))}
+                a11yLabel={t('settings.watermarkZone.a11y', { label: t(row.labelKey) })}
+              />
+            ))}
+          </View>
+        );
+
+      case 'watermark_align':
+        // 横向对齐（v1.8.11）：`auto` 跟版式自带的左右排布，其余三档是显式覆盖。
+        return (
+          <View style={styles.group}>
+            {WATERMARK_ALIGN_ROWS.map((row) => (
+              <OptionRow
+                key={row.align}
+                label={t(row.labelKey)}
+                selected={settings.watermarkAlign === row.align}
+                onPress={() => pickAfter(() => handleWatermarkAlign(row.align))}
+                a11yLabel={t('settings.watermarkAlign.a11y', { label: t(row.labelKey) })}
+              />
+            ))}
+          </View>
+        );
+
+      case 'adaptive_grade':
+        // 布尔两档（契约要求用两档 OptionRow，不做开关组件）：开 = 按画面统计微调冲印。
+        return (
+          <>
+            <View style={styles.group}>
+              {ADAPTIVE_GRADE_ROWS.map((row) => (
+                <OptionRow
+                  key={String(row.adaptiveGrade)}
+                  label={t(row.labelKey)}
+                  selected={settings.adaptiveGrade === row.adaptiveGrade}
+                  onPress={() => pickAfter(() => handleAdaptiveGrade(row.adaptiveGrade))}
+                  a11yLabel={t('settings.adaptiveGrade.a11y', { label: t(row.labelKey) })}
+                />
+              ))}
+            </View>
+            <Text style={styles.hint}>{t('settings.adaptiveGrade.hint')}</Text>
+          </>
         );
 
       case 'date_format':
@@ -742,7 +856,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
         );
 
       default: {
-        // 联合类型穷尽性兜底：真出现第 13 个 key 时，这里返回 null 而不是崩。
+        // 联合类型穷尽性兜底：真出现第 16 个 key 时，这里返回 null 而不是崩。
         // 用 `_exhaustive: never` 让 tsc 在漏写分支时直接报错。
         const _exhaustive: never = key;
         void _exhaustive;
@@ -785,7 +899,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
           </Pressable>
         </View>
 
-        {/* 12 个折叠栏：每次只开一个，默认全收。 */}
+        {/* 15 个折叠栏：每次只开一个，默认全收。 */}
         {SECTION_ORDER.map((key) => {
           const meta = sections[key];
           const expanded = expandedKey === key;
@@ -809,7 +923,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   );
 }
 
-/** 12 栏标题 + 收起态摘要（摘要里只有 `date_color` 带一枚圆点）。 */
+/** 15 栏标题 + 收起态摘要（摘要里只有 `date_color` 带一枚圆点）。 */
 interface SectionMeta {
   title: string;
   summary: string;
@@ -831,8 +945,10 @@ function findOrFirst<T>(rows: readonly T[], match: (row: T) => boolean): T {
 /**
  * 一行折叠栏的头部（收起态）。
  *
- * 固定 54pt 高 —— 12 行 × 54 = 648pt，iPhone 13 的可用高度约 760pt，
- * 加上标题栏正好一屏，这就是"打开设置页一屏看清 12 大类"的算术依据。
+ * 固定 54pt 高 —— 15 行 × 54 = 810pt，比 iPhone 13 的可用高度（约 760pt）
+ * 略高：v1.8.11 新增水印两轴 + 场景自适应之后，"一屏看全"从 12 栏时成立
+ * 变成"轻滑一下看全"；仍然保留折叠栏形态 —— 每栏只讲一件事，比把三个
+ * 新轴硬塞进水印版式那一栏更重要。
  * 布局从左到右：2pt 竖条 → 标题（占剩余）→ 摘要 → 旋转箭头。
  */
 function AccordionHeader({
@@ -942,6 +1058,50 @@ const WATERMARK_ROWS: readonly {
   { layout: 'stacked', labelKey: 'settings.watermark.stacked' },
   { layout: 'centered', labelKey: 'settings.watermark.centered' },
   { layout: 'dateOnly', labelKey: 'settings.watermark.dateOnly' },
+];
+
+/**
+ * 水印纵向落点四档（v1.8.11）。
+ *
+ * 顺序固定 auto / paper / photo-top / photo-bottom（契约要求）：
+ * `'auto'` 永远排第一 —— 打开这一栏时，"我现在是不是在跟随版式"一眼可见。
+ */
+const WATERMARK_ZONE_ROWS: readonly {
+  zone: WatermarkZone;
+  labelKey:
+    | 'settings.watermarkZone.auto'
+    | 'settings.watermarkZone.paper'
+    | 'settings.watermarkZone.photoTop'
+    | 'settings.watermarkZone.photoBottom';
+}[] = [
+  { zone: 'auto', labelKey: 'settings.watermarkZone.auto' },
+  { zone: 'paper', labelKey: 'settings.watermarkZone.paper' },
+  { zone: 'photo-top', labelKey: 'settings.watermarkZone.photoTop' },
+  { zone: 'photo-bottom', labelKey: 'settings.watermarkZone.photoBottom' },
+];
+
+/** 水印横向对齐四档（v1.8.11），顺序固定 auto / left / center / right。 */
+const WATERMARK_ALIGN_ROWS: readonly {
+  align: WatermarkAlign;
+  labelKey:
+    | 'settings.watermarkAlign.auto'
+    | 'settings.watermarkAlign.left'
+    | 'settings.watermarkAlign.center'
+    | 'settings.watermarkAlign.right';
+}[] = [
+  { align: 'auto', labelKey: 'settings.watermarkAlign.auto' },
+  { align: 'left', labelKey: 'settings.watermarkAlign.left' },
+  { align: 'center', labelKey: 'settings.watermarkAlign.center' },
+  { align: 'right', labelKey: 'settings.watermarkAlign.right' },
+];
+
+/** 场景自适应两档（v1.8.11）：默认值（开）永远排第一。 */
+const ADAPTIVE_GRADE_ROWS: readonly {
+  adaptiveGrade: boolean;
+  labelKey: 'settings.adaptiveGrade.on' | 'settings.adaptiveGrade.off';
+}[] = [
+  { adaptiveGrade: true, labelKey: 'settings.adaptiveGrade.on' },
+  { adaptiveGrade: false, labelKey: 'settings.adaptiveGrade.off' },
 ];
 
 /**
@@ -1236,7 +1396,7 @@ function createStyles(theme: Theme) {
       borderTopWidth: StyleSheet.hairlineWidth,
       borderTopColor: ink.hairline,
     },
-    /** 收起态头部：固定 54pt（12 行正好一屏，见 AccordionHeader 的注释）。 */
+    /** 收起态头部：固定 54pt（15 行合计略高于一屏，见 AccordionHeader 的注释）。 */
     accHeader: {
       height: 54,
       flexDirection: 'row',

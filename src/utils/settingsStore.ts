@@ -24,7 +24,9 @@ import type {
   LocationMode,
   NoFrameAspect,
   PlaceDetail,
+  WatermarkAlign,
   WatermarkLayout,
+  WatermarkZone,
 } from '../types';
 import { LOCALES } from '../i18n/locales';
 import { DEFAULT_GRAIN_LEVEL_ID, GRAIN_LEVELS } from '../constants/grain';
@@ -47,6 +49,18 @@ export const DEFAULT_SETTINGS: AppSettings = {
   locale: 'auto',
   locationMode: 'off',
   watermarkLayout: 'split',
+  /*
+   * 水印落点（v1.8.11）：纵向 `'auto'` + 横向 `'auto'` = 完全沿用版式自带的落点，
+   * 也就是 v1.8.10 的成片。老用户升级上来视觉不变，只有主动去设置里改
+   * 才会覆盖 —— 不迁移、不猜测，和上面 `watermarkLayout` 一个原则。
+   */
+  watermarkZone: 'auto',
+  watermarkAlign: 'auto',
+  /*
+   * 场景自适应冲印（v1.8.11）：默认开。按画面亮度 / 对比 / 色偏微调冲印参数，
+   * 暗光或偏色的照片比"一刀切的固定曲线"好看；关掉则回到预设的固定冲印。
+   */
+  adaptiveGrade: true,
   placeDetail: 'archive',
   grainLevel: DEFAULT_GRAIN_LEVEL_ID,
   geoLocale: 'auto',
@@ -91,6 +105,21 @@ const WATERMARK_LAYOUTS: readonly WatermarkLayout[] = [
   'centered',
   'dateOnly',
 ];
+/**
+ * 水印纵向落点白名单（v1.8.11）：`'paper'` = 落在相纸留白，
+ * `'photo-top'` / `'photo-bottom'` = 压在画面内部的上下沿。
+ *
+ * 和 `WATERMARK_LAYOUTS` 一样手写字面量而不 import 常量模块：
+ * 这里只判断"认不认这个字符串"，不比几何。
+ */
+const WATERMARK_ZONES: readonly WatermarkZone[] = [
+  'auto',
+  'paper',
+  'photo-top',
+  'photo-bottom',
+];
+/** 水印横向对齐白名单（v1.8.11）：auto 跟版式，其余三档是显式覆盖。 */
+const WATERMARK_ALIGNS: readonly WatermarkAlign[] = ['auto', 'left', 'center', 'right'];
 const PLACE_DETAILS: readonly PlaceDetail[] = ['archive', 'full'];
 const GRAIN_IDS: readonly GrainLevelId[] = GRAIN_LEVELS.map((level) => level.id);
 /** 地名语言四种（v1.8.5 起含 ja），外加一个"跟界面语言走"。 */
@@ -223,6 +252,15 @@ function pick<T extends string>(
     : fallback;
 }
 
+/**
+ * 布尔字段：只认真正的布尔。
+ * 存储里出现 `'true'` / `1` 这类"手改残留"时一律回落默认值，
+ * 不学和 JS 真值转换 —— 设置项的值必须能被 `tsc` 逐字对上。
+ */
+function pickBoolean(raw: unknown, fallback: boolean): boolean {
+  return typeof raw === 'boolean' ? raw : fallback;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -240,6 +278,17 @@ function sanitize(raw: unknown): AppSettings {
       WATERMARK_LAYOUTS,
       DEFAULT_SETTINGS.watermarkLayout,
     ),
+    watermarkZone: pick(
+      raw.watermarkZone,
+      WATERMARK_ZONES,
+      DEFAULT_SETTINGS.watermarkZone,
+    ),
+    watermarkAlign: pick(
+      raw.watermarkAlign,
+      WATERMARK_ALIGNS,
+      DEFAULT_SETTINGS.watermarkAlign,
+    ),
+    adaptiveGrade: pickBoolean(raw.adaptiveGrade, DEFAULT_SETTINGS.adaptiveGrade),
     placeDetail: pick(raw.placeDetail, PLACE_DETAILS, DEFAULT_SETTINGS.placeDetail),
     grainLevel: pick(raw.grainLevel, GRAIN_IDS, DEFAULT_SETTINGS.grainLevel),
     geoLocale: pick(raw.geoLocale, GEO_LOCALES, DEFAULT_SETTINGS.geoLocale),

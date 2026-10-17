@@ -176,6 +176,25 @@ export const ja: Messages = {
   'settings.watermark.centered': '一行に結合・中央揃え',
   'settings.watermark.dateOnly': '日付のみ',
 
+  'settings.watermarkZone': '透かしの縦位置',
+  'settings.watermarkZone.a11y': '透かしの縦位置：{label}',
+  'settings.watermarkZone.auto': 'フレームに従う',
+  'settings.watermarkZone.paper': '台紙の余白',
+  'settings.watermarkZone.photoTop': '写真の上部',
+  'settings.watermarkZone.photoBottom': '写真の下部',
+  'settings.watermarkAlign': '透かしの横位置',
+  'settings.watermarkAlign.a11y': '透かしの横位置：{label}',
+  'settings.watermarkAlign.auto': 'レイアウトに従う',
+  'settings.watermarkAlign.left': '左寄せ',
+  'settings.watermarkAlign.center': '中央',
+  'settings.watermarkAlign.right': '右寄せ',
+  'settings.adaptiveGrade': 'シーン自動調整',
+  'settings.adaptiveGrade.a11y': 'シーン自動調整：{label}',
+  'settings.adaptiveGrade.on': 'オン',
+  'settings.adaptiveGrade.off': 'オフ',
+  'settings.adaptiveGrade.hint':
+    '写真の明るさ・コントラスト・色かぶりから現像パラメータを自動で調整します。オフにするとプリセットの既定値のまま現像します。',
+
   /* ---------------- 位置情報 ---------------- */
   'location.denied':
     '位置情報の権限が拒否されました。システム設定 → プライバシーとセキュリティ → 位置情報サービス で許可してください。',

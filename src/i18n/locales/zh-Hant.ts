@@ -172,6 +172,25 @@ export const zhHant: Messages = {
   'settings.watermark.centered': '合成一行 · 置中',
   'settings.watermark.dateOnly': '只打日期',
 
+  'settings.watermarkZone': '水印縱向位置',
+  'settings.watermarkZone.a11y': '水印縱向位置：{label}',
+  'settings.watermarkZone.auto': '跟隨相框',
+  'settings.watermarkZone.paper': '落在相紙留白',
+  'settings.watermarkZone.photoTop': '畫面頂部',
+  'settings.watermarkZone.photoBottom': '畫面底部',
+  'settings.watermarkAlign': '水印橫向對齊',
+  'settings.watermarkAlign.a11y': '水印橫向對齊：{label}',
+  'settings.watermarkAlign.auto': '跟隨版式',
+  'settings.watermarkAlign.left': '靠左',
+  'settings.watermarkAlign.center': '置中',
+  'settings.watermarkAlign.right': '靠右',
+  'settings.adaptiveGrade': '場景自適應',
+  'settings.adaptiveGrade.a11y': '場景自適應：{label}',
+  'settings.adaptiveGrade.on': '開',
+  'settings.adaptiveGrade.off': '關',
+  'settings.adaptiveGrade.hint':
+    '依畫面亮度、對比與色偏自動微調沖印參數；關掉則一律使用預設的沖印參數。',
+
   /* ---------------- 定位 ---------------- */
   'location.denied': '定位權限被拒絕，請到 系統設定 → 隱私權與安全性 → 定位服務 裡打開。',
   'location.failed': '定位失敗',
