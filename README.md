@@ -5535,8 +5535,31 @@ v1.8.7 真正新增的是 **九支卷全开的 `sCurveIntensity` 0.24~0.42（第
 
 ### 41.6 产物指纹
 
-（发布后回填：本地/远端提交、CI run、artifact、IPA 体积与 sha256、Release id 与下载地址、
-`_verify_ipa_v188.py` 核验结果、export 冒烟、环境。）
+- 本地提交 `e3947c527a7179c2c141d93a25c89bd1afff6bd9`（「v1.8.8：成片糊的根因修复 + 真机发热三刀（用户 m05280）」，
+  6 files changed，300 insertions / 23 deletions；parent `6058abc`）→ 远端 master
+  `4a1ab734511cd1426ca7c5f9480d7f8ac9934b92`（经 `_push_v180_api.py` 建树提交，133 blobs，本地/远端 tree 一致）。
+- CI run `39056677238`（job `117465950490`，`build-ipa` 全绿；queued 02:06:59 → completed 02:19:03）；
+  artifact `12109748964`（`FretroCam-unsigned-ipa`，10,481,035 B zip）。
+- IPA：**10,596,187 B**，sha256 `9dafc5aade4af1a1460f3b5eee854f73df8ccb82484116ebaf43f773b633191f`
+  （Release 回读 digest 与本地一致）。
+- Release `v1.8.8` id `415984793`，asset id `651228464`（`FretroCam-v1.8.8-unsigned.ipa`）；
+  下载 <https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.8.8/FretroCam-v1.8.8-unsigned.ipa>。
+- 核验：
+  - `python _verify_ipa_v188.py --local ..\_export_v188_lead\_expo\static\js\ios\index-96674eca2a23f03819953db9d70675b7.js`
+    → `RESULT(local): OK`；
+  - `python _verify_ipa_v188.py 12109748964` → `RESULT: OK`（原始输出 `_gate_v188_ipa_verify.txt`）：
+    包内 115 entries、Hermes 主包 2,067,661 B；PRESENT 236 条 needle 全命中（ASCII + UTF-16 两种计数），
+    ABSENT 122 条全 x0；v1.8.8 新增串 `photoBoxStyle` / `AppState` 命中；`makeRandom` canary 不在 ⇒ 内部名段
+    （`cameraActive` / `appActive` / `lastPreviewPlaceAtRef` / `PREVIEW_LOCATION_REFRESH_MS` 等）按设计跳过，
+    不判失败；颗粒仍 v1.8.2 指纹（sha256 `2d30d077…` / 512×512 / std 0.2616 / `<8px`=65.7%）；
+    暗角仍 v1.8.7 指纹（sha256 `e02d6c6b…` / 117,094 B / 中心 alpha 0 / 四角 255）；Info.plist 版本 `1.8.8`、
+    bundle id 在、旧版本号 `1.8.7` 不在；10 张相框与 `no-frame.png` 齐全。
+- export 冒烟：`npx expo export --platform ios --no-bytecode` EXIT 0 →
+  `index-96674eca2a23f03819953db9d70675b7.js` 1,359,126 B。
+- 本地 IPA 副本：workspace 根 `FretroCam-v1.8.8-unsigned.ipa`（10,596,187 B，sha256 同 Release）。
+- 本节为 docs-only 回填，`.github/workflows/build-ios-ipa.yml` 的 `paths-ignore: '**.md'` 会跳过 CI
+  （与 v1.8.7 §40.8 同口径）。
+- 环境：node v24.18.0；日期 2026-10-18。
 
 ### 41.7 文件改动
 
