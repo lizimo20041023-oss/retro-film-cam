@@ -51,7 +51,7 @@ import type { CameraType, CameraViewProps } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import type { MessageKey } from '../i18n';
+import type { LocaleId, MessageKey } from '../i18n';
 import { useI18n } from '../i18n';
 import { useFilmFonts } from '../hooks/useFilmFonts';
 import { useFilmStage } from '../hooks/useFilmStage';
@@ -83,7 +83,7 @@ import { computeFrameLayout } from '../utils/geometry';
 import { importAndDevelop } from '../utils/importPhoto';
 import { processAndSaveFilmPhoto } from '../utils/processFilmPhoto';
 import { AlbumThumb } from './AlbumThumb';
-import { DevelopOverlay, computeDevelopStageBox } from './DevelopOverlay';
+import { DevelopBadge, computeDevelopStageBox } from './DevelopOverlay';
 import { DialButton } from './DialButton';
 import { planWatermark } from './FilmCompositor';
 import { FilmStageComposer } from './FilmStageComposer';
@@ -105,7 +105,22 @@ import type { FocusTarget } from './FocusReticle';
 import type { FlashMode, TimerSeconds } from './ToolRow';
 import type { ThemeInk } from '../constants/theme';
 import type { ZoomLensRole, ZoomStop } from '../constants/lenses';
-import type { CapturedPhoto, DevelopStatus, ResolvedPlace, Size } from '../types';
+import type {
+  CapturedPhoto,
+  DevelopStage,
+  DevelopStatus,
+  FilmPreset,
+  FrameSpec,
+  GrainLevelId,
+  LocationMode,
+  NoFrameAspect,
+  PlaceDetail,
+  ResolvedPlace,
+  Size,
+  WatermarkAlign,
+  WatermarkLayout,
+  WatermarkZone,
+} from '../types';
 
 /** 画幅参考线四周留白：贴着屏幕边看不出画幅比，留一点才像取景框 */
 const PREVIEW_PADDING = 10;
@@ -187,6 +202,90 @@ const FOCUS_PULSE_MS = 50;
 
 /** 重曝第二张压在第一张上的强度：太实会把第一张吃掉，太淡等于没叠 */
 const DOUBLE_OVERLAY_OPACITY = 0.5;
+
+/**
+ * 冲印完成 / 失败的徽标停留时长（v1.9.0 · 用户手术一）。
+ *
+ * 以前这两个状态靠用户点全屏显影层才收掉，现在那层没了：done 给 3 秒够看清
+ * "已存入相册"，error 给 5 秒够读完失败原因；再长就开始挡取景器上沿了。
+ */
+const DEVELOP_DONE_VISIBLE_MS = 3000;
+const DEVELOP_ERROR_VISIBLE_MS = 5000;
+
+/**
+ * iOS 把"被完全遮住的视图"截成空图时抛回来的原生文案（`react-native-view-shot`
+ * 的 `RNViewShot.mm:162/167`）：
+ *   "The view cannot be captured. drawViewHierarchyInRect was not successful."
+ *   "Failed to capture view snapshot. UIGraphicsImageRenderer returned nil!"
+ * `processFilmPhoto` 对空 uri 本身不抛错（它只把 `host.capture()` 的结果原样返回），
+ * 所以兜底判据是两条：抛错文案命中这份正则，**或者**成片 uri 是空串。
+ */
+const EMPTY_CAPTURE_PATTERN = /capture|snapshot|viewshot|截图|画面/i;
+
+/**
+ * 这次失败是不是"合成视图被挡住 ⇒ 截到空图"（v1.9.0：命中后把舞台抬起来重试一次）。
+ * 空串成片由调用方在成功分支里判（`first.photo.uri === ''` 同样走抬升重试），
+ * 所以这里只认抛错文案。
+ */
+function isEmptyCaptureError(error: unknown): boolean {
+  if (error instanceof Error) {
+    return EMPTY_CAPTURE_PATTERN.test(error.message);
+  }
+  return typeof error === 'string' && EMPTY_CAPTURE_PATTERN.test(error);
+}
+
+/** 等两帧：把舞台抬到遮挡层之上后，必须等 RN 真把它画上屏才截图。 */
+function afterTwoFrames(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        resolve();
+      });
+    });
+  });
+}
+
+/**
+ * 一张待冲印工单（v1.9.0 · 用户手术一 · 契约 §6）。
+ *
+ * 工单在**快门按下的那一刻**冻结：之后用户改预设 / 画质 / 水印 / 定位，都不影响
+ * 已经排队的这张。`place` 是快门那一刻就发起、轮到冲印时才 await 的定位 Promise：
+ * 按快门那一路不能等它（最多 2.5s，契约 §5 要求快门段保持短）。
+ */
+interface DevelopJobBase {
+  frame: FrameSpec;
+  noFrameAspect: NoFrameAspect;
+  preset: FilmPreset;
+  locale: LocaleId;
+  watermarkLayout: WatermarkLayout;
+  watermarkZone: WatermarkZone;
+  watermarkAlign: WatermarkAlign;
+  adaptiveGrade: boolean;
+  placeDetail: PlaceDetail;
+  grainLevel: GrainLevelId;
+  locationMode: LocationMode;
+}
+
+/** 按快门产生的工单：双曝的第二次按下会把两张一起送进来。 */
+interface DevelopShotJob extends DevelopJobBase {
+  kind: 'shot';
+  photo: CapturedPhoto;
+  place: Promise<ResolvedPlace | null>;
+  digitalFactor: number;
+  /** 快门时刻定下来的曝光号（连拍时队列里每张各占一个）。 */
+  exposureIndex: number;
+  /** 非 `null` = 这是双曝的合成张（第二张），旧的那张压在上面。 */
+  overlayUri: string | null;
+  overlayOpacity: number | undefined;
+}
+
+/** 相册导入产生的工单：一次可能出好几张，走 `importAndDevelop` 那条管线。 */
+interface DevelopImportJob extends DevelopJobBase {
+  kind: 'import';
+}
+
+type DevelopJob = DevelopShotJob | DevelopImportJob;
+
 
 /**
  * 开屏默认停在 1×那一档（26mm），也是捏合变焦的落脚档。
@@ -627,10 +726,28 @@ export function CameraScreen() {
   const [filmDrawerVisible, setFilmDrawerVisible] = useState(false);
   /** 相册缩略图自己那份列表不会跟着别处变，用这个键催它重读 */
   const [albumKey, setAlbumKey] = useState(0);
+  /**
+   * 冲印队列长度（v1.9.0 · 用户手术一）。
+   *
+   * 它只喂给徽标的"队列 N"文案，**不参与任何交互门控** —— 冲印期间取景器、
+   * 快门、物理快门、画质胶囊都照常可用（这是这一刀的核心体验）。
+   */
+  const [queueDepth, setQueueDepth] = useState(0);
+  /**
+   * 兜底：iOS 对"被完全遮住"的合成视图截到空图时，把舞台临时抬到遮挡层之上。
+   * 只活一次截图的时间，随后立刻落回 false（见 `pumpQueue` 里的重试分支）。
+   */
+  const [stageElevated, setStageElevated] = useState(false);
 
   const cameraRef = useRef<ComponentRef<typeof CameraView>>(null);
-  /** 同步锁：`setState` 是异步的，连点两下快门会漏进来两次 */
+  /** 同步锁：`setState` 是异步的，连点两下快门会漏进来两次 —— v1.9.0 起它只锁 `takePictureAsync` 那一段 */
   const shotLockRef = useRef(false);
+  /** 冲印队列本体（v1.9.0）：push / shift 只在这里发生，`pumpQueue` 串行消费 */
+  const jobQueueRef = useRef<DevelopJob[]>([]);
+  /** 泵是否在跑：可重入守卫（第二次 `kickQueue` 直接返回，`while` 自己会把新工单捡走） */
+  const pumpingRef = useRef(false);
+  /** 舞台是否已经被抬起来过（同一次冲印只兜底重试一次，避免无限重试） */
+  const stageElevatedRef = useRef(false);
   const askedCameraRef = useRef(false);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   /** 上一次真正去取定位的时刻（v1.8.8：地名不再跟着 30 秒心跳走，见 `PREVIEW_LOCATION_REFRESH_MS`） */
@@ -706,7 +823,15 @@ export function CameraScreen() {
   const frameName = frame.nameKey !== undefined ? t(frame.nameKey) : frame.name;
   const developing = status.kind === 'developing';
   const cameraGranted = cameraPermission?.granted === true;
-  const interactive = !developing && cameraGranted;
+  /**
+   * v1.9.0 · 用户手术一：`interactive` 只跟相机权限走，**不再**跟冲印状态走。
+   *
+   * 冲印搬进后台串行队列后，取景器里的画幅切换、轻触对焦、刻度尺都可以继续操作 ——
+   * 这是"按完快门马上能接着拍"的一半（另一半是快门本身不再等冲印）。
+   * `developing` 现在只喂底部 `ToolRow` 的 `busy`（会改变拍摄参数的入口在洗片期间
+   * 暂时灰掉，避免连拍把参数改到一半的歧义），不再挡取景器。
+   */
+  const interactive = cameraGranted;
   const lensesKnown = lenses.length > 0;
   const stop: ZoomStop = ZOOM_STOPS[stopIndex] ?? ZOOM_STOPS[DEFAULT_STOP_INDEX];
   // 焦段读数 = 假定原生焦距 × 布局裁切因子 × 原生变焦因子（v1.8.4）：
@@ -846,6 +971,204 @@ export function CameraScreen() {
   );
 
   /**
+   * 串行冲印泵（v1.9.0 · 用户手术一 · 契约 §6.4）。
+   *
+   * 队列里同一时刻只有队首那一张在洗：`processFilmPhoto` 的合成舞台是**单例**
+   * （`useFilmStage.host` 的 `mount` 互斥），并行洗两张会互相把对方的舞台拆掉。
+   * `pumpingRef` 只防重入；真正的排队语义靠 `while (queue.length)`：洗到一半用户
+   * 又按了快门（新工单 push 进同一个数组），这一轮循环会自己把它捡走。
+   */
+  const pumpQueue = useCallback(async () => {
+    if (pumpingRef.current) {
+      return;
+    }
+    pumpingRef.current = true;
+    const queue = jobQueueRef.current;
+    setQueueDepth(queue.length);
+
+    /** 洗一张按快门来的照片（双曝时两张已经由 `photo` + `overlayUri` 带齐）。 */
+    const developShot = async (job: DevelopShotJob) => {
+      // 定位 Promise 是快门那一刻发起的，到这里才 join：最多已经等了半张相片的时间
+      const place = await job.place;
+      const onStage = (stage: DevelopStage) => {
+        setStatus((current) =>
+          current.kind === 'developing' ? { kind: 'developing', stage } : current,
+        );
+      };
+      return processAndSaveFilmPhoto({
+        photo: job.photo,
+        frame: job.frame,
+        noFrameAspect: job.noFrameAspect,
+        preset: job.preset,
+        digitalFactor: job.digitalFactor,
+        stage: stageBox,
+        host: filmStage.host,
+        place,
+        locale: job.locale,
+        watermarkLayout: job.watermarkLayout,
+        watermarkZone: job.watermarkZone,
+        watermarkAlign: job.watermarkAlign,
+        adaptiveGrade: job.adaptiveGrade,
+        placeDetail: job.placeDetail,
+        exposureIndex: job.exposureIndex,
+        overlayUri: job.overlayUri ?? undefined,
+        overlayOpacity: job.overlayUri === null ? undefined : job.overlayOpacity,
+        onStage,
+      });
+    };
+
+    /**
+     * 空截图兜底（契约 §6.4）：把舞台抬到遮挡层之上、等两帧再洗**同一次**工单。
+     * 只兜底一次 —— `stageElevatedRef` 一旦置真就不再重试，第二次失败就报错。
+     */
+    const developShotWithRetry = async (job: DevelopShotJob) => {
+      try {
+        const first = await developShot(job);
+        if (first.photo.uri !== '') {
+          return first;
+        }
+      } catch (error) {
+        if (!isEmptyCaptureError(error)) {
+          throw error;
+        }
+      }
+      if (stageElevatedRef.current) {
+        throw new Error(t('develop.error.title'));
+      }
+      stageElevatedRef.current = true;
+      setStageElevated(true);
+      try {
+        await afterTwoFrames();
+        const retry = await developShot(job);
+        if (retry.photo.uri === '') {
+          throw new Error(t('develop.error.title'));
+        }
+        return retry;
+      } finally {
+        stageElevatedRef.current = false;
+        setStageElevated(false);
+      }
+    };
+
+    /**
+     * 洗一次相册导入（可能好几张）。失败文案沿用 v1.8.5 的口径，只是从"等它洗完"
+     * 变成"排到它才打开相册选择器"；`cancelled` 静默回 idle（用户自己取消的）。
+     */
+    const developImport = async (job: DevelopImportJob) => {
+      const result = await importAndDevelop({
+        host: filmStage.host,
+        frame: job.frame,
+        noFrameAspect: job.noFrameAspect,
+        preset: job.preset,
+        stage: stageBox,
+        locale: job.locale,
+        watermarkLayout: job.watermarkLayout,
+        watermarkZone: job.watermarkZone,
+        watermarkAlign: job.watermarkAlign,
+        adaptiveGrade: job.adaptiveGrade,
+        placeDetail: job.placeDetail,
+        grainLevel: job.grainLevel,
+        locationMode: job.locationMode,
+      });
+      if (!result.ok) {
+        setStatus({ kind: 'idle' });
+        if (result.reason !== 'cancelled') {
+          setNotice(
+            result.reason === 'permission-denied'
+              ? t('gallery.import.denied')
+              : t('gallery.import.failed', { message: result.message ?? t('common.unknownError') }),
+          );
+        }
+        return;
+      }
+      setAlbumKey((current) => current + 1);
+      setStatus({ kind: 'idle' });
+      if (result.missingExifDate) {
+        setNotice(t('gallery.import.noExif'));
+      }
+    };
+
+    try {
+      while (queue.length > 0) {
+        const job = queue[0];
+        setStatus({ kind: 'developing', stage: 'normalizing' });
+        try {
+          if (job.kind === 'import') {
+            await developImport(job);
+          } else {
+            const result = await developShotWithRetry(job);
+            setStatus({ kind: 'done', uri: result.photo.uri, saved: result.save.ok });
+            setExposureCount((current) => current + 1);
+            if (job.overlayUri !== null) {
+              // 双曝的第二张洗完了：这一对结束，清掉暂存的第一张与开关
+              setPendingExposureUri(null);
+              setDoubleExposure(false);
+            } else {
+              /*
+               * 单张不入队清重曝状态：v1.8.x 每张洗完都会 `setDoubleExposure(false)`，
+               * 但在队列化之后那会误伤"用户刚打开重曝、第一张已暂存"的那一对 ——
+               * 队列里的旧工单洗完时把新的 pending 抹掉，第二次按快门就丢底片。
+               */
+            }
+            setAlbumKey((current) => current + 1);
+            void addShot({
+              sourceUri: result.photo.uri,
+              width: result.photo.width,
+              height: result.photo.height,
+              frameId: job.frame.id,
+              presetId: job.preset.id,
+              maxLongEdge: resolveCaptureLongEdge(settings.captureQuality),
+            }).catch((error) => {
+              console.warn('[gallery] addShot failed', error);
+            });
+            if (!result.save.ok) {
+              setSaveIssue(result.save.message);
+            }
+            if (result.photo.warnings.length > 0) {
+              console.warn('[develop] warnings', result.photo.warnings);
+            }
+          }
+        } catch (error) {
+          setStatus({ kind: 'error', message: describeError(error) });
+        } finally {
+          queue.shift();
+          setQueueDepth(queue.length);
+        }
+      }
+    } finally {
+      pumpingRef.current = false;
+      // 正常路径在 finally 里已经刷过；这里兜住"异常路径 queueDepth 没归零"
+      setQueueDepth(0);
+    }
+  }, [filmStage.host, stageBox, settings.captureQuality, t]);
+
+  /**
+   * 唤醒冲印泵（v1.9.0）：入队后调用。泵已在跑就直接返回 —— 它自己的 `while`
+   * 会把新工单捡走，不需要也不允许并发。
+   */
+  const kickQueue = useCallback(() => {
+    void pumpQueue();
+  }, [pumpQueue]);
+
+  /**
+   * done / error 徽标的自动退场（v1.9.0）。`DevelopBadge` 只负责画，退场需要
+   * `setStatus`，所以放在这里。函数式更新 + 同一状态对象的引用守卫：3 秒内用户
+   * 又按了快门（状态已被泵改成新的 developing）时，超时回调不能把新状态清掉。
+   */
+  useEffect(() => {
+    if (status.kind !== 'done' && status.kind !== 'error') {
+      return;
+    }
+    const timer = setTimeout(
+      () => {
+        setStatus((current) => (current === status ? { kind: 'idle' } : current));
+      },
+      status.kind === 'done' ? DEVELOP_DONE_VISIBLE_MS : DEVELOP_ERROR_VISIBLE_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [status]);
+
+  /**
    * 三个面板打开时取景器整体隐藏（但**不卸载**）：卸载 `CameraView` 会让 iOS
    * 重建一次采集会话，关掉面板回来时要黑一下，那是比"看不见"更糟的体验。
    */
@@ -883,8 +1206,9 @@ export function CameraScreen() {
    * —— 用户在真机上看到的就是「顯影失敗」+ 冻结的取景画面。
    * 闪光灯拍摄要预闪 + 测光、耗时明显更长，几乎 100% 输给这次停机；不带闪光灯时只是
    * 偶尔输，所以才表现成"只有开闪光灯才拍不了"。
-   * 现在冲印期不再停会话：成片阶段取景器已被冲印层盖住画面，多跑几秒采集的耗电远小于
-   * "把一次拍摄打断"的代价；真正的大头（面板盖住 / 退后台）继续停。
+   * 现在冲印期也不再停会话：后台洗片时取景器照常可用（v1.9.0 · 用户手术一要求
+   * "拍完立刻能继续取景/连拍"），多跑几秒采集的耗电远小于"把一次拍摄打断"的代价；
+   * 真正的大头（面板盖住 / 退后台）继续停。
    *
    * 注意 `CameraView` **不卸载**（卸载会重建采集会话、回来黑一下）：只是 `active` 开关。
    */
@@ -1542,21 +1866,18 @@ export function CameraScreen() {
     setFilmDrawerVisible(false);
   }, []);
 
-  /** 冲印层自己的收尾（只在 done/error 可点），顺手把两条轻提示也清掉 */
-  const handleDismiss = useCallback(() => {
-    setStatus({ kind: 'idle' });
-    setSaveIssue(null);
-    setNotice(null);
-  }, []);
-
   const handleDismissBanner = useCallback(() => {
-    // 只清提示，不动 `status`：这条横幅可能是在冲印层还开着的时候弹出来的
+    // 只清提示，不动 `status`：这条横幅可能是在冲印徽标还亮着的时候弹出来的
     setSaveIssue(null);
     setNotice(null);
   }, []);
 
   /**
-   * 拍摄主流程。
+   * 拍摄主流程（v1.9.0 · 用户手术一：快门不再等冲印）。
+   *
+   * 这条路径现在只做三件事：`takePictureAsync` 拿原图 → 把"这一张怎么冲"的快照
+   * 塞进 `jobQueueRef` → 立刻释放快门锁。裁切 / 测光 / 离屏合成 / 写相册全部由
+   * `pumpQueue` 在后台串行完成，所以按完快门 ≈200ms 就能接着取景、连拍。
    *
    * 只剩一条"要按两次才出片"的路径：重曝（§一.7）—— 开着重曝时第一次按快门
    * 只把照片存进 `pendingExposureUri`，**不冲印**；第二次才把两张一起交给合成器。
@@ -1576,21 +1897,38 @@ export function CameraScreen() {
     if (shotLockRef.current) {
       return;
     }
-    if (!camera || !cameraReady || developing) {
+    if (!camera || !cameraReady) {
       return;
     }
+    // 只锁 `takePictureAsync` 那一段：拿到原图就入队并释放（v1.9.0）
     shotLockRef.current = true;
 
     const overlayUri = doubleExposure ? pendingExposureUri : null;
+    /*
+     * 「这一张怎么冲」在按快门那一刻冻结。之后用户改预设 / 画质 / 水印 / 定位，
+     * 只影响下一张 —— 已经排队的这张按当时的意图洗出来（契约 §6.1 的 job 快照）。
+     */
+    const frozen = {
+      frame,
+      noFrameAspect: settings.noFrameAspect,
+      preset: gradedPreset,
+      locale: localeId,
+      watermarkLayout: settings.watermarkLayout,
+      watermarkZone: settings.watermarkZone,
+      watermarkAlign: settings.watermarkAlign,
+      adaptiveGrade: settings.adaptiveGrade,
+      placeDetail: settings.placeDetail,
+      grainLevel: settings.grainLevel,
+      locationMode: settings.locationMode,
+    };
 
     try {
       setSaveIssue(null);
       setNotice(null);
-      setStatus({ kind: 'developing', stage: 'normalizing' });
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-      // 定位与拍摄并行：等 GPS 定下来再按快门，手机会多举一秒
-      const locationPromise = locationStamp.resolveForShot();
+      // 定位与拍摄并行，但**不在这里 await 定位**（最多 2.5s，契约 §5）：Promise 冻进工单
+      const place = locationStamp.resolveForShot();
       // 走 expo-camera 的**高画质静态拍摄**通道（v1.7.0 · 模块一第 2 条）：
       //   · `quality: 1`   —— JPEG 压缩质量拉满，不再从实时预览流上截帧；
       //   · `skipProcessing: false` —— **显式**声明"要完整后处理"。它本来就是 expo-camera
@@ -1607,7 +1945,6 @@ export function CameraScreen() {
         throw new Error(t('error.noPhoto'));
       }
       const captured: CapturedPhoto = { uri: shot.uri, width: shot.width, height: shot.height };
-      const place = await locationPromise;
 
       if (doubleExposure && overlayUri === null) {
         // 重曝第一张：先留着不冲，等第二张叠上去一起冲
@@ -1617,96 +1954,54 @@ export function CameraScreen() {
         return;
       }
 
-      const result = await processAndSaveFilmPhoto({
+      /*
+       * 曝光号在**快门时刻**定下来（v1.9.0）：队列里已经排着的 shot 各占一号，
+       * 否则连拍三张会在冲印完成时才依次 +1，三张全印成同一个 EXP.01。
+       */
+      const queuedExposures = jobQueueRef.current.reduce(
+        (count, queued) => (queued.kind === 'shot' ? count + 1 : count),
+        0,
+      );
+      const job: DevelopShotJob = {
+        kind: 'shot',
         photo: captured,
-        frame,
-        /*
-         * v1.8.1：无相框的画幅比只在这里交给冲印链路，**传原始 `frame`**。
-         * `processFilmPhoto` 内部会 `resolveFrame(frame, noFrameAspect)` 解析出真正的
-         * 画幅（纸框原样返回），这样"取景器预览用的解析"和"成片用的解析"是同一个函数的
-         * 两次同参调用；这里若先解析一遍再传进去，就得把默认值也复制一份，迟早分叉。
-         */
-        noFrameAspect: settings.noFrameAspect,
-        /*
-         * 必须是 `gradedPreset`（= `effectivePreset` + 用户拖过的色温），不是
-         * `effectivePreset`：取景器的实时滤镜与底部胶囊读数都读 `resolved`
-         * （`resolvePreset(gradedPreset)`），相册导入那条路也已经用 `gradedPreset`，
-         * 只有这里少一层色温覆盖 ⇒ 拖完色温"取景器暖了、成片没暖"。
-         */
-        preset: gradedPreset,
-        /*
-         * 布局裁切因子（v1.8.4）：与取景器 `planCameraLayer` 收到的是**同一个 state**，
-         * 冲印链路用它算 `planPhotoCrop` —— 取景里看到的窗口区域与成片逐点对应。
-         */
-        digitalFactor,
-        stage: stageBox,
-        host: filmStage.host,
         place,
-        locale: localeId,
-        watermarkLayout: settings.watermarkLayout,
-        // v1.8.11：水印位置两个轴 + 场景自适应开关，全部原样交给冲印管线。
-        watermarkZone: settings.watermarkZone,
-        watermarkAlign: settings.watermarkAlign,
-        adaptiveGrade: settings.adaptiveGrade,
-        placeDetail: settings.placeDetail,
-        exposureIndex: exposureCount + 1,
-        overlayUri: overlayUri ?? undefined,
+        digitalFactor,
+        exposureIndex: exposureCount + queuedExposures + 1,
+        overlayUri,
         overlayOpacity: overlayUri === null ? undefined : DOUBLE_OVERLAY_OPACITY,
-        onStage: (nextStage) => setStatus({ kind: 'developing', stage: nextStage }),
-      });
-
-      setStatus({ kind: 'done', uri: result.photo.uri, saved: result.save.ok });
-      setExposureCount((current) => current + 1);
-      // 重曝是一次性的：叠完就散伙，否则用户会以为后面每张都会叠
-      setPendingExposureUri(null);
-      setDoubleExposure(false);
-      setAlbumKey((current) => current + 1);
-      // 存 App 相册故意不 await：失败也不该让已经冲好的照片看起来像失败
-      void addShot({
-        sourceUri: result.photo.uri,
-        width: result.photo.width,
-        height: result.photo.height,
-        frameId: frame.id,
-        presetId: effectivePreset.id,
-        /*
-         * 相册副本跟着**画质档**走（v1.7.0 · 模块一）。不传的话它恒被压到 2048px，
-         * 用户选了极致档、回 App 相册里看到的还是一张 2048 的小图。
-         * `planResize` 只缩不放，所以小底片不会因此被拉伸。
-         */
-        maxLongEdge: resolveCaptureLongEdge(settings.captureQuality),
-      }).catch((error: unknown) => {
-        console.warn('[retro-film-cam] 存进 App 相册失败：', describeError(error));
-      });
-      if (!result.save.ok) {
-        setSaveIssue(result.save.message);
-      }
-      if (result.photo.warnings.length > 0) {
-        console.warn('[retro-film-cam] 非致命提示：', result.photo.warnings.join(' / '));
-      }
+        ...frozen,
+      };
+      jobQueueRef.current.push(job);
+      setQueueDepth(jobQueueRef.current.length);
+      // 入队即归还快门：泵在后台串行洗，取景器与快门立刻可用
+      kickQueue();
     } catch (error) {
+      // 只有 `takePictureAsync` 这一段的失败会走到这里（冲印失败由泵自己报）
       setStatus({ kind: 'error', message: describeError(error) });
     } finally {
       shotLockRef.current = false;
     }
   }, [
     cameraReady,
-    developing,
     doubleExposure,
     pendingExposureUri,
     digitalFactor,
-    filmStage.host,
     frame,
     // 依赖写 `gradedPreset` 而不是 `effectivePreset`：色温覆盖一变，这个回调必须拿到
     // 新的预设，否则"拧完色温立刻按快门"会冲印出上一版色温（回调被 useCallback 冻住）
     gradedPreset,
-    stageBox,
+    kickQueue,
     locationStamp.resolveForShot,
     localeId,
+    settings.noFrameAspect,
     settings.watermarkLayout,
     settings.watermarkZone,
     settings.watermarkAlign,
     settings.adaptiveGrade,
     settings.placeDetail,
+    settings.grainLevel,
+    settings.locationMode,
     exposureCount,
     t,
   ]);
@@ -1761,8 +2056,9 @@ export function CameraScreen() {
   }, [handleCancelCountdown, runShutter]);
 
   usePhysicalShutter({
-    // 倒计时中 `developing` 是 false，物理键照样能按 —— 按下去就是取消
-    enabled: cameraGranted && cameraReady && !developing,
+    // v1.9.0 · 用户手术一：冲印不再占用物理快门 —— 后台洗片时照样能按、能连拍；
+    // 倒计时中 `countdownRef` 自己处理"按下去就是取消"，与冲印状态无关
+    enabled: cameraGranted && cameraReady,
     onPress: () => {
       // 唯一的 Heavy 触感。两行都故意不 await：快门响应不能被触感或异步流程拖慢
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
@@ -1771,23 +2067,24 @@ export function CameraScreen() {
   });
 
   /**
-   * 从系统相册导入并重新冲印（§一.4 的 `＋导入`）。
+   * 从系统相册导入并重新冲印（§一.4 的 `＋导入`）—— v1.9.0 起也走冲印队列。
    *
-   * 注意 `setStatus(developing)` 必须发生在调用之前：`FilmCompositor` 得在屏幕上
-   * 真实布局过，iOS 的 `renderInContext` 抓不到没上屏的内容。
+   * 为什么也入队而不是直接 await：`importAndDevelop` 会打开系统相册选择器并逐张冲印，
+   * 在 v1.8.x 里它把 `developing` 一直挂着、顺带锁死取景器。入队之后选择器排到它才开、
+   * 照片在后台洗，取景器照常可用 ——「导入不锁取景器」是契约 §6.6 的明确要求。
+   *
+   * `setStatus(developing)` 由泵在轮到它时设置：`FilmCompositor` 得在屏幕上真实布局过，
+   * iOS 的 `renderInContext` 抓不到没上屏的内容。
    */
-  const handleImport = useCallback(async () => {
-    if (developing) {
-      return;
-    }
+  const handleImport = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setNotice(null);
-    setStatus({ kind: 'developing', stage: 'normalizing' });
-    const result = await importAndDevelop({
-      host: filmStage.host,
+    const job: DevelopImportJob = {
+      kind: 'import',
       frame,
+      noFrameAspect: settings.noFrameAspect,
+      // 同快门那处：导入也要用"含临时色温覆盖"的那一版预设
       preset: gradedPreset,
-      stage: stageBox,
       locale: localeId,
       watermarkLayout: settings.watermarkLayout,
       // v1.8.11：导入的照片也吃同样的位置设置与场景自适应（按每张照片各自采样）。
@@ -1797,45 +2094,27 @@ export function CameraScreen() {
       placeDetail: settings.placeDetail,
       grainLevel: settings.grainLevel,
       locationMode: settings.locationMode,
-    });
-    if (!result.ok) {
-      setStatus({ kind: 'idle' });
-      if (result.reason === 'cancelled') {
-        // 用户自己按掉的选择器不是错误，不该弹提示
-        return;
-      }
-      setNotice(
-        result.reason === 'permission-denied'
-          ? t('gallery.import.denied')
-          : t('gallery.import.failed', { message: result.message ?? t('common.unknownError') }),
-      );
-      return;
-    }
-    // 导入的照片不算"曝光"，底片计数不动；但相册里确实多了东西，缩略图要重读
-    setAlbumKey((current) => current + 1);
-    setStatus({ kind: 'idle' });
-    if (result.missingExifDate) {
-      setNotice(t('gallery.import.noExif'));
-    }
+    };
+    jobQueueRef.current.push(job);
+    setQueueDepth(jobQueueRef.current.length);
+    kickQueue();
   }, [
-    developing,
-    // 同快门那处：导入也要用"含临时色温覆盖"的那一版预设
     gradedPreset,
-    filmStage.host,
     frame,
+    kickQueue,
     localeId,
+    settings.noFrameAspect,
     settings.grainLevel,
     settings.placeDetail,
     settings.watermarkLayout,
     settings.watermarkZone,
     settings.watermarkAlign,
     settings.adaptiveGrade,
-    stageBox,
-    t,
+    settings.locationMode,
   ]);
 
   const handleImportPress = useCallback(() => {
-    void handleImport();
+    handleImport();
   }, [handleImport]);
 
   const filmCounterText = `[${String(exposureCount).padStart(2, '0')}${filmCounterLetter(facing)}]`;
@@ -1860,8 +2139,9 @@ export function CameraScreen() {
    * 这个屏幕有三个每秒 20~60 次改写顶层 state 的手势：捏合变焦（`zoom`）、对焦框上下
    * 拖动（`exposure`）、刻度尺 / 色温搓动（`scrubFocal` / `temperatureOverride`）。
    * 它们每次 setState 都会让本组件整个函数体重跑 —— 本身很便宜，**贵的是重建元素树**：
-   * 未 memo 的 `FramePreviewLayer`、`ViewfinderWindow`、`DevelopOverlay` 都会跟着重新
-   * reconcile 一遍（相框层里还有 PNG + 幕布 + 相纸 + 水印一整套）。
+   * 未 memo 的 `FramePreviewLayer`、`ViewfinderWindow` 都会跟着重新 reconcile 一遍
+   * （相框层里还有 PNG + 幕布 + 相纸 + 水印一整套）；v1.9.0 起屏幕级的冲印状态只剩一枚
+   * 安全区小徽标（`DevelopBadge`，自己带 memo），重画代价可以忽略。
    *
    * 下面六个 `useMemo` 把元素树切成稳定块：只要某一块的依赖没变，React 拿到的就是
    * **同一个元素引用**，整块子树直接跳过 reconcile。隔离粒度按"谁真的会变"来切：
@@ -2040,7 +2320,8 @@ export function CameraScreen() {
           <View style={styles.coreSide}>
             <AlbumThumb refreshKey={albumKey} size={CORE_THUMB_SIZE} onPress={handleOpenGalleryScreen} />
           </View>
-          <ShutterButton onPress={handleShutterPress} busy={developing} disabled={!cameraReady || !cameraGranted} />
+          {/* v1.9.0：冲印在后台串行，快门不再等它 —— 只被"相机没就绪/没权限"挡 */}
+          <ShutterButton onPress={handleShutterPress} disabled={!cameraReady || !cameraGranted} />
           <View style={[styles.coreSide, styles.coreSideRight]}>
             <DialButton
               glyph={(color) => <FilmGlyph size={FILM_GLYPH} color={color} />}
@@ -2295,7 +2576,6 @@ export function CameraScreen() {
           */}
           <Pressable
             onPress={handleCycleCaptureQuality}
-            disabled={developing}
             accessibilityRole="button"
             accessibilityLabel={t('settings.quality.title')}
             accessibilityValue={{ text: captureLabel }}
@@ -2303,7 +2583,6 @@ export function CameraScreen() {
             style={({ pressed }) => [
               styles.qualityChip,
               pressed ? styles.qualityChipPressed : null,
-              developing ? styles.qualityChipDisabled : null,
             ]}
           >
             <Text style={[styles.qualityLabel, { color: ink.amber }]} allowFontScaling={false}>
@@ -2327,6 +2606,72 @@ export function CameraScreen() {
         onLayout={handlePreviewLayout}
         {...pinchHandlers}
       >
+        {/*
+          合成舞台（v1.9.0 · 用户手术一）：**藏在取景器后面**的临时离屏画布。
+
+          为什么放在 `styles.preview` 里面、`cameraClipNode` 之前：
+            · 必须在屏幕上真实布局（iOS 的 `renderInContext` 抓不到没上屏 / opacity 0
+              的视图，会得到空图或黑图）—— 所以不能用 `position: 'absolute'` 之外
+              的"隐身"手法，只能靠后面的原生相机层把它盖住；
+            · 又必须**视觉上完全看不见** —— `CameraView` 与实时滤镜层排在它后面，
+              尺寸正好是 `stageBox`（成片舞台），不会露出纸边。
+          平时 `filmStage.stage === null`，这里连一个原生节点都不挂；泵轮到某张照片时
+          `useFilmStage.mount()` 填上 stage，这张洗进相册后 `unmount()` 立刻清空。
+        */}
+        {filmStage.stage !== null ? (
+          <View
+            pointerEvents="none"
+            style={[
+              styles.stageHost,
+              {
+                width: stageBox.width,
+                height: stageBox.height,
+                left: (window.width - stageBox.width) / 2,
+                top: (window.height - stageBox.height) / 2,
+              },
+              /*
+               * 兜底（v1.9.0）：iOS 偶发把"被原生相机层完全盖住的视图"也截成空图。
+               * 真失败时把这棵舞台临时抬到遮挡层之上（`stageElevated`），让它在下一个
+               * 动画帧里真的可见，再重试同一次截图 —— 代价是屏幕上闪一下纸面，
+               * 但比"照片洗不出来"好。
+               */
+              stageElevated ? styles.stageElevated : null,
+            ]}
+          >
+            <FilmStageComposer
+              stage={filmStage.stage}
+              viewShotRef={filmStage.viewShotRef}
+              onLayout={filmStage.handleStageLayout}
+              onImageLoad={filmStage.handleStageImageLoad}
+              /*
+               * 相框风格变体（v1.7.0 · 模块二）**必须**从设置里传下去。
+               *
+               * 漏了这一行的后果不是"少个装饰"，而是**预览与成片对不上**：取景器里的
+               * `FramePreviewLayer` 拿的是 `settings.frameVariant`，而默认是 `'classic'`，
+               * 用户会看到"取景器里是泛黄的老相纸，洗出来却是干净白卡纸" —— 那正是模块三
+               * 「所见即所得」要消灭的东西。
+               */
+              frameVariant={settings.frameVariant}
+              /*
+               * 日期引擎（v1.8.0 · 模块四）与胶片外观种子（v1.8.0 · 模块一）。
+               * 两边读同一个常量，颗粒与微尘的分布才会逐点重合。
+               */
+              dateEngine={settings.dateEngine}
+              lookSeed={LOOK_SEED}
+              timestampFontFamily={fonts.fontFamily}
+            />
+          </View>
+        ) : null}
+
+        {/*
+          遮挡层（v1.9.0）：不透明近黑（= 本文件的 `CAMERA_ROOT_BACKGROUND` 一族，
+          和 `styles.preview` 底色同一个值）。它盖住上面那棵合成舞台，保证"藏起来"
+          不依赖 `CameraView` 是否已经出画 —— 相机权限刚给、热重启首帧、或系统把
+          `CameraView` 暂停的那一瞬间，舞台都不会漏出来被用户看见。
+          放在 `cameraClipNode` 之前：它自己也被相机层压住，不参与任何视觉。
+        */}
+        <View pointerEvents="none" style={styles.stageOccluder} />
+
         {cameraClipNode}
 
         {/*
@@ -2433,45 +2778,16 @@ export function CameraScreen() {
       {controlNode}
 
       {/*
-        冲印舞台（v1.8.6 · 按需瞬时挂载）。
+        冲印徽标（v1.9.0 · 用户手术一）：绝对定位的安全区小胶囊（层级阶梯里的 21）。
 
-        这里过去是一个「stage 非空才渲染合成器」的内联三元 —— 门控本身是对的，但它是
-        **调用方的自觉**：任何一次重构去掉条件，就会多挂一棵常驻的合成树
-        （`ViewShot` + 相框 PNG + 整条图层栈）。现在门控收进 `FilmStageComposer`：
-        `stage === null` 时它直接 `return null`，一个原生节点都不挂；`stage` 只在一张
-        照片真的要走存盘流程时由 `useFilmStage.mount()` 填上，`unmount()`（`processFilmPhoto`
-        的 finally）随后清空 —— 洗完就彻底卸掉。
+        它**不是**遮罩：没有 backdrop、没有全屏 Pressable，也不渲染合成舞台 —— 洗片期间
+        取景器与快门照常可用，用户只会看到顶部飘着一行"显影中 / 队列 N"。
+        done 3s / error 5s 之后由上面的 effect 自动退回 idle（徽标自己无状态、不可点）。
+
+        合成舞台（v1.8.6 起按需瞬时挂载）已经搬到取景器内部、`cameraClipNode` 之前 ——
+        `filmStage.stage === null` 时那里连一个原生节点都不挂，洗完立刻卸掉。
       */}
-      <DevelopOverlay status={status} onDismiss={handleDismiss}>
-        <FilmStageComposer
-          stage={filmStage.stage}
-          viewShotRef={filmStage.viewShotRef}
-          onLayout={filmStage.handleStageLayout}
-          onImageLoad={filmStage.handleStageImageLoad}
-          /*
-           * 相框风格变体（v1.7.0 · 模块二）**必须**从设置里传下去。
-           *
-           * 漏了这一行的后果不是"少个装饰"，而是**预览与成片对不上**：取景器里的
-           * `FramePreviewLayer` 拿的是 `settings.frameVariant`，而默认是 `'classic'`，
-           * 用户会看到"取景器里是泛黄的老相纸，洗出来却是干净白卡纸" —— 那正是模块三
-           * 「所见即所得」要消灭的东西。
-           */
-          frameVariant={settings.frameVariant}
-          /*
-           * 日期引擎（v1.8.0 · 模块四）与胶片外观种子（v1.8.0 · 模块一）。
-           *
-           * `dateEngine` 是**全局设置**而不是预设字段：日期长得像什么与"这卷胶片
-           * 是什么性格"是两件事，混进 `presets.ts` 会让同一支卷在不同地区印出
-           * 不同格式的日期。取景器预览、成片合成、设置页三处都读它。
-           *
-           * `lookSeed` 与取景器实时预览用**同一个常量** —— 颗粒与微尘的分布要
-           * 逐点重合，否则"所见即所得"就是假的。
-           */
-          dateEngine={settings.dateEngine}
-          lookSeed={LOOK_SEED}
-          timestampFontFamily={fonts.fontFamily}
-        />
-      </DevelopOverlay>
+      <DevelopBadge status={status} queueDepth={queueDepth} />
 
       <FilmDrawer
         visible={filmDrawerVisible}
@@ -2562,9 +2878,6 @@ function createStyles(ink: ThemeInk, scheme: 'dark' | 'light') {
       borderColor: ink.amberDeep,
       backgroundColor: 'rgba(255, 255, 255, 0.06)',
     },
-    qualityChipDisabled: {
-      opacity: 0.4,
-    },
     qualityLabel: {
       fontFamily: UI_MONO,
       fontSize: 10,
@@ -2581,6 +2894,24 @@ function createStyles(ink: ThemeInk, scheme: 'dark' | 'light') {
       backgroundColor: '#0A0A0B',
     },
     previewCovered: { opacity: 0 },
+    /**
+     * 合成舞台的宿主页（v1.9.0 · 用户手术一）。
+     *
+     * JSX 里现算 `width` / `height` / `left` / `top`（按 `stageBox` 居中），这里只管
+     * "绝对定位"一件事。它排在 `cameraClipNode` 之前，平时被原生相机画面与
+     * `stageOccluder` 一起盖住；只有 iOS 截到空图、`stageElevated` 兜底生效的那两帧，
+     * 才靠 `stageElevated` 的 `zIndex` 抬到遮挡层上面。
+     */
+    stageHost: { position: 'absolute' },
+    stageElevated: { zIndex: 9 },
+    /**
+     * 舞台遮挡层（v1.9.0 · 用户手术一）：不透明近黑，和 `styles.preview` 同底色。
+     *
+     * 它保证"舞台藏起来"不依赖 `CameraView` 出没出画 —— 相机权限刚给、热重启首帧、
+     * 系统暂停相机的瞬间，舞台都不会从取景器里漏出来。`pointerEvents="none"`：
+     * 这一层只是画，不参与任何点击（点击归 `focusCatcher`）。
+     */
+    stageOccluder: { ...fill, backgroundColor: '#0A0A0B' },
     /*
      * 浮在画面之上的两层玻璃（顶栏 / 控制台）必须抬到取景器上面。
      *
@@ -2592,7 +2923,8 @@ function createStyles(ink: ThemeInk, scheme: 'dark' | 'light') {
      * ⚠️ 这个 2 是**全局层级阶梯**里的一格，加新的浮层时请接着往下排，别就地拍一个数：
      *   2  = 顶栏 / 控制台（本文件 `overlayChrome`）
      *   10 = 底片抽屉（`FilmDrawer`，见那边的注释）
-     *   20 = 冲印进度遮罩（`DevelopOverlay`）
+     *   20 = （v1.9.0 已移除）旧的全屏冲印进度遮罩
+     *   21 = 冲印徽标（`DevelopBadge`，见 `DevelopOverlay.tsx`）
      *   30 = 相册页 / 设置页
      *   40 = 相册页里的"冲印中"遮罩
      *   50 = 全屏提示遮罩（本文件 `noticeLayer`）

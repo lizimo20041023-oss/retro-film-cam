@@ -6,10 +6,11 @@
  * ─────────────────────────────────────────────────────────────────────
  * 「一眼看出这卷是什么味道」最直观的办法当然是拿真实样片，但项目里没有、
  * 也不该为十个预设各烧一张烘焙图（体积、维护、和真实成像对不上，三头不讨好）。
- * 退而求其次的做法是**从预设自己的调色参数反推一个近似色块**：
- * 拿一个中灰当"标准场景"，把 `color.temperature / tint / exposure / contrast /
- * saturation / fade` 依次施加一遍，得到的三个色阶就是这卷胶片的性格 ——
- * 暖卷偏橙、冷卷偏青、高对比的拉开明暗、褪色重的整体发灰。
+ * 退而求其次的做法是**从预设自己的光学配方反推一个近似色块**：
+ * 拿一个中灰当"标准场景"，把 v1.9.0 的 5 层胶片管线（树脂柔焦 / 暗部浓墨 /
+ * 高光奶油 / 化学分离色 / 显影暗角）依次施加一遍，得到的三个色阶就是这卷
+ * 胶片的性格 —— 暗部浓墨的压出油润黑、Bloom 高的顶出奶油白、暖卷偏琥珀、
+ * 冷卷偏青、黑白卷三档全灰。
  *
  * ⚠️ 它**不等于**成片效果（真正的合成在 `FilmCompositor` / `gradeLayers` 里，
  * 还要叠颗粒、漏光、暗角）。这里只是色偏方向和强度的示意，别拿它当取色器。
@@ -37,7 +38,7 @@
 import { memo, useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import type { ColorGradeConfig, FilmPreset } from '../types';
+import type { FilmPreset } from '../types';
 import { UI_MONO, useTheme } from '../constants/theme';
 import type { Theme } from '../constants/theme';
 import { useI18n } from '../i18n';
@@ -101,12 +102,14 @@ function clampChannel(value: number): number {
 
 /** 中灰：所有近似都以它为起点，相当于"标准场景的中间调"。 */
 const BASE_GRAY = 132;
-/** 色温 / 色调偏移的满量程（以 0~255 的色阶为单位）。 */
-const TINT_RANGE = 26;
-/** 曝光偏移的满量程。 */
-const EXPOSURE_RANGE = 30;
-/** 对比度对暗部/亮部的展开量。 */
-const CONTRAST_RANGE = 7;
+/** Layer2 暗部浓墨对色块底部的满量程下压（shadowCrush ≈ 0.5 时压 ≈ 23 阶）。 */
+const CRUSH_RANGE = 46;
+/** Layer3 高光奶油对色块顶部的满量程抬升（highlightBloom ≈ 0.48 时抬 ≈ 16 阶）。 */
+const BLOOM_RANGE = 34;
+/** Layer1 树脂柔焦带来的轻微奶雾（0.34 时 ≈ +2 阶）。 */
+const SOFTNESS_RANGE = 6;
+/** 化学分离色的偏移倍率：不透明度 × 通道差 × 1.2（0.36 × 127 × 1.2 ≈ 55 阶）。 */
+const CHEMISTRY_GAIN = 1.2;
 
 type SwatchZone = {
   readonly top: string;
@@ -114,70 +117,105 @@ type SwatchZone = {
   readonly bottom: string;
 };
 
-/**
- * 调色参数 → 三段色阶（高光 / 中间调 / 暗部）。
- *
- * 黑白卷（`saturation ≈ 0` 且没有色偏）走单独一条分支：那时温度不再是"黄蓝轴"，
- * 而是印相纸的冷调/暖调，所以把它折成**亮度**偏移，否则黑白卷会算出一块假彩色。
- */
-function swatchZones(color: ColorGradeConfig): SwatchZone {
-  const temperature = color.temperature ?? 0;
-  const tint = color.tint ?? 0;
-  const saturation = color.saturation ?? 1;
-  const contrast = color.contrast ?? 1;
-  const fade = color.fade ?? 0;
-  const exposure = color.exposure ?? 0;
-
-  const exposureShift = exposure * EXPOSURE_RANGE;
-  const isMonochrome = saturation <= 0.06 && Math.abs(tint) <= 0.02 && Math.abs(temperature) <= 0.02;
-
-  // 暗部/亮部相对中间调的偏移：对比度越大，两端拉得越开。
-  const contrastSpread = Math.max(0, contrast - 1) * CONTRAST_RANGE;
-
-  const midOffset = exposureShift;
-  const topOffset = midOffset + contrastSpread;
-  const bottomOffset = midOffset - contrastSpread;
-
-  let redShift = temperature * TINT_RANGE;
-  let greenShift = -tint * TINT_RANGE;
-  let blueShift = -temperature * TINT_RANGE;
-
-  if (isMonochrome) {
-    // 黑白：把"色温"折成整体亮度（暖 → 更亮的印相纸白，冷 → 更深的灰）。
-    const toneShift = temperature * EXPOSURE_RANGE;
-    redShift = toneShift;
-    greenShift = toneShift;
-    blueShift = toneShift;
-  } else {
-    // 饱和度整体缩放色偏：饱和度低的卷（比如过期片、淡雅负片）色偏也应该更弱。
-    const chromaScale = Math.max(0.2, Math.min(1.6, saturation));
-    redShift *= chromaScale;
-    greenShift *= chromaScale;
-    blueShift *= chromaScale;
+/** 把 `#RRGGBB` 拆成 [r, g, b]；不是六位 hex 就返回 null（调用方跳过那一层）。 */
+function hexChannels(hex: string | undefined): readonly [number, number, number] | null {
+  if (hex === undefined || hex.length !== 7 || hex[0] !== '#') {
+    return null;
   }
+  const channels: [number, number, number] = [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ];
+  return channels.some((channel) => Number.isNaN(channel)) ? null : channels;
+}
 
-  const build = (offset: number, zoneScale: number): string => {
-    // 关键：色偏在暗部减半、亮部略增。真实胶片（尤其是负片和过期片）
-    // 的色偏几乎都堆在暗部和高光两极，中间调反而很中性 —— 只做整体偏移
-    // 会让色块看起来像蒙了一层色纸。
-    const red = clampChannel(BASE_GRAY + offset + redShift * zoneScale);
-    const green = clampChannel(BASE_GRAY + offset + greenShift * zoneScale);
-    const blue = clampChannel(BASE_GRAY + offset + blueShift * zoneScale);
-    if (fade <= 0) {
-      return `rgb(${Math.round(red)}, ${Math.round(green)}, ${Math.round(blue)})`;
+/** multiply 混色的等价通道运算：`base × (1 - opacity × (1 - tint/255))`。 */
+function multiplyTint(base: number, tint: number, opacity: number): number {
+  return base * (1 - opacity * (1 - tint / 255));
+}
+
+/** soft-light / overlay 在中间调附近的线性近似：按通道差往 tint 方向偏移。 */
+function lightTint(base: number, tint: number, opacity: number, weight: number): number {
+  return base + (tint - 128) * opacity * weight * CHEMISTRY_GAIN;
+}
+
+/**
+ * v1.9.0 光学配方 → 三段色阶（高光 / 中间调 / 暗部）。
+ *
+ * 映射纪律（与 `gradeLayers.ts` 的 12 层顺序一一对应）：
+ *  1. `lensSoftness`  → 三档统一轻微抬亮（树脂奶雾，量很小）
+ *  2. `shadowCrush`   → 只压暗部（底部最大、中间调少量、顶部不动）
+ *  3. `highlightBloom`→ 只抬高光（顶部最大、中间调少量、暗部不动）
+ *  4. `shadowTint*`   → 暗部 multiply，权重 底部 1.0 / 中间 0.45 / 顶部 0.15
+ *  5. `highlightTint*`→ 高光 soft-light/overlay，权重 顶部 1.0 / 中间 0.4 / 底部 0.25
+ *  6. `mono`          → 三档全部取 BT.709 亮度（`#808080 + 'color'` 的去色等价）
+ *
+ * 暗角（vignette）不参与色块：它只影响四角亮度，画进这条 34pt 的横向色带会读成
+ * "整条都变暗"，反而失真 —— 卡片角标（ISO / SLIDE / B&W）才是卷种信息。
+ */
+function swatchZones(preset: FilmPreset): SwatchZone {
+  const color = preset.color;
+  const lensSoftness = color.lensSoftness ?? 0;
+  const shadowCrush = color.shadowCrush ?? 0;
+  const highlightBloom = color.highlightBloom ?? 0;
+  const shadowTint = hexChannels(color.shadowTint);
+  const shadowOpacity = color.shadowTintOpacity ?? 0;
+  const highlightTint = hexChannels(color.highlightTint);
+  const highlightOpacity = color.highlightTintOpacity ?? 0;
+
+  // 每档的"胶片亮度"：先算浓墨/奶油对灰度的影响，再叠加化学分离色。
+  const zones: {
+    readonly level: number;
+    readonly shadowWeight: number;
+    readonly highlightWeight: number;
+  }[] = [
+    {
+      level: BASE_GRAY - shadowCrush * CRUSH_RANGE - lensSoftness * SOFTNESS_RANGE * 0.3,
+      shadowWeight: 1,
+      highlightWeight: 0.25,
+    },
+    {
+      level:
+        BASE_GRAY -
+        shadowCrush * CRUSH_RANGE * 0.18 +
+        highlightBloom * BLOOM_RANGE * 0.12 +
+        lensSoftness * SOFTNESS_RANGE,
+      shadowWeight: 0.45,
+      highlightWeight: 0.4,
+    },
+    {
+      level: BASE_GRAY + highlightBloom * BLOOM_RANGE + lensSoftness * SOFTNESS_RANGE,
+      shadowWeight: 0.15,
+      highlightWeight: 1,
+    },
+  ];
+
+  const build = (zone: (typeof zones)[number]): string => {
+    const channels: number[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      let channel = zone.level;
+      if (shadowTint !== null) {
+        channel = multiplyTint(channel, shadowTint[index], shadowOpacity * zone.shadowWeight);
+      }
+      if (highlightTint !== null) {
+        channel = lightTint(channel, highlightTint[index], highlightOpacity, zone.highlightWeight);
+      }
+      channels.push(channel);
     }
-    // 褪色：把颜色往米白抬，抬高暗场（这是过期胶片最标志性的特征）。
-    const fadeAmount = fade * 0.5;
-    const fadedRed = red + (238 - red) * fadeAmount;
-    const fadedGreen = green + (232 - green) * fadeAmount;
-    const fadedBlue = blue + (218 - blue) * fadeAmount;
-    return `rgb(${Math.round(fadedRed)}, ${Math.round(fadedGreen)}, ${Math.round(fadedBlue)})`;
+    if (preset.mono === true) {
+      // `#808080 + mixBlendMode:'color'` 的效果 = 三通道全部换成亮度（真黑白）。
+      const luminance = 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+      const gray = Math.round(clampChannel(luminance));
+      return `rgb(${gray}, ${gray}, ${gray})`;
+    }
+    return `rgb(${Math.round(clampChannel(channels[0]))}, ${Math.round(clampChannel(channels[1]))}, ${Math.round(clampChannel(channels[2]))})`;
   };
 
   return {
-    top: build(topOffset, 1.2),
-    mid: build(midOffset, 1),
-    bottom: build(bottomOffset, 0.55),
+    top: build(zones[2]),
+    mid: build(zones[1]),
+    bottom: build(zones[0]),
   };
 }
 
@@ -186,27 +224,27 @@ function swatchZones(color: ColorGradeConfig): SwatchZone {
  * `800T` / `B&W`。
  *
  * 为什么写显式映射而不是从 `preset.name` 解析：名字是给人看的商品名，不是数据
- * 字段；`RI-100` 实际是反转片（该标 SLIDE 而不是 ISO 100）、`NT-800T` 的 800 在
- * 名字中间 —— 解析迟早出错。九卷是冻结的（v1.8.10 底片库重做后仍是九卷），一张
+ * 字段；`EK-100` 实际是反转片（该标 SLIDE 而不是 ISO 100）、`CS-800T` 的 800 在
+ * 名字中间 —— 解析迟早出错。九卷是冻结的（v1.9.0 底片库重做后仍是九卷），一张
  * 表最省心，也不需要给 `FilmPreset` 加 `iso` / `stockType` 字段（那会牵动
  * `presets.ts` 与五语言包）。
  * 兜底（将来加卷忘了登记）才退回 `mono` 判断 + 末段数字，绝不抛错。
  */
 function stockBadgeOf(preset: FilmPreset): string {
   switch (preset.id) {
-    case 'su-200':
-    case 'am-200':
+    case 'gd-200':
+    case 'cp-200':
       return 'ISO 200';
-    case 'vl-400':
-    case 'vx-400':
-    case 'nz-400':
+    case 'um-400':
+    case 'pt-400':
+    case 'fj-400':
       return 'ISO 400';
-    case 'ri-100':
+    case 'ek-100':
       return 'SLIDE';
-    case 'nt-800t':
+    case 'cs-800t':
       return '800T';
-    case 'mn-400-bw':
-    case 'sl-400-bw':
+    case 'hp-400':
+    case 'tx-400':
       return 'B&W';
     default:
       break;
@@ -228,10 +266,10 @@ interface BadgeTone {
 /**
  * 按色块顶部的**相对亮度**选角标底色。
  *
- * 色块颜色是 `swatchZones()` 现算出来的 `rgb(r, g, b)`；褪色重的过期片能到
- * `rgb(238, …)` 这种接近白纸的值，黑底白字会直接消失，所以这里必须真的看一眼
- * 亮度。解析失败（将来色值换成 hex/rgba）就退回黑底 —— 宁可对比弱一点，也不要
- * 因为一行解析把整张卡画崩。
+ * 色块颜色是 `swatchZones()` 现算出来的 `rgb(r, g, b)`；`highlightBloom` 高的卷
+ * （奶油高光）能到 `rgb(210, …)` 这种接近白纸的值，黑底白字会直接消失，所以这里
+ * 必须真的看一眼亮度。解析失败（将来色值换成 hex/rgba）就退回黑底 —— 宁可对比
+ * 弱一点，也不要因为一行解析把整张卡画崩。
  */
 function badgeToneFor(zone: string): BadgeTone {
   const match = /^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/.exec(zone);
@@ -325,7 +363,7 @@ export const FilmCard = memo(function FilmCard({
         pressed ? styles.cardPressed : null,
       ]}
     >
-      <FilmSwatch zones={swatchZones(preset.color)} badge={badge} styles={styles} />
+      <FilmSwatch zones={swatchZones(preset)} badge={badge} styles={styles} />
       <View style={styles.body}>
         <Text style={[styles.code, selected ? styles.codeSelected : null]} numberOfLines={1}>
           {preset.name}

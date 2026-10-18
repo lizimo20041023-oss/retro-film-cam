@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""光学暗角贴图生成器（v1.8.5 M2）
+"""光学暗角贴图生成器（v1.8.5 M2，v1.9.0 手术二重标定）
 
 重新生成 assets/textures/vignette.png：一张 1024x1024 RGBA 的径向暗角遮罩。
 
-设计口径（v1.8.7 模块二/三起，替代 v1.8.5 的 65% 口径）：
-  - 中心到 68% 半径（按短边一半归一化）alpha 恒为 0：画面中心零遮挡；
-  - 68% -> 100% 半径用 smoothstep 平滑升到 alpha 255：没有硬边；
+设计口径（v1.9.0 用户 m07595 规范，替代 v1.8.7 的 68% 口径）：
+  - 中心到 56% 半径（按短边一半归一化）alpha 恒为 0：画面中心零遮挡；
+  - 56% -> 100% 半径用 smoothstep 平滑升到 alpha 255：膝盖在 78% 半径附近，
+    所以中心干净、四角压得重，等价于用户写的 SVG `<RadialGradient>`：
+    中心 0%~56% opacity 0，56%→100% 陡峭过渡到 `rgba(4,12,20,vignette)`；
   - 四角 rho>1 按 1 处理（满不透明度）；
-  - RGB 恒为 (6, 14, 20) 深青黑，不随半径变化（半径只控制 alpha）。
+  - RGB 恒为 (4, 12, 20) 深青黑，不随半径变化（半径只控制 alpha）。
 
 渲染侧（gradeLayers.ts）以 `blendMode:'multiply'` + `opacity = preset.vignette`
 叠加该贴图。multiply 之所以安全：中心 alpha=0（没有任何上层像素参与混合，白不变灰），
@@ -36,9 +38,9 @@ except ImportError:  # pragma: no cover - 运行环境缺 Pillow 时给出明确
 
 # --- 冻结常量 -------------------------------------------------------------
 SIZE = 1024                 # 契约建议 1024x1024：够大不糊，文件仍是普通 PNG
-INNER_RADIUS = 0.68         # 中心透明半径（相对短边一半；v1.8.7 用户规范 68%）
+INNER_RADIUS = 0.56         # 中心透明半径（相对短边一半；v1.9.0 用户规范 56%）
 OUTER_RADIUS = 1.0          # 到边中点为满不透明度
-RGB = (6, 14, 20)           # 深青黑，恒定的暗角颜色
+RGB = (4, 12, 20)           # 深青黑，恒定的暗角颜色（v1.9.0 用户指定 rgba(4,12,20)）
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 OUT_PATH = os.path.join(REPO_ROOT, "assets", "textures", "vignette.png")
@@ -117,7 +119,7 @@ def main() -> int:
     print("sha256=" + hashlib.sha256(png).hexdigest())
     print("center alpha=0, edge-mid alpha=255, corner alpha=255")
     print("alpha 剖面 (按短边一半归一化):")
-    for rho in (0.0, 0.32, 0.5, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 1.0):
+    for rho in (0.0, 0.30, 0.50, 0.56, 0.62, 0.70, 0.78, 0.86, 0.94, 1.0):
         dist = rho * (SIZE / 2.0)
         print("  rho=%.2f  alpha=%3d" % (rho, alpha_at(dist)))
     return 0

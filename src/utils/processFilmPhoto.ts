@@ -160,11 +160,12 @@ export interface ProcessFilmPhotoInput {
   /** 水印横向对齐（v1.8.11）；不传 = `'auto'`（旧行为）。 */
   watermarkAlign?: WatermarkAlign;
   /**
-   * 场景自适应调色（v1.8.11）；不传 = **开**。
+   * 场景自适应调色（v1.8.11 起；v1.9.0 改成 64×64 极速测光）；不传 = **开**。
    *
-   * 打开时会在这里把裁切后的底片送去 `probeScene` 采样（一次 DC 扫描），把 `SceneStats`
-   * 挂到 `preset.scene` 上；关掉则完全不采样，图层栈逐字节回到 v1.8.10 的静态曲线。
-   * 采样失败（非 baseline JPEG / 文件读不了）也等于"没有数据"，同样退化，不抛。
+   * 打开时会在这里把裁切后的底片送去 `probeScene`：原生侧缩到 64×64 JPEG（约 2KB）
+   * 再只解 DC 系数，把 `SceneStats` 挂到 `preset.scene` 上；关掉则完全不采样，
+   * 图层栈逐字节回到静态曲线。采样失败（非 baseline JPEG / 文件读不了）也等于
+   * "没有数据"，同样退化，不抛。
    */
   adaptiveGrade?: boolean;
   /** 地名详细度；不传 = `'archive'`。只影响 `place` 的渲染，不影响经纬度档。 */
@@ -486,12 +487,14 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
    *      为什么放在**挂载之前**：`SceneStats` 要钉进 `stageInput.preset.scene`，合成层
    *      拿到的必须已经是"带场景数据的那一版预设"；挂载之后再补就是两套数据。
    *
-   *      采样本身是 `probeScene(uri)`：读 JPEG 字节 → 只解 DC 系数 → MCU 格亮度 →
-   *      `SceneStats`。整条链**不缩放、不重编码、不建全尺寸位图**，一张 12MP 底片几毫秒。
+   *      采样本身是 `probeScene(uri)`（v1.9.0 极速测光）：原生侧先把这张裁切后的底片
+   *      缩到 64×64 JPEG（base64，约 2KB，iOS 上几毫秒），再只解 DC 系数 → MCU 格亮度
+   *      → `SceneStats`。**整条链不读原图全尺寸字节**，所以快门之后不会再有几百毫秒到
+   *      几秒的纯 JS 解码卡顿（v1.9.0 手术一）。
    *
    *      失败/关闭 = `scene === null`：`scenePreset` 就是 `preset` **同一个引用**，
-   *      `planAdaptiveGrade` 返回 null，`applyAdaptiveColor` 原样返回、`buildSceneLayers`
-   *      返回空数组 —— 图层栈与 v1.8.10 逐字节相同。这是"缺省即旧行为"的机械保证。
+   *      自适应规划返回 null、补偿原样跳过 —— 图层栈与静态曲线逐字节相同。
+   *      这是"缺省即旧行为"的机械保证。
    *
    *      取景器实时预览**不跑**这一步（v1.8.6 发热纪律：预览每帧开销已被卡死）。
    */
@@ -507,7 +510,7 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
   // 5) 调色图层：这里就决定了成片长什么样（纯数据，可断言）
   /*
    * 注意传的是 `scenePreset` 而不是 `preset`：`ProcessedPhoto.layers` 是回报给调用方/
-   * 日志的"这张到底上了哪些层"，必须包含 ⑧.7 的场景补偿层（有场景数据时）。
+   * 日志的"这张到底上了哪些层"，必须包含场景自适应补偿（有场景数据时）。
    */
   const layers = buildGradeLayers(scenePreset).map((layer) => layer.label);
 

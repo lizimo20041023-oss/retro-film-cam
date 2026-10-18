@@ -124,6 +124,7 @@ export const ja: Messages = {
   'develop.done.saved': 'アルバムに保存しました',
   'develop.done.unsaved': '現像が完了しました（未保存）',
   'develop.error.title': '現像に失敗',
+  'develop.queue.count': '待ち {count}',
   'develop.stage.capturing': '露光・現像中',
   'develop.stage.normalizing': 'フィルムを準備中',
   'develop.stage.saving': 'アルバムに保存中',

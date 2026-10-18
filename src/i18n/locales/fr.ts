@@ -130,6 +130,7 @@ export const fr: Messages = {
   'develop.done.saved': "Enregistré dans l'album",
   'develop.done.unsaved': 'Développé (non enregistré)',
   'develop.error.title': 'Développement échoué',
+  'develop.queue.count': 'File {count}',
   'develop.stage.capturing': 'Exposition et développement',
   'develop.stage.normalizing': 'Préparation du négatif',
   'develop.stage.saving': "Enregistrement dans l'album",

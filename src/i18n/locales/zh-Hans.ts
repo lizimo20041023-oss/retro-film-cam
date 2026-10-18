@@ -133,6 +133,7 @@ export const zhHans = {
   'develop.done.saved': '已存入相册',
   'develop.done.unsaved': '成片已生成（未存相册）',
   'develop.error.title': '显影失败',
+  'develop.queue.count': '队列 {count}',
   'develop.stage.capturing': '正在曝光显影',
   'develop.stage.normalizing': '正在整理底片',
   'develop.stage.saving': '正在存入相册',

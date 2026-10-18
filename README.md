@@ -66,6 +66,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [42. v1.8.9：闪光灯拍摄被停机打断（v1.8.8 发热改动的回归）与修法](#42-v189闪光灯拍摄被停机打断v188-发热改动的回归与修法)
 - [43. v1.8.10：底片库整套重做（九支新代号 + 仿色 + 旧照片兼容）](#43-v1810底片库整套重做九支新代号--仿色--旧照片兼容)
 - [44. v1.8.11：场景自适应冲印（按光线测光补偿）与水印位置两轴可设](#44-v1811场景自适应冲印按光线测光补偿与水印位置两轴可设)
+- [45. v1.9.0：五道手术（非阻塞快门 + 极速测光 / 12 层同源显影 / 反 HDR 四场景 / 九支新卷 / 4×4 水印矩阵保留）](#45-v190五道手术非阻塞快门--极速测光--12-层同源显影--反-hdr-四场景--九支新卷--4x4-水印矩阵保留)
 
 ---
 
@@ -6099,6 +6100,277 @@ export 冒烟：`npx expo export --platform ios --no-bytecode` → EXIT 0，bund
 `_commit_v1811_msg.txt`、`_gate_v1811_run2.out.txt`、`_export_v1811_lead/`；
 另改了 `_probe_lead_integration.mjs`（12 → 15 栏）、`_probe_v188_sharp.cjs`、
 `_probe_v189_flash.cjs`、`_probe_v1810_stocks.cjs`（版本钉跟随）。
+
+---
+
+## 45. v1.9.0：五道手术（非阻塞快门 + 极速测光 / 12 层同源显影 / 反 HDR 四场景 / 九支新卷 / 4×4 水印矩阵保留）
+
+### 45.1 用户需求（m07595）
+
+这一版不是"调个参"，用户明确要求**重构核心光学引擎、极速测光链路与胶卷库**，并且给出
+五道手术的具体做法，同时**严禁微弱无效数值调整**、**严禁降级成"原图盖水泥灰玻璃纸"**：
+
+> ①「砍掉 5~7 秒快门卡顿与发热」——成片链路把 4032×3024 原图直接喂纯 JS 解码；
+> 要求先用原生把底片缩到 64×64 JPEG（约 2KB）只做测光，快门一按就拿原图 URI 释放
+> 取景器，裁切 / 测光 / 离屏合成 / 写相册全部丢进异步队列；
+>
+> ②「重写 `gradeLayers.ts` = 真 5 层拍立得光学显影管线」——废除平涂色块：同源柔焦、
+> 同源 `multiply` 压暗部（Y²）、同源 `blur(14)` `screen` 提高光（1-(1-Y)²）、化学冷暖
+> 分离、四角显影黑角；
+>
+> ③「重写 `adaptiveGrade.ts`，废除 ±0.06 微调」——不是数码 HDR 思维，而是按
+> 强光/逆光、阴天平光、开阔天空、夜景四类场景**反向**补偿；
+>
+> ④「清空旧滤镜，重做 9 款防侵权王牌胶卷」——每款参数在契约里逐项冻结；
+>
+> ⑤「保留 4×4 水印位置矩阵与 4 款日期字形完整生效」——并同步全部单测/快照/门禁。
+
+### 45.2 手术一：快门不再等冲印（异步冲印队列 + 64×64 极速测光）
+
+**旧痛点**：`probeScene(uri)` 用 `expo-file-system` 读**裁切后的全尺寸底片字节**（4032×3024，
+约 5~12 MB），再在 JS 主线程逐字节解 DC 系数，单次 5~7 秒；这期间 `developing === true`，
+快门键被禁用、取景器停摆 —— 发热与卡顿同源。
+
+**新链路**（`src/utils/sceneProbe.ts`，207 行）：
+
+```
+ImageManipulator.manipulate(uri)
+  → resize({ width: 64, height: 64 })      // iOS 原生缩放，JS 0 次解码
+  → renderAsync()
+  → saveAsync({ format: SaveFormat.JPEG, compress: 0.75, base64: true })   // ~0.5~2 KB
+  → base64ToBytes()                        // 手写 RFC4648 解码，常量查表
+  → sampleJpegDc()                         // 只解 DC：不解 IDCT、不建位图
+  → analyzeScene()                         // SceneStats
+```
+
+- 导出 `FAST_SAMPLE_EDGE = 64`、`FAST_SAMPLE_COMPRESS = 0.75`、`base64ToBytes`、`probeScene`
+  （任何一步失败都 `return null`，**绝不抛**）。
+- 64×64 彩色 JPEG 默认 4:2:0：4×4 = 16 个 MCU，每 MCU 4 个 Y DC → 64 个 Y 样本；按
+  `jpegSample.ts` 的"同 MCU 取平均 = 1 格"契约，`analyzeScene` 看到 **4×4 = 16 格**，
+  `MIN_SAMPLES = 12` 刚好够判四类；4:4:4 / 灰度编码器则是 8×8 = 64 格（三种布局都有夹具）。
+- **实测**（node 50 次中位，与生产同尺寸夹具）：`sampleJpegDc` 0.0096~0.0161 ms、
+  `analyzeScene` 0.0009~0.0047 ms，**合计 ≈0.010~0.013 ms**，对 5 ms 预算有两个数量级余量。
+- 源码里已不存在 `expo-file-system` / `File(` / `SCENE_PROBE_MAX_BYTES` /
+  `manipulateAsync` 旧路径（`_probe_v190_wiring.cjs` S5 逐条扫描）。
+
+**快门侧改造**（`src/components/CameraScreen.tsx`）：
+
+- `shotLockRef` 现在**只包住 `takePictureAsync`**：拿到 `CapturedPhoto` 后立刻 `push` 一个
+  job 快照进 `jobQueueRef`、`kickQueue()`、`finally` 释放快门锁 —— 取景器与快门下一帧就
+  恢复，连拍/继续对焦不再被冲印挡住（`interactive = cameraGranted`，`usePhysicalShutter`
+  只要求 `cameraGranted && cameraReady`）。
+- job 在**按下快门那一刻冻结**全部输入：`frame` / `noFrameAspect` / `preset` / `locale` /
+  `watermarkLayout/Zone/Align` / `adaptiveGrade` / `placeDetail` / `grainLevel` /
+  `locationMode`，之后用户改设置也不会污染已拍的那张；`exposureIndex =
+  exposureCount + queuedExposures + 1`（重曝与队列并存）。
+- `pumpQueue` 单飞串行冲印（`pumpingRef` 互斥）：`processAndSaveFilmPhoto` →
+  done → `exposureCount+1` →（仅带重曝覆盖时清 `pendingExposureUri`）→ `albumKey+1` →
+  `addShot`；`importAndDevelop` 走同一条队列（`DevelopShotJob` / `DevelopImportJob`）。
+- **空截图兜底**：iOS 在取景器刚恢复的瞬间偶发返回空图，`isEmptyCaptureError(error)` 命中时
+  把该 job 标记 `stageElevated=true`、等两帧后**重试同一次拍摄**（只重试一次，不再弹错）。
+- 离屏舞台仍在 `styles.preview` 内、`cameraClipNode` 之前，其后跟一层
+  `<View pointerEvents="none" style={styles.stageOccluder} />`（不透明 `#0A0A0B`）遮住；
+  `stageElevated` 时舞台提到 `zIndex: 9`。平时 `stage === null` → `FilmStageComposer`
+  返回 `null`：**取景器 0 离屏 GPU 负载**（v1.8.6 纪律不变）。
+- UI 从整屏 DevelopOverlay 换成 `DevelopBadge` 小徽标（`DevelopOverlay.tsx` 导出
+  `DevelopBadge = memo(DevelopOverlayImpl)`）：冲印中显示 `队列 {count}`（五语新键
+  `develop.queue.count`），done 3 秒 / error 5 秒自动退场，不再吃触摸、不再挡取景。
+
+### 45.3 手术二：12 层同源光学显影管线（`src/utils/gradeLayers.ts`，438 行）
+
+所有"照片自己叠自己"的层都是**同源副本**——同一个 URI、同一个 `<Image>`，靠
+`blurRadius` + `mixBlendMode` 完成光学运算，不是平涂色块：
+
+| # | key | 类型 | 渲染 | opacity 来源 | 作用 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `temperature` | color | overlay 色纸 | `min(1, |temperature|×GAIN)` | 自适应白平衡（WB 偏移只改这里） |
+| 2 | `tint` | color | overlay 色纸 | `min(1, |tint|×GAIN)` | 绿-品红偏移 |
+| 3 | `lens-softness` | **photo** | `<Image blurRadius={1.2} normal>` | `lensSoftness` | 抹平 Smart HDR 数码锐边，树脂柔润 |
+| 4 | `mono-desaturate` | color | `#808080` · `color` | **1.0** | 真黑白（仅 mono 卷） |
+| 5 | `shadow-crush` | **photo** | 同源 `multiply` | `shadowCrush` | Y' = Y²：树荫/柏油/深色车压成深黑 |
+| 6 | `highlight-bloom` | **photo** | 同源 `blurRadius={14}` · `screen` | `highlightBloom` | Y' = 1-(1-Y)²：只提亮高光 + 奶油 Bloom |
+| 7 | `shadow-tint` | color | 化学混合（预设决定） | `shadowTintOpacity × separationScale` | 暗部化学染色 |
+| 8 | `highlight-tint` | color | 化学混合（预设决定） | `highlightTintOpacity × separationScale × colorDensityScale` | 高光化学染色 |
+| 9 | `halation` | color | `#FF4028` · `screen` | `halation × 0.18`（`HALATION_RENDER_CAP` 封顶） | 暖红光晕 |
+| 10 | `grain` | texture | `overlay` 平铺 | `grainLayerOpacity()` 硬上限 | 颗粒（ek-100 永不生成） |
+| 11 | `vignette` | texture | `multiply` 拉伸 | `min(vignette + Δ, 0.72)` | 四角显影黑角 |
+| 12 | `light-leak` | texture | `screen`（可镜像） | `min(0.1, lightLeak × 0.29)` | 漏光 |
+
+- 常量冻结在文件头：`LENS_SOFTNESS_BLUR_PX = 1.2`、`HIGHLIGHT_BLOOM_BLUR_PX = 14`、
+  `HALATION_RENDER_CAP = 0.18`、`VIGNETTE_OPACITY_MAX = 0.72`、
+  `LIGHT_LEAK_OPACITY_MAX = 0.1`、`LIGHT_LEAK_GAIN = 0.29`；色值
+  `WARM_OVERLAY #FF641A` / `COOL_OVERLAY #1393FF` / `TINT_GREEN #1AA81A` /
+  `TINT_MAGENTA #E657E6` / `NEUTRAL_GRAY #808080` / `HALATION_RED #FF4028`。
+- **暗角贴图重烤**（`scripts/generate_vignette.py`）：中心到 **56% 半径** alpha 恒 0，
+  56%→100% 用 smoothstep 陡升到 255（膝盖约 78% 半径），RGB 恒 `(4,12,20)`；产物
+  `assets/textures/vignette.png` **115,936 B**、sha256 `bf5148cd…`，`multiply` 叠加 ——
+  中心透明所以白场不变灰，四角才被压暗（`_haze_audit` 9 预设 × 12 条断言守护）。
+- **取景器 live 面继续按 v1.8.6 发热纪律过滤**（`planFilmLooks(preset, 'live')`）：
+  所有 `kind:'photo'` 同源层（柔焦/压暗部/高光溢出）**一律不画**；`grain` 不画；
+  `shadow-tint` / `highlight-tint` 全屏染色层丢弃；剩下 `temperature` / `tint` /
+  `halation` 压到 `liveLookOpacity` ∈ [0.04, 0.08]；`mono-desaturate` 保留 opacity 1
+  （黑白卷取景器必须当场是黑白）、暗角/漏光保留原值。
+- `countStageImages` 契约不变（背景 2 + 纹理/photo 层数）：um/gd/pt/cp/fj 各 7 层 →
+  9 张预热；ek-100 5 层 → 7 张；cs-800t 7 层 → 9 张；hp-400/tx-400 6 层 → 8 张。
+
+### 45.4 手术三：反 HDR 四场景自适应（`src/utils/adaptiveGrade.ts`，274 行）
+
+判定顺序 **dark → bright → high-contrast → flat → neutral**（先命中先停），阈值直接用
+`SceneStats` 原始字段：
+
+| 场景 | 判定条件 | 压暗部 Δ | 高光溢出 Δ | 染色密度 | 分离度 | 暗角 Δ | 光晕 Δ |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `dark` 夜景/室内极暗 | `shadowShare > 0.60 且 highlightShare < 0.08` | **−0.14** | **+0.22** | 1.00 | 1.00 | 0 | **+0.50** |
+| `bright` 开阔天空/雪景 | `highlightShare > 0.42` | 0 | +0.12 | **1.20** | 1.00 | **+0.16** | 0 |
+| `high-contrast` 强光/逆光 | `(highlightShare > 0.16 且 shadowShare > 0.18) 或 contrast > 0.22` | **+0.16** | **+0.18** | **1.22** | 1.00 | 0 | 0 |
+| `flat` 阴天平光 | `contrast < 0.16 且 midShare > 0.52` | **+0.18** | **+0.15** | 1.25 | **1.25** | 0 | 0 |
+| `neutral` | 其余 | 0 | 0 | 1.00 | 1.00 | 0 | 0 |
+
+- **反 HDR 的方向**：`dark` 的 `shadowCrushDelta` 是**负的**——夜景不再"提亮暗部"（数码
+  HDR 思维），而是让暗部保持暗，用 +0.22 高光溢出与 +0.50 光晕表现胶片欠曝的补偿；
+  `high-contrast` 双向加层（+0.16 压暗部、+0.18 提高光）反而拉开动态；`bright` 不压高光，
+  加暗角把视线收回中心；`flat` 同时加压暗部与高光溢出、并把染色分离度 ×1.25。
+- 白平衡（唯一读颜色的量）：`whiteBalanceShift = clamp((0.06 − warmth) × 1.4, ±0.14)`、
+  `tintShift = clamp((0 − tintBias) × 0.9, ±0.08)`；`applyAdaptiveColor(color, plan)` **只改
+  `temperature` / `tint` 两个键**，plan 为 null 时返回**同一引用**。
+- 全部增量为 `round4` 的冻结常量（`SCENE_DELTA_*` / `SCENE_DENSITY_*` /
+  `SCENE_SEPARATION_FLAT` / `WB_SHIFT_MAX = 0.14` / `TINT_SHIFT_MAX = 0.08`）。
+- **可退化硬保证**：`scene == null` / `samples < MIN_SAMPLES = 12` → `plan === null` →
+  `buildGradeLayers` 层表与静态预设**逐字节一致**（九卷 × 三条退化路径
+  `JSON.stringify` 全等，探针快照守护）。
+
+### 45.5 手术四：九支防侵权王牌胶卷（`src/constants/presets.ts`）
+
+`PRESETS` 整套替换，代号不含任何厂商名/商品名（防商标纠纷红线）；数值全部落在
+"数字纪律"区间（softness 0.15~0.34 / crush 0.25~0.55 / bloom 0.20~0.48 /
+vignette 0.28~0.56）：
+
+| id | 代号 | 定位 | lensSoftness | shadowCrush | highlightBloom | vignette | grain | 化学染色（暗部 / 高光） | 特殊 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `um-400` | UM-400 | 高反差拍立得 · 街拍王牌（默认） | 0.30 | 0.42 | 0.36 | 0.46 | 0.045 | `#061626` multiply 0.22 / `#125FA5` soft-light 0.28 | — |
+| `gd-200` | GD-200 | 金色日光 · 暖阳日常 | 0.24 | 0.34 | 0.32 | 0.36 | 0.045 | `#301A0A` multiply 0.18 / `#FFC655` soft-light 0.30 | — |
+| `pt-400` | PT-400 | 大师人像 · 奶油肤色 | 0.26 | 0.28 | 0.34 | 0.28 | 0.045 | `#0E1C24` exclusion 0.12 / `#FFD7BC` soft-light 0.26 | — |
+| `cp-200` | CP-200 | 复古琥珀 · 九十年代 | 0.28 | 0.32 | 0.28 | 0.38 | 0.045 | `#37240E` multiply 0.20 / `#F5B65C` soft-light 0.28 | — |
+| `fj-400` | FJ-400 | 日系青绿 · 空气感 | 0.24 | 0.35 | 0.34 | 0.34 | 0.045 | `#08342E` multiply 0.22 / `#A0EBE1` soft-light 0.24 | — |
+| `ek-100` | EK-100 | 反转片 · 高密红蓝 | 0.15 | 0.46 | 0.30 | 0.44 | **0** | `#B03A48` **overlay** 0.32 | `GRAINLESS_PRESET_IDS` |
+| `cs-800t` | CS-800T | 电影钨丝 · 霓虹光晕 | 0.28 | 0.34 | 0.42 | 0.40 | 0.045 | `#0C4E94` soft-light 0.32 | `halation: 1` |
+| `hp-400` | HP-400 | 纪实黑白 · 银盐灰阶 | 0.26 | 0.32 | 0.30 | 0.35 | 0.045 | — | `mono: true` |
+| `tx-400` | TX-400 | 硬朗黑白 · 森山冲击 | 0.24 | **0.50** | 0.38 | 0.48 | 0.045 | — | `mono: true` |
+
+- `DEFAULT_PRESET_ID = 'um-400'`（冷启动第一张）；`GRAINLESS_PRESET_IDS = new Set(['ek-100'])`。
+- **旧照片兼容**（`LEGACY_PRESET_ID_ALIASES`，11 条只读历史账本；选卷 UI 不读它）：
+  `hp-400-bw→hp-400`、`tx-400-bw→tx-400`、`su-200→gd-200`、`vl-400→pt-400`、
+  `vx-400→um-400`、`am-200→cp-200`、`nz-400→fj-400`、`ri-100→ek-100`、
+  `nt-800t→cs-800t`、`mn-400-bw→hp-400`、`sl-400-bw→tx-400`。
+- `FilmCard` 同步：九卷角标 `um-400 → ISO 400`、`gd-200/cp-200 → ISO 200`、
+  `pt-400/fj-400 → ISO 400`、`ek-100 → SLIDE`、`cs-800t → 800T`、`hp-400/tx-400 → B&W`；
+  卡片渐变改读新五键（`lensSoftness / shadowCrush / highlightBloom / shadowTint /
+  highlightTint` 派生）。
+- 旧 7 个 color 字段（`saturation` / `contrast` / `fade` / `exposure` / `splitTone` /
+  `sCurveIntensity` / `curveBlendMode`）已从类型与数据中删除；`buildGradeLayers` 里不再有
+  `s-curve` / `scene-shadow-lift` / `scene-highlight-rolloff` 这类"数码曲线"层。
+
+### 45.6 手术五：4×4 水印矩阵与四款日期字形原样保留
+
+v1.8.11 的水印位置能力是"用户已经可用的功能"，这一版**一行语义都没动**，只被新管线间接
+保护（全部由 `_probe_v1811_watermark.cjs` 1497 条与 `_probe_v1811_adaptive.cjs` 1701 条
+继续守护）：
+
+- 纵向 `watermarkZone ∈ {auto, paper, photo-top, photo-bottom}` × 横向
+  `watermarkAlign ∈ {auto, left, center, right}` = **16 种组合**；`auto + auto` 时
+  `placement === null`，走 v1.8.10 原实现（`_probe_v1811_watermark.cjs` 与旧快照 `deepEqual`）。
+- 四款日期字形 `quartz_led / ccd_osd / lab_inkjet / archival_steel` 全部生效
+  （`DateGlyphs.tsx` 未被本版触碰）。
+- 设置页 15 栏、三默认值（`watermarkZone:'auto'` / `watermarkAlign:'auto'` /
+  `adaptiveGrade:true`）、五语 17 键全部保持；本版 i18n 只新增 1 个键
+  `develop.queue.count`（异步队列徽标用）。
+
+### 45.7 门禁与验证
+
+- `npx tsc --noEmit -p tsconfig.json` → **EXIT 0**。
+- **26 道门禁全绿、0 失败**（`_gate_v190_run.out.txt`，跑批脚本 `_run_gates_v190.ps1`）：
+
+| # | 门禁 | 断言 | # | 门禁 | 断言 |
+| --- | --- | --- | --- | --- | --- |
+| G01 | `_probe_date_engine.cjs` | 3372 | G14 | `_purity_audit.mjs` | 64 |
+| G02 | `_probe_film_look.cjs` | 2000 | G15 | `_probe_v186_perf.cjs` | 241 |
+| G03 | `_probe_geo_lock.cjs` | 16207 | G16 | `_probe_v188_sharp.cjs` | 118 |
+| G04 | `_probe_noframe_v181.cjs` | 455 | G17 | `_probe_v189_flash.cjs` | 56 |
+| G05 | `_probe_noframe_watermark.cjs` | 458 | G18 | `_probe_v190_stocks.cjs` | **727** |
+| G06 | `_probe_skin_material.cjs` | 1069 | G19 | `_probe_v190_optics.cjs` | **612** |
+| G07 | `_probe_v180_seams.mjs` | 1421 | G20 | `_probe_v190_meter.mjs` | **253** |
+| G08 | `_probe_lead_integration.mjs` | 315 | G21 | `_probe_v190_async.cjs` | **150** |
+| G09 | `_probe_capture_quality.mjs` | 78 | G22 | `_probe_v190_wiring.cjs` | **322** |
+| G10 | `_probe_v184_camera.cjs` | 910 | G23 | `_probe_v1811_adaptive.cjs` | 1701 |
+| G11 | `_probe_v185_place.cjs` | 468 | G24 | `_probe_v1811_scene.mjs` | 478 |
+| G12 | `_probe_v185_frame.cjs` | 1781 | G25 | `_probe_v1811_watermark.cjs` | 1497 |
+| G13 | `_haze_audit.mjs` | 9/9（9 预设 × 12 条 0 失败） | — | **合计** | **34,753 条断言 + 暗角 9/9** |
+
+- 五个新探针（零依赖、`ts.transpileModule` 装真源码）：
+  - `_probe_v190_stocks.cjs`（727）：九卷数据结构/顺序/ID 正则/27 个商标词规避/11 条兼容
+    映射/逐卷 15 参数精确值/数值纪律区间/FilmCard 角标与 `_haze_audit` 数据源；
+  - `_probe_v190_optics.cjs`（612）：12 层顺序与 photo 层属性、同源/混合模式、暗部压片与
+    高光溢出的 Y² / 1-(1-Y)² 恒等、自适应增量接线、live 过滤规则、无 scene 逐字节不变；
+  - `_probe_v190_meter.mjs`（253）：64×64 夹具真值、4:2:0/4:4:4/灰度三种 MCU 布局的格数
+    （16/64/64，均 ≥ 12）、四场景分类、`FAST_SAMPLE_EDGE` / `FAST_SAMPLE_COMPRESS` /
+    `base64ToBytes` 契约、单次测光实耗打印；
+  - `_probe_v190_async.cjs`（150）：队列字段/冻结快照/`exposureIndex`/`pumpQueue` 单飞/
+    空截图重试/`DevelopBadge`/`stageOccluder`/无 `disabled={developing}`/五语队列键；
+  - `_probe_v190_wiring.cjs`（322）：S0 版本与 18 依赖 → S9 零 `as any` / 零
+    `watchPositionAsync`，把「设置 → 64×64 测光 → 四场景 → 12 层显影 → 九卷 → 水印矩阵 →
+    异步队列」整条接线逐文件钉住。
+- 旧探针按新契约改数据/形态不改语义：`_probe_film_look.cjs`（1117 → 2000）、
+  `_probe_v1811_adaptive.cjs`（503 → 1701）、`_probe_v180_seams.mjs`（1190 → 1421）、
+  `_probe_v184_camera.cjs`（895 → 910）、`_probe_v188_sharp.cjs`（80 → 118）、
+  `_probe_v189_flash.cjs`（51 → 56，S4 按非阻塞重写）、`_probe_v186_perf.cjs`（241 不变）。
+  **替代而非新增**：删除失效的 `_probe_v1810_stocks.cjs` 与 `_probe_v1811_wiring.cjs`，
+  换成 `_probe_v190_stocks.cjs` + `_probe_v190_wiring.cjs`（门禁总数 22 → 26）。
+- `npx expo export --platform ios --no-bytecode` → **EXIT 0**，bundle
+  `index-23aea521adf641c6d8d33db0609b617d.js` **1,385,027 B**（v1.8.11 为 1,381,274 B，
+  +3,753 B）；素材含新 `vignette.png` 115,936 B。
+  `python _verify_ipa_v190.py --local ...` → `RESULT(local): OK`（新 needle 全命中、
+  零 `missing:`、ABSENT 全 x0）。
+- **仍没有真机复测**：建议①连拍 5 张看快门是否即按即响应、冲印徽标是否排到"队列 5"；
+  ②同一场景对比九卷（重点 UM-400 的暗部压片与 CS-800T 的暖红光晕）；
+  ③逆光/夜景各拍一张对比"场景自适应"开 / 关，确认暗部不再被提亮成灰雾；
+  ④水印 16 组合过一遍，确认 v1.8.11 的纵横向位置行为逐像素没变。
+
+### 45.8 产物指纹
+
+- **本地提交**：`待回填`
+- **远端 master**：`待回填`
+- **CI**：`待回填`
+- **artifact**：`待回填`
+- **IPA**：`FretroCam-v1.9.0-unsigned.ipa`，`待回填`
+- **Release**：`待回填`
+- **下载**：`待回填`
+- **IPA 回读核验**：`待回填`（`python _verify_ipa_v190.py <artifact_id>` → `RESULT: OK`）
+
+### 45.9 文件改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/types/index.ts` | `ColorGradeConfig` 重写：删 7 个旧色阶字段，新增 `lensSoftness?` / `shadowCrush?` / `highlightBloom?`，`halation` 语义改为光晕上限；`SceneStats` 文档改 64×64 原生测光 |
+| `src/constants/presets.ts` | **整文件重写**：九支新卷 + `PRESET_DEFAULTS` 12 色键 + `DEFAULT_PRESET_ID='um-400'` + `GRAINLESS_PRESET_IDS={'ek-100'}` + 11 条兼容映射 + `resolvePreset` 新键 |
+| `src/utils/gradeLayers.ts` | **整文件重写**（438 行）：12 层同源光学显影管线 + 四场景增量接线 + live 面过滤 + `countStageImages` 口径 |
+| `src/utils/adaptiveGrade.ts` | **整文件重写**（274 行）：反 HDR 四场景分类/增量表/WB-Tint 偏移/退化契约 |
+| `src/utils/sceneProbe.ts` | **整文件重写**（207 行）：原生 64×64 JPEG 极速测光（`FAST_SAMPLE_EDGE` / `base64ToBytes`），删全尺寸读取 |
+| `src/utils/processFilmPhoto.ts` | 测光路径注释与 4.5 场景统计块改 64×64 说法（调用签名不变） |
+| `src/components/CameraScreen.tsx` | 非阻塞冲印队列（`jobQueueRef`/`pumpQueue`/`kickQueue`/`exposureIndex`/空截图重试）+ 舞台遮挡 + `DevelopBadge` 接线 |
+| `src/components/DevelopOverlay.tsx` | 全屏遮罩改为 `DevelopBadge` 小徽标（`memo`），显示 `队列 {count}`、3s/5s 自动退场 |
+| `src/components/FilmCard.tsx` | 九卷新角标与渐变派生键更新 |
+| `src/i18n/locales/*.ts` | 五语各 +1 键 `develop.queue.count`（zh-Hans / zh-Hant / ja / en / fr） |
+| `assets/textures/vignette.png` | 重生成：中心 56% 透明、RGB (4,12,20)、115,936 B |
+| `scripts/generate_vignette.py` | 常量改 `INNER_RADIUS = 0.56`、`RGB = (4,12,20)` |
+| `app.json` | version `1.8.11` → `1.9.0` |
+| `README.md` | 本节 §45 + TOC |
+
+工作区根（不进仓库）：`_probe_v190_stocks.cjs` / `_probe_v190_optics.cjs` /
+`_probe_v190_meter.mjs` / `_probe_v190_async.cjs` / `_probe_v190_wiring.cjs`（五个新门禁）、
+`_v190_make_fixtures.py` + `_v190_meter_fixtures/`（64×64 夹具 7 张 + truth.json）、
+`_run_gates_v190.ps1`、`_verify_ipa_v190.py` / `_release_v190.py` / `_commit_v190_msg.txt`、
+`_gate_v190_run.out.txt`、`_gate_v190_local_verify.txt`、`_export_v190_lead/`；
+删除了 `_probe_v1810_stocks.cjs` / `_probe_v1811_wiring.cjs`（被 v190 两探针替代）。
 
 ---
 

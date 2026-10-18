@@ -129,6 +129,7 @@ export const en: Messages = {
   'develop.done.saved': 'Saved to your album',
   'develop.done.unsaved': 'Developed (not saved)',
   'develop.error.title': 'Development failed',
+  'develop.queue.count': 'Queue {count}',
   'develop.stage.capturing': 'Exposing and developing',
   'develop.stage.normalizing': 'Preparing the negative',
   'develop.stage.saving': 'Saving to your album',

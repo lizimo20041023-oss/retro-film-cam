@@ -122,6 +122,7 @@ export const zhHant: Messages = {
   'develop.done.saved': '已存入相簿',
   'develop.done.unsaved': '成片已產生（未存相簿）',
   'develop.error.title': '顯影失敗',
+  'develop.queue.count': '佇列 {count}',
   'develop.stage.capturing': '正在曝光顯影',
   'develop.stage.normalizing': '正在整理底片',
   'develop.stage.saving': '正在存入相簿',

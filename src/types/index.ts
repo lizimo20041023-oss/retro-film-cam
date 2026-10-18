@@ -355,64 +355,60 @@ export interface LocationLayout {
 /**
  * 调色参数。每个值都有"中性点"，中性点 = 不产生任何图层 = 零开销。
  * 具体映射见 `src/utils/gradeLayers.ts` 顶部注释。
+ *
+ * v1.9.0（用户 m07595 手术二）起，这套参数描述的是 **5 层同源拍立得光学显影管线**：
+ *   base 原图 → 树脂镜微柔焦 → 暗部浓墨重压 → 高光奶油提亮 → 化学冷暖分离 + 四角显影黑角
+ * 字段不再是"半透明色纸"的挡位，而是"光学层"的强度：
+ *   `lensSoftness` / `shadowCrush` / `highlightBloom` 三层全部由**同一张底片**的
+ *   `Image` 副本（blurRadius + mixBlendMode）叠加实现，不做任何像素级 JS 计算。
  */
 export interface ColorGradeConfig {
-  /** 色温：-1 冷（偏蓝）~ 0 中性 ~ +1 暖（偏橙）。 */
+  /** 色温：-1 冷（偏蓝）~ 0 中性 ~ +1 暖（偏橙）。用户色温旋钮直接加减这一项。 */
   temperature?: number;
   /** 色调：-1 品红 ~ 0 中性 ~ +1 偏绿。 */
   tint?: number;
-  /** 饱和度：0 灰度 ~ 1 原样 ~ 2 浓艳。 */
-  saturation?: number;
-  /** 对比度：0 平 ~ 1 原样 ~ 2 硬。 */
-  contrast?: number;
   /**
-   * v1.8.7 模块二：**自混合 S-Curve** 强度（同一张原图的无模糊副本再叠一层的
-   * 不透明度，0.22~0.42；0 = 关）。`curveBlendMode` 决定这层走 soft-light 还是 overlay：
-   * soft-light 在 0.5 处恒等、高光抬升只有 overlay 的一半，overlay 更"硬"。
-   *
-   * 为什么是"同源副本"而不是滤镜：RN 的 `filter` 在 iOS 上只有 brightness/opacity，
-   * 真正的 S 曲线只能靠"同一画面以 soft-light/overlay 自叠"来近似 —— 数学上
-   * `soft-light(cb, cb)` 就是一条过 (0,0)/(0.5,0.5)/(1,1) 的 S 曲线。
+   * v1.9.0 手术二 · Layer 1 **拍立得树脂镜头微柔焦**：同一张底片的 `Image` 副本
+   * `blurRadius={1.2}` 以 normal 混合叠在基底上，opacity = 本值（0.22~0.34）。
+   * 作用 = 抹平 iPhone Smart HDR 在树叶/水面/砖墙上的数码锐化白边，还原 Dazz `#Inst C`
+   * 的柔润光学肌理。0 = 关（不出图层）。
    */
-  sCurveIntensity?: number;
-  /** S-Curve 自混合的混合模式：`'soft-light'`（柔）或 `'overlay'`（硬）。 */
-  curveBlendMode?: BlendMode;
+  lensSoftness?: number;
   /**
-   * v1.8.7 模块二：**暗部染色**（分离色调的"暗部"半边）。空串 = 该卷没有这一层。
-   * 用户规范用 `multiply` / `exclusion` / `color-burn` 这类"乘性"混合，不是半透明平涂。
+   * v1.9.0 手术二 · Layer 2 **暗部浓墨重压**：同一张底片以 'multiply' 自叠
+   * （数学上 Y' = Y²），opacity = 本值（0.25~0.55）。
+   * 作用 = 把灰蒙蒙的树荫/柏油路/深色车体压成深邃油润的胶片暗部，而不是蒙灰。
+   */
+  shadowCrush?: number;
+  /**
+   * v1.9.0 手术二 · Layer 3 **高光奶油提亮 + 溢出**：同一张底片经 `blurRadius={14}`
+   * 高斯柔化后以 'screen' 叠加（数学上 Y' = 1-(1-Y)²），opacity = 本值（0.20~0.48）。
+   * 作用 = 只提亮高光（白云/白石/水面反光），并在明暗交界产生拍立得奶油 Bloom，
+   * 根除"高光发灰发闷"。
+   */
+  highlightBloom?: number;
+  /**
+   * Layer 4a **暗部化学偏色**：空串 = 该卷没有这一层。整幅纯色 + `shadowTintBlendMode`。
+   * 深普鲁士蓝 / 墨绿 / 暖褐这类相乘色把暗部拉出化学显影的色相分离。
    */
   shadowTint?: string;
-  /** 暗部染色的混合模式（缺省 `multiply`）。 */
+  /** 暗部化学偏色的混合模式（缺省 `multiply`；可用 `exclusion` 做轻薄冷调）。 */
   shadowTintBlendMode?: BlendMode;
-  /** 暗部染色的不透明度（用户表 0.06~0.12）。 */
+  /** 暗部化学偏色的不透明度（v1.9.0 值域 0.12~0.28）。 */
   shadowTintOpacity?: number;
   /**
-   * v1.8.7 模块二：**柔光染色**（分离色调的"高光"半边）。空串 = 没有这一层。
-   * 用 `soft-light` / `screen` 把高光往某个色相提。
+   * Layer 4b **高光/中间调色彩密度**：空串 = 该卷没有这一层。整幅纯色 + `highlightTintBlendMode`。
+   * 钴青天空、金色阳光、暖桃肤色、钨丝灯蓝、硬反差红蓝密度都靠这一层。
    */
   highlightTint?: string;
-  /** 柔光染色的混合模式（缺省 `soft-light`）。 */
+  /** 色彩密度层的混合模式（缺省 `soft-light`；可用 `overlay`/`screen`）。 */
   highlightTintBlendMode?: BlendMode;
-  /** 柔光染色的不透明度（用户表 0.16~0.28）。 */
+  /** 色彩密度层的不透明度（v1.9.0 值域 0.18~0.36）。 */
   highlightTintOpacity?: number;
-  /** 褪色：0 无 ~ 1 极重（只抬黑场，模拟过期胶片）。 */
-  fade?: number;
-  /** 曝光：-1 压暗 ~ 0 原样 ~ +1 提亮。 */
-  exposure?: number;
   /**
-   * 分离色调：0 无 ~ 1 极强。暗部压成青蓝、高光提成暖白，中间调基本不动。
-   * 这是"数码味 → 胶片味"最有效的一层，老 CCD 小 DC 尤其明显。
-   */
-  splitTone?: number;
-  /**
-   * 光晕（halation）：0 无 ~ 1 极强。
-   *
-   * ⚠️ v1.8.5 起**不再**用"把原图模糊一层再叠回去"实现 —— 用户红线：严禁在
-   * 原图上叠 `blurRadius` 模糊副本（成片会像蒙了一层白雾、原生锐度全丢）。
-   * 现在的实现 = 一圈**暖红 screen 混合的纯色层**（不参与模糊、不铺白），只在
-   * 暗部/边缘加一点暖红光晕，抬黑场为零。详见 `utils/gradeLayers.ts`。
-   *
-   * 字段原名 `bloom`，v1.8.5 更名并改语义（旧名已无任何代码读取）。
+   * Layer 4c **暖红光晕（halation）**：一层 `#FF4028` 纯色 'screen'。
+   * 渲染不透明度 = clamp01(本值) × 0.18（v1.9.0 上限；CS-800T 这类要浓光晕的卷写 1）。
+   * 字段原名 `bloom`，v1.8.5 更名并改语义；v1.9.0 起不再用模糊副本实现，纯色层不铺白。
    */
   halation?: number;
 }
@@ -421,15 +417,16 @@ export interface ColorGradeConfig {
 export type ResolvedColorGrade = Required<ColorGradeConfig>;
 
 /**
- * 场景统计（v1.8.11，用户 m06849 第一条：调色要「根据光线变化改变、明部暗部按拍摄场景
- * 自己计算」，而不是给固定色偏）。
+ * 场景统计（v1.8.11 引入，v1.9.0 手术一重做采集链路）。
  *
- * 来源：**成片链路**在归一化 + 裁切之后，把底片缩到 512px 交给 `utils/sceneStats.ts`
- * 的 baseline-JPEG DC 解码器采样（不做 IDCT、不跑滤镜，一次快门只算一次），
- * 结果挂在 `ResolvedFilmPreset.scene` 上传给 `utils/adaptiveGrade.ts`。
+ * 来源：**成片链路**在归一化 + 裁切之后，用 `expo-image-manipulator` 原生（C++）
+ * 把底片缩到 **64×64 的 JPEG**（compress 0.75），再把这张 ~2 KB 的微型 JPEG
+ * （base64）交给 `utils/sceneStats.ts` 的 baseline-JPEG DC 解码器采样（不做 IDCT、
+ * 不跑滤镜，一次快门只算一次，单次测光 CPU 必须 < 5 ms）。结果挂在
+ * `ResolvedFilmPreset.scene` 上传给 `utils/adaptiveGrade.ts` 做反 HDR 场景策略。
  *
- * ⚠️ 取景器实时预览**没有**这份数据（也不许为了它去解码原图 —— 发热纪律 v1.8.6），
- * 所以 `scene === undefined | null` 时调色必须逐字节回到 v1.8.10 的静态曲线。
+ * ⚠️ 取景器实时预览**没有**这份数据（也不许为了它去解码任何图 —— 发热纪律 v1.8.6），
+ * 所以 `scene === undefined | null` 时调色必须逐字节回到静态预设层表。
  *
  * 全部字段都是「测量值」，不在这层做任何补偿；怎么补偿是 `planAdaptiveGrade()` 的事。
  */

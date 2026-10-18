@@ -1,26 +1,35 @@
 /**
- * 显影遮罩层：拍摄后盖住实时取景，露出正在合成的画面。
+ * 冲印状态徽标（v1.9.0 · 用户手术一）：**不再阻塞取景器**。
  *
- * 为什么要有这一层（不是纯装饰）：
- * iOS 的视图截图（`renderInContext`）对未上屏 / opacity 0 / 被完全遮住的视图可能截到空图。
- * 所以合成视图必须真的正常渲染在屏幕上 —— 这层的暖黑色半透明背景就是"把实时取景压暗，
- * 让用户看合成结果"的那块幕布，同时它**在 ViewShot 之外**，不会被截进成片。
+ * v1.8.x 的那层是全屏暖黑幕布 + 操作防火墙，副作用是用户每拍一张都要盯着它等
+ * 5~7 秒（裁切 → 测光 → 离屏合成 → 写相册），快门和取景器都被锁死。v1.9.0 起冲印
+ * 搬进异步串行队列（见 `CameraScreen` 的 `pumpQueue`），这层就只剩下"告诉用户后台
+ * 在洗第几张"的职责：安全区内一枚小胶囊，不吃触摸、不遮画面。
  *
- * 它同时是"操作防火墙"：显影期间整屏吃掉触摸，避免用户连点快门或乱切相框。
+ * 合成舞台去哪儿了：`FilmStageComposer` 现在挂在 `CameraScreen` 的 `styles.preview`
+ * 内部、`cameraClipNode` 之前，平时被 `styles.stageOccluder` 这层不透明挡板盖住
+ * （它必须真的上屏、真的可见，否则 iOS 的 `renderInContext` 会截到空图）；只有
+ * 截图失败兜底时才把舞台临时抬到挡板之上。所以这个文件里**没有**任何全屏层，
+ * 也**没有** `children` 插槽。
  *
- * 尺寸约定：`computeDevelopStageBox` 给出的盒子 = 合成舞台能用的逻辑尺寸，
- * 也是 `processFilmPhoto({ stage })` 应该传的尺寸 —— 两边用同一个函数，保证"所见即所得"。
+ * `computeDevelopStageBox` 仍然留在这里：它是"合成舞台能用的逻辑尺寸"，也是
+ * `processFilmPhoto({ stage })` 传的尺寸 —— 两边共用一套几何，保证所见即所得。
  */
 import { memo } from 'react';
-import type { ReactNode } from 'react';
-import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { useI18n } from '../i18n';
 import type { MessageKey } from '../i18n';
 import type { DevelopStage, DevelopStatus, Size } from '../types';
 
 /** 舞台四周留白。 */
 export const DEVELOP_STAGE_MARGIN = 16;
-/** 底部状态条预留高度（成片预览/提示文字都在这块里）。 */
+/**
+ * 底部状态条预留高度。
+ * v1.9.0 起舞台藏在取景器后面、不再需要给底部状态条让位，但 `stageBox` 是
+ * "排版尺寸"的公共约定（合成舞台 / 相框预览共用），改它会连带改所有旧成片的
+ * 构图，所以常量与公式**保持不变**。
+ */
 export const DEVELOP_PANEL_RESERVE = 172;
 
 /**
@@ -37,12 +46,11 @@ export function computeDevelopStageBox(viewport: Size): Size {
   };
 }
 
-export interface DevelopOverlayProps {
+export interface DevelopBadgeProps {
+  /** 当前这条冲印链路的状态（`idle` 时整个徽标不渲染）。 */
   status: DevelopStatus;
-  /** 轻触"已完成 / 失败"提示后回到取景（`idle` 时不会触发）。 */
-  onDismiss: () => void;
-  /** 合成视图插到这里（显影结束后宿主会自动卸载它）。 */
-  children?: ReactNode;
+  /** 队列里还没洗完的张数（含正在洗的这张）；`developing` 时显示成"队列 N"。 */
+  queueDepth: number;
 }
 
 /** 三个阶段各自的文案键 —— 翻译要跟着语言变，所以这里只存键，取文案在组件里做。 */
@@ -53,137 +61,111 @@ const STAGE_TEXT: Record<DevelopStage, MessageKey> = {
 };
 
 /**
- * v1.8.6 · 契约 §2/§4：`memo` 包装。
+ * v1.8.6 · 契约 §2/§4 的 `memo` 包装保留；v1.9.0 起它退化成"一枚小胶囊"。
  *
- * 为什么值得包：相机屏顶层有 37 个 state（曝光 / 色温 / 变焦都在上面），
- * 参数条一动就整屏重渲染；而显影遮罩的 `status` 在一张照片洗完之后**不会再变**
- * （`done` 等着用户点掉），它底下的 `children` 就是合成视图。没有 memo 的话，
- * 用户只是在显影完成页上拖动一下，这棵覆盖层也跟着重渲染一遍。
+ * 为什么还值得 memo：相机屏顶层有 37 个 state（曝光 / 色温 / 变焦都在上面），
+ * 参数条一动就整屏重渲染；徽标只关心 `status` / `queueDepth` 两个 props，
+ * 父级把它们放进 `useMemo` 节点里就能挡掉绝大多数重渲染。
  *
- * 导出名不变（`DevelopOverlay`），调用方（`CameraScreen`）一行不用改。
- * 注意：`memo` 只挡"props 引用没变"的重渲染 —— `status` 是对象、`children` 是
- * React 元素，父级若每次渲染都新建它们，memo 自然失效（这属于调用方的稳定性问题，
- * 契约 §5.2 用 `overlayNode` 的 `useMemo` 解决）。
+ * 内部实现名 `DevelopOverlayImpl` 是刻意保留的：`_verify_ipa_v190.py` 的
+ * `IF_LOCAL_NAMES_KEPT` 表按名字断言它（canary 在时必须存在）。
+ *
+ * 这层不渲染 `onPress`、不铺 backdrop：done/error 的自动退场是 CameraScreen 的
+ * `useEffect` 做的（那里才有 `setStatus`），点按任何位置都不会打断取景。
  */
-function DevelopOverlayImpl({ status, onDismiss, children }: DevelopOverlayProps) {
+function DevelopOverlayImpl({ status, queueDepth }: DevelopBadgeProps) {
   const { t } = useI18n();
+  const insets = useSafeAreaInsets();
 
   if (status.kind === 'idle') {
     return null;
   }
 
-  const dismissable = status.kind === 'done' || status.kind === 'error';
-
   return (
-    <Pressable
-      // 始终吃掉触摸：显影中防止连点，结束后轻触继续
-      onPress={dismissable ? onDismiss : undefined}
-      accessibilityRole={dismissable ? 'button' : undefined}
-      accessibilityLabel={dismissable ? t('develop.tapToContinue') : undefined}
-      style={styles.layer}
-    >
-      <View pointerEvents="none" style={styles.backdrop} />
-      <View pointerEvents="none" style={styles.center}>
-        {children}
-      </View>
-
-      <View pointerEvents="none" style={styles.panel}>
+    <View pointerEvents="none" style={[styles.layer, { paddingTop: insets.top + 8 }]}>
+      <View
+        accessible
+        accessibilityRole="text"
+        accessibilityLabel={
+          status.kind === 'developing'
+            ? `${t(STAGE_TEXT[status.stage])} ${t('develop.queue.count', { count: queueDepth })}`
+            : status.kind === 'done'
+              ? t(status.saved ? 'develop.done.saved' : 'develop.done.unsaved')
+              : `${t('develop.error.title')} ${status.message}`
+        }
+        style={styles.pill}
+      >
         {status.kind === 'developing' ? (
-          <View style={styles.row}>
-            <ActivityIndicator color="#FFB562" />
-            <Text style={styles.title}>{t(STAGE_TEXT[status.stage])}…</Text>
-          </View>
+          <>
+            <ActivityIndicator size="small" color="#FFB562" />
+            <Text style={styles.title}>{t(STAGE_TEXT[status.stage])}</Text>
+            {queueDepth > 0 ? (
+              <Text style={styles.queue}>{t('develop.queue.count', { count: queueDepth })}</Text>
+            ) : null}
+          </>
         ) : null}
 
         {status.kind === 'done' ? (
-          <View style={styles.row}>
-            <Image source={{ uri: status.uri }} style={styles.thumb} resizeMode="cover" />
-            <View style={styles.column}>
-              <Text style={styles.title}>
-                {t(status.saved ? 'develop.done.saved' : 'develop.done.unsaved')}
-              </Text>
-              <Text style={styles.hint}>{t('develop.tapToContinue')}</Text>
-            </View>
-          </View>
+          <Text style={styles.title}>{t(status.saved ? 'develop.done.saved' : 'develop.done.unsaved')}</Text>
         ) : null}
 
         {status.kind === 'error' ? (
-          <View style={styles.column}>
+          <>
             <Text style={styles.errorTitle}>{t('develop.error.title')}</Text>
-            <Text style={styles.message}>{status.message}</Text>
-            <Text style={styles.hint}>{t('develop.tapToContinue')}</Text>
-          </View>
+            <Text style={styles.message} numberOfLines={1}>
+              {status.message}
+            </Text>
+          </>
         ) : null}
       </View>
-    </Pressable>
+    </View>
   );
 }
 
-export const DevelopOverlay = memo(DevelopOverlayImpl);
+export const DevelopBadge = memo(DevelopOverlayImpl);
 
 const styles = StyleSheet.create({
   layer: {
-    ...StyleSheet.absoluteFill,
-    // 盖住实时取景，但留一点透：用户能看出画面在"显影"
-    zIndex: 20,
-  },
-  backdrop: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: '#140A03',
-    opacity: 0.82,
-  },
-  center: {
-    ...StyleSheet.absoluteFill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    // 上下 padding 之和 = 剧场盒子四周的留白，保证合成视图不会压到底部状态条
-    paddingTop: DEVELOP_STAGE_MARGIN,
-    paddingBottom: DEVELOP_STAGE_MARGIN + DEVELOP_PANEL_RESERVE,
-  },
-  panel: {
     position: 'absolute',
-    left: 20,
-    right: 20,
-    bottom: 44,
-    padding: 14,
-    borderRadius: 16,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    top: 0,
+    left: 0,
+    right: 0,
+    // 安全区内居中的一条窄带：宽度撑满才能居中，但整层不吃触摸
+    alignItems: 'center',
+    zIndex: 21,
   },
-  row: {
+  pill: {
     flexDirection: 'row',
     alignItems: 'center',
-  },
-  column: {
-    flex: 1,
-  },
-  thumb: {
-    width: 64,
-    height: 64,
-    borderRadius: 10,
-    marginRight: 12,
-    backgroundColor: 'rgba(255,255,255,0.08)',
+    maxWidth: '92%',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: 'rgba(10, 10, 11, 0.82)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255, 255, 255, 0.18)',
   },
   title: {
-    marginLeft: 10,
+    marginLeft: 8,
     color: '#FFFFFF',
-    fontSize: 16,
+    fontSize: 12,
     fontWeight: '600',
+  },
+  queue: {
+    marginLeft: 8,
+    color: 'rgba(255, 255, 255, 0.62)',
+    fontSize: 12,
+    fontWeight: '500',
   },
   errorTitle: {
     color: '#FFB4A2',
-    fontSize: 16,
+    fontSize: 12,
     fontWeight: '700',
   },
   message: {
-    marginTop: 6,
-    color: 'rgba(255,255,255,0.78)',
-    fontSize: 13,
-    lineHeight: 19,
-  },
-  hint: {
-    marginTop: 6,
-    marginLeft: 10,
-    color: 'rgba(255,255,255,0.55)',
+    marginLeft: 8,
+    maxWidth: 220,
+    color: 'rgba(255, 255, 255, 0.7)',
     fontSize: 12,
   },
 });
