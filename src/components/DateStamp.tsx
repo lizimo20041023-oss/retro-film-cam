@@ -93,6 +93,13 @@ export interface DateStampProps {
    * 旧路径（不传 `glyphStyle`）忽略此参数 —— 旧探针冻结了它的 offset 恒 (0,0)。
    */
   haloShadow?: boolean;
+  /**
+   * 是否给日期垫「贴身高反差暗部底托」（v1.9.3 §5.2）。默认 `false`；
+   * 只有成片合成里**压在照片上**的日期（`FilmCompositor` 画内日期 /
+   * `FramePreviewLayer` 同位置日期）才传 `true`。本组件只透传给
+   * `OpticalDateText`，不自己决定任何数值（三个冻结值在 `DateGlyphs.tsx`）。
+   */
+  contrastShadow?: boolean;
 }
 
 /**
@@ -119,6 +126,7 @@ function DateStampImpl({
   canvasWidth,
   box,
   haloShadow = false,
+  contrastShadow = false,
 }: DateStampProps): ReactElement | null {
   /*
    * `format === 'OFF'` 的判据落在**文本**上，不落在 render 层的 switch 上：
@@ -217,6 +225,7 @@ function DateStampImpl({
           glow={glowId}
           rotationDeg={rotationDeg}
           haloShadow={haloShadow}
+          contrastShadow={contrastShadow}
         />
       </View>
     </View>

@@ -2,7 +2,7 @@
   "expo": {
     "name": "FretroCam",
     "slug": "retro-film-cam",
-    "version": "1.9.2",
+    "version": "1.9.3",
     "icon": "./assets/icon.png",
     "scheme": "fretrocam",
     "orientation": "portrait",

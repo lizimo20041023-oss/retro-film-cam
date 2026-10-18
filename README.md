@@ -69,6 +69,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [45. v1.9.0：五道手术（非阻塞快门 + 极速测光 / 12 层同源显影 / 反 HDR 四场景 / 九支新卷 / 4×4 水印矩阵保留）](#45-v190五道手术非阻塞快门--极速测光--12-层同源显影--反-hdr-四场景--九支新卷--4x4-水印矩阵保留)
 - [46. v1.9.1：去糊、去雾、去灰（零模糊 S 曲线 / 零模糊曝光提亮 / 四场景去雾 / 九卷零模糊基准 / 70% 暗角）](#46-v191去糊去雾去灰零模糊-s-曲线--零模糊曝光提亮--四场景去雾--九卷零模糊基准--70-暗角)
 - [47. v1.9.2：亮白通透（层序倒置 + 无 crush + 高明度染色 + 80% 内圈暗角 + RGBA 颗粒 + 地名后缀）](#47-v192亮白通透层序倒置--无-crush--高明度染色--80-内圈暗角--rgba-颗粒--地名后缀)
+- [48. v1.9.3：德味高密光学曲线（像素级平铺真银盐颗粒 / color-burn 色彩密度 / 九卷重标定 / 夜景纯黑 / 简繁归一 / 日期底托）](#48-v193德味高密光学曲线像素级平铺真银盐颗粒--color-burn-色彩密度--九卷重标定--夜景纯黑--简繁归一--日期底托)
 
 ---
 
@@ -6759,6 +6760,196 @@ v1.9.1 的层序是「sCurve(overlay) → exposure(screen)」，先压黑再提�
 `_verify_ipa_v192.py` / `_release_v192.py` / `_commit_v192_msg.txt`、`_export_v192_lead/`；
 A/B/D 组探针由 `zero-blur-optics` / `optics-engine` / `watermark-engine` 就地更新，
 C 组由 `quality-gate` 全量复跑（26 道门禁 + 颗粒/暗角单验）。
+
+## 48. v1.9.3：德味高密光学曲线（像素级平铺真银盐颗粒 / color-burn 色彩密度 / 九卷重标定 / 夜景纯黑 / 简繁归一 / 日期底托）
+
+### 48.1 用户需求与四条判断
+
+用户 m09629：v1.9.2 已把「灰雾」清掉，但成片仍缺**德味高密光学曲线**——反差偏软、色彩偏轻、
+颗粒观感不像真银盐、夜景黑场不够纯。四条判断：
+
+1. **颗粒**：v1.8.x 的稀疏圆点观感来自小尺寸 + 低不透明度，不是「SVG 圆点」（v1.8.2 起颗粒
+   早已是预烘 PNG + 手工 1:1 平铺）。要真银盐，得用**不透明中性灰基底 + 双极性黑白点**的
+   像素级贴图 + 更高绝对不透明度。
+2. **反差与色彩密度**：v1.9.2 的 sCurve 上限 0.30 / lift 0.62 是「通透露线」的产物，sCurve
+   被压得比 lift 还弱，反差不可能高。要德味，必须把 sCurve 提到 0.46~0.72、lift 压到
+   0.04~0.18，并补一层 **color-burn 色彩密度**（纯白高光数学恒不变）。
+3. **夜景纯黑**：暗场景若还叠 `exposure-lift`，黑场会被 screen 层抬灰。夜景 lift 必须置 0，
+   同时用 sCurve 与 color-burn 把密度做上去。
+4. **地名与日期**：繁体水印出现「中國 · 云南省 · 麗江市」半繁半简；画内竖排日期压在
+   雪地/白墙上不可读，需要常驻暗部底托。
+
+### 48.2 手术一：像素级平铺真银盐颗粒（`grain.png` 重烤 + `grain.ts`）
+
+- **贴图重烤**（`scripts/generate_grain_clump.py` 全量重写）：512×512 **RGB 不透明双极性
+  银盐板**——中性灰基底 `128` + σ3.0 微抖动，暗点 `#18181C`、亮点 `#E8E6E0`，用周期高斯场 +
+  分位数阈值取暗/亮覆盖各 **7.5%**（合 14.4%），单尺度 `DOT_SIGMA=0.62px`（像素级，不加
+  1.8px 团簇项——那会把能量推到 24–64px 频带，违反「像素级平铺」）。`SEED=20261018`。
+  实测指纹：**280,121 B**、sha256 `5aa05b0dca031e2fd2dd148a171494b6e2b4b8ea79ec275ce2858ac65cbf6aff`；
+  灰度 mean **127.90** / std **39.19**；暗点 **7.21%** / 亮点 **7.23%** / 中性基底 **82.94%**；
+  频带 `<8px 88.2% / 8–24px 10.4% / 24–64px 1.2% / 64–160px 0.1%`。
+- **档位改绝对不透明度**（`src/constants/grain.ts`）：**OFF 0 / LT 0.10 / STD 0.18 /
+  HV 0.30 / MAX 0.42**，`GRAIN_OPACITY_MAX=0.42`，`grainLevelAt` 兜底 0.18；
+  微尘阈值（`dustSpecCountForGrain`）随档位改 0.36/0.24。
+- **渲染层一行未改**（`src/components/FilmLookLayers.tsx`）：颗粒仍是 `Image` + 手工 1:1
+  平铺（`TEXTURE_TILE_PT = 512/3`，块数上限 6×6）+ 外层 `View` 的 `mixBlendMode:'overlay'`；
+  取景器实时预览仍**零颗粒、零 SVG**。不透明基底在 overlay 下等价于「中性灰不改变底图 +
+  黑白点做密度」，因此 0.10~0.42 的档位都是可见剂量，不再有 alpha 载体时代「覆盖率只有
+  20%、看着像噪点云」的问题。
+
+### 48.3 手术二：德味高密光学曲线（`gradeLayers.ts` 13 槽）
+
+层序（`buildGradeLayers` 内 0–12，低层先渲染）：
+
+| 槽 | key | blend | 上限 | 说明 |
+| --- | --- | --- | --- | --- |
+| 0 | `base` 原图 | — | — | 100% 刀锐，photo `blurRadius` 恒 0 |
+| 1 | `s-curve-contrast` | overlay | **0.72** | 九卷 0.46~0.72，主反差 |
+| 2 | `color-density` | **color-burn** | **0.24** | **本版新增**：纯色 `colorBurnTint`，纯白恒不变 |
+| 3 | `exposure-lift` | screen | **0.24** | 九卷 0.04~0.18，夜景由自适应置 0 |
+| 4 | `temperature` | soft-light | 0.22 增益 | 仅非 0 出层 |
+| 5 | `tint` | soft-light | 0.22 增益 | 仅非 0 出层 |
+| 6 | `shadow-tint` | soft-light / overlay | **0.36** | `sanitizeTintBlendMode` 只放两种 |
+| 7 | `highlight-tint` | soft-light / overlay | **0.36** | 同上 |
+| 8 | `shadow-crush` | multiply | **0.08** | 仅 TX-400 = 0.08 |
+| 9 | `mono-desaturate` | color `#808080` | 1.0 | 仅 mono 卷 |
+| 10 | `halation` | screen（lightLeak 贴图） | **0.06** | 仅 CS-800T = 0.06 |
+| 11 | `grain` | overlay（grain 贴图平铺） | 档位 0~0.42 | 见 §48.2 |
+| 12 | `vignette` | multiply（vignette 贴图） | **0.40** | 见 §48.6 |
+
+- 导出常量：`S_CURVE_OPACITY_MAX=0.72`、`COLOR_BURN_OPACITY_MAX=0.24`、
+  `EXPOSURE_LIFT_OPACITY_MAX=0.24`、`SHADOW_CRUSH_OPACITY_MAX=0.08`、
+  `HALATION_OPACITY_MAX=0.06`、`VIGNETTE_OPACITY_MAX=0.40`、
+  `SHADOW_TINT_OPACITY_MAX=0.36`、`HIGHLIGHT_TINT_OPACITY_MAX=0.36`、
+  `TEMPERATURE_GAIN = TINT_GAIN = 0.22`。
+- **color-burn 的数学**：`result = 1 − (1−base)/source`，`source=1`（纯白）时恒等于 base，
+  所以高光不会被压脏；暗部/中间调随 `colorBurn` 加深，这正是「色彩密度 / 德味厚实」的来源。
+- `halation` 在 v1.9.2 被删到 0，本版按用户要求恢复**唯一最小剂量**（仅 CS-800T 0.06），
+  其余八卷仍 0。
+
+### 48.4 手术三：九卷参数矩阵（`presets.ts` / `FilmCard.tsx`）
+
+九卷 `sCurveContrast / exposureLift / colorBurn / shadowCrush / vignette`（grain 基准仍 0.025，
+运行时由五档绝对覆盖；EK-100 = 0）：
+
+| 卷 | sCurve | lift | burn | crush | vignette | 备注 |
+| --- | --- | --- | --- | --- | --- | --- |
+| UM-400 | 0.62 | 0.14 | 0.08 | 0 | 0.34 | shadow `#2373C3` overlay 0.24 / high `#FFCD6E` soft 0.26 / burn `#235F9E` |
+| GD-200 | 0.52 | 0.12 | 0.10 | 0 | 0.26 | high `#FFBE4B` overlay 0.28 / burn `#B46E32` |
+| PT-400 | 0.46 | 0.08 | 0.14 | 0 | 0.22 | high `#FFD0AF` soft 0.30 / shadow `#A8C4E0` soft 0.16 / burn `#C08A5A` |
+| CP-200 | 0.50 | 0.14 | 0.08 | 0 | 0.30 | high `#EBAF50` overlay 0.28 / burn `#B77A2E` |
+| FJ-400 | 0.54 | 0.12 | 0.10 | 0 | 0.26 | shadow `#1E917D` overlay 0.26 / burn `#2F7F6E` |
+| EK-100 | 0.68 | 0.16 | 0.06 | 0 | 0.36 | 零颗粒；shadow `#1B3A6B` overlay 0.30 / high `#D2452F` overlay 0.26 / burn `#8C2F26` |
+| CS-800T | 0.56 | 0.12 | 0.06 | 0 | 0.32 | halation 0.06；high `#196ECD` overlay 0.32 / burn `#1A4F8C` |
+| HP-400 | 0.54 | 0.10 | 0.08 | 0 | 0.28 | mono；burn `#6B5A45` |
+| TX-400 | 0.72 | 0.18 | 0.04 | 0.08 | 0.38 | mono；burn `#5A4632` |
+
+- **胶片卡 swatch**（`FilmCard.tsx`）：`BASE_GRAY=110`、`CRUSH_RANGE=500`、`S_RANGE=55`、
+  `LIFT_RANGE=240`、`VIGNETTE_RANGE=120`、`COLOR_BURN_RANGE=160`、
+  `SHADOW_GAIN=1.2`、`HIGHLIGHT_GAIN=3.0`；三档公式含 burn 项（逐通道
+  `−burn·160·(1−burnTintCh/255)·{0.2/0.3/0}`），mono 走 BT.709。九卷两两可辨
+  **minMaxDiff = 19**（阈值 15）、minSumDiff = 63，通道 6..250 无封顶。
+
+### 48.5 手术四：夜景纯黑 / 地名简繁归一 / 画内日期底托
+
+- **`adaptiveGrade.ts`**：`AdaptivePlan` 新增 `colorBurnDelta` 与「目标置 0」语义的
+  `exposureLiftTarget`：
+  - dark（夜景）：sCurve **+0.14** / colorBurn **+0.05** / `exposureLiftTarget = 0`（不再抬黑场）；
+  - high-contrast：+0.12 / +0.06；
+  - flat：+0.18 / +0.08（`colorDensityScale` / `separationScale` 维持 1.20）；
+  - bright：sCurve +0.10 / lift +0.08；
+  - neutral 全 0。`ADAPTIVE_DELTA_MAX=0.20`、`ADAPTIVE_COLOR_BURN_DELTA_MAX=0.08`；
+    halation 自适应增量仍为 0（不通过场景加光晕）。
+- **`placeNames.ts` 简繁归一**：新增 `HAN_SIMPLIFIED_TO_TRADITIONAL`（191 对，覆盖 34 个省级
+  行政区 + 省/市/自治区/特别行政区/自治州/地区/县/区/街道后缀 + 常见地级市与县市名）、
+  `HAN_TRADITIONAL_PHRASES`（臺灣/臺北 等 7 条）与反向表；导出 `toTraditionalHan` /
+  `toSimplifiedHan` / `normalizeHanVariant`；`formatChinesePlace` 内对 country / 港澳台
+  region / city / 非港澳台 region 逐段做 `han()` 归一（单遍最长匹配，未知字原样）。
+  效果：zh-Hant 整行繁体 `中國 · 雲南省 · 麗江市`、`中國 · 香港特別行政區`；
+  zh-Hans 整行简体 `中国 · 云南省 · 丽江市`；en/ja 逐字节不变。
+- **`DateGlyphs.tsx` 画内日期底托**：新增常驻最底层 `contrast-bed`——
+  `textShadowColor = 'rgba(0, 0, 0, 0.82)'`、`textShadowOffset = { width: 0, height: 1 }`、
+  `textShadowRadius = 3.5`；`dateGlyphLayers(style, glow, fontPx, letterSpacing, haloShadow,
+  contrastShadow=false)` 层序为 contrast-bed → haloShadow 两层 → 材质层，默认路径逐字节不变。
+  `OpticalDateText` / `DateStamp` 新增可选 `contrastShadow?`（默认 false）。
+  **接线**：`FilmCompositor` 画内日期与 `QuartzPiece` 水印日期（`contrastShadow={haloShadow}`，
+  仅 fullBleed 即日期压照片时为真）、`FramePreviewLayer` 两处（`contrastShadow={fullBleed}`）；
+  白边/相纸上的日期不底色托，避免破坏相纸质感。
+
+### 48.6 暗角重烤：中心透明内圈 80% → 72%
+
+`scripts/generate_vignette.py` 的 `INNER_RADIUS = 0.72`；重烤 1024×1024 RGBA **118,166 B**、
+sha256 `4ab7add959d5460225c816ff47d80721fddff06af38229b4a42b547c3085be8a`、RGB(4,12,20)；
+alpha 径向剖面 `.72=0 / .80=50 / .88=153 / .94=224 / 1.00=255`。九卷 vignette 新量程
+0.22~0.38，乘上新暗角后强度与 v1.9.2 的 0.08~0.15 × 80% 内圈相比更「角部收得住、
+中心不受影响」。
+
+### 48.7 门禁（26 道，45,107 条断言）
+
+- `tsc --noEmit` EXIT 0。
+- 26 道门禁：| # | 门禁 | 断言 | # | 门禁 | 断言 |
+| --- | --- | --- | --- | --- | --- |
+| G01 | `_probe_date_engine.cjs` | 3522 | G14 | `_purity_audit.mjs` | 64 |
+| G02 | `_probe_film_look.cjs` | 2591 | G15 | `_probe_v186_perf.cjs` | 241 |
+| G03 | `_probe_geo_lock.cjs` | 16207 | G16 | `_probe_v188_sharp.cjs` | 158 |
+| G04 | `_probe_noframe_v181.cjs` | 455 | G17 | `_probe_v189_flash.cjs` | 56 |
+| G05 | `_probe_noframe_watermark.cjs` | 458 | G18 | `_probe_v190_stocks.cjs` | 998 |
+| G06 | `_probe_skin_material.cjs` | 1069 | G19 | `_probe_v190_optics.cjs` | 5006 |
+| G07 | `_probe_v180_seams.mjs` | 1506 | G20 | `_probe_v190_meter.mjs` | 298 |
+| G08 | `_probe_lead_integration.mjs` | 315 | G21 | `_probe_v190_async.cjs` | 150 |
+| G09 | `_probe_capture_quality.mjs` | 78 | G22 | `_probe_v190_wiring.cjs` | 2267 |
+| G10 | `_probe_v184_camera.cjs` | 941 | G23 | `_probe_v1811_adaptive.cjs` | 3957 |
+| G11 | `_probe_v185_place.cjs` | 1014 | G24 | `_probe_v1811_scene.mjs` | 478 |
+| G12 | `_probe_v185_frame.cjs` | 1781 | G25 | `_probe_v1811_watermark.cjs` | 1497 |
+| G13 | `_haze_audit.mjs` | 9/9（结构 117 + 数据/源码 148，超预算 0/9） | — | **合计** | **45,107 条断言 + 暗角单验 9/9** |
+
+- `tsc --noEmit -p tsconfig.json` → EXIT 0；26 门禁全 EXIT 0 / 0 失败
+  （`_run_gates_v193.ps1`，日志 `_gate_v193_run.out.txt` 167,428 B；Lead 独立复跑日志
+  `_gate_v193_lead_verify.out.txt` 同样 `GATES TOTAL 26 / FAILED 0`）。
+- `_haze_audit.mjs`：13 槽层序成立（`sCurve → color-density → exposure`），halation 仅
+  CS-800T 0.06 / screen；`veilMid` 最大 0.0632（预算 0.08）、`veilHigh` 最大 0.0682
+  （预算 0.09）、`whiteLoss` 0、超预算 0/9；`_purity_audit.mjs` → `RESULT: PURE`。
+- 资产单验：`_verify_ipa_v193.py --grain` → `RESULT(grain): OK`、`--vignette` →
+  `RESULT(vignette): OK`；本地 bundle 核验 `RESULT(local): OK`，
+  `index-ec242e6a8419d99fb97b0767ec790d8e.js` = **1,393,957 B**
+  （v1.9.2 为 1,386,381 B，+7,576 B），sha256 `fd111267…651a`。
+- `_haze_audit.mjs` / `_purity_audit.mjs`：13 槽层序成立、halation 仅 CS-800T 0.06、超预算 0/9、`RESULT: PURE`
+- 资产单验：`_verify_ipa_v193.py --grain` / `--vignette` 均 `RESULT: OK`。
+
+### 48.8 发布指纹（本版实测）
+
+*（发布后回填）*
+
+### 48.9 文件改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/utils/gradeLayers.ts` | v1.9.3 13 槽层序：sCurve 上限 0.72、新增 color-burn 色彩密度层、 lift 上限 0.24、halation 恢复 0.06、染色上限 0.36、暗角上限 0.40 |
+| `src/utils/adaptiveGrade.ts` | 新增 `colorBurnDelta` / `exposureLiftTarget`；四场景改 dark +0.14/+0.05/lift 0、hc +0.12/+0.06、flat +0.18/+0.08、bright +0.10/+0.08 |
+| `src/constants/presets.ts` | 九卷高反差高密度矩阵重标定；新增 `colorBurn` / `colorBurnTint` |
+| `src/components/FilmCard.tsx` | swatch 量程/公式重算（S_RANGE 55 / LIFT_RANGE 240 / COLOR_BURN_RANGE 160 / SHADOW_GAIN 1.2 / HIGHLIGHT_GAIN 3.0），九卷两两可辨 |
+| `src/constants/grain.ts` | 五档绝对不透明度 0/0.10/0.18/0.30/0.42、上限 0.42、dust 阈值 0.36/0.24 |
+| `scripts/generate_grain_clump.py` | 全量重写为 RGB 不透明双极性银盐配方 + 自检门 |
+| `assets/textures/grain.png` | 重烤 512² RGB、280,121 B、sha256 `5aa05b0d…` |
+| `scripts/generate_vignette.py` | `INNER_RADIUS = 0.72`、剖面元组与 docstring |
+| `assets/textures/vignette.png` | 重烤 1024² RGBA、118,166 B、sha256 `4ab7add9…` |
+| `src/constants/textures.ts` | grain / vignette / lightLeak 注释改 v1.9.3 口径 |
+| `src/utils/placeNames.ts` | 191 对简→繁 + 短语表 + `toTraditionalHan`/`toSimplifiedHan`/`normalizeHanVariant` |
+| `src/components/DateGlyphs.tsx` | 新增 `contrast-bed` 底托（rgba(0,0,0,0.82) / offset {0,1} / radius 3.5）与 `contrastShadow` 开关 |
+| `src/components/DateStamp.tsx` | 透传 `contrastShadow?`（默认 false） |
+| `src/components/FilmCompositor.tsx` | 画内日期 / 水印日期接 `contrastShadow` |
+| `src/components/FramePreviewLayer.tsx` | 预览两处日期接 `contrastShadow={fullBleed}` |
+| `src/components/FilmLookLayers.tsx` | **零改动**（颗粒渲染路径本版不动，见 §48.2） |
+| `src/types/index.ts` | `ColorGradeConfig` 新增 `colorBurn?` / `colorBurnTint?`；量程注释改 v1.9.3 |
+| `app.json` | version `1.9.2` → `1.9.3` |
+| `README.md` | 本节 §48 + TOC |
+
+工作区根（不进仓库）：`_v193_contract.md`、`_v193_amend.md`、`_derive_v193.py`、
+`_derive_release_v193.py`、`_run_gates_v193.ps1`、`_gate_v193_run.out.txt`、
+`_gate_v193_report.txt`、`_verify_ipa_v193.py` / `_release_v193.py` / `_commit_v193_msg.txt`、
+`_export_v193_lead/`；A/B/D 组探针由 `zero-blur-optics` / `optics-engine` /
+`watermark-engine` 就地更新，C 组由 `quality-gate` 全量复跑（26 道门禁 + 颗粒/暗角单验）。
+
 
 ---
 

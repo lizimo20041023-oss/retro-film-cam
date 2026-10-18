@@ -356,15 +356,21 @@ export interface LocationLayout {
  * 调色参数。每个值都有"中性点"，中性点 = 不产生任何图层 = 零开销。
  * 具体映射见 `src/utils/gradeLayers.ts` 顶部注释。
  *
- * v1.9.2（用户 m09093「彻底去雾 + 亮白通透」手术）起，这套参数描述的是
- * **提亮优先的零模糊同源显影管线**：先 screen 大提亮、再 overlay 拉反差，彻底废除
- * multiply 压暗思路（仅 TX-400 保留 0.03 的轻微黑位托底）：
- *   base 原图（100% 刀锐） → 同源 screen 零模糊曝光提亮（0.34~0.46）
- *   → 同源 overlay 零模糊真 S 曲线（0.16~0.30） → 化学染色（只允许 soft-light）
+ * v1.9.3（用户 m09629「德味高密光学曲线」手术）起，这套参数描述的是
+ * **反差优先的零模糊同源显影管线**：先把 S 曲线拉满、再用 color-burn 增重色彩，
+ * screen 只留极克制的 0.06~0.14 高光延展：
+ *   base 原图（100% 刀锐）
+ *   → overlay 零模糊真 S 曲线（0.46~0.72，德味核心反差）
+ *   → color-burn 光学色彩密度（0.08~0.16，天空/绿植/颜料增重）
+ *   → screen 克制提亮（0.06~0.14；夜景强制 0）
+ *   → 冷暖分离（soft-light / overlay，浓度提升到 0.24~0.36）
+ *   → multiply 黑位托底（仅 TX-400 0.08）
+ *   → 黑白去色（mono 卷）
+ *   → halation（仅 CS-800T 0.06）
  *   → 物理介质（颗粒 / 暗角 / 漏光）
- * 三个光学键全部由**同一张底片**的无模糊 `Image` 副本叠加实现，`blurRadius` 恒为 0；
- * 数学上 screen/overlay 都满足 f(0)=0、f(1)=1，黑场永不起雾、白场永不发脏。
- * halation 字段 v1.9.2 起九卷全 0 且管线**不再产生光晕层**（仅保留数据结构兼容）。
+ * 三个 photo 光学键全部由**同一张底片**的无模糊 `Image` 副本叠加实现，`blurRadius` 恒为 0；
+ * 数学上 screen/overlay/color-burn 都满足 f(0)=0、f(1)=1（color-burn 的纯白恒为白），
+ * 黑场永不起雾、白场永不发脏。
  */
 export interface ColorGradeConfig {
   /** 色温：-1 冷（偏蓝）~ 0 中性 ~ +1 暖（偏橙）。用户色温旋钮直接加减这一项。 */
@@ -372,23 +378,34 @@ export interface ColorGradeConfig {
   /** 色调：-1 品红 ~ 0 中性 ~ +1 偏绿。 */
   tint?: number;
   /**
-   * v1.9.2 手术二 · **零模糊真 S 曲线反差**：同源无模糊 `Image`（blurRadius 0）
-   * 以 'overlay' 自叠，opacity = 本值（九卷 0.16~0.30，渲染侧夹 ≤ 0.30）。
-   * 数学：Y<0.5 → 2Y²（暗部压实）；Y≥0.5 → 1−2(1−Y)²（亮部提亮）。
-   * 中灰是不动点、黑场白场都不动，只拉反差，不负责提亮（提亮交给 exposureLift）。
+   * v1.9.3 手术二 · **德味核心反差层（零模糊同源 overlay S 曲线）**：
+   * 同源无模糊 `Image`（blurRadius 0）以 'overlay' 自叠，opacity = 本值
+   * （九卷 0.46~0.72，渲染侧夹 ≤ 0.72）。
+   * 数学：Y<0.5 → 2Y²（暗部压出油润浓黑）；Y≥0.5 → 1−2(1−Y)²（亮部推亮）。
+   * 三通道独立非线性拉伸自带原生胶片饱和度，中灰不动点、黑场白场都不动。
    */
   sCurveContrast?: number;
   /**
-   * v1.9.2 手术二 · **零模糊曝光提亮**：同源无模糊 `Image`（**blurRadius 0，严禁任何模糊**）
-   * 以 'screen' 自叠（数学 Y' = 2Y−Y²），opacity = 本值（九卷 0.34~0.46，渲染侧夹 ≤ 0.62）。
-   * 层序上紧贴原图、先于 S 曲线 —— 先把白场/中间调抬到通透，再用 S 曲线拉反差。
-   * Y=0 时恒为 0 —— 黑色显示器/夜空绝不起雾；中间调/高光干净提亮。
+   * v1.9.3 手术二 · **光学色彩密度增重层**：整幅纯色 `colorBurnTint` 以 `color-burn`
+   * 混合，opacity = 本值（九卷 0.08~0.18：TX-400 为 0.18，其余 0.08~0.16；
+   * 渲染侧夹 ≤ 0.24）。
+   *
+   * 数学：`color-burn(cb, cs) = 1 − min(1, (1−cb)/cs)`。纯白高光（cb=1）恒等于 1
+   * → **白雪/白墙绝不会被压灰**；中间调与暗部按源色乘性加深 → 天空更深邃、绿植更森绿、
+   * 黄墙红花带油画密度。这是 v1.9.3「德味油润」的第二根支柱（第一根是 sCurve）。
+   */
+  colorBurn?: number;
+  /** 色彩密度层纯色（hex）；空串 = 该卷没有这一层。九卷均由预设显式给出。 */
+  colorBurnTint?: string;
+  /**
+   * v1.9.3 手术二 · **克制的高光补偿（零模糊 screen）**：同源无模糊 `Image`（blurRadius 0）
+   * 以 'screen' 自叠，opacity = 本值（九卷 0.04~0.14，渲染侧夹 ≤ 0.24；夜景强制 0）。
+   * Y=0 时恒为 0 —— 黑色显示器/夜空绝不起雾；只做微弱高光延展，不冲淡暗部。
    */
   exposureLift?: number;
   /**
-   * v1.9.2 手术二 · **黑位托底**：同源无模糊 `Image` 以 'multiply' 自叠（Y'=Y²）。
-   * v1.9.2 起**整条 multiply 压暗层基本废除**：九卷里八卷为 0，只有 TX-400 保留 0.03；
-   * 渲染侧硬上限 0.03（v1.9.1 的 0.12 / v1.9.0 的 0.25~0.55 全部作废）。
+   * v1.9.3 手术二 · **黑位托底**：同源无模糊 `Image` 以 'multiply' 自叠（Y'=Y²）。
+   * 九卷里八卷为 0，只有 TX-400 保留 0.08；渲染侧硬上限 0.08。
    */
   shadowCrush?: number;
   /**
@@ -397,27 +414,26 @@ export interface ColorGradeConfig {
    */
   shadowTint?: string;
   /**
-   * 暗部化学偏色的混合模式：v1.9.2 铁律**只允许 `soft-light`**（渲染侧 `sanitizeTintBlendMode`
-   * 会把任何非 soft-light 的值强制回 soft-light）；只有 EK-100 的高光染色层允许 overlay，
-   * 由预设显式声明。multiply / exclusion / screen 会污染黑场白场，一律禁止。
+   * 暗部化学偏色的混合模式：v1.9.3 只允许 `soft-light` / `overlay`（渲染侧
+   * `sanitizeTintBlendMode` 会把任何其它值强制回 soft-light）；multiply / exclusion / screen
+   * 会污染黑场白场，一律禁止。
    */
   shadowTintBlendMode?: BlendMode;
-  /** 暗部化学偏色的不透明度（v1.9.1 值域 0~0.28）。 */
+  /** 暗部化学偏色的不透明度（v1.9.3 九卷 0.16~0.32，渲染侧夹 ≤ 0.36）。 */
   shadowTintOpacity?: number;
   /**
    * Layer 4b **高光/中间调色彩密度**：空串 = 该卷没有这一层。整幅纯色 + `highlightTintBlendMode`。
    * 钴青天空、金色阳光、暖桃肤色、钨丝灯蓝、硬反差红蓝密度都靠这一层。
    */
   highlightTint?: string;
-  /** 色彩密度层混合模式：同 v1.9.1 铁律（非 soft-light/overlay 一律回退 soft-light）。 */
+  /** 色彩密度层混合模式：同铁律（非 soft-light/overlay 一律回退 soft-light）。 */
   highlightTintBlendMode?: BlendMode;
-  /** 色彩密度层的不透明度（v1.9.1 值域 0~0.30）。 */
+  /** 色彩密度层的不透明度（v1.9.3 九卷 0.18~0.32，渲染侧夹 ≤ 0.36）。 */
   highlightTintOpacity?: number;
   /**
-   * **暖红光晕（halation）**：v1.9.2 起九卷**全部为 0**，且渲染管线（gradeLayers.ts）
-   * **不再产生任何光晕层** —— 字段只为历史预设结构与旧照片回放保留，不产生任何图层。
-   * 理由（用户 m08443 → m09093）：带模糊的大面积 screen 光晕会把夜空/黑色背景漫成乳白雾，
-   * 而零模糊少量 screen 光晕又会被误当成「雾」。暗部提亮统一交给 exposure-lift。
+   * **暖红光晕（halation）**：v1.9.3 起只有 CS-800T 一支为 0.06（暖红除碳光晕），
+   * 其余八卷 0；渲染管线在值 > 0.005 时产出**一层 `lightLeak` 贴图 + screen**，
+   * 渲染侧夹 ≤ 0.06（v1.9.2 曾把九卷全部归 0，v1.9.3 按用户 m09629 恢复最小剂量）。
    */
   halation?: number;
 }

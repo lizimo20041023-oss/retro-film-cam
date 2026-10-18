@@ -1115,6 +1115,14 @@ function FilmCompositorImpl({
         （绕中心），所以"竖排日期贴左下角"的几何与 `resolveDateSpot` 算出的
         `placement.bounds` 是同一份数据算出来的两个视角。
       */}
+      {/*
+        v1.9.3 · 手术四第 3 条：画在**照片上**的日期，背景可能是雪地/白墙/逆光天空，
+        必须有贴身高反差暗部底托（`DateGlyphs` 的 `contrast-bed` 独立最底层，
+        rgba(0,0,0,0.82) / offset{0,1} / radius 3.5）。
+        白边水印区（③ 段 `pieces` 与 WatermarkPiece）**不开** —— 那里是相纸留白，
+        底托会变成一块脏污。两个位置用的是同一个 `<DateStamp/>`，所以只能在这里
+        按"是否压在照片上"分别传，不能改 `DateStamp` 的默认值。
+      */}
       {inPhotoDate !== null ? (
         <DateStamp
           key="date-in-photo"
@@ -1126,6 +1134,7 @@ function FilmCompositorImpl({
           spot={dateEngine.spot}
           canvasWidth={layout.width}
           box={{ left: inPhotoDate.placement.box.left, top: inPhotoDate.placement.box.top }}
+          contrastShadow
         />
       ) : null}
         </View>
@@ -1247,6 +1256,12 @@ function QuartzPiece({
       spot={dateEngine.spot}
       canvasWidth={canvasWidth}
       haloShadow={haloShadow}
+      /*
+        v1.9.3 · 与 `haloShadow` 同源：它只在 00 NO FRAME（fullBleed）时为 true，
+        而 fullBleed 正是"没有相纸留白、日期直接压在照片上"的形态 —— 这时才需要
+        `contrast-bed` 贴身高反差底托。有白边时日期坐在相纸上，不开底托。
+      */
+      contrastShadow={haloShadow}
     />
   );
 }

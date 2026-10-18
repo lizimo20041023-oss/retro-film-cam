@@ -1,58 +1,42 @@
 # -*- coding: utf-8 -*-
-"""重烤 assets/textures/grain.png（双尺度团簇颗粒）与 assets/textures/light-leak.png（角落漏光）。
-
-为什么这些事必须在**烘焙期**做（而不是留给运行时）：
-
-  · 颗粒的"中间调/暗部明显、高光近零"在 RN 里没有逐像素亮度遮罩可用，唯一的
-    办法是 overlay 混合的数学性质：`overlay(cb,cs)` 与 0.5 的偏差按
-    `2·min(cb,1−cb)` 加权 —— 高光处权重趋 0，中间调处权重最大。所以"影调加权"
-    等于"贴图围绕中灰 128 的对比度"。对比度不够，颗粒就是看不见的。
-  · 贴图由 `src/components/FilmLookLayers.tsx` **手工按 512/3 pt 的方格平铺**
-    （v1.8.2 起，不再依赖 `resizeMode="repeat"`；见该文件头注释）—— 3x 屏上
-    1 贴图像素 = 1 设备像素，所以**贴图的空间尺度就是屏幕上的尺度**：`<8px` 带是
-    肉眼看得清的颗粒，`24–64px` 带就是用户说的"脏云雾"。贴图必须**无缝**，且频率
-    成分必须在烘焙期定死（运行时没有逐像素遮罩可以把低频成分压下去）。
-  · 漏光是 `screen` 混合 + 拉伸铺满整幅：screen 的抬升 = `cs·(1−cb)`，贴图越亮、
-    暗部被抬得越狠 —— 这是"成片白雾"的第一根因（旧贴图 99% 的像素亮度 ≥0.5）。
-    新贴图把光收进角落，让 ≥60% 的像素三通道全 ≤0.02（= screen 中性），
-    并把 meanLum 压到 ≤0.25。
-
-无缝是怎么保证的：所有滤波都在**周期性**域里做 —— 高斯模糊走 FFT（乘高斯传递函数，
-等价于把图首尾相接再卷积），需要放大时走"按模取下标"的周期双线性插值（`wrap_resize`，
-放大倍数为整数比时输出严格周期）。脚本最后用数值断言核对"跨接缝的相邻梯度分布"与
-"图内相邻梯度分布"一致，不靠眼睛。
-
-v1.8.2 的根因（用户 2026-10-17「颗粒像脏云雾」）在这份脚本里留下两道门：
-  ① 频带能量：`<8px ≥ 0.60`、`24–64px ≤ 0.06`。旧配方实测是 0.258 / 0.162，
-     加上"1 贴图像素 = 1 逻辑点"的旧口径 ⇒ 8–24px 的团簇在 3x 屏上变成
-     8–24pt 的斑块。现在这两条越界就直接烘焙失败。
-  ② 生成顺序：先定尺（在最终 SIZE 网格上生成，不再"366 网格 + 1.4× 上采样"，
-     那一步单独就把 <8px 带的能量搬走 12.6pp）→ 再定形（细支 σ=0.60px 占 0.78、
-     团簇 σ=1.80px 占 0.22）→ 最后定对比度。
+"""重烤 assets/textures/grain.png（像素级平铺真银盐颗粒）与 assets/textures/light-leak.png（角落漏光）。
 
 ─────────────────────────────────────────────────────────────────────────────
-v1.9.2（用户 m09093 铁律一）：**透明背景 + alpha 通道为载体**
+v1.9.3（用户 m09629 手术一）：**不透明 50% 中灰基底 + 双极性银盐黑/白点**
 ─────────────────────────────────────────────────────────────────────────────
-旧 `grain.png` 是 8 位灰度图（mode=L）：整张 512×512 是一块不透明的中灰噪声板，
-运行时以 overlay 盖上照片 —— 它没有 alpha，"背景"默认是不透明的，等于在照片上
-又蒙一层灰罩。用户明确要求：**grain 纹理层背景必须全透明，alpha 通道为载体，
-颗粒本体用 RGB 白/黑点表示**。
+用户实测「重 (HV)」档仍像没开颗粒。根因不是密度不够，而是 **v1.9.2 的 alpha 载体
+对比度太低**：背景全透明、颗粒本体 alpha = |偏差|（均值仅 0.2078），层 opacity
+又被封顶在 0.055 —— 换算到成片上只有 ±1~2 个灰阶的抖动，肉眼不可能看见。
 
-新烘焙流程（数值上与旧灰度版同构，只是把"亮度偏差"搬进 alpha）：
+v1.9.3 回到「真实胶片板」的物理模型：
 
-  1. 同一支确定性噪声、同一组细支/团簇权重（形状不变）→ 归一化 signed pattern `pat`。
-  2. `dev = pat × TARGET_DEV_SIGMA`（σ = 0.2605，与 v1.8.2 灰度贴图的归一化
-     亮度偏差完全一致 ⇒ 同样的"颗粒对比度"语义）。
-  3. **alpha = |dev| 归一化到 0..255**：偏差为 0 的中灰基线（旧贴图的"背景"）
-     alpha = 0 → 完全透明；颗粒本体按偏差大小半透明叠加。
-  4. RGB 只有两种值：`dev ≥ 0` → 白 (255,255,255)，`dev < 0` → 黑 (0,0,0)；
-     alpha == 0 的像素三通道也归零（背景严格全透明）。
-  5. 颗粒浓度上限不再靠贴图不透明度：层 opacity 被 `src/constants/grain.ts`
-     冻结到 0.055 以下（默认 0.025）。贴图对比度已定死，抬 opacity 只会变回
-     "灰网 / 雪花屏"。
+  · 基底 = 50% 中性灰 `#808080`（128/255）。overlay 对中灰是**不动点**
+    （overlay(cb, 0.5) = cb），所以基底完全透明、绝不给照片蒙灰罩；
+  · 高频暗部银盐（卤化银）黑点 `#18181C`（约 24,24,28）→ overlay 压暗；
+  · 高频亮部银盐白点 `#E8E6E0`（约 232,230,224）→ overlay 提亮；
+  · 两色覆盖率对称（各 7.5%，合计 15%），保证整张均值仍是 128（不偏灰也不偏亮）；
+  · 基底再叠一层 σ=3 灰阶的微抖动，破掉纯平色带来的"数字位图"感；
+  · 频率结构由**周期高斯场 + 分位数阈值**决定（`DOT_SIGMA=0.62px`），所有滤波都在
+    周期性域里做（FFT），平铺接缝与图内相邻梯度同分布。
 
-频带纪律（v1.8.2 门）与无缝断言现在**量在 alpha 通道上**：颗粒"看得见的程度"
-就是 alpha 的起伏，量 alpha 才是量颗粒本身；RGB 是二值化的白/黑点，没有频带意义。
+为什么"看得出颗粒"与"不蒙灰"能同时成立：overlay 的偏差权重是 `2·min(cb,1−cb)`，
+中灰附近最大、纯黑纯白两端趋 0 —— 颗粒只在中灰附近显形，白墙/雪地/夜空都不会被
+整体抬亮或压暗。层 opacity 由 `src/constants/grain.ts` 冻结为 0/.10/.18/.30/.42，
+贴图对比度在此定死，运行时只改 opacity。
+
+频带纪律（v1.8.2 门，v1.9.3 沿用，量在灰度亮度上）：
+  `<8px ≥ 0.60`、`24–64px ≤ 0.06` —— 颗粒必须在"看得清"的小尺度，不能堆成大团块。
+另外新增三道门：均值 ∈ [124,132]、灰度 σ ∈ [30,55]、黑白点覆盖率对称且合计 ∈ [12%,18%]、
+中性基底像素（|v−128|≤6）≥ 60%。
+
+─────────────────────────────────────────────────────────────────────────────
+历史沿革（为什么脚本长这样）
+─────────────────────────────────────────────────────────────────────────────
+* v1.8.2：颗粒贴图旧版是 366 网格 + 1.4× 上采样 + 0.7px 微模糊，能量跑进大尺度，
+  真机上变成"脏云雾"；改为直接在 512 网格生成 + 频带门。
+* v1.9.2：改用 RGBA 透明背景 + alpha 载体（颗粒 = 白/黑点 × |偏差|），层 opacity
+  封顶 0.055 —— 结果就是用户 m09629 说的"开了重档还是干净得像没开"。
+* v1.9.3：本文件。回到不透明中性灰基底 + 双极性点（当前实现）。
 
 用法（PATH 上的 python 是 Windows Store 桩，必须用工作区自带的解释器）：
 
@@ -73,19 +57,21 @@ from PIL import Image
 
 # ---------------------------------------------------------------- 常量（确定性）
 
-SEED = 20261017
+SEED = 20261018
 SIZE = 512
-# v1.8.2：直接在最终网格上生成。旧配方（366 网格 + 1.4× 上采样 + 0.7px 微模糊）把
-# 能量推到了大尺度：实测 <8px 带只剩 25.8%、8–24px 带占 55.0%、24–64px 占 16.2%。
-SIGMA_FINE = 0.60  # 细颗粒：σ 0.60px ⇒ 约 2~3px 的结构（主体）
-SIGMA_CLUMP = 1.80  # 团簇：σ 1.80px ⇒ 约 6~10px 的结构（只占 22% 权重）
-W_CLUMP = 0.22
-# v1.9.2：alpha 载体直接复用旧灰度贴图的"偏差幅度"语义（σ=0.2605 归一化亮度偏差），
-# 这样 0.025 的层不透明度 ≈ 旧 0.045 档的一半观感，用户"再降 50%"的数值才有意义。
-TARGET_DEV_SIGMA = 0.2605
-# 频带能量门槛（环带口径，见 band_energy）：旧配方在这两条上分别是 0.258 与 0.162。
-BAND_FINE_MIN = 0.60  # 周期 <8px 的能量占比下限
-BAND_COARSE_MAX = 0.06  # 周期 24–64px 的能量占比上限
+
+# v1.9.3 颗粒配方（用户 m09629 手术一）
+BASE_LEVEL = 128                     # 50% 中性灰基底（overlay 不动点）
+DARK_POINT = (24, 24, 28)            # #18181C 暗部银盐（卤化银）
+LIGHT_POINT = (232, 230, 224)        # #E8E6E0 亮部银盐
+DOT_SIGMA = 0.62                     # 点的团簇尺度（px）：<8px 频带的主体
+DARK_COVER = 0.075                   # 暗点覆盖率（对称）
+LIGHT_COVER = 0.075                  # 亮点覆盖率（对称）
+BASE_DITHER_SIGMA = 3.0              # 基底微抖动（灰阶），破数字位图感
+
+# 频带能量门槛（环带口径，见 band_energy）：v1.8.2 的"脏云雾"配方是 0.162。
+BAND_FINE_MIN = 0.60                 # 周期 <8px 的能量占比下限
+BAND_COARSE_MAX = 0.06               # 周期 24–64px 的能量占比上限
 BAND_LABELS = (
     ("<8", 0.0, 8.0),
     ("8-24", 8.0, 24.0),
@@ -93,6 +79,16 @@ BAND_LABELS = (
     ("64-160", 64.0, 160.0),
     (">160", 160.0, 1e9),
 )
+
+# v1.9.3 自检门槛
+MEAN_LEVEL_MIN = 124.0
+MEAN_LEVEL_MAX = 132.0
+GRAY_STD_MIN = 30.0
+GRAY_STD_MAX = 55.0
+NEUTRAL_FRAC_MIN = 0.60              # |灰度−128| ≤ 6 的"中性基底"占比
+COVER_TOTAL_MIN = 0.12
+COVER_TOTAL_MAX = 0.18
+COVER_ASYMMETRY_MAX = 0.01
 
 GRAIN_OUT = r"assets\textures\grain.png"
 LEAK_OUT = r"assets\textures\light-leak.png"
@@ -114,28 +110,10 @@ def wrap_blur(a, sigma):
     return np.real(np.fft.ifft2(np.fft.fft2(a) * g))
 
 
-def wrap_resize(a, size):
-    """周期性双线性放大：源网格周期 → 按模取下标；放大倍数 = size/C，输出严格周期。"""
-    c = a.shape[0]
-    s = size / float(c)
-    xs = (np.arange(size) + 0.5) / s - 0.5
-    i0 = np.floor(xs).astype(np.int64)
-    t = xs - i0
-    i0m = np.mod(i0, c)
-    i1m = np.mod(i0 + 1, c)
-    w0 = 1.0 - t
-    return (
-        a[np.ix_(i0m, i0m)] * np.outer(w0, w0)
-        + a[np.ix_(i0m, i1m)] * np.outer(w0, t)
-        + a[np.ix_(i1m, i0m)] * np.outer(t, w0)
-        + a[np.ix_(i1m, i1m)] * np.outer(t, t)
-    )
-
-
 def band_energy(arr):
     """环带能量占比（去掉直流）：周期 = SIZE / 半径，与探针里的口径一致。
 
-    v1.9.2：入参是 alpha 通道（0..255）—— 颗粒的可见强度全在 alpha 上，量它才量到颗粒。
+    v1.9.3：入参是灰度亮度（0..255）—— 颗粒的可见强度全在亮度偏差上。
     """
     a = arr.astype(np.float64) / 255.0
     n = a.shape[0]
@@ -158,49 +136,61 @@ def smoothstep(edge0, edge1, x):
     return t * t * (3.0 - 2.0 * t)
 
 
-def bake_grain():
-    """烘出 512×512 RGBA 颗粒贴图：背景 alpha=0，颗粒 = RGB 白/黑点 + |偏差| alpha。"""
-    rng = np.random.default_rng(SEED)
-    # 一支白噪、两个尺度：细支是颗粒本体，粗支只提供 22% 的有机团簇。
-    # （旧配方用两支独立白噪 + 1.4× 上采样 + 0.7px 微模糊，那是能量跑到大尺度的成因。）
+def _periodic_field(rng, sigma):
+    """零均值、单位方差的周期高斯随机场（用于做点的掩膜）。"""
     white = rng.standard_normal((SIZE, SIZE))
-    fine = wrap_blur(white, SIGMA_FINE)
-    clump = wrap_blur(white, SIGMA_CLUMP)
-    fine /= fine.std()
-    clump /= clump.std()
-    pat = (1.0 - W_CLUMP) * fine + W_CLUMP * clump
-    pat = (pat - pat.mean()) / pat.std()
+    field = wrap_blur(white, sigma)
+    return (field - field.mean()) / field.std()
 
-    # 形状定死后再定对比度：signed deviation 的 σ 与旧灰度贴图的归一化亮度偏差一致。
-    dev = pat * TARGET_DEV_SIGMA
-    # v1.9.2 核心：alpha = |偏差| 归一化到 0..255。偏差为 0（旧贴图的 128 中灰基线
-    # = “背景”）→ alpha 0 → 完全透明；颗粒越偏离中灰，alpha 越大。
-    alpha_lin = np.clip(np.abs(dev), 0.0, 1.0)
-    alpha = np.rint(alpha_lin * 255.0).astype(np.int64)
 
-    arr = np.zeros((SIZE, SIZE, 4), dtype=np.uint8)
-    pos = dev >= 0
-    # 颗粒本体：亮偏差 = 白点，暗偏差 = 黑点。
-    arr[..., 0] = np.where(pos, 255, 0)
-    arr[..., 1] = np.where(pos, 255, 0)
-    arr[..., 2] = np.where(pos, 255, 0)
-    arr[..., 3] = alpha
-    # 背景严格全透明：alpha==0 处三通道也归零。
-    arr[arr[..., 3] == 0] = 0
+def _mask_at_coverage(field, coverage):
+    """按分位数阈值取覆盖率恰为 coverage 的掩膜，并返回每个像素的"超出阈值"幅度。"""
+    threshold = float(np.quantile(field, 1.0 - coverage))
+    mask = field >= threshold
+    return mask, field - threshold
 
-    a = arr[..., 3].astype(np.float64)
-    # 无缝核对：跨接缝的相邻梯度 vs 图内相邻梯度（量在 alpha 上）。
-    gx = np.abs(np.diff(a, axis=1))
-    gy = np.abs(np.diff(a, axis=0))
-    seam_x = np.abs(a[:, 0] - a[:, -1])
-    seam_y = np.abs(a[0, :] - a[-1, :])
+
+def bake_grain():
+    """烘出 512×512 RGB 颗粒贴图：中性灰基底 + 对称双极性银盐黑/白点。"""
+    rng = np.random.default_rng(SEED)
+
+    dark_field = _periodic_field(rng, DOT_SIGMA)
+    light_field = _periodic_field(rng, DOT_SIGMA)
+    dark_mask, dark_excess = _mask_at_coverage(dark_field, DARK_COVER)
+    light_mask, light_excess = _mask_at_coverage(light_field, LIGHT_COVER)
+
+    # 重叠像素只归给"超出阈值更多"的那一极，保持两色覆盖率对称、互不抵消。
+    overlap = dark_mask & light_mask
+    dark_only = (dark_mask & ~light_mask) | (overlap & (dark_excess >= light_excess))
+    light_only = (light_mask & ~dark_mask) | (overlap & (dark_excess < light_excess))
+
+    dither = rng.standard_normal((SIZE, SIZE)) * BASE_DITHER_SIGMA
+    arr = np.full((SIZE, SIZE, 3), float(BASE_LEVEL))
+    arr += dither[..., None]
+    arr[dark_only] = np.array(DARK_POINT, dtype=float)
+    arr[light_only] = np.array(LIGHT_POINT, dtype=float)
+    img = np.clip(np.rint(arr), 0.0, 255.0).astype(np.uint8)
+
+    gray = (
+        0.2126 * img[..., 0].astype(np.float64)
+        + 0.7152 * img[..., 1].astype(np.float64)
+        + 0.0722 * img[..., 2].astype(np.float64)
+    )
+    # 无缝核对：跨接缝的相邻梯度 vs 图内相邻梯度（量在灰度上）。
+    gx = np.abs(np.diff(gray, axis=1))
+    gy = np.abs(np.diff(gray, axis=0))
+    seam_x = np.abs(gray[:, 0] - gray[:, -1])
+    seam_y = np.abs(gray[0, :] - gray[-1, :])
+
+    dark_frac = float(dark_only.mean())
+    light_frac = float(light_only.mean())
     report = {
-        "alpha_mean": float(a.mean() / 255.0),
-        "alpha_std": float(a.std() / 255.0),
-        "alpha_p05": float(np.percentile(a, 5) / 255.0),
-        "alpha_p95": float(np.percentile(a, 95) / 255.0),
-        "alpha_zero": float((arr[..., 3] == 0).mean()),
-        "bands": band_energy(arr[..., 3]),
+        "mean": float(gray.mean()),
+        "std": float(gray.std()),
+        "dark_frac": dark_frac,
+        "light_frac": light_frac,
+        "neutral_frac": float((np.abs(gray - BASE_LEVEL) <= 6.0).mean()),
+        "bands": band_energy(gray),
         "gx_mean": float(gx.mean()),
         "gx_p95": float(np.percentile(gx, 95)),
         "seam_x_mean": float(seam_x.mean()),
@@ -210,7 +200,7 @@ def bake_grain():
         "seam_y_mean": float(seam_y.mean()),
         "seam_y_p95": float(np.percentile(seam_y, 95)),
     }
-    return arr, report
+    return img, report
 
 
 def bake_leak():
@@ -262,21 +252,21 @@ def main():
 
     grain, greport = bake_grain()
     grain_path = root + "\\" + GRAIN_OUT
-    Image.fromarray(grain, mode="RGBA").save(grain_path, optimize=True)
+    Image.fromarray(grain, mode="RGB").save(grain_path, optimize=True)
     gbytes, gsha = file_facts(grain_path)
-    print("grain.png  %dx%d mode=RGBA" % (SIZE, SIZE))
+    print("grain.png  %dx%d mode=RGB" % (SIZE, SIZE))
     print(
-        "  alpha: mean=%.4f std=%.4f p05=%.4f p95=%.4f 透明背景占比=%.2f%%"
+        "  灰度: mean=%.2f std=%.2f 暗点=%.2f%% 亮点=%.2f%% 中性基底=%.2f%%"
         % (
-            greport["alpha_mean"],
-            greport["alpha_std"],
-            greport["alpha_p05"],
-            greport["alpha_p95"],
-            greport["alpha_zero"] * 100.0,
+            greport["mean"],
+            greport["std"],
+            greport["dark_frac"] * 100.0,
+            greport["light_frac"] * 100.0,
+            greport["neutral_frac"] * 100.0,
         )
     )
     print(
-        "  频带能量（周期，量在 alpha 上）："
+        "  频带能量（周期）："
         + "  ".join("%s=%.1f%%" % (k, v * 100.0) for k, v in greport["bands"].items())
     )
     print(
@@ -313,14 +303,34 @@ def main():
     print("  bytes=%d  sha256=%s" % (lbytes, lsha))
 
     problems = []
-    # v1.9.2：RGBA + 透明背景的存在性检查（背景不是一块不透明灰板）
-    if greport["alpha_zero"] < 0.001:
+    # v1.9.3：中性灰基底 + 对称双极性银盐点的存在性（不再是透明 alpha 载体）
+    if not (MEAN_LEVEL_MIN <= greport["mean"] <= MEAN_LEVEL_MAX):
         problems.append(
-            "grain 透明背景不足（alpha==0 仅 %.2f%%）—— 背景必须全透明" % (greport["alpha_zero"] * 100.0)
+            "grain 灰度均值偏离中灰: %.2f（要求 %.0f~%.0f）"
+            % (greport["mean"], MEAN_LEVEL_MIN, MEAN_LEVEL_MAX)
         )
-    if not (0.15 <= greport["alpha_mean"] <= 0.30):
-        problems.append("grain alpha 平均浓度偏了: %.4f" % greport["alpha_mean"])
-    # v1.8.2 根因门：颗粒的能量必须在"看得清"的小尺度上，不能堆成大团块（量在 alpha 上）
+    if not (GRAY_STD_MIN <= greport["std"] <= GRAY_STD_MAX):
+        problems.append(
+            "grain 灰度对比度不在 [%.0f,%.0f]: %.2f —— 太高像雪花屏，太低又看不见"
+            % (GRAY_STD_MIN, GRAY_STD_MAX, greport["std"])
+        )
+    cover_total = greport["dark_frac"] + greport["light_frac"]
+    if not (COVER_TOTAL_MIN <= cover_total <= COVER_TOTAL_MAX):
+        problems.append(
+            "grain 黑/白点总覆盖率不在 [%.0f%%,%.0f%%]: %.2f%%"
+            % (COVER_TOTAL_MIN * 100, COVER_TOTAL_MAX * 100, cover_total * 100)
+        )
+    if abs(greport["dark_frac"] - greport["light_frac"]) > COVER_ASYMMETRY_MAX:
+        problems.append(
+            "grain 黑/白点覆盖率不对称（会整体偏灰或偏亮）: 暗=%.4f 亮=%.4f"
+            % (greport["dark_frac"], greport["light_frac"])
+        )
+    if greport["neutral_frac"] < NEUTRAL_FRAC_MIN:
+        problems.append(
+            "grain 中性基底占比不足（|v-128|≤6 仅 %.2f%%）—— 中灰基底是 overlay 透明的前提"
+            % (greport["neutral_frac"] * 100.0)
+        )
+    # v1.8.2 根因门：颗粒的能量必须在"看得清"的小尺度上，不能堆成大团块
     if greport["bands"]["<8"] < BAND_FINE_MIN:
         problems.append(
             "grain <8px 频带能量不足（%.3f < %.2f）——会在大屏上显成脏云雾"

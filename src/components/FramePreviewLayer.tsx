@@ -425,6 +425,7 @@ function FramePreviewLayerImpl({
                   glow={dateEngine?.glow}
                   spot={dateEngine?.spot}
                   haloShadow={fullBleed}
+                  contrastShadow={fullBleed}
                 />
               </View>
             );
@@ -457,6 +458,7 @@ function FramePreviewLayerImpl({
                 glow={dateEngine?.glow}
                 spot={dateEngine?.spot}
                 haloShadow={fullBleed}
+                contrastShadow={fullBleed}
               />
             </View>
           );

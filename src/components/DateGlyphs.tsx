@@ -231,6 +231,18 @@ export function opticalGlowLayers(
 const SHADOW_OFFSET: GlyphShadowOffset = { width: 0, height: 0 };
 
 /**
+ * 画内日期底托的三个冻结值（v1.9.3 §5.2）。
+ *
+ * 用户规范：「画在照片上的日期必须常驻一层贴合字身的高反差暗部底托」——
+ * 与 `haloShadow`（00 NO FRAME 的两层大晕）不同，这一层是**贴身高反差**的：
+ * 暗部色 `rgba(0, 0, 0, 0.82)`、只向下偏 1pt、模糊 3.5pt，是"无论照片多亮字都立得住"
+ * 的那层底。数值是契约冻结值，渲染层与探针都读这三个导出，不许在别处重写。
+ */
+export const CONTRAST_SHADOW_COLOR = 'rgba(0, 0, 0, 0.82)';
+export const CONTRAST_SHADOW_OFFSET: GlyphShadowOffset = { width: 0, height: 1 };
+export const CONTRAST_SHADOW_RADIUS = 3.5;
+
+/**
  * 一档字形在渲染层的一层墨迹（`dateGlyphLayers()` 的返回项）。
  *
  * 与 v1.8.3 的 `OpticalGlowLayer` 相比多了 `opacity` / `shadowOffset` / `transform`：
@@ -277,6 +289,12 @@ export interface DateGlyphLayer {
  * 两层都是**同字形的黑色副本**，上层彩色/发光字盖住主体，只从边缘渗出暗影 —— 这样
  * 浅色照片上也能读，且不改动任何一档的配色逻辑（`dateGlyphLayers` 的默认返回值
  * 保持逐字节不变，探针的"恰好 3 层"断言不受影响）。
+ * ── `contrastShadow`（v1.9.3 §5.2：画内日期底托）──────────────────────────────
+ * 压在照片上的日期再垫一层**贴身高反差暗部底托**（不是替代 `haloShadow`，是独立最底层）：
+ * `CONTRAST_SHADOW_COLOR` / `CONTRAST_SHADOW_RADIUS` / `CONTRAST_SHADOW_OFFSET` 三个冻结值
+ * 只从本文件导出，渲染层照抄。层序固定在**最底层**：`contrast-bed` → `haloShadow` 两层
+ * （若同时开启）→ 材质层。材质层与 halo 层字段逐字节不变，所以"默认（false）"路径与
+ * v1.9.2 完全一致。它只负责"字永远立得住"，不改任何一档的配色/发光逻辑。
  */
 export function dateGlyphLayers(
   style: DateGlyphStyleId,
@@ -284,6 +302,7 @@ export function dateGlyphLayers(
   fontPx: number,
   letterSpacing: number,
   haloShadow: boolean = false,
+  contrastShadow: boolean = false,
 ): DateGlyphLayer[] {
   // `letterSpacing` 参与签名是为了让"渲染层知道排版层给了多少字距"这件事在类型上
   // 显式化（阴影的 S 比例不依赖它）；真正排版时由 `OpticalDateText` 把它写进 textStyle。
@@ -350,10 +369,39 @@ export function dateGlyphLayers(
     }));
   }
 
-  if (!haloShadow) {
+  // 底托层序：contrast-bed（最底）→ haloShadow 两层（若开）→ 材质层。默认全关时直接返回材质层，
+  // 保证 v1.9.2 的返回值逐字节不变（探针的"默认层数"断言不受影响）。
+  const under: DateGlyphLayer[] = [];
+  if (contrastShadow) {
+    under.push(...contrastBedLayers());
+  }
+  if (haloShadow) {
+    under.push(...haloLayers(fontPx));
+  }
+  if (under.length === 0) {
     return base;
   }
-  return [...haloLayers(fontPx), ...base];
+  return [...under, ...base];
+}
+
+/**
+ * 画内日期的贴身暗部底托（v1.9.3 §5.2）：**一层**黑色同字形副本，压在所有层最底下。
+ *
+ * 与 `haloLayers` 的区别：halo 是两点大晕（0.22 em 扩散 + 0.08 em 贴边），是为
+ * 00 NO FRAME 的浅色照片准备的；底托是贴身高反差（偏 1pt、模糊 3.5pt），是"字身轮廓
+ * 自身"的一圈暗边 —— 两者不互斥，同时开启时底托在最底、halo 在其上。
+ */
+function contrastBedLayers(): DateGlyphLayer[] {
+  return [
+    {
+      key: 'contrast-bed',
+      color: CONTRAST_SHADOW_COLOR,
+      opacity: 1,
+      shadowColor: CONTRAST_SHADOW_COLOR,
+      shadowRadius: CONTRAST_SHADOW_RADIUS,
+      shadowOffset: CONTRAST_SHADOW_OFFSET,
+    },
+  ];
 }
 
 /**
@@ -443,6 +491,14 @@ export interface OpticalDateTextProps {
    * 额外阴影，四档材质与探针冻结的层数都维持原样。
    */
   haloShadow?: boolean;
+  /**
+   * 是否给日期垫**贴身高反差暗部底托**（v1.9.3 §5.2，`contrast-bed` 独立最底层）。
+   *
+   * 默认 `false` —— 白边水印、相纸留白上的日期维持 v1.9.2 的层数与观感不变；
+   * 只有**成片合成里压在照片上的日期**（`FilmCompositor` 画内日期 / `FramePreviewLayer`
+   * 同位置日期）才传 `true`。三个冻结值见 `CONTRAST_SHADOW_COLOR` 等导出。
+   */
+  contrastShadow?: boolean;
 }
 
 /**
@@ -460,6 +516,7 @@ function OpticalDateTextImpl({
   glow,
   rotationDeg = 0,
   haloShadow = false,
+  contrastShadow = false,
 }: OpticalDateTextProps): ReactElement | null {
   const height = glyphHeight(style, fontPx);
   if (text.length === 0 || !(fontPx > 0) || !(width > 0)) {
@@ -496,7 +553,7 @@ function OpticalDateTextImpl({
 
   return (
     <View style={rowStyle} pointerEvents="none">
-      {dateGlyphLayers(style, glow, fontPx, letterSpacing, haloShadow).map((layer) => (
+      {dateGlyphLayers(style, glow, fontPx, letterSpacing, haloShadow, contrastShadow).map((layer) => (
         <Text
           // key 在同一档内唯一（outer/mid/core、ccd-hard、lab-ink、steel-*）。
           key={layer.key}
@@ -525,9 +582,10 @@ function OpticalDateTextImpl({
 
 /**
  * `memo`（v1.8.6）：这一行日期会在三处被父级重排带着重建 —— 成片合成的 `DateStamp`、
- * 取景器预览 `FramePreviewLayer`、抽屉/相册里的迷你成片。八个 props 全是标量
+ * 取景器预览 `FramePreviewLayer`、抽屉/相册里的迷你成片。九个 props 全是标量
  * （`text` / `style` / `fontPx` / `width` / `letterSpacing` / `glow` / `rotationDeg` /
- * `haloShadow`），父级重渲染而日期没变时应当整棵 bailout，不必把叠影层重新提交。
+ * `haloShadow` / `contrastShadow`），父级重渲染而日期没变时应当整棵 bailout，
+ * 不必把叠影层重新提交。
  *
  * 导出名与 props 接口名都不变（`DateStamp.tsx` 零改动）；实现体改名
  * `OpticalDateTextImpl` 只是让"带 memo 的导出"与"裸实现"一眼可分。

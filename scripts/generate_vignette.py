@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""光学暗角贴图生成器（v1.8.5 M2，v1.9.0 重标定，v1.9.1 去雾手术，v1.9.2 再收）
+"""光学暗角贴图生成器（v1.8.5 M2，v1.9.0 重标定，v1.9.1 去雾，v1.9.2 收到 80%，v1.9.3 收到 72%）
 
 重新生成 assets/textures/vignette.png：一张 1024x1024 RGBA 的径向暗角遮罩。
 
-设计口径（v1.9.2 用户 m09093 规范，替代 v1.9.1 的 70% 口径）：
-  - 中心到 **80%** 半径（按短边一半归一化）alpha 恒为 0：画面主体（山体/海湾/
-    人像/白衬衫）所在的中心区零遮挡 —— 用户明确要求「中心 100% 透明区扩到 80%」；
-  - 80% -> 100% 半径用 smoothstep 平滑升到 alpha 255：只压四角最后 20% 过渡带；
+设计口径（v1.9.3 用户 m09629 手术二第 5 条，替代 v1.9.2 的 80% 口径）：
+  - 中心到 **72%** 半径（按短边一半归一化）alpha 恒为 0：画面主体（山体/海湾/
+    人像/白衬衫）所在的中心区零遮挡 —— 用户明确要求「中心 72% 完全透明」；
+  - 72% -> 100% 半径用 smoothstep 平滑升到 alpha 255：只压最外圈过渡带；
   - 四角 rho>1 按 1 处理（满不透明度）；
-  - RGB 恒为 (4, 12, 20) 深青黑，不随半径变化（半径只控制 alpha）。
-  - 渲染侧 opacity 由预设 `vignette` 决定，v1.9.2 值域收敛到 0.08~0.15。
+  - RGB 恒为 (4, 12, 20) 深青黑，不随半径变化（半径只控制 alpha）；
+  - 渲染侧 opacity 由预设 `vignette` 决定，v1.9.3 值域提到 0.22~0.38
+    （用户要求"四角压暗到 0.24~0.36"，见契约 §5 九卷表）。
 
 渲染侧（gradeLayers.ts）以 `blendMode:'multiply'` + `opacity = preset.vignette`
 叠加该贴图。multiply 之所以安全：中心 alpha=0（没有任何上层像素参与混合，白不变灰），
@@ -38,7 +39,7 @@ except ImportError:  # pragma: no cover - 运行环境缺 Pillow 时给出明确
 
 # --- 冻结常量 -------------------------------------------------------------
 SIZE = 1024                 # 契约建议 1024x1024：够大不糊，文件仍是普通 PNG
-INNER_RADIUS = 0.80         # 中心透明半径（相对短边一半；v1.9.2 用户规范 80%）
+INNER_RADIUS = 0.72         # 中心透明半径（相对短边一半；v1.9.3 用户规范 72%）
 OUTER_RADIUS = 1.0          # 到边中点为满不透明度
 RGB = (4, 12, 20)           # 深青黑，恒定的暗角颜色（v1.9.0 用户指定 rgba(4,12,20)）
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -119,7 +120,7 @@ def main() -> int:
     print("sha256=" + hashlib.sha256(png).hexdigest())
     print("center alpha=0, edge-mid alpha=255, corner alpha=255")
     print("alpha 剖面 (按短边一半归一化):")
-    for rho in (0.0, 0.30, 0.50, 0.60, 0.70, 0.80, 0.86, 0.94, 1.0):
+    for rho in (0.0, 0.30, 0.50, 0.60, 0.72, 0.80, 0.88, 0.94, 1.0):
         dist = rho * (SIZE / 2.0)
         print("  rho=%.2f  alpha=%3d" % (rho, alpha_at(dist)))
     return 0

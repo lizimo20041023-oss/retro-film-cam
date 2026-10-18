@@ -904,6 +904,153 @@ function isSameAdministrativeName(left: string, right: string): boolean {
   return coreA.length > 0 && coreA === coreB;
 }
 
+/* ==========================================================================
+ * 汉字简繁归一（v1.9.3 §5.1）
+ *
+ * 目的：`zh-Hant` 档整行必须繁体（`中國 · 雲南省 · 麗江市`），`zh-Hans` 档整行必须
+ * 简体（`中国 · 云南省 · 丽江市`）。反查服务（BigDataCloud / 离线表）回填的
+ * `country` / `region` / `city` 是**另一套字形**（繁体 → 简中档、简中 → 繁中档、
+ * 混排）时，渲染前按目标档位做一次确定性归一；`ja` / `en` 一个字节都不动。
+ *
+ * 约束（`_probe_v185_place.cjs` §⑭ 逐条钉）：
+ * - 表只收行政区划 / 地名里真会出现的字（约 190 对），不做通用简繁转换；
+ * - 不在表里的字**原样保留**（未知字不崩不丢）；
+ * - 「台」只有「台湾 / 台北 / 台中 / 台南 / 台东 / 台西」这些**短语**在 `zh-Hant`
+ *   档写成「臺」，其余「台」保持原样（`台州` 不写成 `臺州`，`烟台` 不写成 `煙臺`）。
+ * ========================================================================== */
+
+/** 简 → 繁对照（只覆盖行政区划 / 地名字，含「臺灣」相关短语的单字）。 */
+const HAN_SIMPLIFIED_TO_TRADITIONAL: ReadonlyArray<readonly [string, string]> = [
+  // ── 行政级别词 / 通用后缀 ──
+  ['别', '別'], ['区', '區'], ['县', '縣'], ['乡', '鄉'], ['镇', '鎮'], ['庄', '莊'], ['场', '場'],
+  ['团', '團'], ['营', '營'], ['队', '隊'], ['组', '組'], ['师', '師'], ['军', '軍'], ['农', '農'],
+  ['垦', '墾'], ['业', '業'], ['机', '機'], ['线', '線'], ['处', '處'], ['会', '會'], ['众', '眾'],
+  ['图', '圖'], ['园', '園'], ['圆', '圓'], ['国', '國'], ['库', '庫'], ['坛', '壇'], ['观', '觀'],
+  ['览', '覽'], ['庙', '廟'], ['阁', '閣'], ['楼', '樓'], ['桥', '橋'], ['铺', '鋪'], ['窑', '窯'],
+  ['砖', '磚'], ['闸', '閘'], ['坝', '壩'], ['沟', '溝'], ['滩', '灘'], ['湾', '灣'], ['岛', '島'],
+  ['屿', '嶼'], ['峡', '峽'], ['岭', '嶺'], ['冈', '岡'], ['岗', '崗'], ['关', '關'], ['门', '門'],
+  ['阳', '陽'], ['阴', '陰'], ['东', '東'], ['滨', '濱'], ['边', '邊'], ['头', '頭'], ['远', '遠'],
+  ['连', '連'], ['长', '長'], ['运', '運'], ['临', '臨'], ['绥', '綏'], ['兴', '興'], ['双', '雙'],
+  ['鲜', '鮮'], ['达', '達'], ['独', '獨'], ['诺', '諾'], ['邮', '郵'], ['围', '圍'], ['户', '戶'],
+  ['雾', '霧'], ['岚', '嵐'],
+  // ── 山川 / 物产类地名字 ──
+  ['马', '馬'], ['车', '車'], ['鸟', '鳥'], ['鱼', '魚'], ['龙', '龍'], ['凤', '鳳'], ['鹤', '鶴'],
+  ['鸡', '雞'], ['鸭', '鴨'], ['鹅', '鵝'], ['鹰', '鷹'], ['树', '樹'], ['桦', '樺'], ['杨', '楊'],
+  ['兰', '蘭'], ['莲', '蓮'], ['芦', '蘆'], ['华', '華'], ['矿', '礦'], ['铁', '鐵'], ['钢', '鋼'],
+  ['铜', '銅'], ['银', '銀'], ['铅', '鉛'], ['锌', '鋅'], ['锡', '錫'], ['铝', '鋁'],
+  // ── 省级行政区名称里的字 ──
+  ['庆', '慶'], ['广', '廣'], ['宁', '寧'], ['辽', '遼'], ['苏', '蘇'], ['贵', '貴'], ['云', '雲'],
+  ['陕', '陝'], ['肃', '肅'], ['内', '內'], ['乌', '烏'], ['鲁', '魯'], ['齐', '齊'], ['维', '維'],
+  ['尔', '爾'], ['壮', '壯'], ['丰', '豐'], ['复', '復'], ['冲', '沖'], ['汉', '漢'], ['满', '滿'],
+  ['纳', '納'], ['颇', '頗'],
+  // ── 地级市 / 县 / 姓氏类常见字 ──
+  ['张', '張'], ['陈', '陳'], ['刘', '劉'], ['赵', '趙'], ['孙', '孫'], ['吴', '吳'], ['郑', '鄭'],
+  ['韩', '韓'], ['吕', '呂'], ['罗', '羅'], ['陆', '陸'], ['饶', '饒'], ['郸', '鄲'], ['沧', '滄'],
+  ['晋', '晉'], ['应', '應'], ['义', '義'], ['宝', '寶'], ['实', '實'], ['寻', '尋'], ['乐', '樂'],
+  ['荣', '榮'], ['盘', '盤'], ['抚', '撫'], ['顺', '順'], ['锦', '錦'], ['伦', '倫'], ['贝', '貝'],
+  ['彦', '彥'], ['温', '溫'], ['绍', '紹'], ['盐', '鹽'], ['扬', '揚'], ['迁', '遷'], ['丽', '麗'],
+  ['芜', '蕪'], ['厦', '廈'], ['赣', '贛'], ['济', '濟'], ['枣', '棗'], ['潍', '濰'], ['泽', '澤'],
+  ['开', '開'], ['顶', '頂'], ['许', '許'], ['驻', '駐'], ['随', '隨'], ['潜', '潛'], ['怀', '懷'],
+  ['娄', '婁'], ['钦', '欽'], ['贺', '賀'], ['亚', '亞'], ['贡', '貢'], ['泸', '瀘'], ['绵', '綿'],
+  ['宾', '賓'], ['资', '資'], ['凉', '涼'], ['毕', '畢'], ['红', '紅'], ['萨', '薩'], ['则', '則'],
+  ['陇', '隴'], ['离', '離'], ['玛', '瑪'], ['后', '後'], ['恒', '恆'], ['蓟', '薊'],
+];
+
+/**
+ * 「臺」系短语（只给 `zh-Hant` 方向用）。
+ *
+ * 「台」在简体里同时是「臺」「檯」「颱」的简化字，单字映射无法判断：「台湾 / 台北」
+ * 在繁体里写「臺灣 / 臺北」，而「台州 / 烟台 / 台山」里的「台」本来就是正字。
+ * 所以只对这几个固定短语做「台 → 臺」，其余「台」原样保留。
+ */
+const HAN_TRADITIONAL_PHRASES: ReadonlyArray<readonly [string, string]> = [
+  ['台湾', '臺灣'],
+  ['台灣', '臺灣'],
+  ['台北', '臺北'],
+  ['台中', '臺中'],
+  ['台南', '臺南'],
+  ['台东', '臺東'],
+  ['台西', '臺西'],
+];
+
+const SIMPLIFIED_TO_TRADITIONAL: ReadonlyMap<string, string> = new Map(HAN_SIMPLIFIED_TO_TRADITIONAL);
+
+/**
+ * 只出现在「臺」系短语里的字：单字表不能收「台」（否则 `台州 / 烟台` 会被误转），
+ * 但繁 → 简方向必须能把「臺」收回来，所以反向表单独补这一条。
+ */
+const HAN_TRADITIONAL_ONLY_EXTRAS: ReadonlyArray<readonly [string, string]> = [['臺', '台']];
+
+const TRADITIONAL_TO_SIMPLIFIED: ReadonlyMap<string, string> = new Map([
+  ...HAN_SIMPLIFIED_TO_TRADITIONAL.map(([simplified, traditional]) => [traditional, simplified] as const),
+  ...HAN_TRADITIONAL_ONLY_EXTRAS,
+]);
+
+const TRADITIONAL_PHRASES: ReadonlyMap<string, string> = new Map(HAN_TRADITIONAL_PHRASES);
+
+/** 短语表里最长的键（当前全是两字；写成变量免得以后加三字地名要改循环）。 */
+const HAN_PHRASE_MAX_LENGTH = HAN_TRADITIONAL_PHRASES.reduce(
+  (max, [phrase]) => Math.max(max, phrase.length),
+  2,
+);
+
+/**
+ * 逐字过表；命中短语优先（最长匹配）。
+ *
+ * 命中不了的字 `原样` 输出（未知字保底），这也是「不崩不丢」的实现方式。
+ */
+function translateHan(
+  text: string,
+  table: ReadonlyMap<string, string>,
+  phrases?: ReadonlyMap<string, string>,
+): string {
+  let output = '';
+  for (let index = 0; index < text.length; index += 1) {
+    let replaced = false;
+    if (phrases !== undefined && text.length - index >= 2) {
+      for (let length = HAN_PHRASE_MAX_LENGTH; length >= 2; length -= 1) {
+        const chunk = text.slice(index, index + length);
+        const phrase = phrases.get(chunk);
+        if (phrase !== undefined) {
+          output += phrase;
+          index += length - 1;
+          replaced = true;
+          break;
+        }
+      }
+    }
+    if (replaced) {
+      continue;
+    }
+    const current = text.charAt(index);
+    const mapped = table.get(current);
+    output += mapped !== undefined ? mapped : current;
+  }
+  return output;
+}
+
+/** 整串转繁体（`zh-Hant` 档；`臺灣 / 臺北` 等短语走单独一张表）。 */
+export function toTraditionalHan(text: string): string {
+  return translateHan(text, SIMPLIFIED_TO_TRADITIONAL, TRADITIONAL_PHRASES);
+}
+
+/** 整串转简体（`zh-Hans` 档；`臺灣 → 台湾` 由繁 → 简单字表负责）。 */
+export function toSimplifiedHan(text: string): string {
+  return translateHan(text, TRADITIONAL_TO_SIMPLIFIED);
+}
+
+/**
+ * 按目标中文档位归一（`ja` 原样返回）。
+ *
+ * 归一必须**幂等**：已经是对应字形的名字过一遍不变（探针 §⑭ 会连跑两遍逐字比对）。
+ */
+export function normalizeHanVariant(text: string, locale: ChineseLocale): string {
+  if (text.length === 0 || locale === 'ja') {
+    return text;
+  }
+  return locale === 'zh-Hant' ? toTraditionalHan(text) : toSimplifiedHan(text);
+}
+
 /**
  * 中文档（简 / 繁 / 日）的一行字 —— 国家 · 省 · 市，从大到小。
  *
@@ -931,27 +1078,30 @@ function formatChinesePlace(
   const gc = isGreaterChina(code);
   // ja 保后缀（语言差异）；中文两档在下面按 detail 分流。
   const keepSuffix = locale === 'ja';
-  const country = countryWord(place, locale);
+  // v1.9.3 §5.1：整行字形按目标档位归一（ja / en 原样；未知字保底原样）。
+  const han = (value: string): string => normalizeHanVariant(value, locale);
+  const country = han(countryWord(place, locale));
 
   let region = '';
   let city = '';
   if (gc) {
-    region = greaterChinaLabel(code, locale);
+    region = han(greaterChinaLabel(code, locale));
     if (!keepSuffix && detail === 'full') {
       // 台湾是「省」、港澳是「特别行政区」；日文档不补（见上）。
       region = `${region}${code === 'TW' ? '省' : SPECIAL_ADMIN_REGION[locale]}`;
     }
     // 城市那一格填的就是地区名本身（香港 / 澳门）时，地区段已经说了，别再重复。
     if (place.city.length > 0 && !isTerritoryCity(place.city, code)) {
+      const normalizedCity = han(place.city);
       city = keepSuffix
-        ? place.city
+        ? normalizedCity
         : detail === 'full'
-          ? ensureAdminSuffix(place.city, '市')
-          : stripAdminSuffix(place.city);
+          ? ensureAdminSuffix(normalizedCity, '市')
+          : stripAdminSuffix(normalizedCity);
     }
   } else {
-    region = distinctRegion(place);
-    city = place.city;
+    region = han(distinctRegion(place));
+    city = han(place.city);
     if (!keepSuffix) {
       if (detail === 'full') {
         region = ensureAdminSuffix(region, '省');
@@ -973,7 +1123,10 @@ function formatChinesePlace(
     region = '';
   }
 
-  return [country, region, city].filter((part) => part.length > 0).join(PLACE_SEPARATOR);
+  return [country, region, city]
+    .map((part) => han(part))
+    .filter((part) => part.length > 0)
+    .join(PLACE_SEPARATOR);
 }
 
 /**
