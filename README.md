@@ -7493,21 +7493,21 @@ halation 强度按卷改 `HALATION_BY_STOCK`（`ek-100` / `hp-400` / `tx-400` �
   回环 / LUT 查表精度 / 渲染参数与单调性 / 管线接线与兜底）；5 个受影响的旧探针已按
   v2.0.0 口径修绿：`_probe_capture_quality.mjs`、`_probe_v188_sharp.cjs`、
   `_probe_v189_flash.cjs`、`_probe_v190_wiring.cjs`、`_probe_v190_stocks.cjs`；
-  断言总数 48,331 → **@@GATE_ASSERTIONS@@**（目标 ≥49,000，只增不减）。
+  断言总数 48,331 → **49,019**（目标 ≥49,000，只增不减）。
 - `_verify_ipa_v200.py`：PRESENT 只放压缩后仍会命中的真实字符串——九卷 LUT base64 唯一窗口
   （各 48 字符，完整落在单一 120 字符切片内、逐卷互不重叠）、`LUT_ATLAS_LICENSE` 上游 MIT 归属声明（不含任何胶卷厂商/商品名）、五语「冲印中」文案、兜底告警「真胶片像素管线失败」、缓存名前缀 `film-`，以及
   v1.9.5 的 11 个染色 hex（`presets.ts` 未改，取景器仍用）与 `chromaLock` 标记；
   ABSENT 沿用 v1.9.3 / v1.9.4 的旧染色 hex（v1.9.5 的 11 个 hex 仍随 `presets.ts` 打包，
   **不能**放进 ABSENT）；`EXPECTED_VERSION="2.0.0"`、`PREVIOUS_VERSION="1.9.5"`。
-- `expo export --platform ios --no-bytecode` bundle **@@BUNDLE_BYTES@@ B**：契约原估（t3mujin
+- `expo export --platform ios --no-bytecode` bundle **1,956,540 B**：契约原估（t3mujin
   时代）九卷 atlas ≤320KB，但 spectral 数据熵更高，实测九卷 PNG 407,760 B / base64
-  543,692 字符（≈531 KiB），**接受超预算**；bundle 由 export 实测回填 @@BUNDLE_BYTES@@，
+  543,692 字符（≈531 KiB），**接受超预算**；bundle 由 export 实测为 1,956,540 B，
   预估约 1.9–1.95 MB。
 - IPA 核验 `RESULT: OK`：体积 / SHA-256 / Info.plist `2.0.0` / `main.jsbundle` 内新标记全在 /
   旧染色 hex 全 0 / 九卷 LUT base64 唯一窗口逐卷命中。
 
 *怎么改*：门禁只增不减，新断言优先加在「资产完整性 / 查表精度 / 管线接线」三处；
-占位符 `@@GATE_ASSERTIONS@@` 由发布时 `_v200_fill.json` 回填（见 §51.8）。
+发布指纹（远端 / CI / artifact / IPA / Release）见 §51.8。
 
 ### 51.8 发布指纹（v2.0.0）
 
@@ -7515,15 +7515,15 @@ halation 强度按卷改 `HALATION_BY_STOCK`（`ek-100` / `hp-400` / `tx-400` �
 
 | 项 | 值 |
 | --- | --- |
-| 本地提交 | `@@COMMIT@@`（v2.0.0 特性，@@COMMIT_STAT@@）+ 本文档回填提交（docs-only，`paths-ignore` 跳过 CI） |
-| 远端 master | `@@REMOTE_HEAD@@`（Git Data API 推送，TREE MATCH，tree `@@TREE@@`） |
-| CI run / job | run `@@RUN_ID@@` / job `@@JOB_ID@@`（macos-26-intel，build-ipa 全 success） |
-| artifact id / 体积 | `@@ARTIFACT_ID@@` / **@@ARTIFACT_BYTES@@ B**（`FretroCam-unsigned-ipa`） |
-| expo export bundle | **@@BUNDLE_BYTES@@ B**（v1.9.5 为 1,392,268 B；九卷 PNG 407,760 B / base64 543,692 字符，接受超预算；预估约 1.9–1.95 MB，以实测为准） |
-| IPA 文件 / 体积 / sha256 | `FretroCam-v2.0.0-unsigned.ipa` / **@@IPA_BYTES@@ B** / `@@IPA_SHA@@` |
-| Release id / asset id | release `@@RELEASE_ID@@`（tag `v2.0.0`）/ asset `@@ASSET_ID@@` |
-| IPA 回读核验 | `RESULT: OK` —— `main.jsbundle` **@@MAIN_JSBUNDLE_BYTES@@ B**、Info.plist `2.0.0` + `com.canyerylee.fretrocam` FOUND、九卷 LUT base64 唯一窗口逐卷命中、PRESENT @@PRESENT_COUNT@@ 命中零 missing、ABSENT 全 0 |
-| 下载地址 | @@RELEASE_URL@@ |
+| 本地提交 | `69c35cd`（v2.0.0 特性，24 files changed, 6,720 insertions(+), 17 deletions(-)）+ 本文档回填提交（docs-only，`paths-ignore` 跳过 CI） |
+| 远端 master | `60c196cfb20a01a8b7e40b705f7bfccb9b0a7283`（Git Data API 推送，TREE MATCH，tree `192e8dca6ce35a3c7b61f045e3d2223e807910d7`） |
+| CI run / job | run `39161423616` / job `117775357692`（macos-26-intel，build-ipa 全 success） |
+| artifact id / 体积 | `12149346526` / **10,978,598 B**（`FretroCam-unsigned-ipa`） |
+| expo export bundle | **1,956,540 B**（v1.9.5 为 1,392,268 B；九卷 PNG 407,760 B / base64 543,692 字符，接受超预算；预估约 1.9–1.95 MB，以实测为准） |
+| IPA 文件 / 体积 / sha256 | `FretroCam-v2.0.0-unsigned.ipa` / **11,093,261 B** / `7b6a187df5d660d58b997da89ce65faf9a83dbd328ee14b673978bf3f2fdf101` |
+| Release id / asset id | release `416685406`（tag `v2.0.0`）/ asset `654386116` |
+| IPA 回读核验 | `RESULT: OK` —— `main.jsbundle` **2,686,719 B**、Info.plist `2.0.0` + `com.canyerylee.fretrocam` FOUND、九卷 LUT base64 唯一窗口逐卷命中、PRESENT 350 命中零 missing、ABSENT 全 0 |
+| 下载地址 | https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v2.0.0/FretroCam-v2.0.0-unsigned.ipa |
 
 *怎么改*：发布后把实测值写进工作区根 `_v200_fill.json`（键为占位符去掉 `@@`，如
 `"RELEASE_URL": "https://github.com/…/releases/download/v2.0.0/FretroCam-v2.0.0-unsigned.ipa"`），

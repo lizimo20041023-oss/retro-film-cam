@@ -96,7 +96,7 @@ v2.0.0 起，九卷底片的**成片像素映射**改用真 33³ 3D LUT：由开
 LUT 图集（PNG base64），运行时零网络请求、零新增依赖。
 
 - 来源：https://github.com/JanLohse/spectral_film_lut
-- 许可证：MIT License，版权人 Jan Lohse
+- 许可证：MIT License，`Copyright (c) 2017 Jan Lohse`（与包内 `LUT_ATLAS_LICENSE` 归属声明同文）
 - 使用方式：离线生成（`_v196_gen_luts.py` 调上游 `create_lut`，sRGB→sRGB 33³；
   `_v200_gen_atlas.py` 打包为 256×141 RGBA 图集并生成 `src/constants/lutAtlas.ts`），
   转译与格式口径见 README §51.2/§51.3
@@ -118,7 +118,7 @@ LUT 图集（PNG base64），运行时零网络请求、零新增依赖。
 | HP-400 | Kodak 5222 Dev 9（黑白） | Kodak Polymax Fine-Art Paper Grade 2 |
 | TX-400 | Kodak Tri-X 400 Dev 9（黑白） | Kodak Polymax Fine-Art Paper Grade 2 |
 
-该数据的 MIT 全文与上文「MIT 许可证全文」相同，版权人为 `Copyright (c) Jan Lohse`。
+该数据的 MIT 全文与上文「MIT 许可证全文」相同，版权人为 `Copyright (c) 2017 Jan Lohse`。
 
 ## 素材
 
