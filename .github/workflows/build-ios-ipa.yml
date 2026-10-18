@@ -50,33 +50,25 @@ permissions:
 
 jobs:
   build-ipa:
-    # 用 GitHub 免费提供的 macOS 机器。钉 Intel（x64）那一档，但**必须配 macOS 26**。
+    # 用 GitHub 免费提供的 macOS 26 机器（arm64）。2026-10-18 v1.9.1 这次踩到的教训：
+    #   `macos-26-intel` 标签当天不再分配到任何机器 —— 连续三次 attempt 都是
+    #   `runner_id=0`、`steps=[]`、29 秒内 complete=failure（排队 13 分钟 → 直接判负，
+    #   一步都没跑）。GitHub Status 全绿，属 Intel 标准池被收回/无容量，与代码无关。
+    #   → 回退 `macos-26`（arm64，macOS 26 + Xcode 26，标准标签免费）。
     #
-    # 为什么要 Intel：`macos-latest` 现在指向 arm64 镜像，2026-10-15 这次构建连续三次
-    #   排队满 15 分钟后被 GitHub 直接取消，`steps=0`（一步都没跑），两条标注是
-    #     "The job was not acquired by Runner of type hosted even after multiple attempts"
-    #     "Due to capacity constraints, jobs targeting macOS arm64 runners may experience longer queue times."
-    #   —— 纯属 arm64 池排不上机器，与代码无关。Intel 池实测**秒分配**。
+    # 历史沿革（保留以便排错）：
+    #   · 2026-10-15 `macos-latest`（arm64）曾排队 15 分钟后被取消，标注
+    #     "The job was not acquired by Runner of type hosted even after multiple attempts"；
+    #     当时 Intel 池秒分配，故临时钉 `macos-26-intel`。
+    #   · `macos-15-intel` 不可用：镜像自带 Xcode 16.4，RN 0.86 / Expo SDK 57 的
+    #     `ExpoModulesJSI` xcframework 构建报 `error: Could not resolve package dependencies:`。
+    #   · 宿主机是 Intel 还是 arm64 不影响产出的未签名 ipa（只做 prebuild + xcodebuild）。
+    #   · `-large` / `-xlarge` 才是计费的 larger runner，别改过去。
     #
-    # 为什么是 26 而不是 15（这条是踩出来的）：换成 `macos-15-intel` 后机器立刻到手、
-    #   前 7 步全过（npm ci / prebuild / pod install 都成功），第 8 步 `xcodebuild` 退出码 65：
-    #     PhaseScriptExecution [CP-User] Build ExpoModulesJSI xcframework (in target 'ExpoModulesJSI')
-    #   该脚本内部嵌套调用的 xcodebuild 报 `error: Could not resolve package dependencies:`。
-    #   根因是那台镜像自带 **Xcode 16.4**（`/Applications/Xcode_16.4.app`），而 RN 0.86 /
-    #   Expo SDK 57 的 `ExpoModulesJSI` xcframework 构建依赖 Xcode 26 那一代的 SPM 工具链。
-    #   此前所有成功构建都跑在 `macos-latest` = macOS 26 + Xcode 26，所以本工作流**不 pin Xcode**，
-    #   换镜像就等于换工具链 —— 镜像选错会以「包依赖解析不了」这种看不出真因的方式失败。
-    #   → 取两者交集：`macos-26-intel`（macOS 26 x64，标准标签，免费）。
-    #
-    # 标签事实（`actions/runner-images` README）：macOS 26 x64 = `macos-26-intel` / `macos-26-large`；
-    #   macOS 26 arm64 = `macos-latest` / `macos-26`；macOS 15 x64 = `macos-15-intel`。
-    #   `-large` / `-xlarge` 才是计费的 larger runner，别改过去。
-    # 宿主机是 Intel 还是 arm64 不影响产出的未签名 ipa（只做 prebuild + xcodebuild）。
-    #
-    # 回退路径：若这行报「runner not found」→ 改 `macos-26`（arm64，等池放量）；
-    #   若又出现 SPM 依赖解析失败 → 说明镜像退回了旧 Xcode，改 `macos-26`。
+    # 回退路径：若 arm64 池又出现长时间排队 → 改回 `macos-26-intel` 试容量；
+    #   若出现 SPM 依赖解析失败 → 说明镜像退回了旧 Xcode，改 `macos-26`。
     #   （见 如何装到手机上.md 的排错一节）
-    runs-on: macos-26-intel
+    runs-on: macos-26
     timeout-minutes: 60
 
     steps:
