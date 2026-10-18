@@ -6723,7 +6723,16 @@ v1.9.1 的层序是「sCurve(overlay) → exposure(screen)」，先压黑再提�
 
 *（实测值，2026-10-18 发布回填）*
 
-__FINGERPRINTS__
+| 项 | 值 |
+| --- | --- |
+| 本地提交 | `43b2e85`（v1.9.2 特性）+ 本文档回填提交（docs-only，`paths-ignore` 跳过 CI） |
+| 远端 master | `87d4f6eb92051787265ee7a9b9023b11fc087b2d`（Git Data API 推送，TREE MATCH） |
+| CI run / job | run `39131478827` / job `117687380745`（macos-26-intel，全 success） |
+| artifact id / 体积 | `12137653657` / **10,644,088 B**（`FretroCam-unsigned-ipa`） |
+| IPA 文件 / 体积 / sha256 | `FretroCam-v1.9.2-unsigned.ipa` / **10,758,404 B** / `869a51a7961960e45ee7c01baec4a3527043ae6f2faf6a0b918a89aa6caef25a` |
+| Release id / asset id | release `416473758`（tag `v1.9.2`）/ asset `653583148` |
+| IPA 回读核验 | `RESULT: OK` —— 115 entries、`main.jsbundle` **2,103,239 B**、Info.plist `1.9.2` + `com.canyerylee.fretrocam` FOUND、10 张相框、grain.png 390,943 B sha `84098a73…`（RGBA alpha mean 0.2078/std 0.1570，<8px 84.4%）、vignette.png 118,547 B sha `a379f924…`（中心 0/四角 255/RGB(4,12,20)）、PRESENT 全命中零 missing、ABSENT 全 0 |
+| 下载地址 | https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.9.2/FretroCam-v1.9.2-unsigned.ipa |
 
 ### 47.9 文件改动
 
