@@ -263,6 +263,58 @@ const TERRITORY_NAMES: Record<string, readonly string[]> = {
 };
 
 /**
+ * 拉丁国名别名表（v1.9.2 §6 防御性归一化）：反查 `country` 是拉丁名时的兜底。
+ *
+ * 为什么需要它：`COUNTRY_NAMES` 的英文全名反查能覆盖 `CHINA` / `JAPAN` 这类，
+ * 但真机反查会给别的写法 —— `PRC` / `Mainland China` / `Hong Kong` / `Macao` /
+ * `Taiwan`。港澳台**不在** `COUNTRY_NAMES` 里（见上方红线注释），而英文系统的原生反查
+ * 又可能只给 `countryName`、不给 `isoCountryCode`；中文 / 日文档这时仍必须映射出
+ * 「中国 / 中國 / 日本」，否则用户会看到 `中国 · 上海 · CHINA` 这种拉丁尾巴
+ * （用户 m09093 点名的真机痛点，见 `_v192_contract.md` §6）。
+ *
+ * **只给中文 / 日文档用**（`resolveCountryCode` 里调）：英文档的国名段本来就该是
+ * 拉丁的，任何额外映射都会改变英文行，违约「英文档逐字不变」。
+ *
+ * 键是 `normalizeLatinAliasKey` 归一后的形态（大写、去点、空白折叠）；值必须是
+ * `COUNTRY_NAMES` 的 alpha-2 或港澳台代码。`COUNTRY_NAMES` 英文名与 `ALPHA3` 反表
+ * 能查到的写法**不在这里重复**（分别由 `codeFromCountryName` 的前两级覆盖）。
+ */
+const LATIN_COUNTRY_ALIASES: Readonly<Record<string, string>> = {
+  // 中国（英文全名 CHINA 走 COUNTRY_NAMES；这里收变体与别名）
+  PRC: 'CN',
+  'PR CHINA': 'CN',
+  PRCHINA: 'CN',
+  "PEOPLE'S REPUBLIC OF CHINA": 'CN',
+  'MAINLAND CHINA': 'CN',
+  'CHINA MAINLAND': 'CN',
+  // 日本
+  NIPPON: 'JP',
+  // 港澳台：不在 COUNTRY_NAMES 里，必须显式收拉丁写法（CJK 写法在 TERRITORY_NAMES 里）
+  'HONG KONG': 'HK',
+  HONGKONG: 'HK',
+  'HONG KONG SAR': 'HK',
+  MACAU: 'MO',
+  MACAO: 'MO',
+  'MACAU SAR': 'MO',
+  TAIWAN: 'TW',
+  'CHINESE TAIPEI': 'TW',
+  // 常见反查变体（COUNTRY_NAMES 英文全名之外的写法）
+  USA: 'US',
+  'UNITED STATES OF AMERICA': 'US',
+  UK: 'GB',
+  'GREAT BRITAIN': 'GB',
+  'REPUBLIC OF KOREA': 'KR',
+  'RUSSIAN FEDERATION': 'RU',
+  'VIET NAM': 'VN',
+  'CZECH REPUBLIC': 'CZ',
+  HOLLAND: 'NL',
+  'THE NETHERLANDS': 'NL',
+  UAE: 'AE',
+  TURKIYE: 'TR',
+  'TÜRKIYE': 'TR',
+};
+
+/**
  * 各语言里「中国」怎么写 —— 中文档的国家段，也是拉丁档 `full` 的国家全称。
  *
  * 为什么国家段要按语言取词而不是永远写「中国」：英文界面出「台北 · 中国台湾」会非常怪，
@@ -651,6 +703,89 @@ function normalizeCountryCode(place: ResolvedPlace): string {
   return '';
 }
 
+/** 拉丁国名比较键：大写、去点、空白折叠（`' P.R. China '` → `'PR CHINA'`）。 */
+function normalizeLatinAliasKey(raw: string): string {
+  return raw
+    .trim()
+    .toUpperCase()
+    .replace(/\./g, '')
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * 国名 → alpha-2 反查（v1.9.2 §6）：把反查给的国名（四语词 + 拉丁别名）翻回代码。
+ *
+ * 三级判据：`COUNTRY_NAMES` 四语词（反查语言可能是中文 / 日文，代码缺失时也得救）
+ * → 港澳台本地写法（`TERRITORY_NAMES`：`香港` / `澳門` / `TAIWAN` …）→ 拉丁别名表
+ * （大小写 / 空白 / 尾点不敏感，alpha-3 由 `ALPHA3` 反表兜底）。查不到返回空串。
+ *
+ * **没有副作用、也不改英文档**：只会被 `resolveCountryCode` 在「中文 / 日文档」里调用。
+ */
+function codeFromCountryName(country: string): string {
+  const raw = country.trim();
+  if (raw.length === 0) {
+    return '';
+  }
+  for (const [code, names] of Object.entries(COUNTRY_NAMES)) {
+    if (
+      names.en === raw.toUpperCase() ||
+      names['zh-Hans'] === raw ||
+      names['zh-Hant'] === raw ||
+      names.ja === raw
+    ) {
+      return code;
+    }
+  }
+  for (const [code, names] of Object.entries(TERRITORY_NAMES)) {
+    if (names.includes(raw) || names.includes(raw.toUpperCase())) {
+      return code;
+    }
+  }
+  const key = normalizeLatinAliasKey(raw);
+  const alias = LATIN_COUNTRY_ALIASES[key];
+  if (alias !== undefined) {
+    return alias;
+  }
+  // alpha-3 / 小写 alpha-2 塞进国名槽：`JPN` / `CHN` / `cn`。
+  const fromAlpha3 = ALPHA3_TO_ALPHA2[key];
+  if (fromAlpha3 !== undefined) {
+    return fromAlpha3;
+  }
+  if (/^[A-Z]{2}$/.test(key) && ALPHA3[key] !== undefined) {
+    return key;
+  }
+  return '';
+}
+
+/**
+ * 中文 / 日文档的国家代码归一（v1.9.2 §6 防御性归一化）。
+ *
+ * `normalizeCountryCode` 的英文档口径**原样保留**；本函数只在它的结果"中文档根本
+ * 印不出国家段"时再兜一次：
+ * 1. 代码归一后是 `COUNTRY_NAMES` / 港澳台认识的代码 → 直接用；
+ * 2. 否则拿 `place.country` 反查（`CHINA` / `Japan` / `中国` / `香港` …）；
+ * 3. 再否则拿 `countryCode` 槽本身当国名反查（真机见过把 `'CHINA'` 塞进代码槽的）；
+ * 4. 都失败才退回 1 的原始归一值（不认识的代码在中文档继续"宁可不印"）。
+ *
+ * 英文档不走这里（`formatLatinPlace` / `countryWord('en')` 继续用
+ * `normalizeCountryCode`），所以「英文档逐字不变」是结构性保证。
+ */
+function resolveCountryCode(place: ResolvedPlace): string {
+  const direct = normalizeCountryCode(place);
+  if (direct.length > 0 && (COUNTRY_NAMES[direct] !== undefined || isGreaterChina(direct))) {
+    return direct;
+  }
+  const viaCountry = codeFromCountryName(place.country);
+  if (viaCountry.length > 0) {
+    return viaCountry;
+  }
+  const viaCodeSlot = codeFromCountryName(place.countryCode);
+  if (viaCodeSlot.length > 0) {
+    return viaCodeSlot;
+  }
+  return direct;
+}
+
 /**
  * 国家段用哪个词 —— **这条是 v1.8.5 的核心修正**。
  *
@@ -667,7 +802,10 @@ function normalizeCountryCode(place: ResolvedPlace): string {
  * （`resolveGeoLocale` 已经判掉 fr），多给一种语言只会让表里多一列没人用的「国名」。
  */
 function countryWord(place: ResolvedPlace, locale: GeoLocale): string {
-  const code = normalizeCountryCode(place);
+  // v1.9.2 §6：英文档保持原归一（逐字不变）；中文 / 日文档走防御性代码归一，
+  // 保证 `place.country` 是 `CHINA` / `JAPAN` 这类拉丁名（代码缺失 / 不认识）时
+  // 也能映射成「中国 / 中國 / 日本」，而不是把拉丁尾巴漏到行尾。
+  const code = locale === 'en' ? normalizeCountryCode(place) : resolveCountryCode(place);
   if (isGreaterChina(code)) {
     return CHINA_PREFIX[locale];
   }
@@ -787,7 +925,9 @@ function formatChinesePlace(
   locale: ChineseLocale,
   detail: PlaceDetail,
 ): string {
-  const code = normalizeCountryCode(place);
+  // v1.9.2 §6：中文 / 日文档的代码归一必须和 `countryWord` 用同一个（防御性）口径，
+  // 否则"国家段印了 中国、港澳台分支却没进"这种自相矛盾的行会出现。
+  const code = resolveCountryCode(place);
   const gc = isGreaterChina(code);
   // ja 保后缀（语言差异）；中文两档在下面按 detail 分流。
   const keepSuffix = locale === 'ja';

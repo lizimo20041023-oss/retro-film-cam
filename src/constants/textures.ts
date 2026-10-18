@@ -29,8 +29,12 @@
  *      每 170.67pt 重复一次没问题 —— 它是噪声场，重复不可见。
  *   3. `dust.png` 是稀疏离散点，仍然走 RN 的 `repeat`（一屏一块，重复会被看出来）；
  *      它在打包路径下斑点偏大 3 倍，属于已记档的已知缺口。
- *   4. 颗粒的"影调加权"依然靠 overlay 的数学性质：贴图围绕中灰 128、σ≈66/255，
- *      高光处 overlay 权重趋 0，中间调最大 —— 不需要逐像素遮罩。
+ *   4. 颗粒的"影调加权"依然靠 overlay 的数学性质：颗粒贴图偏离中灰越远、overlay 的
+ *      提亮/压暗越明显，高光处权重趋 0，中间调最大 —— 不需要逐像素遮罩。
+ *      v1.9.2 起 `grain.png` 不再是整块不透明灰度板，而是 **RGBA 透明背景 + alpha
+ *      通道为载体**：RGB 只有纯白/纯黑两种点，alpha = |亮度偏差|，偏差为 0 的
+ *      "背景" alpha=0 完全透明（用户铁律一）。因此层不透明度从 0.045 档降到
+ *      0.025 档（默认），颗粒浓度不再由"灰罩"提供。
  */
 import type { TextureId, TextureSpec } from '../types';
 
@@ -41,7 +45,7 @@ export const TEXTURES: Record<TextureId, TextureSpec> = {
     // 512×512：比照片窗口（最大约 352×466 pt）大 → 完全不重复
     source: require('../../assets/textures/grain.png'),
     defaultResizeMode: 'repeat',
-    note: '单色颗粒 tile（512×512 8 位灰度）：双尺度带限噪声（细颗粒 σ=0.60px 占 0.78 + 团簇 σ=1.80px 占 0.22；v1.8.2 起直接在 512 网格上生成，不再做 1.4× 上采样 + 0.7px 微模糊），围绕中灰 128、σ≈66.4（归一化 0.2616），三通道恒等 → 只改亮度、绝不出彩噪。频带能量：<8px 65.7% / 8–24px 28.5% / 24–64px 5.0%（旧版 25.8 / 55.0 / 16.2 —— 真机上就是"脏云雾"）；由 `FilmLookLayers` 按 512/3pt 手工平铺（1 贴图像素 = 1 设备像素）+ overlay 铺满画面，FFT + 周期重采样保证无缝。',
+    note: '透明背景颗粒 tile（512×512 RGBA，v1.9.2 重烤）：双尺度带限噪声（细颗粒 σ=0.60px 占 0.78 + 团簇 σ=1.80px 占 0.22；v1.8.2 起直接在 512 网格上生成，不再做 1.4× 上采样 + 0.7px 微模糊）。alpha 通道为载体（background alpha=0 完全透明，颗粒 = 纯白/纯黑点 × |偏差|），不再有整块中灰底板；alpha 均值 0.2078、频带能量 <8px 84.4% / 8–24px 13.7% / 24–64px 1.6%（旧版 25.8 / 55.0 / 16.2 —— 真机上就是"脏云雾"）；由 `FilmLookLayers` 按 512/3pt 手工平铺（1 贴图像素 = 1 设备像素）+ overlay 铺满画面，FFT + 周期重采样保证无缝；层 opacity 由 grain.ts 封顶 ≤0.055。',
   },
   dust: {
     id: 'dust',
@@ -55,7 +59,7 @@ export const TEXTURES: Record<TextureId, TextureSpec> = {
     name: '暗角',
     source: require('../../assets/textures/vignette.png'),
     defaultResizeMode: 'stretch',
-    note: '从中心透明 → 边缘深青黑的径向渐变（v1.9.1 重烤：中心 70% 半径 alpha=0，四角 alpha=255，smoothstep 无硬边），拉伸铺满，v1.8.7 起用 multiply 压暗四角。为什么这次 multiply 安全：中心 alpha=0 —— 没有上层像素参与混合，纯白不会被压灰（v1.9.1 把透明区从 56% 扩到 70%，中间的山体/海湾不再被暗角压黑）；v1.8.0 那次是整张不透明白底铺满，才有白雾。multiply 四角"乘"暗比 normal"盖"黑纱保留更多中间调。',
+    note: '从中心透明 → 边缘深青黑的径向渐变（v1.9.2 重烤：中心 80% 半径 alpha=0 完全透明，四角 alpha=255，smoothstep 无硬边；v1.9.1 曾是 70%），拉伸铺满，v1.8.7 起用 multiply 压暗四角。为什么这次 multiply 安全：中心 alpha=0 —— 没有上层像素参与混合，纯白/山体/海湾不会被压灰（v1.9.2 把透明区从 70% 扩到 80%，只有画面最外圈参与压暗）；v1.8.0 那次是整张不透明白底铺满，才有白雾。multiply 四角"乘"暗比 normal"盖"黑纱保留更多中间调。',
   },
   lightLeak: {
     id: 'lightLeak',

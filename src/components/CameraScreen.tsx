@@ -82,6 +82,7 @@ import { focusPointInCamera, planCameraLayer } from '../utils/cameraGeometry';
 import { computeFrameLayout } from '../utils/geometry';
 import { importAndDevelop } from '../utils/importPhoto';
 import { processAndSaveFilmPhoto } from '../utils/processFilmPhoto';
+import { resolveGeoLocale } from '../utils/placeNames';
 import { AlbumThumb } from './AlbumThumb';
 import { DevelopBadge, computeDevelopStageBox } from './DevelopOverlay';
 import { DialButton } from './DialButton';
@@ -1242,7 +1243,15 @@ export function CameraScreen() {
       capturedAt: previewClock,
       locationText: '',
       place: previewPlace,
-      locale: localeId,
+      /*
+       * v1.9.2（用户 m09093 铁律四 · 尾声）：预览与成片必须用**同一个地名语言**。
+       * 原来这里传的是界面语言 `localeId`，而成片链路（useFilmStage.mount）传的是
+       * `resolveGeoLocale(settings.geoLocale, localeId)` —— 于是「界面英文 + 地名语言中文」
+       * 时取景器会印拉丁 `SHANGHAI · CHINA`，洗出来却是中文，正好对应
+       * 「中文/日文模式下末尾漏出 CHINA/JAPAN」的实拍症状。
+       * 这里改成与成片完全同源：先按设置解析地名语言，再交给 planWatermark。
+       */
+      locale: resolveGeoLocale(settings.geoLocale, localeId),
       watermarkLayout: settings.watermarkLayout,
       // v1.8.11：预览与成片必须走**同一份**位置设置，否则"设置里挪了位置、取景器没动"。
       watermarkZone: settings.watermarkZone,
@@ -1266,6 +1275,7 @@ export function CameraScreen() {
     previewClock,
     previewPlace,
     localeId,
+    settings.geoLocale,
     settings.watermarkLayout,
     settings.watermarkZone,
     settings.watermarkAlign,

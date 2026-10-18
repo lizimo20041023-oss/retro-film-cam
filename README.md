@@ -68,6 +68,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [44. v1.8.11：场景自适应冲印（按光线测光补偿）与水印位置两轴可设](#44-v1811场景自适应冲印按光线测光补偿与水印位置两轴可设)
 - [45. v1.9.0：五道手术（非阻塞快门 + 极速测光 / 12 层同源显影 / 反 HDR 四场景 / 九支新卷 / 4×4 水印矩阵保留）](#45-v190五道手术非阻塞快门--极速测光--12-层同源显影--反-hdr-四场景--九支新卷--4x4-水印矩阵保留)
 - [46. v1.9.1：去糊、去雾、去灰（零模糊 S 曲线 / 零模糊曝光提亮 / 四场景去雾 / 九卷零模糊基准 / 70% 暗角）](#46-v191去糊去雾去灰零模糊-s-曲线--零模糊曝光提亮--四场景去雾--九卷零模糊基准--70-暗角)
+- [47. v1.9.2：亮白通透（层序倒置 + 无 crush + 高明度染色 + 80% 内圈暗角 + RGBA 颗粒 + 地名后缀）](#47-v192亮白通透层序倒置--无-crush--高明度染色--80-内圈暗角--rgba-颗粒--地名后缀)
 
 ---
 
@@ -6576,6 +6577,179 @@ RGB 恒 `(4,12,20)`。重生成 `assets/textures/vignette.png`：
 `_verify_ipa_v191.py` / `_release_v191.py` / `_commit_v191_msg.txt`、`_export_v191_lead/`；
 A/B 组探针由 `zero-blur-optics` / `optics-engine` 就地更新，
 C 组由 `quality-gate` 全量复跑（26 道门禁 + 暗角单验）。
+
+## 47. v1.9.2：亮白通透（层序倒置 + 无 crush + 高明度染色 + 80% 内圈暗角 + RGBA 颗粒 + 地名后缀）
+
+### 47.1 用户需求与四条数学病根
+
+用户 m09093 对照 v1.9.1 的十张实拍样片，结论是**整体欠曝 0.7~1.0 EV**
+（白衬衫、斑马线、白云、白雪全在发灰）、且仍有灰雾。四条数学病根：
+
+1. 照片上方还有 `normal` 混合的半透明层 —— 等价于「用一张黑纸垫在照片上再压白」，
+   亮度乘性垫灰；
+2. `shadowCrush` 的 multiply 压暗 + 过强 `sCurveContrast` 的 overlay 压中间调，
+   两刀都朝下；
+3. 深色 `soft-light` 染色（RGB<128）在 iOS 的 CoreImage 公式下等于减光镜；
+4. 暗角中心透明区只有 70%、强度偏大，画面中间的山体/海湾被压黑。
+
+用户冻结规格：**除基底（opacity:1）外严禁照片上方出现 `normal` 或未声明混合模式的
+半透明层**；染色只许 `soft-light`（每卷明文例外优先）；废除 shadowCrush；曝光提亮翻倍；
+暗角中心 80% 全透明、上限 0.15。
+
+### 47.2 手术一：层序倒置 —— 先加光、后拉反差（`gradeLayers.ts`）
+
+v1.9.1 的层序是「sCurve(overlay) → exposure(screen)」，先压黑再提亮，中调被两刀反复
+揉搓。v1.9.2 倒置为「exposure(screen) → sCurve(overlay)」，并把三条 photo 层的
+`blurRadius` 全部锁 0：
+
+| # | 层 key | 混合模式 | 不透明度 | 说明 |
+| --- | --- | --- | --- | --- |
+| 1 | `exposure-lift` | `screen`（同源、blurRadius 0） | `clamp(exposureLift, 0, 0.62)` | 零模糊曝光提亮，Y' = 2Y − Y² |
+| 2 | `s-curve-contrast` | `overlay`（同源、blurRadius 0） | `clamp(sCurveContrast, 0, 0.30)` | 零模糊 S 曲线，Y<0.5→2Y²，Y≥0.5→1−2(1−Y)² |
+| 3 | `temperature` | `soft-light` | `clamp(ΔT, 0, 0.22)` | 仅非 0 才出层（九卷静态为 0） |
+| 4 | `tint` | `soft-light` | `clamp(Δt, 0, 0.22)` | 同上 |
+| 5 | `shadow-crush` | `multiply`（同源、blurRadius 0） | `clamp(crush, 0, 0.03)` | 仅 >0.005 才出层（九卷只剩 TX-400 0.03） |
+| 6 | `mono-desaturate` | `color` | 1.0 | 真黑白去色 |
+| 7 | `shadow-tint` | `soft-light` | `clamp(opacity, 0, 0.28)` | 暗部色纸（高明度色） |
+| 8 | `highlight-tint` | `soft-light` / `overlay` | `clamp(opacity, 0, 0.30)` | 高光色纸；EK-100 按用户明文用 overlay |
+| 9 | `grain` | `multiply` | `grainLevel` 档位 | 颗粒（RGBA 透明载体） |
+| 10 | `vignette` | `multiply` | `clamp(vignette, 0, 0.15)` | 80% 内圈暗角 |
+| 11 | `light-leak` | `screen` | `clamp(leak, 0, 0.10)` | 漏光 |
+
+- 常量导出：`S_CURVE_OPACITY_MAX = 0.30`、`EXPOSURE_LIFT_OPACITY_MAX = 0.62`、
+  `SHADOW_CRUSH_OPACITY_MAX = 0.03`、`VIGNETTE_OPACITY_MAX = 0.15`、
+  `sanitizeTintBlendMode()`；`halation` 层与 `HALATION_OPACITY_MAX` 一起删除
+  （九卷全 0，`halation` 字段仅为兼容保留在 `ColorGradeConfig`）；
+- 色温/色调四个化学色全部换成**高明度色纸**：`#FFE2C2`（暖）/ `#C9E6FF`（冷）/
+  `#D2F6C8`（绿）/ `#FFD1F2`（品红），不再有深色 soft-light 当减光镜；
+- `countStageImages` 契约：um-400/gd-200/pt-400/cp-200/fj-400/cs-800t/hp-400 各 6 层，
+  ek-100 5 层（零颗粒），tx-400 7 层（带 crush）。
+
+### 47.3 手术二：自适应只加光、不压暗（`adaptiveGrade.ts`）
+
+删 `shadowCrushTarget` 与四个 `SCENE_CRUSH_TARGET_*`（绝对目标值会强行抬高预设 crush，
+与新约束冲突），四场景改为纯增量：
+
+| 场景 | `sCurveContrastDelta` | `exposureLiftDelta` | `shadowCrushDelta` | 密度 / 分离 |
+| --- | --- | --- | --- | --- |
+| `dark`（夜景/室内） | +0.06 | **+0.15** | 0 | 1.00 / 1.00 |
+| `high-contrast`（大光比） | +0.10 | +0.06 | 0 | 1.00 / 1.00 |
+| `flat`（阴天平光） | +0.12 | +0.12 | 0 | 1.20 / 1.20 |
+| `bright`（雪地/天空） | +0.04 | +0.04 | 0 | 1.00 / 1.00 |
+| `neutral` | 0 | 0 | 0 | 1.00 / 1.00 |
+
+任何场景都不再减少曝光提亮、也不增加压暗；`HALATION_DELTA_MAX = 0`。
+`classifyScene` 阈值与 `MIN_SAMPLES=12` 不变，白平衡/色调夹取仍为 ±0.14 / ±0.08。
+
+### 47.4 手术三：九卷亮白通透基准（`presets.ts` / `FilmCard.tsx`）
+
+| id | 代号 | sCurve / lift / crush / vignette / halation | 染色（全部 soft-light） |
+| --- | --- | --- | --- |
+| `um-400` | 幽蓝 400（默认） | .24 / **.42** / 0 / .12 / 0 | 暗部 `#91CDFF`.22 + 高光 `#FFE6AF`.18 |
+| `gd-200` | 金调 200 | .20 / .44 / 0 / .10 / 0 | 高光 `#FFE096`.28 |
+| `pt-400` | 蜜桃 400 | .16 / **.46** / 0 / .08 / 0 | 高光 `#FFE8D7`.26 |
+| `cp-200` | 琥珀 200 | .18 / .40 / 0 / .12 / 0 | 高光 `#FFD791`.26 |
+| `fj-400` | 翡翠 400 | .20 / .44 / 0 / .10 / 0 | 高光 `#9BEEE1`.26 |
+| `ek-100` | 暖金 100 | .26 / .38 / 0 / .14 / 0 | 高光 `#FFEBCD`.18 **overlay**（用户明文例外），零颗粒 |
+| `cs-800t` | 冰川 800T | .22 / .42 / 0 / .12 / 0 | 暗部 `#8CD2FF`.28 |
+| `hp-400` | 石墨 400（mono） | .22 / .42 / 0 / .10 / 0 | — |
+| `tx-400` | 玄铁 400（mono） | .30 / .38 / **.03** / .15 / 0 | — |
+
+- 九卷 halation 全 0（用户铁律），grain 默认 0.025（比 v1.9.1 再降 50%）；
+  `PRESET_DEFAULTS.grain = 0.025`、`PRESET_DEFAULTS.vignette = 0.10`；
+- `FilmCard.tsx` 渐变卡随新量程重标定：`BASE_GRAY=110`、`CRUSH_RANGE=240`、
+  `S_RANGE=150`、`LIFT_RANGE=160`、`VIGNETTE_RANGE=170`、`CHEMISTRY_GAIN=1.2`；
+  三档都带暗角下沿项，九卷两两可辨（max ≥15 / 累计 ≥50）；
+- 11 条旧 id 兼容映射、`DEFAULT_PRESET_ID='um-400'`、
+  `GRAINLESS_PRESET_IDS={'ek-100'}` 全部保留。
+
+### 47.5 颗粒重烤（RGBA alpha 载体）与暗角重烤（80% 内圈）
+
+- `grain.ts` 档位改为 LT 0.012 / STD 0.025 / HV 0.038 / MAX 0.055、
+  `GRAIN_OPACITY_MAX = 0.055`；dust 阈值 0.035 / 0.05；
+- `scripts/generate_grain_clump.py` 改为**真 RGBA 透明 alpha 载体**（RGB 只做白/黑粒子
+  载体，alpha 承载透明度），重生成 `assets/textures/grain.png`：
+  512×512 RGBA、**390,943 B**、
+  sha256 `84098a73fe0c8d86049718c85252d46231bc6172f6303eaefb8165e792c00994`；
+  alpha mean 0.2078 / std 0.1570 / zeroFrac 0.0060，频带 `<8px 84.4% / 24–64px 1.6%`；
+- `scripts/generate_vignette.py` 改 `INNER_RADIUS = 0.80`：中心 80% 完全透明、仅四角
+  20% 过渡，RGB 恒 `(4,12,20)`；重生成 `assets/textures/vignette.png`：
+  1024×1024 RGBA、**118,547 B**、
+  sha256 `a379f92417b71890aca3e4ea75e6a4ac1e2824c11beee32d47a0accc98185e70`；
+  alpha 实测 rho 0.80 = 0 / 0.86 = 55 / 0.94 = 200 / 1.0 = 255。
+
+### 47.6 地名后缀修复：CHINA / JAPAN 在中文/日文水印里归位
+
+- `placeNames.ts` 新增 `LATIN_COUNTRY_ALIASES` / `normalizeLatinAliasKey` /
+  `codeFromCountryName` / `resolveCountryCode`：中文/日文地名栏的国名后缀先按
+  四语反表 → 地区名 → 拉丁别名 → alpha-3 归一成国家代码，再走 `COUNTRY_NAMES`
+  输出 中国/中國/日本，不再直接漏出 `CHINA` / `JAPAN`；
+- 覆盖 CHINA 6 种变体 / JAPAN 5 种变体 × 3 种语言 × 3 种形态，英文档逐字不变，
+  港澳台仍走 `CHINA_PREFIX`；
+- `CameraScreen.tsx` 预览水印的 `planWatermark` 改传
+  `locale: resolveGeoLocale(settings.geoLocale, localeId)`（并把 `settings.geoLocale`
+  加进依赖），修掉 UI=en/fr + 地名语言=zh/ja 时预览漏出 `CITY · CHINA` 的路径；
+  成片链路 `useFilmStage` 此前已是正确 locale，无需改。
+
+### 47.7 门禁（26 道，39,312 条断言 + 暗角 9/9）
+
+| # | 门禁 | 断言 | # | 门禁 | 断言 |
+| --- | --- | --- | --- | --- | --- |
+| G01 | `_probe_date_engine.cjs` | 3372 | G14 | `_purity_audit.mjs` | 64 |
+| G02 | `_probe_film_look.cjs` | 2417 | G15 | `_probe_v186_perf.cjs` | 241 |
+| G03 | `_probe_geo_lock.cjs` | 16207 | G16 | `_probe_v188_sharp.cjs` | 158 |
+| G04 | `_probe_noframe_v181.cjs` | 455 | G17 | `_probe_v189_flash.cjs` | 56 |
+| G05 | `_probe_noframe_watermark.cjs` | 458 | G18 | `_probe_v190_stocks.cjs` | 919 |
+| G06 | `_probe_skin_material.cjs` | 1069 | G19 | `_probe_v190_optics.cjs` | 1319 |
+| G07 | `_probe_v180_seams.mjs` | 1468 | G20 | `_probe_v190_meter.mjs` | 281 |
+| G08 | `_probe_lead_integration.mjs` | 315 | G21 | `_probe_v190_async.cjs` | 150 |
+| G09 | `_probe_capture_quality.mjs` | 78 | G22 | `_probe_v190_wiring.cjs` | 1953 |
+| G10 | `_probe_v184_camera.cjs` | 940 | G23 | `_probe_v1811_adaptive.cjs` | 2717 |
+| G11 | `_probe_v185_place.cjs` | 731 | G24 | `_probe_v1811_scene.mjs` | 478 |
+| G12 | `_probe_v185_frame.cjs` | 1781 | G25 | `_probe_v1811_watermark.cjs` | 1497 |
+| G13 | `_haze_audit.mjs` | 9/9（结构 108 + 数据/源码 80，超预算 0/9） | — | **合计** | **39,312 条断言 + 暗角 9/9** |
+
+- `tsc --noEmit -p tsconfig.json` → EXIT 0；26 门禁全 EXIT 0 / 0 失败
+  （`_run_gates_v192.ps1`，日志 `_gate_v192_run.out.txt`）。
+- `_haze_audit.mjs` 结构门禁 9 卷 × 12 条与径向暗角 9 卷 × 12 条各 0 失败；
+  `veilMid` 预算由 0.10 重标定为 0.18：exposureLift 翻倍后光晕的声明成本实测
+  0.1110~0.1746，仍能抓住额外 ≥0.02 的雾层，属预算口径更新而非放宽雾限。
+- 本地包核验 `python _verify_ipa_v192.py --local <bundle>` → `RESULT(local): OK`，
+  bundle `index-144d259c9b13df301d519b91f6decd9e.js` = **1,386,381 B**
+  （v1.9.1 为 1,386,100 B，+281 B）；`--grain` / `--vignette` 单验均 OK
+  （颗粒改按 512×512 RGBA alpha 通道统计 mean/std/zeroFrac 与 alpha 频带）。
+
+### 47.8 发布指纹
+
+*（实测值，2026-10-18 发布回填）*
+
+__FINGERPRINTS__
+
+### 47.9 文件改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/utils/gradeLayers.ts` | 层序倒置（exposure → sCurve）、删 halation 层、染色强制 soft-light/overlay、高明度化学色、五常量改 0.30/0.62/0.03/0.15、文件头注释重写 |
+| `src/utils/adaptiveGrade.ts` | 删 `shadowCrushTarget` 与四个 `SCENE_CRUSH_TARGET_*`；四场景纯增量（只加光不压暗）；`HALATION_DELTA_MAX=0` |
+| `src/constants/presets.ts` | 九卷亮白基准重标定；`PRESET_DEFAULTS.grain=0.025` / `vignette=0.10`；染色换高明度色纸 |
+| `src/components/FilmCard.tsx` | swatch 量程与公式重标定（BASE_GRAY=110 等），九卷两两可辨 |
+| `src/constants/grain.ts` | 档位 0.012/0.025/0.038/0.055、上限 0.055、dust 阈值 |
+| `scripts/generate_grain_clump.py` | 改为 RGBA 透明 alpha 载体 |
+| `assets/textures/grain.png` | 重烤 512² RGBA、390,943 B、sha256 `84098a73…` |
+| `scripts/generate_vignette.py` | `INNER_RADIUS = 0.80`、剖面元组与 docstring |
+| `assets/textures/vignette.png` | 重烤 1024² RGBA、118,547 B、sha256 `a379f924…` |
+| `src/utils/placeNames.ts` | 新增国家码归一化四函数；中文/日文国名后缀不再漏 CHINA/JAPAN |
+| `src/components/CameraScreen.tsx` | 预览水印 locale 走 `resolveGeoLocale(settings.geoLocale, localeId)` |
+| `src/types/index.ts` | `ColorGradeConfig` 结构不变，注释改 v1.9.2 口径（halation 不产生图层） |
+| `src/constants/textures.ts` | 纹理注释更新 |
+| `app.json` | version `1.9.1` → `1.9.2` |
+| `README.md` | 本节 §47 + TOC |
+
+工作区根（不进仓库）：`_v192_contract.md`、`_patch_verify_v192.py` / `_patch_verify_v192b.py`、
+`_run_gates_v192.ps1`、`_gate_v192_run.out.txt`、`_gate_v192_local_verify.txt`、
+`_verify_ipa_v192.py` / `_release_v192.py` / `_commit_v192_msg.txt`、`_export_v192_lead/`；
+A/B/D 组探针由 `zero-blur-optics` / `optics-engine` / `watermark-engine` 就地更新，
+C 组由 `quality-gate` 全量复跑（26 道门禁 + 颗粒/暗角单验）。
 
 ---
 

@@ -7,10 +7,10 @@
  * 「一眼看出这卷是什么味道」最直观的办法当然是拿真实样片，但项目里没有、
  * 也不该为十个预设各烧一张烘焙图（体积、维护、和真实成像对不上，三头不讨好）。
  * 退而求其次的做法是**从预设自己的光学配方反推一个近似色块**：
- * 拿一个中灰当"标准场景"，把 v1.9.0 的 5 层胶片管线（树脂柔焦 / 暗部浓墨 /
- * 高光奶油 / 化学分离色 / 显影暗角）依次施加一遍，得到的三个色阶就是这卷
- * 胶片的性格 —— 暗部浓墨的压出油润黑、Bloom 高的顶出奶油白、暖卷偏琥珀、
- * 冷卷偏青、黑白卷三档全灰。
+ * 拿一个中灰当"标准场景"，把 v1.9.2 的零模糊管线（screen 曝光提亮 →
+ * overlay 真 S 曲线 → 化学冷暖分离色 → 暗角边缘）依次施加一遍，得到的三个
+ * 色阶就是这卷胶片的性格 —— 提亮大的中间调更亮、S 曲线强的顶出高反差、
+ * 暖卷偏琥珀、冷卷偏青、黑白卷三档全灰。
  *
  * ⚠️ 它**不等于**成片效果（真正的合成在 `FilmCompositor` / `gradeLayers` 里，
  * 还要叠颗粒、漏光、暗角）。这里只是色偏方向和强度的示意，别拿它当取色器。
@@ -100,14 +100,28 @@ function clampChannel(value: number): number {
   return value;
 }
 
-/** 中灰：所有近似都以它为起点，相当于"标准场景的中间调"。 */
-const BASE_GRAY = 132;
-/** v1.9.1 黑位托底（同源 multiply 自叠）对色块底部的满量程下压（shadowCrush 0.12 时 ≈ 5.5 阶）。 */
-const CRUSH_RANGE = 46;
-/** v1.9.1 零模糊真 S 曲线（同源 overlay 自叠）对色块顶部的满量程抬升（sCurve 0.48 时 ≈ 14 阶）。 */
-const S_RANGE = 30;
-/** v1.9.1 零模糊曝光提亮（同源 screen 自叠）对色块顶部的满量程抬升（exposureLift 0.22 时 ≈ 4 阶）。 */
-const LIFT_RANGE = 18;
+/** 中灰：所有近似都以它为起点，相当于"标准场景的中间调"（v1.9.2 取 110 让顶部不再全通道封顶）。 */
+const BASE_GRAY = 110;
+/**
+ * v1.9.2 黑位托底（同源 multiply 自叠）对色块底部的满量程下压：
+ * 覆盖 0~0.03 量程（0.03 时 ≈ 7 阶；全库只有 TX-400 会用到）。
+ */
+const CRUSH_RANGE = 240;
+/**
+ * v1.9.2 零模糊真 S 曲线（同源 overlay 自叠）对色块顶部的满量程抬升：
+ * 覆盖 0.16~0.30 量程（0.30 时 ≈ 45 阶，底部同步 −0.8 倍）。
+ */
+const S_RANGE = 150;
+/**
+ * v1.9.2 零模糊曝光提亮（同源 screen 自叠）对色块顶部的满量程抬升：
+ * 覆盖 0.34~0.46 量程（0.46 时 ≈ 74 阶，中间调同步 ×0.6）。
+ */
+const LIFT_RANGE = 160;
+/**
+ * v1.9.2 暗角对色块底部的边缘下压：覆盖 0.08~0.15 量程
+ * （0.08 时 ≈ 14 阶、0.15 时 ≈ 26 阶 —— 暗角只压四角，这里映射到横向色带的下沿做示意）。
+ */
+const VIGNETTE_RANGE = 170;
 /** 化学分离色的偏移倍率：不透明度 × 通道差 × 1.2（0.30 × 127 × 1.2 ≈ 46 阶）。 */
 const CHEMISTRY_GAIN = 1.2;
 
@@ -136,30 +150,33 @@ function lightTint(base: number, tint: number, opacity: number, weight: number):
 }
 
 /**
- * v1.9.1 零模糊配方 → 三段色阶（高光 / 中间调 / 暗部）。
+ * v1.9.2 零模糊配方 → 三段色阶（高光 / 中间调 / 暗部）。
  *
- * 映射纪律（与 `gradeLayers.ts` 的 12 层顺序一一对应，全部 blurRadius 0 自叠）：
- *  1. `sCurveContrast`→ overlay 自叠：底部压深（×0.8）、中间调微抬（×0.05）、顶部提亮（×1）
- *  2. `exposureLift`  → screen 自叠：三档统一提亮（底部 0.3 / 中间调 0.6 / 顶部 1）
- *  3. `shadowCrush`   → multiply 自叠：只压暗部（底部最大、顶部轻抬 0.15）
+ * 映射纪律（与 `gradeLayers.ts` 的图层顺序一一对应，三个光学层全部 blurRadius 0 自叠）：
+ *  1. `exposureLift`  → screen 自叠：三档统一提亮（底部 0.3 / 中间调 0.6 / 顶部 1）
+ *  2. `sCurveContrast`→ overlay 自叠：底部压深（×0.8）、中间调微抬（×0.05）、顶部提亮（×1）
+ *  3. `shadowCrush`   → multiply 自叠：只压暗部（底部最大、顶部轻抬 0.15；只有 TX-400 > 0）
  *  4. `shadowTint*`   → 化学暗部偏色（soft-light / overlay），权重 底部 1.0 / 中间 0.45 / 顶部 0.15
  *  5. `highlightTint*`→ 色彩密度层（soft-light / overlay），权重 顶部 1.0 / 中间 0.4 / 底部 0.25
- *  6. `mono`          → 三档全部取 BT.709 亮度（`#808080 + 'color'` 的去色等价）
+ *  6. `vignette`      → 只压四角；横向色带把它映射到**下沿**（底部 −VIGNETTE_RANGE）
+ *  7. `mono`          → 三档全部取 BT.709 亮度（`#808080 + 'color'` 的去色等价）
  *
- * 暗角（vignette）不参与色块：它只影响四角亮度，画进这条 34pt 的横向色带会读成
- * "整条都变暗"，反而失真 —— 卡片角标（ISO / SLIDE / B&W）才是卷种信息。
+ * 暗角不参与中间调/顶部的计算：它只影响四角亮度，画进这条 34pt 的横向色带如果
+ * 全档都减，会读成"整条都变暗"，反而失真 —— 因此只让下沿承担边缘感，
+ * 卡片角标（ISO / SLIDE / B&W）才是卷种信息。
  */
 function swatchZones(preset: FilmPreset): SwatchZone {
   const color = preset.color;
   const sCurveContrast = color.sCurveContrast ?? 0;
   const exposureLift = color.exposureLift ?? 0;
   const shadowCrush = color.shadowCrush ?? 0;
+  const vignette = preset.vignette ?? 0;
   const shadowTint = hexChannels(color.shadowTint);
   const shadowOpacity = color.shadowTintOpacity ?? 0;
   const highlightTint = hexChannels(color.highlightTint);
   const highlightOpacity = color.highlightTintOpacity ?? 0;
 
-  // 每档的"胶片亮度"：先算 S 曲线/曝光提亮/黑位托底对灰度的影响，再叠加化学分离色。
+  // 每档的"胶片亮度"：先算曝光提亮 / S 曲线 / 黑位托底对灰度的影响，再叠加化学分离色。
   const zones: {
     readonly level: number;
     readonly shadowWeight: number;
@@ -170,7 +187,8 @@ function swatchZones(preset: FilmPreset): SwatchZone {
         BASE_GRAY -
         shadowCrush * CRUSH_RANGE -
         sCurveContrast * S_RANGE * 0.8 +
-        exposureLift * LIFT_RANGE * 0.3,
+        exposureLift * LIFT_RANGE * 0.3 -
+        vignette * VIGNETTE_RANGE,
       shadowWeight: 1,
       highlightWeight: 0.25,
     },
@@ -263,7 +281,7 @@ interface BadgeTone {
  * 按色块顶部的**相对亮度**选角标底色。
  *
  * 色块颜色是 `swatchZones()` 现算出来的 `rgb(r, g, b)`；`sCurveContrast` / `exposureLift`
- * 双高的卷（黑位托底 + 提亮）能到 `rgb(210, …)` 这种接近白纸的值，黑底白字会直接消失，
+ * 双高的卷（提亮 + 真反差）能到 `rgb(240, …)` 这种接近白纸的值，黑底白字会直接消失，
  * 所以这里必须真的看一眼亮度。解析失败（将来色值换成 hex/rgba）就退回黑底 —— 宁可对比
  * 弱一点，也不要因为一行解析把整张卡画崩。
  */
