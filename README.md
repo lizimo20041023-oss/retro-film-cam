@@ -6533,21 +6533,28 @@ RGB 恒 `(4,12,20)`。重生成 `assets/textures/vignette.png`：
 - 本地包核验 `python _verify_ipa_v191.py --local <bundle>` → `RESULT(local): OK`，
   bundle `index-da5c6fc22dde743914ddb7d0c6b998ce.js` = **1,386,100 B**
   （v1.9.0 为 1,385,027 B，+1,073 B）；`--grain` / `--vignette` 单验均 OK。
+- **CI 计费插曲（排错记档）**：v1.9.1 首次推送后连续 4 次 run 都在 30 秒内判负、
+  `runner_id=0` / `steps=[]`，一度误判为 `macos-26-intel` 池无机器并改 `macos-26`（仍失败）。
+  最终由 check-run annotations 定位真因：「The job was not started because recent account
+  payments have failed or your spending limit needs to be increased」——仓库是 private，
+  macOS runner 按 10 倍费率消耗包含分钟，当日多次打包后触顶。把仓库临时转为 **public**
+  （public 仓库标准 runner 免费）后同一条 workflow 重跑成功；`macos-26-intel` 已回退保留。
+  → 后续若再次出现该标注，先查 Billing & plans，再动 runner label。
 
 ### 46.8 发布指纹
 
-*（发布完成后回填，见下方表格）*
+*（实测值，2026-10-18 发布回填）*
 
 | 项 | 值 |
 | --- | --- |
-| 本地提交 | 待回填 |
-| 远端 master | 待回填 |
-| CI run / job | 待回填 |
-| artifact id / 体积 | 待回填 |
-| IPA 文件 / 体积 / sha256 | 待回填 |
-| Release id / asset id | 待回填 |
-| IPA 回读核验 | 待回填 |
-| 下载地址 | 待回填 |
+| 本地提交 | `8b64c2e`（v1.9.1 特性）+ `29f74c7` / `e6c36c3`（CI runner 修正与回退） |
+| 远端 master | `1f173df635bb1846c2d150f266503f7da763be46`（Git Data API 推送，TREE MATCH） |
+| CI run / job | run `39123549264` / job `117665549352`（macos-26-intel，全 success） |
+| artifact id / 体积 | `12135706737` / **10,500,059 B**（`FretroCam-unsigned-ipa`） |
+| IPA 文件 / 体积 / sha256 | `FretroCam-v1.9.1-unsigned.ipa` / **10,614,302 B** / `14e8c819f7bcacf07fe31ce5abf2ea2129fc4ec25cd0e6b8b57892330824b576` |
+| Release id / asset id | release `416420930`（tag `v1.9.1`）/ asset `653378959` |
+| IPA 回读核验 | `RESULT: OK` —— 115 entries、`main.jsbundle` **2,102,181 B**、Info.plist `1.9.1` + `com.canyerylee.fretrocam` FOUND、10 张相框、grain/vignette sha 与频谱全 OK、PRESENT 全命中且 `missing:` 为 0 |
+| 下载地址 | https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.9.1/FretroCam-v1.9.1-unsigned.ipa |
 
 ### 46.9 文件改动
 
