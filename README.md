@@ -7240,13 +7240,13 @@ halation → grain `soft-light` → vignette `multiply` → light-leak），染�
 
 | 项 | 值 |
 | --- | --- |
-| 本地提交 | `@@COMMIT@@`（v1.9.5 特性，@@COMMIT_STAT@@）+ 本文档回填提交（docs-only，`paths-ignore` 跳过 CI） |
-| 远端 master | `@@REMOTE_HEAD@@`（Git Data API 推送，TREE MATCH，tree `@@TREE@@`） |
-| CI run / job | run `@@RUN_ID@@` / job `@@JOB_ID@@`（macos-26-intel，build-ipa 全 success） |
-| artifact id / 体积 | `@@ARTIFACT_ID@@` / **@@ARTIFACT_BYTES@@ B**（`FretroCam-unsigned-ipa`） |
-| IPA 文件 / 体积 / sha256 | `FretroCam-v1.9.5-unsigned.ipa` / **@@IPA_BYTES@@ B** / `@@IPA_SHA@@` |
-| Release id / asset id | release `@@RELEASE_ID@@`（tag `v1.9.5`）/ asset `@@ASSET_ID@@` |
-| IPA 回读核验 | `RESULT: OK` —— `main.jsbundle` **@@MAIN_JSBUNDLE_BYTES@@ B**、Info.plist `1.9.5` + `com.canyerylee.fretrocam` FOUND、10 张相框全在、grain.png 281,634 B sha `0fc81816…ee83`（1200×1600 RGBA、透明 86.37%、mean α 0.0508、512-lag 自相关 ≤0.0021）、vignette.png 119,560 B sha `0555a67d…68c6`（0.74 内圈全透明）、PRESENT @@PRESENT_COUNT@@ 命中零 missing、ABSENT 全 0 |
+| 本地提交 | `20238ab`（v1.9.5 特性，5 files changed, +226/−54）+ 本文档回填提交（docs-only，`paths-ignore` 跳过 CI） |
+| 远端 master | `a5f6ed32e0a5a73483fb07969e19612d5c4af78a`（Git Data API 推送，TREE MATCH，tree `a0e4cb69bb46b38c8df01e9e842e4017a5b08dbf`） |
+| CI run / job | run `39153814316` / job `117752743811`（macos-26-intel，build-ipa 全 success） |
+| artifact id / 体积 | `12146336441` / **10,539,482 B**（`FretroCam-unsigned-ipa`） |
+| IPA 文件 / 体积 / sha256 | `FretroCam-v1.9.5-unsigned.ipa` / **10,653,676 B** / `44de7d7b3c91ce136f3badcb35955afd2af8e14eec1c880c242dbd96e98c31a6` |
+| Release id / asset id | release `416624574`（tag `v1.9.5`）/ asset `654170564` |
+| IPA 回读核验 | `RESULT: OK` —— `main.jsbundle` **2,112,034 B**、Info.plist `1.9.5` + `com.canyerylee.fretrocam` FOUND、10 张相框全在、grain.png 281,634 B sha `0fc81816…ee83`（1200×1600 RGBA、透明 86.37%、mean α 0.0508、512-lag 自相关 ≤0.0021）、vignette.png 119,560 B sha `0555a67d…68c6`（0.74 内圈全透明）、PRESENT 330 命中零 missing、ABSENT 全 0 |
 | 下载地址 | https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.9.5/FretroCam-v1.9.5-unsigned.ipa |
 
 ### 50.8 文件改动
