@@ -7083,7 +7083,18 @@ v1.9.4 的答案不是把反差调小（那只会退回清爽数码照），而�
 
 ### 49.7 发布指纹（v1.9.4）
 
-*（发布后回填：提交 sha / 远端 sha / CI run+job / artifact / IPA 体积-SHA256 / Release id+asset / 核验结果）*
+*（实测值，2026-10-19 发布回填）*
+
+| 项 | 值 |
+| --- | --- |
+| 本地提交 | `e3a8443`（v1.9.4 特性，14 files changed +970/−851）+ 本文档回填提交（docs-only，`paths-ignore` 跳过 CI） |
+| 远端 master | `e36056c6c59c6cfaa833b254fe17a37611a8c6cf`（Git Data API 推送，TREE MATCH，tree `4803baaae4897111d5a44af53ce83fcec43e58b9`） |
+| CI run / job | run `39146475248` / job `117731221908`（macos-26-intel，build-ipa 全 success） |
+| artifact id / 体积 | `12143721951` / **10,538,869 B**（`FretroCam-unsigned-ipa`） |
+| IPA 文件 / 体积 / sha256 | `FretroCam-v1.9.4-unsigned.ipa` / **10,653,573 B** / `926b1a861abec3170f42490208dc5690648f0c9e975e8803f5930d3da25cef0d` |
+| Release id / asset id | release `416581039`（tag `v1.9.4`）/ asset `653990615` |
+| IPA 回读核验 | `RESULT: OK` —— 115 entries、`main.jsbundle` **2,111,933 B**、Info.plist `1.9.4` + `com.canyerylee.fretrocam` FOUND、10 张相框全在、grain.png 281,634 B sha `0fc81816…ee83`（1200×1600 RGBA、透明 86.37%、mean α 0.0508、频带 `<8px` 90.1%／`24-64px` 1.0%、512-lag 自相关 x .0005／y .0015）、vignette.png 119,560 B sha `0555a67d…68c6`（中心 0／四角 255／RGB(4,12,20)、剖面 .74=0／.80=34／.88=141／.94=220／1.00=255）、PRESENT 全命中零 missing、ABSENT 全 0 |
+| 下载地址 | https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.9.4/FretroCam-v1.9.4-unsigned.ipa |
 
 ### 49.8 文件改动
 
