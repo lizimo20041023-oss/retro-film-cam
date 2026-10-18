@@ -15,28 +15,21 @@
  *
  * 替换规范见 `assets/textures/README.md`。换图不用改代码。
  *
- * ⚠️ **尺寸那些事（颗粒看起来什么样，就由这几行决定；v1.8.2 重写）**：
- * 颗粒板的实际口径是 **1 贴图像素 = 1 设备像素**：`FilmLookLayers.tsx` 用
- * `planTextureTiles()` 按 `TEXTURE_TILE_PT = 512/3 ≈ 170.667pt` **手工铺方格**。
- * 旧的 `resizeMode="repeat"` 不能用 —— 它的方格边长 = `image.size`（点），而
- * `image.size` 取决于资源解码成几倍图：Metro 数据路径 3 倍（170.67pt），打包路径
- * 1 倍（512pt）⇒ 真机 IPA 里贴图被放大 3 倍，`grain.png` 中 8–24px 的团簇变成
- * 屏幕上 8–24pt 的"脏云雾"（用户 2026-10-17 的投诉，根因与修法见
- * `FilmLookLayers.tsx` 文件头）。于是：
- *   1. 贴图的**空间尺度就是屏幕尺度**：周期 `<8px` 是肉眼看得清的颗粒，`24–64px`
- *      就是污渍。`scripts/generate_grain_clump.py` 的频带自检卡死这两条
- *      （`<8px ≥ 0.60`、`24–64px ≤ 0.06`）。
- *   2. `grain.png` 必须**无缝**（FFT 域滤波 + 分位数阈值），平铺后看不出接缝；
- *      每 170.67pt 重复一次没问题 —— 它是噪声场，重复不可见。
- *   3. `dust.png` 是稀疏离散点，仍然走 RN 的 `repeat`（一屏一块，重复会被看出来）；
- *      它在打包路径下斑点偏大 3 倍，属于已记档的已知缺口。
- *   4. 颗粒的"影调加权"靠 overlay 的数学性质：颗粒贴图偏离中灰越远、overlay 的
- *      提亮/压暗越明显，高光处权重趋 0，中间调最大 —— 不需要逐像素遮罩。
- *      **v1.9.3 起 `grain.png` 是不透明 RGB 板**：50% 中性灰基底（#808080，overlay
- *      不动点=完全透明）+ 高频暗部银盐黑点 #18181C + 高频亮部银盐白点 #E8E6E0，
- *      黑白点对称覆盖；层 opacity 由 `grain.ts` 冻结为 0/.10/.18/.30/.42。
- *      v1.9.2 的"RGBA 透明背景 + alpha 载体"（alpha 均值 0.2078、层 opacity 封顶
- *      0.055）已被用户 m09629 判定为"开了重档像没开"，整套口径作废。
+ * ⚠️ **尺寸那些事（颗粒看起来什么样，就由这几行决定；v1.9.4 重写）**：
+ * v1.9.3 的"512 小图 + 每 170.67pt 手工平铺"已彻底废除 —— 用户 m10195 在蓝天上
+ * 看到了肉眼可见的「重复网格黑麻点阵列（纱窗效应）」。v1.9.4 起：
+ *   1. `grain.png` = **1200×1600 RGBA 全画幅非周期银盐板**，一次 `stretch` 铺满整个
+ *      照片窗口（`resizeMode='stretch'`，**没有任何 repeat/平铺/周期小图**）；
+ *   2. 基底**全透明**（alpha=0）：没有中性灰底，也就不会给照片蒙灰罩；粒子是
+ *      50%:50% 双极性 —— 亮粒子 `(255,252,245)` 核心 alpha 0.42、暗粒子
+ *      `(28,26,24)` 核心 alpha 0.32，半径 0.55~0.95px；
+ *   3. 混合模式 **`soft-light`**（v1.9.4 图层配置给出）：只加肌理，不动蓝天/白墙的
+ *      明度与色相；层 opacity 由 `grain.ts` 冻结为 0/.04/.075/.115/.16；
+ *   4. `scripts/generate_grain_clump.py` 的自检卡死：透明像素 ≥70%、平均 alpha
+ *      0.04~0.12、亮/暗粒子数相等、非零像素只有两个调色板、512-lag 自相关 ≤0.02、
+ *      周期 <8px ≥60% 且 24–64px ≤6%。
+ *   `dust.png` 是稀疏离散点（v1.8.3 起 `dust` 纹理层已不参与渲染，白尘改由
+ *   `planDustSpecks` 的 1~2 颗 specks 承担），保留注册只为历史兼容。
  */
 
 import type { TextureId, TextureSpec } from '../types';
@@ -45,31 +38,31 @@ export const TEXTURES: Record<TextureId, TextureSpec> = {
   grain: {
     id: 'grain',
     name: '颗粒',
-    // 512×512：比照片窗口（最大约 352×466 pt）大 → 完全不重复
+    // 1200×1600 全画幅：一次 stretch 铺满窗口，绝不 repeat/平铺（v1.9.4）
     source: require('../../assets/textures/grain.png'),
-    defaultResizeMode: 'repeat',
-    note: '不透明中性灰银盐颗粒 tile（512×512 RGB，v1.9.3 重烤）：50% 中性灰基底 #808080 + 高频暗部银盐黑点 #18181C + 高频亮部银盐白点 #E8E6E0（各约 7.2%，合计 ≤18%），基底微抖动 σ=3 灰阶；灰度均值 127.9、σ 39.2、中性基底 82.9%；频带 <8px 88.2% / 8–24 10.4% / 24–64 1.2%（v1.8.2 旧配方是 25.8 / 55.0 / 16.2 —— 真机上就是"脏云雾"）；由 `FilmLookLayers` 按 512/3pt 手工平铺（1 贴图像素 = 1 设备像素）+ overlay 铺满画面，FFT + 分位数阈值保证无缝；层 opacity 由 grain.ts 冻结为 0/.10/.18/.30/.42。overlay 对中灰是不动点 ⇒ 底色绝不蒙灰。',
+    defaultResizeMode: 'stretch',
+    note: '全画幅非周期银盐板（1200×1600 RGBA，v1.9.4 重烤）：全透明基底 + 50%:50% 双极性粒子 —— 亮粒子 (255,252,245) 核心 alpha 0.42、暗粒子 (28,26,24) 核心 alpha 0.32，半径 0.55~0.95px，随机均匀撒点（非网格、无周期）；透明像素 86.4%、平均 alpha 0.0508、非零像素调色板纯度 100%、512-lag 自相关 ≤0.002、频带 <8px 90.1% / 8–24 8.8% / 24–64 1.0%（v1.9.4 已废除 512 小图周期平铺，蓝天零网格伪影）；混合 soft-light；层 opacity 由 grain.ts 冻结为 0/.04/.075/.115/.16。',
   },
   dust: {
     id: 'dust',
     name: '灰尘',
     source: require('../../assets/textures/dust.png'),
-    defaultResizeMode: 'repeat',
-    note: '稀疏白点 + 划痕，平铺 + screen（只加亮点）。模拟胶片扫描件的"不干净"。',
+    defaultResizeMode: 'stretch',
+    note: '稀疏白点 + 划痕（历史纹理：v1.8.3 起 dust 层已不参与渲染，白尘改由 planDustSpecks 成片 1~2 颗承担）。',
   },
   vignette: {
     id: 'vignette',
     name: '暗角',
     source: require('../../assets/textures/vignette.png'),
     defaultResizeMode: 'stretch',
-    note: '从中心透明 → 边缘深青黑的径向渐变（v1.9.3 重烤：中心 72% 半径 alpha=0 完全透明，四角 alpha=255，smoothstep 无硬边；v1.9.2 曾是 80%、v1.9.1 70%），拉伸铺满，v1.8.7 起用 multiply 压暗四角。为什么 multiply 安全：中心 alpha=0 —— 没有上层像素参与混合，纯白/山体/海湾不会被压灰；multiply 四角"乘"暗比 normal"盖"黑纱保留更多中间调。层 opacity 由预设 vignette 决定，v1.9.3 值域 0.22~0.38。',
+    note: '从中心透明 → 边缘深青黑的径向渐变（v1.9.4 重烤：中心 **74%** 半径 alpha=0 完全透明，四角 alpha=255，smoothstep 无硬边；v1.9.3 曾是 72%、v1.9.2 80%），拉伸铺满，v1.8.7 起用 multiply 压暗四角。为什么 multiply 安全：中心 alpha=0 —— 没有上层像素参与混合，纯白/山体/海湾不会被压灰；multiply 四角"乘"暗比 normal"盖"黑纱保留更多中间调。层 opacity 由预设 vignette 决定，v1.9.4 值域 0.16~0.28。',
   },
   lightLeak: {
     id: 'lightLeak',
     name: '漏光',
     source: require('../../assets/textures/light-leak.png'),
     defaultResizeMode: 'stretch',
-    note: '右上角暖色光晕，拉伸铺满，用 screen 提亮。v1.8.0 重烤：80% 像素三通道全 ≤0.02（= screen 中性）、meanLum 0.082，只有角部一条暖橙光；v1.9.3 起它同时是 CS-800T 的 halation(0.06) 光晕层材质，层 opacity 由 gradeLayers 夹在 ≤0.06。preset 的 lightLeakFlip 可左右翻转换边。',
+    note: '右上角暖色光晕，拉伸铺满，用 screen 提亮。v1.8.0 重烤：80% 像素三通道全 ≤0.02（= screen 中性）、meanLum 0.082，只有角部一条暖橙光；v1.9.4 起它同时是 CS-800T 的 halation(0.04) 光晕层材质，层 opacity 由 gradeLayers 夹在 ≤0.04。preset 的 lightLeakFlip 可左右翻转换边。',
   },
 };
 

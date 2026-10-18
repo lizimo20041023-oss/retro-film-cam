@@ -70,6 +70,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [46. v1.9.1：去糊、去雾、去灰（零模糊 S 曲线 / 零模糊曝光提亮 / 四场景去雾 / 九卷零模糊基准 / 70% 暗角）](#46-v191去糊去雾去灰零模糊-s-曲线--零模糊曝光提亮--四场景去雾--九卷零模糊基准--70-暗角)
 - [47. v1.9.2：亮白通透（层序倒置 + 无 crush + 高明度染色 + 80% 内圈暗角 + RGBA 颗粒 + 地名后缀）](#47-v192亮白通透层序倒置--无-crush--高明度染色--80-内圈暗角--rgba-颗粒--地名后缀)
 - [48. v1.9.3：德味高密光学曲线（像素级平铺真银盐颗粒 / color-burn 色彩密度 / 九卷重标定 / 夜景纯黑 / 简繁归一 / 日期底托）](#48-v193德味高密光学曲线像素级平铺真银盐颗粒--color-burn-色彩密度--九卷重标定--夜景纯黑--简繁归一--日期底托)
+- [49. v1.9.4：真·德味明度色度解耦引擎（v1.9.3 实拍翻车根治）](#49-v194真德味明度色度解耦引擎v193-实拍翻车根治)
 
 ---
 
@@ -6961,6 +6962,153 @@ alpha 径向剖面 `.72=0 / .80=50 / .88=153 / .94=224 / 1.00=255`。九卷 vign
 `_export_v193_lead/`；A/B/D 组探针由 `zero-blur-optics` / `optics-engine` /
 `watermark-engine` 就地更新，C 组由 `quality-gate` 全量复跑（26 道门禁 + 颗粒/暗角单验）。
 
+
+## 49. v1.9.4：真·德味明度色度解耦引擎（v1.9.3 实拍翻车根治）
+
+v1.9.3 用「同源 overlay 高反差 + color-burn 色彩密度」做出了浓黑油润的德味骨架，但真机实拍（大理花海、东京机场）暴露了两个无法靠调参掩盖的结构性错误：
+
+1. **128 分界线通道撕裂**：`overlay` 对 R/G/B 三通道**各自独立**判断 `<128`（压暗）还是 `≥128`（提亮）。拍到的浅冷灰水泥停机坪 `R=118, G=124, B=134` 正好横跨分界线 —— 红绿通道被压黑、蓝通道被提亮，中性灰当场裂成「剧毒青蓝」+「妖艳紫蓝」；白花瓣裂成青紫，再叠 `color-burn` 后彻底失控。
+2. **64×64 / 512 小图周期平铺穿帮**：颗粒用周期小图 + `overlay` 黑点平铺，蓝天上出现肉眼可见的「重复网格黑麻点阵列（纱窗效应）」。
+
+v1.9.4 的答案不是把反差调小（那只会退回清爽数码照），而是**把明度与色度解耦**：反差继续拉满，但用一层同源 `mixBlendMode: 'color'` 色度锁把被撕裂的色相按权重锁回原图。
+
+### 49.1 手术一：12 槽零模糊层序 + 同源 Color 色度锁
+
+`src/utils/gradeLayers.ts` 冻结 12 槽（0 值层不出现；base 原图由宿主渲染）：
+
+| # | key | 类型 | 混合 | 参数 / 上限 |
+|---|-----|------|------|-------------|
+| 0 | base | 原图 | — | 100% 刀锐，不在 layers 里 |
+| 1 | `exposure-lift` | photo（blur 0） | `screen` | ≤ 0.28（九卷 0.16~0.26，夜景 target 0.06） |
+| 2 | `s-curve-contrast` | photo（blur 0） | `overlay` | ≤ 0.60（九卷 0.40~0.60） |
+| 3 | `chroma-lock` | photo（blur 0）/ color | `color` | 彩色卷夹 [0.54, 0.68]；黑白卷 `#808080` opacity 1.0 |
+| 4 | `temperature` | color | `soft-light` | 亮色纸，\|v\|×0.22 ≤ 0.20 |
+| 5 | `tint` | color | `soft-light` | 亮色纸，\|v\|×0.22 ≤ 0.20 |
+| 6 | `shadow-tint` | color | `soft-light` | ≤ 0.20 |
+| 7 | `highlight-tint` | color | `soft-light` | ≤ 0.20 |
+| 8 | `shadow-crush` | photo（blur 0） | `multiply` | ≤ 0.05（仅 TX-400 0.05） |
+| 9 | `halation` | texture（lightLeak） | `screen` | ≤ 0.04（仅 CS-800T 0.04） |
+| 10 | `grain` | texture（grain） | `soft-light` | 档位绝对不透明度 ≤ 0.16 |
+| 11 | `vignette` | texture（vignette） | `multiply` | ≤ 0.28（中心 74% 全透明） |
+| 12 | `light-leak` | texture（lightLeak） | `screen` | ≤ 0.10（九卷 0） |
+
+**色度锁为什么能同时保住反差和不偏色**（槽 3）：
+
+- `color(cb, cs)` 的定义是「取 `cb` 的明度 + `cs` 的色相/饱和度」；
+- `cs` 与 `cb` 是**同一张底片**：明度来自槽 1/2 雕塑后的自己（浓黑仍浓黑、高光仍立体），色度来自未被动过的原图；
+- 所以 overlay 造成的色相撕裂在槽 3 按 `chromaLock` 权重被拉回原图，**而明度反差一分不减**；
+- 0.54 是能锁住色相的最低剂量，0.68 是上限 —— 再高就把德味色相偏移也抹平了。
+
+> 黑白卷（HP-400 / TX-400）不走彩色锁：预设 `mono: true` 时槽 3 变成 `#808080` `color` opacity 1.0 的 0 饱和载体；由于它在全部染色之后，暗部染色与高光分色都被中性化 ⇒ 真黑白 R=G=B。
+
+同源 photo 层**全部 `blurRadius: 0`**，只过 `(0,0)`、`(1,1)` 两个不动点 —— 黑场永不起雾、白场永不发脏。`color-burn` / `color-density` 图层与 `mono-desaturate` 独立层在 v1.9.4 **已彻底删除**；染色层统一 `soft-light`（`sanitizeTintBlendMode` 恒返回它）。
+
+### 49.2 手术二：全画幅非周期银盐颗粒板（废除一切平铺）
+
+- `assets/textures/grain.png` 重烤为 **1200×1600 RGBA 全画幅非周期板**，一次 `stretch` 铺满窗口：**没有 repeat、没有平铺、没有周期小图**；
+- 全透明基底（没有中性灰底 ⇒ 绝不给照片蒙灰罩）；50%:50% 双极性粒子：
+  - 亮粒子 `(255,252,245)` 核心 alpha **0.42**；
+  - 暗粒子 `(28,26,24)` 核心 alpha **0.32**；
+  - 半径 `0.55~0.95px`，随机均匀撒点，亮度极性随机置换（不是网格、不是隔行）；
+- 混合模式改为 **`soft-light`**：只加胶片肌理，不改蓝天/白墙/肤色的明度与色相；
+- 五档绝对不透明度：**OFF 0 / LT 0.04 / STD 0.075 / HV 0.115 / MAX 0.16**（`src/constants/grain.ts` 冻结，硬封顶 0.16）；
+- 取景器（live 面）仍然**零颗粒层**（沿用 v1.8.6 发热纪律）。
+
+烘焙自检（`scripts/generate_grain_clump.py` 内置，失败即拒绝出图）：透明像素 0.70~0.95、平均 alpha 0.04~0.12、亮/暗粒子数严格相等、非零像素只含两个调色板、512-lag 自相关 ≤0.02、频带 `<8px ≥60%` 且 `24–64px ≤6%`。实测：
+
+| 指标 | 实测值 |
+|------|--------|
+| 尺寸 / 字节 | 1200×1600 RGBA / 281,634 B |
+| sha256 | `0fc81816ce3b05c41d9431d40cc46112778f0815c9637d890631061e26dfee83` |
+| 透明 / 非零像素 | 86.37% / 13.63% |
+| 平均 alpha / 峰值 | 0.0508 / 0.4196 |
+| 亮 / 暗粒子数 | 77,618 / 77,618 |
+| 非零像素调色板 | `#FFFCF5` / `#1C1A18`（纯度 100%） |
+| 频带 <8 / 8–24 / 24–64 / 64–160px | 90.1% / 8.8% / 1.0% / 0.1% |
+| 512-lag 自相关 x / y | 0.0005 / 0.0015 |
+
+### 49.3 手术三：九卷「德味 S 曲线 + 色度锁」参数表
+
+九卷全部废除 `colorBurn` / `colorBurnTint` 字段（类型层已删），改用 `chromaLock`：
+
+| 胶卷 | lift(screen) | sCurve(overlay) | chromaLock(color) | crush | vignette | 染色（soft-light） |
+|------|--------------|-----------------|-------------------|-------|----------|--------------------|
+| UM-400（默认王牌） | 0.22 | 0.52 | 0.62 | — | 0.24 | 暖阳金 `rgba(255,224,170,0.16)` + 冷青平衡 `rgba(175,215,245,0.10)` |
+| GD-200（金色日光） | 0.24 | 0.46 | 0.60 | — | 0.20 | 醇厚暖金 `rgba(255,215,140,0.20)` |
+| PT-400（大师人像） | 0.26 | 0.40 | 0.66 | — | 0.16 | 暖桃奶油 `rgba(255,226,205,0.18)` |
+| CP-200（复古琥珀） | 0.22 | 0.44 | 0.62 | — | 0.22 | 复古琥珀 `rgba(248,208,138,0.18)` |
+| FJ-400（日系青绿） | 0.24 | 0.46 | 0.64 | — | 0.18 | 清透翠青 `rgba(175,232,220,0.16)` |
+| EK-100（反转片级） | 0.18 | 0.56 | 0.54 | — | 0.26 | 微暖高密 `rgba(255,228,190,0.14)` |
+| CS-800T（电影钨丝） | 0.22 | 0.48 | 0.60 | — | 0.24 | 电影冷蓝 `rgba(165,210,250,0.18)`，halation 0.04 |
+| HP-400（纪实黑白） | 0.22 | 0.46 | mono `#808080` 1.0 | — | 0.20 | — |
+| TX-400（硬朗黑白） | 0.16 | 0.60 | mono `#808080` 1.0 | 0.05 | 0.28 | — |
+
+### 49.4 手术四：自适应边界（锁定色度不发妖）
+
+`src/utils/adaptiveGrade.ts`：
+
+- **所有场景强制 `colorBurn = 0`**（图层已删，字段也删）；
+- `chromaLock` **恒定在 0.54~0.68，任何场景都不许关闭或压低**；
+- `dark`（夜景）：`exposureLift` 目标 **0.06**（夜空纯黑不泛灰），`sCurveContrast` **+0.08**；
+- `high-contrast` / `flat`（强光 / 远景）：`sCurveContrast` **+0.08**（总上限封顶 0.60），`exposureLift` 保持 0.20~0.28 区间；
+- `bright`（雪景 / 高调）：`exposureLift` **+0.06**，保证白雪与白花洁白通透。
+
+场景统计不可用（样本不足 / 解码失败）时 plan 为 `null`，层表与静态预设逐字节一致（与 v1.9.2 起的口径相同）。
+
+### 49.5 光学暗角 74%
+
+`assets/textures/vignette.png` 重烤：中心 **74%** 半径完全透明（v1.9.3 是 72%），74%→100% 用 smoothstep 平滑升到 alpha 255，RGB 恒 `(4,12,20)`；渲染侧 `multiply`、预设 opacity 0.16~0.28。实测 119,560 B / sha256 `0555a67d431d1bf19483e6fe36190a67fdbf890ee42b0d0b5c17ee5ec34268c6`，径向 alpha 剖面 `.74=0 / .80=34 / .88=142 / .94=221 / 1.00=255`。
+
+### 49.6 门禁与验证
+
+- `npx tsc --noEmit` EXIT 0；`grep -rn "as any" src` 0 处。
+- **26 道门禁全绿：GATES TOTAL 26 / FAILED 0，编号断言合计 47,633 条**（v1.9.3 为 45,107，
+  +2,526，契约「只增不减」达标）；另 haze 单列 117 + 212 条 0 失败。
+- 逐道（断言数，全部 EXIT 0 / 0 失败）：date_engine 3,522 · film_look 3,018 ·
+  geo_lock 16,207 · noframe_v181 455 · noframe_watermark 458 · skin_material 1,069 ·
+  v180_seams 1,518 · lead_integration 315 · capture_quality 78 · v184_camera 973 ·
+  v185_place 1,014 · v185_frame 1,781 · haze 117+212 · purity 64 · v186_perf 241 ·
+  v188_sharp 158 · v189_flash 56 · v190_stocks 1,047 · v190_optics 6,414 ·
+  v190_meter 299 · v190_async 150 · v190_wiring 2,125 · v1811_adaptive 4,696 ·
+  v1811_scene 478 · v1811_watermark 1,497。
+- 产物：`_gate_v194_run.out.txt`、`_gate_v194_report.txt`、`_run_gates_v194.ps1`；
+  EXTRA 资产单验 `_verify_ipa_v194.py --grain/--vignette` 均 `RESULT: OK`。
+- 关键实测：颗粒板 281,634 B / sha256 `0fc81816…ee83`、1200×1600 RGBA、透明 86.37%、
+  mean alpha 0.0508、调色板纯度 100%、频带 `<8px` 90.0%、512-lag 自相关 ≤0.0021；
+  暗角 119,560 B / sha256 `0555a67d…68c6`、0.74 内圈全透明；
+  haze 9 卷 × 13 条全绿（12 槽层序成立、halation 仅 CS-800T 0.04、中心 74% 只压边角、
+  颗粒为 1200×1600 全画幅非周期板）、whiteLoss 全 0；purity PURE。
+- `expo export --platform ios --no-bytecode` bundle **1,392,036 B**；
+  `_verify_ipa_v194.py --local` → `RESULT(local): OK`。
+
+### 49.7 发布指纹（v1.9.4）
+
+*（发布后回填：提交 sha / 远端 sha / CI run+job / artifact / IPA 体积-SHA256 / Release id+asset / 核验结果）*
+
+### 49.8 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `src/utils/gradeLayers.ts` | **12 槽重写**：删 `color-burn` / `color-density` / `mono-desaturate`，加同源 `color` 色度锁 `chroma-lock`；常量 sCurve≤0.60 / lift≤0.28 / tint≤0.20 / crush≤0.05 / halation≤0.04 / 暗角≤0.28 |
+| `src/utils/adaptiveGrade.ts` | `colorBurn*` 全删；S 曲线四场景增量 0.08、bright lift +0.06、dark target 0.06；`chromaLock` 不被场景修改 |
+| `src/constants/presets.ts` | 九卷新表（lift / sCurve / chromaLock / vignette + 新染色 hex，删 `colorBurn`/`colorBurnTint`，染色统一 soft-light） |
+| `src/components/FilmCard.tsx` | swatch 按色度锁口径重标定（BASE_GRAY 110 / CRUSH_RANGE 800 / S_RANGE 90 / LIFT_RANGE 380 / VIGNETTE_RANGE 240 / CHROMA_RANGE 0.14 / CHROMA_FLOOR 0.86 / SATURATION_EXPONENT 1.5） |
+| `src/constants/grain.ts` | 五档绝对不透明度 0 / 0.04 / 0.075 / 0.115 / 0.16；dust 档位同步；文件头改全画幅非周期口径 |
+| `src/components/FilmLookLayers.tsx` | 删 `planTextureTiles` / `TEXTURE_SIZE_PX` / `TEXTURE_TILE_PT` 与平铺分支，颗粒改单张 `resizeMode="stretch"` |
+| `src/types/index.ts` | `ColorGradeConfig` 删 `colorBurn?`/`colorBurnTint?`、加 `chromaLock?`；`TextureResizeMode` 收敛为 `'stretch'`；量程/注释改 v1.9.4 |
+| `src/constants/textures.ts` | grain 注册改全画幅 RGBA + `defaultResizeMode:'stretch'`；vignette note 74%；lightLeak note halation 0.04 |
+| `scripts/generate_grain_clump.py` | 整文件重写：1200×1600 全画幅非周期 RGBA 银盐板（随机撒点 / 覆盖率取整像素 / 双调色板 / 自检门） |
+| `scripts/generate_vignette.py` | `INNER_RADIUS` 0.72 → 0.74，剖面元组同步 |
+| `assets/textures/grain.png` | 512² RGB → **1200×1600 RGBA**（281,634 B / sha256 `0fc81816…ee83`） |
+| `assets/textures/vignette.png` | 72% → **74%** 内圈重烤（119,560 B / sha256 `0555a67d…68c6`） |
+| `app.json` | version `1.9.3` → `1.9.4` |
+| `README.md` | 本节 §49 + TOC |
+
+工作区根（不进仓库）：`_v194_contract.md`、`_derive_verify_v194.py`、
+`_run_gates_v194.ps1`、`_gate_v194_run.out.txt`、`_gate_v194_report.txt`、
+`_verify_ipa_v194.py`、`_release_v194.py`、`_commit_v194_msg.txt`、`_export_v194_lead/`；
+A 组探针由 `zero-blur-optics` 就地更新、B 组由 `optics-engine` 更新、C 组由
+`quality-gate` 全量复跑（26 道门禁 + 颗粒/暗角单验）。
 
 ---
 

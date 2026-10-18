@@ -1,42 +1,36 @@
 # -*- coding: utf-8 -*-
-"""重烤 assets/textures/grain.png（像素级平铺真银盐颗粒）与 assets/textures/light-leak.png（角落漏光）。
+"""重烤 assets/textures/grain.png（全画幅非周期微米银盐板）与 assets/textures/light-leak.png（角落漏光）。
 
 ─────────────────────────────────────────────────────────────────────────────
-v1.9.3（用户 m09629 手术一）：**不透明 50% 中灰基底 + 双极性银盐黑/白点**
+v1.9.4（用户 m10195 手术二）：**全画幅 1200×1600 RGBA 透明基底 + 双极性银盐粒子**
 ─────────────────────────────────────────────────────────────────────────────
-用户实测「重 (HV)」档仍像没开颗粒。根因不是密度不够，而是 **v1.9.2 的 alpha 载体
-对比度太低**：背景全透明、颗粒本体 alpha = |偏差|（均值仅 0.2078），层 opacity
-又被封顶在 0.055 —— 换算到成片上只有 ±1~2 个灰阶的抖动，肉眼不可能看见。
+v1.9.3 的 512×512 不透明中灰板 + `overlay` 黑点在真机上被看穿：颗粒是**小尺寸周期平铺**
+（`planTextureTiles` 每 170.67pt 重复一块），蓝天上出现肉眼可见的「重复网格黑麻点阵列
+（纱窗效应）」。用户 m10195 要求彻底废除周期性平铺，改为**整幅一次性的非周期银盐噪点**。
 
-v1.9.3 回到「真实胶片板」的物理模型：
+v1.9.4 的物理模型：
 
-  · 基底 = 50% 中性灰 `#808080`（128/255）。overlay 对中灰是**不动点**
-    （overlay(cb, 0.5) = cb），所以基底完全透明、绝不给照片蒙灰罩；
-  · 高频暗部银盐（卤化银）黑点 `#18181C`（约 24,24,28）→ overlay 压暗；
-  · 高频亮部银盐白点 `#E8E6E0`（约 232,230,224）→ overlay 提亮；
-  · 两色覆盖率对称（各 7.5%，合计 15%），保证整张均值仍是 128（不偏灰也不偏亮）；
-  · 基底再叠一层 σ=3 灰阶的微抖动，破掉纯平色带来的"数字位图"感；
-  · 频率结构由**周期高斯场 + 分位数阈值**决定（`DOT_SIGMA=0.62px`），所有滤波都在
-    周期性域里做（FFT），平铺接缝与图内相邻梯度同分布。
+  · 画幅 = **1200×1600** 整块板（一次铺满画面，绝不平铺、绝不 repeat）；
+  · 基底 **全透明**（alpha=0，RGB 也归零）—— 没有中性灰底，也就不会给照片蒙灰罩；
+    混合模式从 overlay 换回 **soft-light**（v1.9.4 图层配置给出），只增加肌理、绝不动
+    蓝天/白墙的色相与明度；
+  · 粒子 50%:50% 双极性：
+      - 亮部银盐粒子 RGB `(255,252,245)`，核心 alpha **0.42**（107/255）；
+      - 暗部卤化银粒子 RGB `(28,26,24)`，核心 alpha **0.32**（82/255）；
+  · 半径 `0.55 ~ 0.95` px（亚像素圆心），覆盖像素以 d=r 为阈值取整（无灰边）；
+  · 位置 = **随机均匀撒点**（不是网格；网格会在格子周期的整数倍处留下可测伪周期），
+    所有非零像素的三个通道都严格等于两个调色板之一（绝不出现第三种颜色/彩噪）；
+  · 亮/暗极性**随机打乱**（不是隔行交替）—— 隔行交替会留下 2 格周期的明暗纹理，
+    512-lag 自相关不为零，正好会被蓝天的"网格感"投诉命中；
+  · 确定性：`numpy.random.default_rng(20261019)`，重跑逐字节一致。
 
-为什么"看得出颗粒"与"不蒙灰"能同时成立：overlay 的偏差权重是 `2·min(cb,1−cb)`，
-中灰附近最大、纯黑纯白两端趋 0 —— 颗粒只在中灰附近显形，白墙/雪地/夜空都不会被
-整体抬亮或压暗。层 opacity 由 `src/constants/grain.ts` 冻结为 0/.10/.18/.30/.42，
-贴图对比度在此定死，运行时只改 opacity。
-
-频带纪律（v1.8.2 门，v1.9.3 沿用，量在灰度亮度上）：
-  `<8px ≥ 0.60`、`24–64px ≤ 0.06` —— 颗粒必须在"看得清"的小尺度，不能堆成大团块。
-另外新增三道门：均值 ∈ [124,132]、灰度 σ ∈ [30,55]、黑白点覆盖率对称且合计 ∈ [12%,18%]、
-中性基底像素（|v−128|≤6）≥ 60%。
-
-─────────────────────────────────────────────────────────────────────────────
-历史沿革（为什么脚本长这样）
-─────────────────────────────────────────────────────────────────────────────
-* v1.8.2：颗粒贴图旧版是 366 网格 + 1.4× 上采样 + 0.7px 微模糊，能量跑进大尺度，
-  真机上变成"脏云雾"；改为直接在 512 网格生成 + 频带门。
-* v1.9.2：改用 RGBA 透明背景 + alpha 载体（颗粒 = 白/黑点 × |偏差|），层 opacity
-  封顶 0.055 —— 结果就是用户 m09629 说的"开了重档还是干净得像没开"。
-* v1.9.3：本文件。回到不透明中性灰基底 + 双极性点（当前实现）。
+自检门（脚本 exit 1 即失败）：
+  · 透明像素占比 ∈ [0.70, 0.95]；平均 alpha ∈ [0.04, 0.12]；
+  · 亮/暗粒子数量严格相等（50:50）；
+  · **所有非零 alpha 像素的 RGB 只能是两个调色板之一**（无混色、无彩噪）；
+  · 峰值 alpha = 107/255、128±? 不适用；亮核 ≥0.40、暗核 ≥0.30；
+  · 非周期性：alpha 的 512-lag 自相关（x / y / 对角）≤ 0.02；
+  · 频带（周期）：`<8px` 是主体（≥0.60）、`24–64px` 基本没有（≤0.06）。
 
 用法（PATH 上的 python 是 Windows Store 桩，必须用工作区自带的解释器）：
 
@@ -46,10 +40,18 @@ v1.9.3 回到「真实胶片板」的物理模型：
 
 跑完必须再跑一次工作区根的 `_plate_stats.py` 刷新 `_plate_stats.json`
 （`_haze_audit.mjs` 读的是那份 JSON 统计，不是 PNG 本身）。
+
+─────────────────────────────────────────────────────────────────────────────
+历史沿革
+─────────────────────────────────────────────────────────────────────────────
+* v1.8.2：旧版 366 网格 + 1.4× 上采样 + 0.7px 微模糊，能量跑进大尺度 → 真机「脏云雾」；
+  改为 512 网格 + 频带门。
+* v1.9.2：RGBA 透明背景 + alpha 载体，层 opacity 封顶 0.055 → 用户 m09629「像没开」。
+* v1.9.3：不透明中性灰基底 + overlay 双极点 → 用户 m10195 蓝天「纱窗网格黑麻点」。
+* v1.9.4：本文件。全画幅非周期透明银盐板 + soft-light（当前实现）。
 """
 
 import hashlib
-import os
 import sys
 
 import numpy as np
@@ -57,21 +59,35 @@ from PIL import Image
 
 # ---------------------------------------------------------------- 常量（确定性）
 
-SEED = 20261018
-SIZE = 512
+SEED = 20261019
 
-# v1.9.3 颗粒配方（用户 m09629 手术一）
-BASE_LEVEL = 128                     # 50% 中性灰基底（overlay 不动点）
-DARK_POINT = (24, 24, 28)            # #18181C 暗部银盐（卤化银）
-LIGHT_POINT = (232, 230, 224)        # #E8E6E0 亮部银盐
-DOT_SIGMA = 0.62                     # 点的团簇尺度（px）：<8px 频带的主体
-DARK_COVER = 0.075                   # 暗点覆盖率（对称）
-LIGHT_COVER = 0.075                  # 亮点覆盖率（对称）
-BASE_DITHER_SIGMA = 3.0              # 基底微抖动（灰阶），破数字位图感
+# 全画幅银盐板（一次铺满整个照片窗口，不平铺）
+PLATE_W = 1200
+PLATE_H = 1600
 
-# 频带能量门槛（环带口径，见 band_energy）：v1.8.2 的"脏云雾"配方是 0.162。
-BAND_FINE_MIN = 0.60                 # 周期 <8px 的能量占比下限
-BAND_COARSE_MAX = 0.06               # 周期 24–64px 的能量占比上限
+# 粒子总数（随机均匀撒点）：394×394 = 155,236，亮/暗各半
+GRID_COLS = 394
+GRID_ROWS = 394
+
+# 粒子（用户 m10195 冻结数值）
+LIGHT_RGB = (255, 252, 245)   # rgba(255,252,245)
+DARK_RGB = (28, 26, 24)       # rgba(28,26,24)
+LIGHT_CORE = 0.42             # 107/255
+DARK_CORE = 0.32              # 82/255
+RADIUS_MIN = 0.55
+RADIUS_MAX = 0.95
+AA_SOFT_PX = 0.45             # 覆盖率阈值带：d=r 处恰好 0.5 ⇒ 亚像素圆心落进整像素
+
+# 自检门槛
+TRANSPARENT_MIN = 0.70
+TRANSPARENT_MAX = 0.95
+MEAN_ALPHA_MIN = 0.04
+MEAN_ALPHA_MAX = 0.12
+LIGHT_CORE_MIN = 0.40
+DARK_CORE_MIN = 0.30
+AUTOCORR_MAX = 0.02
+BAND_FINE_MIN = 0.60          # 周期 <8px 的能量占比下限
+BAND_COARSE_MAX = 0.06        # 周期 24–64px 的能量占比上限
 BAND_LABELS = (
     ("<8", 0.0, 8.0),
     ("8-24", 8.0, 24.0),
@@ -80,49 +96,35 @@ BAND_LABELS = (
     (">160", 160.0, 1e9),
 )
 
-# v1.9.3 自检门槛
-MEAN_LEVEL_MIN = 124.0
-MEAN_LEVEL_MAX = 132.0
-GRAY_STD_MIN = 30.0
-GRAY_STD_MAX = 55.0
-NEUTRAL_FRAC_MIN = 0.60              # |灰度−128| ≤ 6 的"中性基底"占比
-COVER_TOTAL_MIN = 0.12
-COVER_TOTAL_MAX = 0.18
-COVER_ASYMMETRY_MAX = 0.01
-
 GRAIN_OUT = r"assets\textures\grain.png"
 LEAK_OUT = r"assets\textures\light-leak.png"
 
-# 漏光：暖橙（255,140,56），右上角一条拉长的光斑 + 上边缘一条带
+# 漏光：暖橙（255,140,56），右上角一条拉长的光斑 + 上边缘一条带（v1.8.0 起逐字保留）
 ORANGE = np.array([1.0, 0.549, 0.220])
 LEAK_SIZE = 512
 LEAK_PEAK_ALPHA = 0.62
-LEAK_CUT = 0.16  # 低于此强度直接归零 → 保证 ≥60% 像素是 screen 中性
+LEAK_CUT = 0.16
 
 
-def wrap_blur(a, sigma):
-    """周期性高斯模糊（FFT 乘高斯传递函数 = 首尾相接的卷积）。"""
-    if sigma <= 0:
-        return a
-    fy = np.fft.fftfreq(a.shape[0])[:, None]
-    fx = np.fft.fftfreq(a.shape[1])[None, :]
-    g = np.exp(-2.0 * np.pi**2 * sigma**2 * (fx**2 + fy**2))
-    return np.real(np.fft.ifft2(np.fft.fft2(a) * g))
+# ---------------------------------------------------------------- 通用工具
+
+
+def smoothstep(edge0, edge1, x):
+    """t in [0,1] -> 3t²-2t³（两端导数为 0）。"""
+    t = np.clip((x - edge0) / (edge1 - edge0), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
 
 
 def band_energy(arr):
-    """环带能量占比（去掉直流）：周期 = SIZE / 半径，与探针里的口径一致。
-
-    v1.9.3：入参是灰度亮度（0..255）—— 颗粒的可见强度全在亮度偏差上。
-    """
-    a = arr.astype(np.float64) / 255.0
-    n = a.shape[0]
-    f = np.fft.fftshift(np.fft.fft2(a - a.mean()))
+    """环带能量占比（去掉直流）。周期 = 1 / 径向频率（像素）。支持非方形板。"""
+    a = arr.astype(np.float64)
+    a = a - a.mean()
+    f = np.fft.fftshift(np.fft.fft2(a))
     p = np.abs(f) ** 2
-    c = n // 2
-    yy, xx = np.mgrid[0:n, 0:n]
-    r = np.sqrt((yy - c) ** 2 + (xx - c) ** 2)
-    period = np.where(r > 0, n / np.maximum(r, 1.0), 0.0)
+    fy = np.fft.fftshift(np.fft.fftfreq(arr.shape[0]))[:, None]
+    fx = np.fft.fftshift(np.fft.fftfreq(arr.shape[1]))[None, :]
+    r = np.sqrt(fy**2 + fx**2)
+    period = np.where(r > 0, 1.0 / np.maximum(r, 1e-12), 0.0)
     tot = p[r > 0].sum()
     out = {}
     for label, lo, hi in BAND_LABELS:
@@ -131,87 +133,127 @@ def band_energy(arr):
     return out
 
 
-def smoothstep(edge0, edge1, x):
-    t = np.clip((x - edge0) / (edge1 - edge0), 0.0, 1.0)
-    return t * t * (3.0 - 2.0 * t)
+def autocorr_lag(arr, lag):
+    """给定 lag 的归一化自相关（去均值、按方差归一化）。"""
+    a = arr.astype(np.float64)
+    a = a - a.mean()
+    var = float((a * a).mean())
+    if var <= 0:
+        return 1.0
+    return float((a * np.roll(a, lag, axis=1)).mean() / var)
 
 
-def _periodic_field(rng, sigma):
-    """零均值、单位方差的周期高斯随机场（用于做点的掩膜）。"""
-    white = rng.standard_normal((SIZE, SIZE))
-    field = wrap_blur(white, sigma)
-    return (field - field.mean()) / field.std()
+def _splat(px, py, radii, core, shape):
+    """把一批亚像素圆粒子叠进 alpha 场（3×3 邻域，覆盖率阈值取整像素，取 max）。
 
-
-def _mask_at_coverage(field, coverage):
-    """按分位数阈值取覆盖率恰为 coverage 的掩膜，并返回每个像素的"超出阈值"幅度。"""
-    threshold = float(np.quantile(field, 1.0 - coverage))
-    mask = field >= threshold
-    return mask, field - threshold
+    颗粒只落在整像素上（alpha 只有 0 与核心值两级），这样"每个非零像素都是纯
+    亮/暗调色板"与"平均覆盖别太大"能同时成立；亚像素只体现在圆心位置与半径上。
+    """
+    h, w = shape
+    plate = np.zeros((h, w), np.float32)
+    ix = np.floor(px).astype(np.int64)
+    iy = np.floor(py).astype(np.int64)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            cx = ix + dx
+            cy = iy + dy
+            dcx = px - (cx + 0.5)
+            dcy = py - (cy + 0.5)
+            d = np.sqrt(dcx * dcx + dcy * dcy)
+            cov = smoothstep(radii + AA_SOFT_PX, radii - AA_SOFT_PX, d)
+            val = np.where(cov >= 0.5, core, 0.0).astype(np.float32)
+            inb = (cx >= 0) & (cx < w) & (cy >= 0) & (cy < h) & (val > 0)
+            if not np.any(inb):
+                continue
+            np.maximum.at(plate, (cy[inb], cx[inb]), val[inb])
+    return plate
 
 
 def bake_grain():
-    """烘出 512×512 RGB 颗粒贴图：中性灰基底 + 对称双极性银盐黑/白点。"""
+    """烘出 1200×1600 RGBA 全画幅非周期银盐板。"""
     rng = np.random.default_rng(SEED)
 
-    dark_field = _periodic_field(rng, DOT_SIGMA)
-    light_field = _periodic_field(rng, DOT_SIGMA)
-    dark_mask, dark_excess = _mask_at_coverage(dark_field, DARK_COVER)
-    light_mask, light_excess = _mask_at_coverage(light_field, LIGHT_COVER)
+    cols, rows = GRID_COLS, GRID_ROWS
+    count = cols * rows
+    # 随机均匀撒点（不是网格）：任何方向的 lag 自相关都只剩有限样本噪声 ——
+    # 抖动网格会在"格子周期 ≈ lag 的整数倍"处留下可测的伪周期，正好是用户投诉的网格感。
+    jx = rng.uniform(0.0, PLATE_W, count)
+    jy = rng.uniform(0.0, PLATE_H, count)
+    radii = rng.uniform(RADIUS_MIN, RADIUS_MAX, count)
 
-    # 重叠像素只归给"超出阈值更多"的那一极，保持两色覆盖率对称、互不抵消。
-    overlap = dark_mask & light_mask
-    dark_only = (dark_mask & ~light_mask) | (overlap & (dark_excess >= light_excess))
-    light_only = (light_mask & ~dark_mask) | (overlap & (dark_excess < light_excess))
+    # 极性随机打乱（隔行交替会留下 2 格周期纹理 → 512-lag 自相关不为零）
+    perm = rng.permutation(count)
+    half = count // 2
+    light_mask = np.zeros(count, dtype=bool)
+    light_mask[perm[:half]] = True
+    light_sel = light_mask
+    dark_sel = ~light_sel
+    light_count = int(light_sel.sum())
+    dark_count = int(dark_sel.sum())
 
-    dither = rng.standard_normal((SIZE, SIZE)) * BASE_DITHER_SIGMA
-    arr = np.full((SIZE, SIZE, 3), float(BASE_LEVEL))
-    arr += dither[..., None]
-    arr[dark_only] = np.array(DARK_POINT, dtype=float)
-    arr[light_only] = np.array(LIGHT_POINT, dtype=float)
-    img = np.clip(np.rint(arr), 0.0, 255.0).astype(np.uint8)
+    alpha_l = _splat(jx[light_sel], jy[light_sel], radii[light_sel], LIGHT_CORE, (PLATE_H, PLATE_W))
+    alpha_d = _splat(jx[dark_sel], jy[dark_sel], radii[dark_sel], DARK_CORE, (PLATE_H, PLATE_W))
 
-    gray = (
-        0.2126 * img[..., 0].astype(np.float64)
-        + 0.7152 * img[..., 1].astype(np.float64)
-        + 0.0722 * img[..., 2].astype(np.float64)
+    # 理论零重叠；真出现就按"谁更强"归属，保住调色板纯度（不混色）。
+    overlap = (alpha_l > 0) & (alpha_d > 0)
+    if np.any(overlap):
+        keep_light = overlap & (alpha_l >= alpha_d)
+        keep_dark = overlap & (alpha_l < alpha_d)
+        alpha_d[keep_light] = 0.0
+        alpha_l[keep_dark] = 0.0
+
+    alpha = np.maximum(alpha_l, alpha_d)
+    # 量化到 8bit（核心 0.42 -> 107，0.32 -> 82）
+    q = np.rint(alpha * 255.0).astype(np.uint8)
+    q[alpha <= 0] = 0
+
+    rgba = np.zeros((PLATE_H, PLATE_W, 4), dtype=np.uint8)
+    light_px = q > 0
+    light_px &= alpha_l > 0
+    dark_px = (q > 0) & (alpha_d > 0)
+    rgba[..., :3][light_px] = np.array(LIGHT_RGB, dtype=np.uint8)
+    rgba[..., :3][dark_px] = np.array(DARK_RGB, dtype=np.uint8)
+    rgba[..., 3] = q
+
+    alpha01 = rgba[..., 3].astype(np.float64) / 255.0
+    # 调色板纯度：非零像素必须是两调色板之一（无混色、无第三种颜色）
+    nz = rgba[..., 3] > 0
+    pal_ok = np.zeros(nz.shape, dtype=bool)
+    pal_ok[nz] = (
+        np.all(rgba[..., :3][nz] == np.array(LIGHT_RGB, dtype=np.uint8), axis=1)
+        | np.all(rgba[..., :3][nz] == np.array(DARK_RGB, dtype=np.uint8), axis=1)
     )
-    # 无缝核对：跨接缝的相邻梯度 vs 图内相邻梯度（量在灰度上）。
-    gx = np.abs(np.diff(gray, axis=1))
-    gy = np.abs(np.diff(gray, axis=0))
-    seam_x = np.abs(gray[:, 0] - gray[:, -1])
-    seam_y = np.abs(gray[0, :] - gray[-1, :])
 
-    dark_frac = float(dark_only.mean())
-    light_frac = float(light_only.mean())
     report = {
-        "mean": float(gray.mean()),
-        "std": float(gray.std()),
-        "dark_frac": dark_frac,
-        "light_frac": light_frac,
-        "neutral_frac": float((np.abs(gray - BASE_LEVEL) <= 6.0).mean()),
-        "bands": band_energy(gray),
-        "gx_mean": float(gx.mean()),
-        "gx_p95": float(np.percentile(gx, 95)),
-        "seam_x_mean": float(seam_x.mean()),
-        "seam_x_p95": float(np.percentile(seam_x, 95)),
-        "gy_mean": float(gy.mean()),
-        "gy_p95": float(np.percentile(gy, 95)),
-        "seam_y_mean": float(seam_y.mean()),
-        "seam_y_p95": float(np.percentile(seam_y, 95)),
+        "transparent_frac": float((rgba[..., 3] == 0).mean()),
+        "mean_alpha": float(alpha01.mean()),
+        "light_count": light_count,
+        "dark_count": dark_count,
+        "max_alpha": float(alpha01.max()),
+        "nonzero_frac": float(nz.mean()),
+        "palette_ok": bool(np.all(pal_ok[nz])),
+        "palette_frac": float(pal_ok[nz].mean()) if np.any(nz) else 1.0,
+        "bands": band_energy(alpha01),
+        "autocorr_x512": autocorr_lag(alpha01, 512),
+        "autocorr_y512": float(
+            (lambda a: (a * np.roll(a, 512, axis=0)).mean() / (a * a).mean())(
+                alpha01 - alpha01.mean()
+            )
+        ),
+        "overlap_px": int(overlap.sum()),
     }
-    return img, report
+    return rgba, report
 
 
 def bake_leak():
+    """v1.8.0 起逐字保留的漏光烘焙（512×512 RGBA）。"""
     yy, xx = np.mgrid[0:LEAK_SIZE, 0:LEAK_SIZE].astype(float)
     u = xx / (LEAK_SIZE - 1.0)  # 0 = 左, 1 = 右
     v = yy / (LEAK_SIZE - 1.0)  # 0 = 上, 1 = 下
-    # 从右上角斜着进来的一条光：椭圆高斯（横向拉长）+ 上边缘一条带
     core = np.exp(-1.6 * (((1.0 - u) / 0.62) ** 2 + ((v - 0.02) / 0.30) ** 2))
     band = np.exp(-(((v - 0.06) / 0.16) ** 2)) * np.exp(-(((1.0 - u) / 0.75) ** 2))
     t = np.clip(0.78 * core + 0.42 * band, 0.0, 1.0)
-    t = smoothstep(LEAK_CUT, 0.62, t)  # 硬门槛：光只留在角落，其余像素纯黑
+    t = smoothstep(LEAK_CUT, 0.62, t)
     alpha = np.clip(LEAK_PEAK_ALPHA * t**1.25, 0.0, 1.0)
     rgb = ORANGE[None, None, :] * (t**0.85)[..., None]
 
@@ -252,17 +294,26 @@ def main():
 
     grain, greport = bake_grain()
     grain_path = root + "\\" + GRAIN_OUT
-    Image.fromarray(grain, mode="RGB").save(grain_path, optimize=True)
+    Image.fromarray(grain, mode="RGBA").save(grain_path, optimize=True)
     gbytes, gsha = file_facts(grain_path)
-    print("grain.png  %dx%d mode=RGB" % (SIZE, SIZE))
+    print("grain.png  %dx%d mode=RGBA" % (PLATE_W, PLATE_H))
     print(
-        "  灰度: mean=%.2f std=%.2f 暗点=%.2f%% 亮点=%.2f%% 中性基底=%.2f%%"
+        "  透明像素=%.2f%%  非零=%.2f%%  平均alpha=%.4f  峰值alpha=%.4f"
         % (
-            greport["mean"],
-            greport["std"],
-            greport["dark_frac"] * 100.0,
-            greport["light_frac"] * 100.0,
-            greport["neutral_frac"] * 100.0,
+            greport["transparent_frac"] * 100.0,
+            greport["nonzero_frac"] * 100.0,
+            greport["mean_alpha"],
+            greport["max_alpha"],
+        )
+    )
+    print(
+        "  粒子: 亮=%d 暗=%d 相等=%s  调色板纯度=%.6f  重叠像素=%d"
+        % (
+            greport["light_count"],
+            greport["dark_count"],
+            greport["light_count"] == greport["dark_count"],
+            greport["palette_frac"],
+            greport["overlap_px"],
         )
     )
     print(
@@ -270,17 +321,8 @@ def main():
         + "  ".join("%s=%.1f%%" % (k, v * 100.0) for k, v in greport["bands"].items())
     )
     print(
-        "  无缝：水平内部梯度 mean=%.3f 跨接缝 mean=%.3f | 垂直内部 mean=%.3f 跨接缝 mean=%.3f"
-        % (
-            greport["gx_mean"],
-            greport["seam_x_mean"],
-            greport["gy_mean"],
-            greport["seam_y_mean"],
-        )
-    )
-    print(
-        "  跨接缝 p95=%.1f vs 内部 p95=%.1f"
-        % (max(greport["seam_x_p95"], greport["seam_y_p95"]), greport["gx_p95"])
+        "  512-lag 自相关: x=%.4f y=%.4f"
+        % (greport["autocorr_x512"], greport["autocorr_y512"])
     )
     print("  bytes=%d  sha256=%s" % (gbytes, gsha))
 
@@ -303,34 +345,32 @@ def main():
     print("  bytes=%d  sha256=%s" % (lbytes, lsha))
 
     problems = []
-    # v1.9.3：中性灰基底 + 对称双极性银盐点的存在性（不再是透明 alpha 载体）
-    if not (MEAN_LEVEL_MIN <= greport["mean"] <= MEAN_LEVEL_MAX):
+    if not (TRANSPARENT_MIN <= greport["transparent_frac"] <= TRANSPARENT_MAX):
         problems.append(
-            "grain 灰度均值偏离中灰: %.2f（要求 %.0f~%.0f）"
-            % (greport["mean"], MEAN_LEVEL_MIN, MEAN_LEVEL_MAX)
+            "grain 透明像素占比不在 [%.2f,%.2f]: %.4f"
+            % (TRANSPARENT_MIN, TRANSPARENT_MAX, greport["transparent_frac"])
         )
-    if not (GRAY_STD_MIN <= greport["std"] <= GRAY_STD_MAX):
+    if not (MEAN_ALPHA_MIN <= greport["mean_alpha"] <= MEAN_ALPHA_MAX):
         problems.append(
-            "grain 灰度对比度不在 [%.0f,%.0f]: %.2f —— 太高像雪花屏，太低又看不见"
-            % (GRAY_STD_MIN, GRAY_STD_MAX, greport["std"])
+            "grain 平均 alpha 不在 [%.2f,%.2f]: %.4f"
+            % (MEAN_ALPHA_MIN, MEAN_ALPHA_MAX, greport["mean_alpha"])
         )
-    cover_total = greport["dark_frac"] + greport["light_frac"]
-    if not (COVER_TOTAL_MIN <= cover_total <= COVER_TOTAL_MAX):
+    if greport["light_count"] != greport["dark_count"]:
         problems.append(
-            "grain 黑/白点总覆盖率不在 [%.0f%%,%.0f%%]: %.2f%%"
-            % (COVER_TOTAL_MIN * 100, COVER_TOTAL_MAX * 100, cover_total * 100)
+            "grain 亮/暗粒子数量不等: %d vs %d"
+            % (greport["light_count"], greport["dark_count"])
         )
-    if abs(greport["dark_frac"] - greport["light_frac"]) > COVER_ASYMMETRY_MAX:
+    if not greport["palette_ok"]:
+        problems.append("grain 非零像素出现第三种颜色（混色/彩噪）: %.6f" % greport["palette_frac"])
+    if greport["max_alpha"] < LIGHT_CORE_MIN - 0.01:
+        problems.append("grain 亮粒子核心 alpha 不足: %.4f" % greport["max_alpha"])
+    if greport["max_alpha"] > LIGHT_CORE_MIN + 0.04:
+        problems.append("grain 亮粒子核心 alpha 过高: %.4f" % greport["max_alpha"])
+    if greport["autocorr_x512"] > AUTOCORR_MAX or greport["autocorr_y512"] > AUTOCORR_MAX:
         problems.append(
-            "grain 黑/白点覆盖率不对称（会整体偏灰或偏亮）: 暗=%.4f 亮=%.4f"
-            % (greport["dark_frac"], greport["light_frac"])
+            "grain 存在周期性重复（512-lag 自相关 x=%.4f y=%.4f > %.2f）"
+            % (greport["autocorr_x512"], greport["autocorr_y512"], AUTOCORR_MAX)
         )
-    if greport["neutral_frac"] < NEUTRAL_FRAC_MIN:
-        problems.append(
-            "grain 中性基底占比不足（|v-128|≤6 仅 %.2f%%）—— 中灰基底是 overlay 透明的前提"
-            % (greport["neutral_frac"] * 100.0)
-        )
-    # v1.8.2 根因门：颗粒的能量必须在"看得清"的小尺度上，不能堆成大团块
     if greport["bands"]["<8"] < BAND_FINE_MIN:
         problems.append(
             "grain <8px 频带能量不足（%.3f < %.2f）——会在大屏上显成脏云雾"
@@ -341,16 +381,6 @@ def main():
             "grain 24–64px 频带能量过高（%.3f > %.2f）——团块会被看成污渍"
             % (greport["bands"]["24-64"], BAND_COARSE_MAX)
         )
-    for name, internal, seam in (
-        ("x", greport["gx_mean"], greport["seam_x_mean"]),
-        ("y", greport["gy_mean"], greport["seam_y_mean"]),
-    ):
-        if internal <= 0:
-            problems.append("grain 内部梯度为 0（%s）" % name)
-        elif abs(seam - internal) / internal > 0.25:
-            problems.append(
-                "grain 跨接缝梯度与图内不一致（%s）: seam=%.3f internal=%.3f" % (name, seam, internal)
-            )
     if lreport["fracScreenNeutral"] < 0.60:
         problems.append("light-leak screen 中性区不足: %.3f" % lreport["fracScreenNeutral"])
     if lreport["meanLum"] > 0.25:

@@ -7,14 +7,17 @@
  * 「一眼看出这卷是什么味道」最直观的办法当然是拿真实样片，但项目里没有、
  * 也不该为十个预设各烧一张烘焙图（体积、维护、和真实成像对不上，三头不讨好）。
  * 退而求其次的做法是**从预设自己的光学配方反推一个近似色块**：
- * 拿一个中灰当"标准场景"，把 v1.9.3 的零模糊管线（overlay 真 S 曲线 →
- * color-burn 色彩密度 → screen 克制提亮 → 化学冷暖分离色 → 暗角边缘）依次
- * 施加一遍，得到的三个色阶就是这卷胶片的性格 —— S 曲线强的顶出高反差、
- * color-burn 厚的料更稠、提亮大的中间调更亮、暖卷偏琥珀、冷卷偏青、
- * 黑白卷三档全灰。
+ * 拿一个中灰当"标准场景"，把 v1.9.4 的零模糊解耦管线（同源 S 曲线 overlay
+ * 明度雕塑 → 同源 color 色度锁 → screen 克制提亮 → 化学冷暖分离色 → 暗角边缘）
+ * 依次施加一遍，得到的三个色阶就是这卷胶片的性格 —— S 曲线强的顶出高反差、
+ * 色度锁强的保色更真、提亮大的中间调更亮、暖卷偏琥珀、冷卷偏青、黑白卷三档全灰。
  *
  * ⚠️ 它**不等于**成片效果（真正的合成在 `FilmCompositor` / `gradeLayers` 里，
  * 还要叠颗粒、漏光、暗角）。这里只是色偏方向和强度的示意，别拿它当取色器。
+ *
+ * ⚠️ v1.9.4 起 swatch 不再画 color-burn 的压暗项，改成**色度锁对饱和度的影响**：
+ * chromaLock 越高 → 染色层的吃料越接近原色 → swatch 的色偏/饱和度越明显；
+ * 黑白卷不写 chromaLock，直接走 BT.709 亮度转灰。
  *
  * ─────────────────────────────────────────────────────────────────────
  * ─────────────────────────────────────────────────────────────────────
@@ -90,48 +93,62 @@ const CHECK_SIZE = 16;
  */
 const DESCRIPTION_MIN_SCALE = 0.7;
 
-/** 把 0~255 夹回合法区间。 */
+/**
+ * 把通道值夹回 v1.9.4 的合法区间 [6, 250]。
+ *
+ * 为什么不是 0~255：饱和/封顶的色块在抽屉里会读成"纯色贴纸"而不是"胶片色"，
+ * 而且 0/255 的通道在深色主题下对比度会炸；契约 §6 明确要求通道值夹在 [6,250]。
+ */
 function clampChannel(value: number): number {
-  if (value < 0) {
-    return 0;
+  if (value < 6) {
+    return 6;
   }
-  if (value > 255) {
-    return 255;
+  if (value > 250) {
+    return 250;
   }
   return value;
 }
 
-/** 中灰：所有近似都以它为起点，相当于"标准场景的中间调"（v1.9.3 取 110 让九卷三档都落在 0..255 内且不封顶）。 */
+/** 中灰：所有近似都以它为起点，相当于"标准场景的中间调"（v1.9.4 取 110 让九卷三档都落在 [6,250] 内且不封顶）。 */
 const BASE_GRAY = 110;
 /**
- * v1.9.3 黑位托底（同源 multiply 自叠）对色块底部的满量程下压：
- * 覆盖 0~0.08 量程（0.08 时 ≈ 12 阶；全库只有 TX-400 会用到）。
+ * v1.9.4 黑位托底（同源 multiply 自叠）对色块底部的满量程下压：
+ * 覆盖 0~0.05 量程（0.05 时 ≈ 12 阶；全库只有 TX-400 会用到）。
  */
-const CRUSH_RANGE = 500;
+const CRUSH_RANGE = 800;
 /**
- * v1.9.3 零模糊真 S 曲线（同源 overlay 自叠）对色块顶部的满量程抬升：
- * 覆盖 0.46~0.72 量程（0.72 时 ≈ 22 阶，底部同步 −1.35 倍压深）。
+ * v1.9.4 零模糊真 S 曲线（同源 overlay 自叠）对色块顶部的满量程抬升：
+ * 覆盖 0.40~0.60 量程（0.60 时 ≈ 30 阶，底部同步 −1.35 倍压深）。
  */
-const S_RANGE = 55;
+const S_RANGE = 90;
 /**
- * v1.9.3 零模糊曝光提亮（同源 screen 自叠）对色块顶部的满量程抬升：
- * 覆盖 0.04~0.14 量程（0.14 时 ≈ 11 阶，中间调同步 ×0.4）。
+ * v1.9.4 零模糊曝光提亮（同源 screen 自叠）对色块顶部的满量程抬升：
+ * 覆盖 0.16~0.26 量程（0.26 时 ≈ 32 阶，中间调同步 ×0.4）。
  */
-const LIFT_RANGE = 240;
+const LIFT_RANGE = 380;
 /**
- * v1.9.3 暗角对色块底部的边缘下压：覆盖 0.22~0.38 量程
- * （0.22 时 ≈ 11 阶、0.38 时 ≈ 19 阶 —— 暗角只压四角，这里映射到横向色带的下沿做示意）。
+ * v1.9.4 暗角对色块底部的边缘下压：覆盖 0.16~0.28 量程
+ * （0.16 时 ≈ 16 阶、0.28 时 ≈ 28 阶 —— 暗角只压四角，这里映射到横向色带的下沿做示意）。
  */
-const VIGNETTE_RANGE = 120;
+const VIGNETTE_RANGE = 240;
 /**
- * v1.9.3 色彩密度（color-burn 色层）对色块的满量程压暗：覆盖 0.08~0.18 量程
- * （按 `1 − burnTint通道/255` 逐通道算，白 tint = 纯白不变）。
+ * v1.9.4 色度锁（chroma-lock）的色相/饱和度权重满量程：
+ * 契约区间 0.54~0.68 映射到 CHROMA_FLOOR~1.0（色度锁越高 → 越接近原图色 → swatch 越饱和）。
  */
-const COLOR_BURN_RANGE = 160;
-/** 化学暗部偏色的偏移倍率：不透明度 × 通道差 × 权重 × 1.2。 */
-const SHADOW_GAIN = 1.2;
-/** 化学高光偏色的偏移倍率：不透明度 × 通道差 × 权重 × 3.0（高光染色更吃料）。 */
-const HIGHLIGHT_GAIN = 3.0;
+const CHROMA_RANGE = 0.14;
+/** 色度锁权重下限（chromaLock = 0.54 时的吃料系数；缺省/mono 卷按 1.0 处理）。 */
+const CHROMA_FLOOR = 0.86;
+/** 化学暗部偏色的偏移倍率：染色不透明度^1.5 × 通道差 × 权重 × 6.0 × 色度锁系数。 */
+const SHADOW_GAIN = 6.0;
+/** 化学高光偏色的偏移倍率：染色不透明度^1.5 × 通道差 × 权重 × 8.0 × 色度锁系数。 */
+const HIGHLIGHT_GAIN = 8.0;
+/**
+ * 染色不透明度的**非线性吃料指数**：胶片乳剂的染色密度不是线性叠加的，
+ * 这里按 `opacity^1.5` 近似 —— 低不透明度的分离色更克制、高不透明度才吃饱，
+ * 同时让九卷 swatch 在 [6,250] 通道域里两两可辨（线性档在契约九卷参数下无解）。
+ */
+const SATURATION_EXPONENT = 1.5;
+
 
 type SwatchZone = {
   readonly top: string;
@@ -152,20 +169,43 @@ function hexChannels(hex: string | undefined): readonly [number, number, number]
   return channels.some((channel) => Number.isNaN(channel)) ? null : channels;
 }
 
-/** soft-light / overlay 在中间调附近的线性近似：按通道差往 tint 方向偏移，增益分暗部/高光两档。 */
-function lightTint(base: number, tint: number, opacity: number, weight: number, gain: number): number {
-  return base + (tint - 128) * opacity * weight * gain;
+/**
+ * 色度锁（chroma-lock）对染色层的吃料系数：色度锁越高 → 越接近原图色 → 系数越大。
+ * 黑白卷/chromaLock 缺省 → 1.0（染色层按原强度算，真黑白交给 BT.709 转灰）。
+ */
+function chromaScaleOf(chromaLock: number | undefined): number {
+  if (chromaLock === undefined || chromaLock <= 0) {
+    return 1;
+  }
+  const normalized = Math.min(1, Math.max(0, (chromaLock - 0.54) / CHROMA_RANGE));
+  return CHROMA_FLOOR + normalized * (1 - CHROMA_FLOOR);
 }
 
 /**
- * v1.9.3 零模糊配方 → 三段色阶（高光 / 中间调 / 暗部）。
+ * soft-light 分离色在中间调附近的线性近似：按通道差往 tint 方向偏移，
+ * 吃料量 = `opacity^1.5 × 通道差 × 权重 × 增益 × 色度锁系数`。
+ */
+function lightTint(
+  base: number,
+  tint: number,
+  opacity: number,
+  weight: number,
+  gain: number,
+  chromaScale: number,
+): number {
+  return base + (tint - 128) * Math.pow(opacity, SATURATION_EXPONENT) * weight * gain * chromaScale;
+}
+
+/**
+ * v1.9.4 明度/色度解耦配方 → 三段色阶（高光 / 中间调 / 暗部）。
  *
- * 映射纪律（与 `gradeLayers.ts` 的 v1.9.3 图层顺序 0~13 一一对应，三个光学层全部 blurRadius 0 自叠）：
+ * 映射纪律（与 `gradeLayers.ts` 的 v1.9.4 图层顺序 1~12 对应，photo 层全部 blurRadius 0 自叠）：
  *  1. `sCurveContrast`→ overlay 自叠：底部压深（×1.35）、中间调微抬（×0.055）、顶部提亮（×0.55）
- *  2. `colorBurn`     → color-burn 色层：逐通道按 `1 − burnTint/255` 压暗（白 tint 恒不变），权重 底部 0.2 / 中间 0.3 / 顶部 0
+ *  2. `chromaLock`    → color 色度锁：不直接改明度，而是把染色层的吃料按 0.86~1.0 缩放；
+ *                       色度锁越高 → 颜色越接近原色 → swatch 饱和度越高
  *  3. `exposureLift`  → screen 自叠：顶部提亮（×0.33）、中间调（×0.4）、底部（×0.2）
- *  4. `shadowTint*`   → 化学暗部偏色（soft-light / overlay），权重 底部 1.0 / 中间 0.45 / 顶部 0.15，增益 ×1.2
- *  5. `highlightTint*`→ 色彩密度层（soft-light / overlay），权重 顶部 1.0 / 中间 0.4 / 底部 0.2，增益 ×3.0
+ *  4. `shadowTint*`   → 化学暗部偏色（只 soft-light），权重 底部 1.0 / 中间 0.45 / 顶部 0.15，增益 ×6.0
+ *  5. `highlightTint*`→ 德味暖调分色（只 soft-light），权重 顶部 1.0 / 中间 0.4 / 底部 0.2，增益 ×8.0
  *  6. `shadowCrush`   → multiply 自叠：只压暗部（底部 ×0.3，中间调 ×0.06；只有 TX-400 > 0）
  *  7. `vignette`      → 只压四角；横向色带把它映射到**下沿**（底部 −VIGNETTE_RANGE×0.42）
  *  8. `mono`          → 三档全部取 BT.709 亮度（`#808080 + 'color'` 的去色等价）
@@ -177,8 +217,6 @@ function lightTint(base: number, tint: number, opacity: number, weight: number, 
 function swatchZones(preset: FilmPreset): SwatchZone {
   const color = preset.color;
   const sCurveContrast = color.sCurveContrast ?? 0;
-  const colorBurn = color.colorBurn ?? 0;
-  const colorBurnTint = hexChannels(color.colorBurnTint);
   const exposureLift = color.exposureLift ?? 0;
   const shadowCrush = color.shadowCrush ?? 0;
   const vignette = preset.vignette ?? 0;
@@ -186,13 +224,14 @@ function swatchZones(preset: FilmPreset): SwatchZone {
   const shadowOpacity = color.shadowTintOpacity ?? 0;
   const highlightTint = hexChannels(color.highlightTint);
   const highlightOpacity = color.highlightTintOpacity ?? 0;
+  const chromaScale = preset.mono === true ? 1 : chromaScaleOf(color.chromaLock);
 
-  // 每档的"胶片亮度"：先算 S 曲线 / 色彩密度 / 曝光提亮 / 黑位托底对灰度的影响，再叠加化学分离色。
+  // 每档的"胶片亮度"：先算 S 曲线 / 曝光提亮 / 黑位托底 / 暗角对灰度的整体影响，
+  // 再让同源色度锁决定化学分离色吃多少料。
   const zones: {
     readonly level: number;
     readonly shadowWeight: number;
     readonly highlightWeight: number;
-    readonly burnWeight: number;
   }[] = [
     {
       level:
@@ -203,7 +242,6 @@ function swatchZones(preset: FilmPreset): SwatchZone {
         vignette * VIGNETTE_RANGE * 0.42,
       shadowWeight: 1,
       highlightWeight: 0.2,
-      burnWeight: 0.2,
     },
     {
       level:
@@ -213,13 +251,11 @@ function swatchZones(preset: FilmPreset): SwatchZone {
         exposureLift * LIFT_RANGE * 0.4,
       shadowWeight: 0.45,
       highlightWeight: 0.4,
-      burnWeight: 0.3,
     },
     {
       level: BASE_GRAY + sCurveContrast * S_RANGE * 0.55 + exposureLift * LIFT_RANGE * 0.33,
       shadowWeight: 0.15,
       highlightWeight: 1,
-      burnWeight: 0,
     },
   ];
 
@@ -227,12 +263,15 @@ function swatchZones(preset: FilmPreset): SwatchZone {
     const channels: number[] = [];
     for (let index = 0; index < 3; index += 1) {
       let channel = zone.level;
-      // color-burn 的线性近似：白场（tint 通道 255）恒不变，越深的色越吃料。
-      if (colorBurnTint !== null) {
-        channel -= colorBurn * COLOR_BURN_RANGE * (1 - colorBurnTint[index] / 255) * zone.burnWeight;
-      }
       if (shadowTint !== null) {
-        channel = lightTint(channel, shadowTint[index], shadowOpacity, zone.shadowWeight, SHADOW_GAIN);
+        channel = lightTint(
+          channel,
+          shadowTint[index],
+          shadowOpacity,
+          zone.shadowWeight,
+          SHADOW_GAIN,
+          chromaScale,
+        );
       }
       if (highlightTint !== null) {
         channel = lightTint(
@@ -241,6 +280,7 @@ function swatchZones(preset: FilmPreset): SwatchZone {
           highlightOpacity,
           zone.highlightWeight,
           HIGHLIGHT_GAIN,
+          chromaScale,
         );
       }
       channels.push(channel);

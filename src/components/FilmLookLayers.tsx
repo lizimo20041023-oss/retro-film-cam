@@ -36,17 +36,23 @@
  *   模糊层**（泛光的 8pt 模糊副本已删，halation 只剩暖红纯色）。本组件仍保留
  *   `blurRadius` 透传（`GradeLayer.photo` 类型字段），只是当前没有构建路径会写它。
  *
- * ── 为什么平铺不用 `resizeMode="repeat"`（v1.8.2 的根因修正）─────────────
- * iOS 的 repeat 由 `RCTImageComponentView.mm:148-150` 的
- * `resizableImageWithMode:UIImageResizingModeTile` 实现，**方格边长 = `image.size`（点）**，
- * 而 `image.size` 取决于资源被解码成几倍图：Metro 数据路径是 3 倍（`512/3 ≈ 170.7pt`），
- * 打包路径（`RCTImageFromLocalAssetURL`，assets 里没有 @2x/@3x 变体）是 1 倍
- * （`512pt`）—— 同一张贴图在真机 IPA 里被放大 3 倍，于是 `grain.png` 里 8–24px 的团簇
- * 变成屏幕上 8–24pt 的"脏云雾"（用户 2026-10-17 的投诉）。
- * 现在改成 `planTextureTiles()` 手工铺方格：固定 `TEXTURE_TILE_PT = 512/3`，
- * **1 贴图像素 = 1 设备像素**（3x 屏），与资源解码倍率、与 RN 的 repeat 语义都无关；
- * 越界的最后一行/列由根节点的 `overflow: 'hidden'` 裁掉。
- * 就绪计数口径不变：整层只在**第一块**贴图上报一次 `onPlateLoad`（见上面第 1 条）。
+ * ── 纹理渲染方式（v1.9.4 重写：全画幅单张、零平铺）──────────────────────
+ * 所有纹理层（`grain` / `vignette` / `lightLeak`）现在都是**单张整幅 `<Image>` +
+ * `resizeMode="stretch"`**，没有任何 repeat / 平铺 / 周期小图。
+ *
+ * 历史教训（先记档，别再退回去）：
+ * · v1.8.2 之前用 `resizeMode="repeat"`：iOS 的 repeat 由
+ *   `RCTImageComponentView.mm:148-150` 的 `resizableImageWithMode:UIImageResizingModeTile`
+ *   实现，**方格边长 = `image.size`（点）**，而解码倍率 Metro 数据路径 3x、打包路径 1x
+ *   ⇒ 真机 IPA 里贴图被放大 3 倍（用户 2026-10-17「脏云雾」投诉）。
+ * · v1.8.2~v1.9.3 改成 `planTextureTiles()` 按 170.67pt 手工平铺 512 小图：尺寸口径对了，
+ *   但**周期性本身**成了新病根 —— 用户 m10195 在蓝天上看到肉眼可见的「重复网格黑麻点
+ *   阵列（纱窗效应）」。v1.9.4 把颗粒板换成 1200×1600 全画幅非周期银盐板，
+ *   平铺逻辑连同 `TEXTURE_SIZE_PX` / `TEXTURE_TILE_PT` / `TextureTile` / `planTextureTiles`
+ *   一起删除。
+ *
+ * 就绪计数口径：每个 texture 层 / 每个 photo 层各上报一次 `onPlateLoad`（见上面第 1 条）；
+ * 现在每层只有一张 `<Image>`，天然满足。
  */
 import { memo, useMemo } from 'react';
 import { Image, StyleSheet, View } from 'react-native';
@@ -162,53 +168,15 @@ export function planDustSpecks(preset: ResolvedFilmPreset, seed: number): DustSp
   return specks;
 }
 
-/**
- * 贴图的原始边长（= `scripts/generate_grain_clump.py` 里的 `SIZE = 512`）。
- * 改烤脚本的尺寸时，这里要跟着改，否则"1 贴图像素 = 1 设备像素"就断了。
- */
-export const TEXTURE_SIZE_PX = 512;
-
-/**
- * 平铺方格的边长（逻辑点）：`512 / 3 = 170.667pt` ⇒ **3x 屏上 1 贴图像素 = 1 设备像素**。
- * 取景器镂空窗约 321~373pt ⇒ 2×2 块（最多 3×3 = 9 张 `<Image>`）。
- */
-export const TEXTURE_TILE_PT = TEXTURE_SIZE_PX / 3;
-
-/** 一块平铺方格：尺寸都是逻辑点，绝对定位在图层容器里（越界部分由根的 overflow 裁掉）。 */
-export interface TextureTile {
-  key: string;
-  left: number;
-  top: number;
-  size: number;
-}
-
-/**
- * 把一个 `w × h`（逻辑点）的区域切成边长为 `tilePt` 的方格阵列。
+/*
+ * v1.9.4（用户 m10195 手术二）：**周期平铺彻底删除**。
  *
- * 纯函数，探针直接调用它核对"1 贴图像素 = 1 设备像素"这条口径。
- * · 极端尺寸保护：块数上限 6×6，超出就把方格等比放大（宁可少铺几块，
- *   也不要在成片路径上炸出上百个 `<Image>`）。
- * · `- 1e-9` 是防浮点误差：`341.333… / 170.666…` 必须正好是 2 列，不能多出第 3 列。
+ * v1.9.3 及更早，颗粒板是 512×512 的小图，靠 `planTextureTiles()` 按 170.67pt
+ * 手工铺 2×2~3×3 块（绕开 RN `resizeMode="repeat"` 在 Metro 3x / 打包 1x 解码倍率
+ * 不同的 bug）。真机实拍暴露了周期性平铺的致命外观问题：蓝天上出现肉眼可见的
+ * 「重复网格黑麻点阵列（纱窗效应）」。v1.9.4 把 `grain.png` 换成 1200×1600 全画幅
+ * 非周期银盐板 —— **一张 `stretch` 贴图铺满窗口，不需要任何平铺逻辑**。
  */
-export function planTextureTiles(
-  w: number,
-  h: number,
-  tilePt: number = TEXTURE_TILE_PT,
-): TextureTile[] {
-  if (w <= 0 || h <= 0 || tilePt <= 0) {
-    return [];
-  }
-  const size = Math.max(tilePt, Math.max(w, h) / 6);
-  const cols = Math.max(1, Math.ceil(w / size - 1e-9));
-  const rows = Math.max(1, Math.ceil(h / size - 1e-9));
-  const tiles: TextureTile[] = [];
-  for (let r = 0; r < rows; r += 1) {
-    for (let c = 0; c < cols; c += 1) {
-      tiles.push({ key: `tile-${r}-${c}`, left: c * size, top: r * size, size });
-    }
-  }
-  return tiles;
-}
 
 /** 一个图层要叠的 View 样式（混合模式 + 透明度 [+ 水平镜像]）。 */
 function overlayStyle(layer: GradeLayer): ViewStyle {
@@ -290,13 +258,9 @@ function FilmLookLayersImpl({
         }
 
         const flip = layer.flipX === true ? !grainFlipped : grainFlipped;
-        // 只有**颗粒板**走手工 1:1 方格（见文件头）。v1.8.3 起 `dust` 纹理层已从图层栈
-        // 删除（白尘改成成片上 1~2 颗 specks，见 `planDustSpecks`）；剩下的纹理层
-        // （`vignette` / `lightLeak`）都是 `resizeMode='stretch'`，走不到 repeat 分支。
-        // v1.8.5：`vignette.png` 换成 1024×1024 中心透明的光学暗角贴图、层混合改 `normal`，
-        // 渲染侧仍是"一张拉伸 Image"，无需特殊处理。
-        const tiled = layer.resizeMode === 'repeat' && layer.textureId === 'grain';
-        const tiles = tiled ? planTextureTiles(width, height) : [];
+        // v1.9.4：所有纹理层（颗粒 / 暗角 / 漏光）都是**单张整幅贴图 + stretch**。
+        // 颗粒的周期平铺（v1.9.3 的 planTextureTiles）已彻底删除，蓝天零网格伪影。
+        // `dust` 纹理层 v1.8.3 起已从图层栈删除（白尘改由 `planDustSpecks` 承担）。
         const source = textureSource(layer.textureId);
         return (
           <View
@@ -308,34 +272,13 @@ function FilmLookLayersImpl({
               flip ? styles.flipX : null,
             ]}
           >
-            {tiled
-              ? tiles.map((tile, index) => (
-                  <Image
-                    key={tile.key}
-                    source={source}
-                    style={{
-                      position: 'absolute',
-                      left: tile.left,
-                      top: tile.top,
-                      width: tile.size,
-                      height: tile.size,
-                    }}
-                    resizeMode="stretch"
-                    // 就绪计数口径：整层只在第一块上报一次（见文件头第 1 条）——
-                    // 多报几次会让宿主的"还差几张图"提前归零，截图就可能截到半张。
-                    onLoad={index === 0 ? onPlateLoad : undefined}
-                    fadeDuration={0}
-                  />
-                ))
-              : (
-                  <Image
-                    source={source}
-                    style={StyleSheet.absoluteFill}
-                    resizeMode={layer.resizeMode === 'repeat' ? 'repeat' : 'stretch'}
-                    onLoad={onPlateLoad}
-                    fadeDuration={0}
-                  />
-                )}
+            <Image
+              source={source}
+              style={StyleSheet.absoluteFill}
+              resizeMode="stretch"
+              onLoad={onPlateLoad}
+              fadeDuration={0}
+            />
           </View>
         );
       })}

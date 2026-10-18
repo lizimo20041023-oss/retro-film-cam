@@ -369,8 +369,10 @@ export interface LocationLayout {
  *   → halation（仅 CS-800T 0.06）
  *   → 物理介质（颗粒 / 暗角 / 漏光）
  * 三个 photo 光学键全部由**同一张底片**的无模糊 `Image` 副本叠加实现，`blurRadius` 恒为 0；
- * 数学上 screen/overlay/color-burn 都满足 f(0)=0、f(1)=1（color-burn 的纯白恒为白），
- * 黑场永不起雾、白场永不发脏。
+ * 数学上 screen / overlay / color / soft-light / multiply 都满足 f(0)=0、f(1)=1，
+ * 黑场永不起雾、白场永不发脏；v1.9.4 起明度（screen lift + overlay S 曲线）与
+ * 色度（同源 `color` 色度锁）**解耦**——反差可以拉满而中性灰不再在 128 分界线
+ * 被 RGB 通道撕裂成青蓝/紫红。
  */
 export interface ColorGradeConfig {
   /** 色温：-1 冷（偏蓝）~ 0 中性 ~ +1 暖（偏橙）。用户色温旋钮直接加减这一项。 */
@@ -380,32 +382,33 @@ export interface ColorGradeConfig {
   /**
    * v1.9.3 手术二 · **德味核心反差层（零模糊同源 overlay S 曲线）**：
    * 同源无模糊 `Image`（blurRadius 0）以 'overlay' 自叠，opacity = 本值
-   * （九卷 0.46~0.72，渲染侧夹 ≤ 0.72）。
+   * （九卷 0.40~0.60，渲染侧夹 ≤ 0.60）。
    * 数学：Y<0.5 → 2Y²（暗部压出油润浓黑）；Y≥0.5 → 1−2(1−Y)²（亮部推亮）。
    * 三通道独立非线性拉伸自带原生胶片饱和度，中灰不动点、黑场白场都不动。
    */
   sCurveContrast?: number;
   /**
-   * v1.9.3 手术二 · **光学色彩密度增重层**：整幅纯色 `colorBurnTint` 以 `color-burn`
-   * 混合，opacity = 本值（九卷 0.08~0.18：TX-400 为 0.18，其余 0.08~0.16；
-   * 渲染侧夹 ≤ 0.24）。
+   * v1.9.4 手术一 · **原图色度锁（Chrominance Lock）**——本版德味核心：
+   * 同源无模糊 `Image`（blurRadius 0）以 `'color'` 混合叠在 screen lift 与 overlay
+   * S 曲线**之后**，opacity = 本值（彩色卷 0.54~0.68，渲染侧夹 `[0.54, 0.68]`）。
    *
-   * 数学：`color-burn(cb, cs) = 1 − min(1, (1−cb)/cs)`。纯白高光（cb=1）恒等于 1
-   * → **白雪/白墙绝不会被压灰**；中间调与暗部按源色乘性加深 → 天空更深邃、绿植更森绿、
-   * 黄墙红花带油画密度。这是 v1.9.3「德味油润」的第二根支柱（第一根是 sCurve）。
+   * 光学原理：`color` 混合在 iOS Metal 上**只取源图的色相+饱和度、保留底层的明度**，
+   * 所以 —— 高权重 overlay 刚雕出的浓黑/通透亮部 100% 保留（明度反差丝毫不减），
+   * 而 overlay 在 128 分界线处把 R/G/B 独立压暗/提亮造成的青蓝/紫红伪色，被按本值
+   * 的权重锁回原图真实色相。中性浅灰（水泥地/白花）压暗后仍是高级炭灰/奶油白。
+   * 黑白胶卷（HP-400 / TX-400）不走这一项：由预设 `mono` 在渲染侧改成
+   * `#808080` `color` opacity 1.0 的 100% 去色层，层序仍在全部染色之后。
    */
-  colorBurn?: number;
-  /** 色彩密度层纯色（hex）；空串 = 该卷没有这一层。九卷均由预设显式给出。 */
-  colorBurnTint?: string;
+  chromaLock?: number;
   /**
    * v1.9.3 手术二 · **克制的高光补偿（零模糊 screen）**：同源无模糊 `Image`（blurRadius 0）
-   * 以 'screen' 自叠，opacity = 本值（九卷 0.04~0.14，渲染侧夹 ≤ 0.24；夜景强制 0）。
+   * 以 'screen' 自叠，opacity = 本值（九卷 0.16~0.26，渲染侧夹 ≤ 0.28；夜景 `dark` 场景整体目标 0.06，不再归零）。
    * Y=0 时恒为 0 —— 黑色显示器/夜空绝不起雾；只做微弱高光延展，不冲淡暗部。
    */
   exposureLift?: number;
   /**
    * v1.9.3 手术二 · **黑位托底**：同源无模糊 `Image` 以 'multiply' 自叠（Y'=Y²）。
-   * 九卷里八卷为 0，只有 TX-400 保留 0.08；渲染侧硬上限 0.08。
+   * 九卷里八卷为 0，只有 TX-400 保留 0.05；渲染侧硬上限 0.05。
    */
   shadowCrush?: number;
   /**
@@ -414,26 +417,26 @@ export interface ColorGradeConfig {
    */
   shadowTint?: string;
   /**
-   * 暗部化学偏色的混合模式：v1.9.3 只允许 `soft-light` / `overlay`（渲染侧
-   * `sanitizeTintBlendMode` 会把任何其它值强制回 soft-light）；multiply / exclusion / screen
-   * 会污染黑场白场，一律禁止。
+   * 暗部化学偏色的混合模式：v1.9.4 **只允许 `soft-light`**（渲染侧
+   * `sanitizeTintBlendMode` 会把任何值强制成 soft-light）；overlay / color-burn /
+   * multiply / exclusion / screen 会污染黑场白场，一律禁止。
    */
   shadowTintBlendMode?: BlendMode;
-  /** 暗部化学偏色的不透明度（v1.9.3 九卷 0.16~0.32，渲染侧夹 ≤ 0.36）。 */
+  /** 暗部化学偏色的不透明度（v1.9.4 九卷 0.10~0.18，渲染侧夹 ≤ 0.20）。 */
   shadowTintOpacity?: number;
   /**
    * Layer 4b **高光/中间调色彩密度**：空串 = 该卷没有这一层。整幅纯色 + `highlightTintBlendMode`。
    * 钴青天空、金色阳光、暖桃肤色、钨丝灯蓝、硬反差红蓝密度都靠这一层。
    */
   highlightTint?: string;
-  /** 色彩密度层混合模式：同铁律（非 soft-light/overlay 一律回退 soft-light）。 */
+  /** 色彩密度层混合模式：v1.9.4 只允许 soft-light（其它值一律回退 soft-light）。 */
   highlightTintBlendMode?: BlendMode;
-  /** 色彩密度层的不透明度（v1.9.3 九卷 0.18~0.32，渲染侧夹 ≤ 0.36）。 */
+  /** 色彩密度层的不透明度（v1.9.4 九卷 0.14~0.20，渲染侧夹 ≤ 0.20）。 */
   highlightTintOpacity?: number;
   /**
-   * **暖红光晕（halation）**：v1.9.3 起只有 CS-800T 一支为 0.06（暖红除碳光晕），
+   * **暖红光晕（halation）**：v1.9.4 起只有 CS-800T 一支为 0.04（电影冷夜光晕），
    * 其余八卷 0；渲染管线在值 > 0.005 时产出**一层 `lightLeak` 贴图 + screen**，
-   * 渲染侧夹 ≤ 0.06（v1.9.2 曾把九卷全部归 0，v1.9.3 按用户 m09629 恢复最小剂量）。
+   * 渲染侧夹 ≤ 0.04。
    */
   halation?: number;
 }
@@ -602,11 +605,10 @@ export type GrainLevelId = 'off' | 'light' | 'std' | 'heavy' | 'max';
  * 一档颗粒强度 —— 设置页里那排分段按钮的一项。
  *
  * ⚠️ v1.8.3（用户 m01534 · 模块 C1）起，档位**不再乘在预设上**，而是直接给出
- * 颗粒层的**绝对不透明度**（0 / 0.022 / 0.045 / 0.075 / 0.110）。
- * 用户实测"颗粒开起来像脏云雾、整幅画面被灰网盖住"，要求"颗粒整体下调两档、
- * 按这张表锁死、最高封顶 0.11"。所以旧字段 `scale`（0 / 0.45 / 1 / 1.5 / 2.2 的乘积系数）
- * 已被 `opacity` 取代 —— 预设里那点 0.42~0.62 的"底味"不再参与计算，
- * 否则"预设 0.62 × 档位"必然又顶到上限。见 `constants/grain.ts` 顶部说明。
+ * 颗粒层的**绝对不透明度**；v1.9.4（用户 m10195 手术二）冻结为
+ *（0 / 0.04 / 0.075 / 0.115 / 0.16），硬封顶 0.16。
+ * 旧的乘积系数 `scale` 与"预设 grain 底味"都已作废 —— 颗粒板换成 1200×1600 全画幅
+ * 非周期银盐板 + `soft-light`，浓度只由这里的绝对档位决定。见 `constants/grain.ts`。
  */
 export interface GrainLevel {
   id: GrainLevelId;
@@ -617,8 +619,8 @@ export interface GrainLevel {
   /** LCD 状态条里的机器打印缩写。 */
   code: string;
   /**
-   * 颗粒层**总不透明度**（绝对值，0~0.11）。0 = 关档，整层不渲染。
-   * 这是 v1.8.3 用户强制表：0 / 0.022 / 0.045 / 0.075 / 0.110。
+   * 颗粒层**总不透明度**（绝对值，0~0.16）。0 = 关档，整层不渲染。
+   * v1.9.4 用户强制表：0 / 0.04 / 0.075 / 0.115 / 0.16。
    */
   opacity: number;
   /** 一句话说明，写在配置里方便日后改。 */
@@ -638,8 +640,8 @@ export interface GrainLevel {
  */
 export type TextureId = 'grain' | 'dust' | 'vignette' | 'lightLeak';
 
-/** 纹理铺法：`repeat` 平铺（颗粒）/ `stretch` 拉伸（暗角、漏光）。 */
-export type TextureResizeMode = 'repeat' | 'stretch';
+/** 纹理铺法：v1.9.4 起**只有 `stretch`**（全画幅一次性贴图；周期平铺已被彻底废除）。 */
+export type TextureResizeMode = 'stretch';
 
 /**
  * 一个合成图层。
