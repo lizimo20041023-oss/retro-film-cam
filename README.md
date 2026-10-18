@@ -6210,8 +6210,9 @@ ImageManipulator.manipulate(uri)
   `shadow-tint` / `highlight-tint` 全屏染色层丢弃；剩下 `temperature` / `tint` /
   `halation` 压到 `liveLookOpacity` ∈ [0.04, 0.08]；`mono-desaturate` 保留 opacity 1
   （黑白卷取景器必须当场是黑白）、暗角/漏光保留原值。
-- `countStageImages` 契约不变（背景 2 + 纹理/photo 层数）：um/gd/pt/cp/fj 各 7 层 →
-  9 张预热；ek-100 5 层 → 7 张；cs-800t 7 层 → 9 张；hp-400/tx-400 6 层 → 8 张。
+- `countStageImages` 契约不变（背景 2 + 纹理/photo 层数）：um/gd/pt/cp/fj/cs-800t/hp-400/tx-400
+  都是 **7**；ek-100 **6**（3 张 photo 同源层 + 1 张暗角纹理，无颗粒）。预热图片数与
+  v1.8.11 同量级，离屏舞台的 onLoad 计数逻辑不用改。
 
 ### 45.4 手术三：反 HDR 四场景自适应（`src/utils/adaptiveGrade.ts`，274 行）
 
@@ -6337,14 +6338,24 @@ v1.8.11 的水印位置能力是"用户已经可用的功能"，这一版**一�
 
 ### 45.8 产物指纹
 
-- **本地提交**：`待回填`
-- **远端 master**：`待回填`
-- **CI**：`待回填`
-- **artifact**：`待回填`
-- **IPA**：`FretroCam-v1.9.0-unsigned.ipa`，`待回填`
-- **Release**：`待回填`
-- **下载**：`待回填`
-- **IPA 回读核验**：`待回填`（`python _verify_ipa_v190.py <artifact_id>` → `RESULT: OK`）
+- **本地提交**：`786304d26c5694b8c5d072ff11d8e7cae6b346c0`（18 files，+1,952 / −1,418）
+- **远端 master**：`f540a94813d47f4098e8f146897e89f9ff9af8be`（`_push_v180_api.py`，
+  TREE MATCH True，137 blobs 全一致）
+- **CI**：run [`39117905815`](https://github.com/lizimo20041023-oss/retro-film-cam/actions/runs/39117905815)
+  / job `117647338646` —— 12 个 step 全 success（skip 1 个「只在上次失败时才执行」的哈希缓存 step）
+- **artifact**：`12132593712`（`FretroCam-unsigned-ipa`，10,498,571 B）
+- **IPA**：`FretroCam-v1.9.0-unsigned.ipa`，**10,613,104 B**
+  sha256 `c5be089bf50351972f2bc47d0432bf5ae7b8da4ce3ed87d157e4d50bbdb0b4a7`
+- **Release**：id `416377637`，tag `v1.9.0`，asset `653173121`（size / digest 双 MATCH）
+- **下载**：<https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.9.0/FretroCam-v1.9.0-unsigned.ipa>
+- **IPA 回读核验**（`python _verify_ipa_v190.py 12132593712` → `RESULT: OK`，115 entries）：
+  `main.jsbundle` **2,101,132 B**；`Info.plist` 1.9.0 FOUND；10 张相框素材齐全；
+  颗粒 `2d30d077…`（频带 <8px = 65.7% / 24–64px = 5.0%，两道门禁 OK）、
+  暗角 `bf5148cd…`（中心 alpha 0、四角 255、RGB 恒 (4,12,20)、115,936 B）；
+  v1.9.0 新 needle 全命中（`lens-softness` ×2、`shadow-crush` ×2、`highlight-bloom` ×2、
+  `mono-desaturate` ×2、`halation` ×2、`halationDelta` ×2、`FAST_SAMPLE_EDGE` ×2、
+  `FAST_SAMPLE_COMPRESS` ×2、`base64ToBytes` ×2、`DevelopBadge` ×2、`queueDepth` ×2、
+  `develop.queue.count` ×2），零 `missing:`，登记的 x0 全部是已知兜底（源码级探针另行守护）。
 
 ### 45.9 文件改动
 
