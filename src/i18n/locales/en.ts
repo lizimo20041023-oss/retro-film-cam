@@ -131,6 +131,7 @@ export const en: Messages = {
   'develop.error.title': 'Development failed',
   'develop.queue.count': 'Queue {count}',
   'develop.stage.capturing': 'Exposing and developing',
+  'develop.stage.grading': 'Grading the film',
   'develop.stage.normalizing': 'Preparing the negative',
   'develop.stage.saving': 'Saving to your album',
   'develop.tapToContinue': 'Tap the screen to keep shooting',

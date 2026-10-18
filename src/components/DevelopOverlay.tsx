@@ -57,6 +57,7 @@ export interface DevelopBadgeProps {
 const STAGE_TEXT: Record<DevelopStage, MessageKey> = {
   normalizing: 'develop.stage.normalizing',
   capturing: 'develop.stage.capturing',
+  grading: 'develop.stage.grading',
   saving: 'develop.stage.saving',
 };
 

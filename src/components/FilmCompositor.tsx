@@ -566,6 +566,17 @@ function FilmCompositorImpl({
    */
   const overlayUri = nonEmptyUri(stage.overlayUri);
   const overlayOpacity = overlayOpacityOf(stage.overlayOpacity);
+  /*
+   * v2.0.0 真胶片管线 · pass2（`stageMode: 'final'` + `lutUri`）：
+   * `lutUri` 是已经在 JS 里查过 33³ LUT、并加了 halation / 颗粒 / 暗角的"已洗好照片"。
+   * 有它时本组件要退化成**只画相框和水印**：
+   *   ① 照片层用 `lutUri` 代替 `rawUri`（像素尺寸与窗口 1:1，不会二次插值）；
+   *   ② 不再叠 `overlayUri` —— 重曝在 pass1 已经合成并一起过了 LUT，再叠一次是双份；
+   *   ③ 不再渲染 `<FilmLookLayers>` —— 调色 / 纹理 / 暗角全部烘进像素，再叠一遍会加倍。
+   * `lutUri` 为空时整条路径与 v1.9.x 逐像素相同（声明式调色层的兜底路径）。
+   */
+  const gradedUri = nonEmptyUri(stage.lutUri);
+  const photoUri = gradedUri ?? rawUri;
   const windowRect = layout.window;
   /*
    * v1.8.1 无相框（`00 NO FRAME`）：相纸与材质整组不画。
@@ -797,7 +808,7 @@ function FilmCompositorImpl({
         ]}
       >
         <Image
-          source={{ uri: rawUri }}
+          source={{ uri: photoUri }}
           style={photoBoxStyle}
           resizeMode={frame.photoFit === 'contain' ? 'contain' : 'cover'}
           onLoad={onImageLoad}
@@ -809,7 +820,7 @@ function FilmCompositorImpl({
           "两张底片叠在同一格上晒一次"，所以下面那条调色 / 颗粒 / 暗角管线
           作用的是合成结果，而不是各洗一遍再叠（后者会得到两道暗角和双份颗粒）。
         */}
-        {overlayUri !== null ? (
+        {gradedUri === null && overlayUri !== null ? (
           <Image
             source={{ uri: overlayUri }}
             /*
@@ -841,8 +852,9 @@ function FilmCompositorImpl({
           `onPlateLoad` 接到宿主同一个就绪计数器上：每一张叠图恰好报一次，
           绝不能出现第二个计数源（口径见 `countStageImages()` 的注释）。
         */}
-        <FilmLookLayers
-          preset={preset}
+        {gradedUri === null ? (
+          <FilmLookLayers
+            preset={preset}
           width={windowRect.width}
           height={windowRect.height}
           surface="composite"
@@ -854,9 +866,10 @@ function FilmCompositorImpl({
            * 而不是让它退回 `StyleSheet.absoluteFill`（那会差 ≈1.2% 缩放 + 1pt 偏移，
            * 在成片上就是窗口边缘 ≈10px 的重影 = "成片糊"）。
            */
-          photoBoxStyle={photoBoxStyle}
-          onPlateLoad={onImageLoad}
-        />
+            photoBoxStyle={photoBoxStyle}
+            onPlateLoad={onImageLoad}
+          />
+        ) : null}
         {!fullBleed ? (
           <>
             {/*

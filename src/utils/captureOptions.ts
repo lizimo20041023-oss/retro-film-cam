@@ -36,7 +36,11 @@ import { PixelRatio } from 'react-native';
 
 /** 传给 `captureRef` 的截图选项；`width`/`height` 的单位是**逻辑点**，不是像素。 */
 export interface PlannedCaptureOptions {
-  format: 'jpg';
+  /**
+   * `'jpg'` = 成片（v1.6.0~v1.9.x 唯一格式）；
+   * `'png'` = v2.0.0 真胶片管线的 pass1 照片中间图（LUT 对色度敏感，不能先丢一次 4:2:0）。
+   */
+  format: 'jpg' | 'png';
   quality: number;
   result: 'tmpfile';
   width?: number;
@@ -98,6 +102,11 @@ export interface CapturePlanInput {
    * 不传 / `<= 0` / 非有限值 = 不设上限（与 v1.6.0 行为一致）。
    */
   sourceLongEdge?: number;
+  /**
+   * 输出格式（v2.0.0）。缺省 `'jpg'` = 老行为，成片链路不变；
+   * `'png'` = 真胶片管线的 pass1 照片中间图（无损、无 4:2:0）。
+   */
+  format?: 'jpg' | 'png';
 }
 
 /**
@@ -110,6 +119,7 @@ export interface CapturePlanInput {
  */
 export function planCapture(input: CapturePlanInput): CapturePlan {
   const pixelRatio = PixelRatio.get();
+  const format = input.format ?? 'jpg';
   const nativeLongEdge = Math.max(input.width, input.height) * pixelRatio;
   const nativeWidth = Math.round(input.width * pixelRatio);
   const nativeHeight = Math.round(input.height * pixelRatio);
@@ -128,7 +138,7 @@ export function planCapture(input: CapturePlanInput): CapturePlan {
   // 目标没比屏幕原生大（或者压根没设）→ 不传 width/height，省一次重采样
   if (!(targetLongEdge > 0) || targetLongEdge <= nativeLongEdge + 1) {
     return {
-      options: { format: 'jpg', quality: JPEG_QUALITY, result: 'tmpfile' },
+      options: { format, quality: JPEG_QUALITY, result: 'tmpfile' },
       pixelWidth: nativeWidth,
       pixelHeight: nativeHeight,
       pixelRatio,
@@ -145,7 +155,7 @@ export function planCapture(input: CapturePlanInput): CapturePlan {
 
   return {
     options: {
-      format: 'jpg',
+      format,
       quality: JPEG_QUALITY,
       result: 'tmpfile',
       width: pointWidth,

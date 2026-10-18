@@ -723,7 +723,7 @@ export interface NormalizedPhoto extends CapturedPhoto {
 }
 
 /** 显影阶段，用于 UI 文案。 */
-export type DevelopStage = 'normalizing' | 'capturing' | 'saving';
+export type DevelopStage = 'normalizing' | 'capturing' | 'grading' | 'saving';
 
 /** 拍摄流程状态机。 */
 export type DevelopStatus =
@@ -792,6 +792,22 @@ export interface FilmStageInput {
   overlayUri?: string | null;
   /** 重曝上面那张的不透明度（0~1），不填 = 0.5。只有 `overlayUri` 有值时才有意义。 */
   overlayOpacity?: number;
+  /**
+   * 这一轮要画**哪一遍**（v2.0.0 真胶片管线）。
+   *
+   * - `'photo'`：pass1，只画照片（主图 + 重曝），截 PNG 交给像素渲染；
+   * - `'final'`：pass2，照片已洗好（`lutUri`），照旧画相框 / 日期 / 水印，截 JPEG 成片。
+   *
+   * 不填 = `'final'`（v1.9.x 的单遍行为，老调用点与裸探针不用改）。
+   */
+  stageMode?: 'photo' | 'final';
+  /**
+   * pass2 用的"已上卷"照片 uri（v2.0.0）。有它时合成层：
+   *   ① 照片层用它代替 `rawUri`；
+   *   ② **不再渲染** `<FilmLookLayers>`（调色/颗粒/暗角/漏光已经烘进像素）；
+   *   ③ 不再叠 `overlayUri`（重曝在 pass1 已合成并一起过 LUT）。
+   */
+  lutUri?: string | null;
 }
 
 /**
@@ -854,8 +870,18 @@ export interface ProcessedPhoto {
   /**
    * 实际生效的调色图层说明（例如 `['色温 暖 0.28', '提对比度 1.12', '颗粒 0.16']`）。
    * 改预设后对不上预期时，看这个数组最快。
+   *
+   * v2.0.0 起还可能是像素管线阶段名（`['lut:gd-200', 'halation 0.14', 'vignette 0.30',
+   * 'grain 0.030']`），由 `renderMode` 区分。
    */
   layers: string[];
+  /**
+   * 这次成片用了哪条渲染路径（v2.0.0）：
+   * - `'lut'`：真胶片像素管线（PNG pass1 → 33³ LUT + halation/grain/vignette → pass2 JPEG）；
+   * - `'declarative'`：v1.9.x 的声明式调色层（LUT 失败时的兜底，或是显式降级）。
+   * 不填的旧调用点按 `'declarative'` 理解。
+   */
+  renderMode?: 'lut' | 'declarative';
   /** 非致命问题，例如"归一化失败已退回原图"。 */
   warnings: string[];
 }

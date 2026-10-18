@@ -33,6 +33,7 @@ import type { ViewShotRef } from 'react-native-view-shot';
 import type { DateEngineConfig, FilmStageInput, FrameVariant } from '../types';
 import { SYSTEM_MONO_FAMILY } from '../hooks/useFilmFonts';
 import { FilmCompositor } from './FilmCompositor';
+import { FilmPhotoStage } from './FilmPhotoStage';
 
 export interface FilmStageComposerProps {
   /** 当前要渲染的合成数据（`useFilmStage().stage`）；`null` = 没在显影。 */
@@ -74,6 +75,16 @@ export const FilmStageComposer = memo(function FilmStageComposer({
    */
   if (stage === null) {
     return null;
+  }
+
+  /*
+   * v2.0.0 真胶片管线 · pass1：只画照片（主图 + 重曝），截 PNG 交给 `filmRender.ts`。
+   * 这条分支**不画**相框 / 日期 / 水印 —— 它们属于 pass2（同一个 stage 换成
+   * `stageMode: 'final'` + `lutUri` 再挂一次）。两条路径共用 `viewShotRef` /
+   * `onLayout` / `onImageLoad`，所以 `useFilmStage` 的 ready 计数必须按模式分开算。
+   */
+  if (stage.stageMode === 'photo') {
+    return <FilmPhotoStage stage={stage} viewShotRef={viewShotRef} onLayout={onLayout} onImageLoad={onImageLoad} />;
   }
 
   return (

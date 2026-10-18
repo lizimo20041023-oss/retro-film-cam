@@ -72,6 +72,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [48. v1.9.3：德味高密光学曲线（像素级平铺真银盐颗粒 / color-burn 色彩密度 / 九卷重标定 / 夜景纯黑 / 简繁归一 / 日期底托）](#48-v193德味高密光学曲线像素级平铺真银盐颗粒--color-burn-色彩密度--九卷重标定--夜景纯黑--简繁归一--日期底托)
 - [49. v1.9.4：真·德味明度色度解耦引擎（v1.9.3 实拍翻车根治）](#49-v194真德味明度色度解耦引擎v193-实拍翻车根治)
 - [50. v1.9.5：开源胶片预设转译（t3mujinpack MIT → 九卷调色重标定）](#50-v195开源胶片预设转译t3mujinpack-mit--九卷调色重标定)
+- [51. v2.0.0：真胶片 LUT 成片管线](#51-v200真胶片-lut-成片管线)
 
 ---
 
@@ -7263,6 +7264,308 @@ halation → grain `soft-light` → vignette `multiply` → light-leak），染�
 `_v195_render_strip.py`、`_verify_ipa_v195.py`、`_release_v195.py`、`_run_gates_v195.ps1`、
 `_gate_v195_run.out.txt`、`_gate_v195_report.txt`、`_export_v195_lead/`；A 组探针由
 `zero-blur-optics` 更新、B 组由 `optics-engine` 更新、C 组由 `quality-gate` 全量复跑。
+
+## 51. v2.0.0：真胶片 LUT 成片管线
+
+> 用户诉求：「这一版还是很不尽人意 显得很假 且没有任何胶片的感觉 重新寻找开源胶片预设并导入」→
+> 不是再调一遍九卷参数，而是把成片从「声明式调色层」换成**真 33³ 3D LUT 像素管线**：
+> 九卷由 [spectral_film_lut](https://github.com/JanLohse/spectral_film_lut)（MIT）离线生成真实负片+印片光谱模拟，
+> 取景器仍保留声明式近似预览。这不新增任何 npm/原生依赖，也不联网。
+
+### 51.1 为什么 v1.9.x 一定是「假胶片」
+
+v1.9.4 / v1.9.5 的显影引擎是 12 槽声明式层：`screen` / `overlay` / `multiply` / `soft-light`
+全部**逐通道可分**，唯一的跨通道层 `chroma-lock` 取的是同一像素自己的色相/饱和度。
+整条栈的合成结果必然落在下面这个函数族里：
+
+```
+y_c = F_c(x_c) + s_c·(x_c − luma(x)) + 微量淡色 soft-light
+```
+
+即「3 条逐通道单调曲线 + 一个饱和度缩放 + 一点色偏」。它能改对比、改饱和、改冷暖，
+**唯独不能把红推到橙、把绿推到黄绿、把蓝推到青**——而这正是胶片成色的主要来源
+（负片染料层的交叉显影 + 印片相纸的通道耦合）。v1.9.5 用 t3mujinpack 重标定九卷，
+只是把 tone 曲线拟合得更像目标 LUT，函数族没有变。
+
+架构师对九卷目标 LUT 做了三族最优拟合（ADR-002，`_v200_architecture_decision.md`）：
+
+| 卷 | M0 现状（v1.9.5） | MA 声明式族解析上界 | MB1 3×3 矩阵+曲线 | LUT33 | LUT65 |
+|---|---|---|---|---|---|
+| UM-400 | 8.25 | 5.95 | 5.59 | **0.21** | 0.13 |
+| GD-200 | 9.89 | 8.25 | 7.46 | **0.21** | 0.12 |
+| PT-400 | 7.12 | 5.19 | 5.18 | **0.23** | 0.12 |
+| CP-200 | 10.19 | 8.62 | 8.13 | **0.20** | 0.12 |
+| FJ-400 | 8.03 | 6.50 | 6.11 | **0.24** | 0.13 |
+| EK-100 | 7.88 | 6.83 | 6.33 | **0.26** | 0.14 |
+| CS-800T | 6.76 | 6.02 | 5.79 | **0.24** | 0.13 |
+| HP-400 | 10.95 | 16.04 | 16.73 | **0.06** | 0.05 |
+| TX-400 | 13.53 | 15.71 | 6.14 | **0.05** | 0.05 |
+| **均分** | **9.18** | **8.79（天花板）** | **7.50** | **0.19** | **0.11** |
+
+（ΔE76；LUT33/LUT65 = 真 3D LUT 相对参考光谱模拟的量化误差。MA 是凸优化下界，
+「再加参数/加槽」也只会落在它下面——v1.9.5 的失败不是执行不力，是函数族无解。）
+
+三条具体缺失，全部可量化：
+
+- **片基灰**：真胶片未曝光处仍有乳剂底灰 + 扫描端 toe（黑位抬升约 1–13/255），
+  而 12 槽管线第 1 槽 `exposure-lift` 用 `screen`（f(0)=0）、第 2 槽 `s-curve` 用
+  `overlay`（f(0)=0, f(1)=1）⇒ **输出黑场恒为 0**，暗部直落 0 是「数码味」最直接的视觉签名。
+- **肩部/趾部**：真实负片+印片在高光处斜率递减（白位 0.87–0.98），声明式引擎只能整体拉曲线，
+  做不到「亮部压缩、暗部抬升」的 S 形过渡；过曝白衬衫/雪景因此发死。
+- **光学/化学颗粒**：t3mujinpack 的 `.dtstyle` 只有一个 `tonecurve` 模块（曲线预设，不是
+  negative+print 胶片模拟），没有银盐颗粒随密度变化、没有乳剂层间 halation、没有镜头暗角物理。
+  v1.9.3 的 grain 纹理实际只有 86% 透明、halation 几乎不可见。
+
+结论：**要的是三维非线性映射，不是第 10 个调色参数。** 真 3D LUT 的量化误差 0.19 ΔE，
+比声明式族天花板 8.79 小 46 倍，而且天然包含片基灰、肩部与通道串扰。
+
+*怎么改*：LUT 资产走 §51.2/§51.3 的离线生成链；不要再往 `gradeLayers.ts` 里加逐通道参数
+去追这个 ΔE——数学上够不着，v1.9.4/v1.9.5 已经证明了两次。
+
+### 51.2 源与许可（spectral_film_lut，MIT）
+
+- 来源：[spectral_film_lut](https://github.com/JanLohse/spectral_film_lut)（作者 Jan Lohse，
+  **MIT License**）。它是一个 Python GUI 工具：把胶片 datasheet 的光谱数据数字化，多步模拟
+  「负片曝光 → 显影 → 印片 → 放映/扫描 → 显示」全链路，再生成给视频调色用的 LUT。
+  支持彩色/黑白、负片/反转片、Kodak/Fuji/停产卷等大量底片与相纸。
+- 用法：**完全离线生成**（`_v196_gen_luts.py`）。对九组「负片 + 印片」组合各调一次
+  `create_lut(..., lut_size=33, input_colorspace="sRGB", output_gamut="Rec. 709", gamma_func="sRGB")`，
+  得到 sRGB 编码值 →sRGB 编码值的 33³ LUT（float32，`(33,33,33,3)`，即 `lut[r,g,b,c]`）。
+  单卷生成 0.135–0.623 s，九卷全量 < 5 s，可复现。
+- **不打包上游源码/数据**：App 里只有生成好的图集 PNG base64（§51.3），不含 SFL 的 Python
+  源码、datasheet 数据、numpy 或任何运行时依赖；运行时**不联网、不下载 LUT**，也不新增 npm 包。
+- 许可处理：SFL 为 MIT，九卷 LUT 是其数据/模型的**衍生作品**，同样以 MIT 提供；
+  `THIRD-PARTY-NOTICES.md` 新增「胶片 LUT 数据（spectral_film_lut，MIT）」一节，README 本节同步收录。
+- 精度边界（上游 README 自述并接受）：精度受 published datasheet 精度限制（停产卷尤其差），
+  且 interlayer 效应等未公开行为只能用简化假设。**本版不承诺物理级准确，只承诺比声明式引擎
+  在色彩映射上高一个数量级，并把物理缺陷（片基灰/肩部/颗粒/光晕/暗角）做成像素级。**
+
+*怎么改*：换源仓库/升级版本 → 重跑 `_v196_gen_luts.py`（生 `.npy`）→ `_v200_gen_atlas.py`
+（生 PNG/`lutAtlas.ts`）→ `_v200_gen_atlas.py --check` 校验 → 同步本节数字与 notices。
+上游源码在工作区 `_v196_src/sfl/`，只是生成期工具，不进仓库。
+
+### 51.3 九卷负片/印片映射表
+
+v2.0.0 的九卷不再按 t3mujinpack 的预设语义映射，而是直接选真实底片+相纸组合：
+
+| 卷 | 负片 / 反转片（SFL 常量） | 印片 / 相纸（SFL 常量） | 黑位 | 白位 | 中灰输出 | 输出范围 | 生成 |
+|---|---|---|---|---|---|---|---|
+| UM-400 | Kodak Ultramax 400（`KODAK_ULTRAMAX_400`） | Fuji Crystal Archive Maxima（`FUJI_CA_MAXIMA`） | 0.074 | 0.937 | 0.552 | 0.043–0.937 | 0.623 s |
+| GD-200 | Kodak Gold 200（`KODAK_GOLD_200`） | Kodak Supra Endura Paper（`KODAK_SUPRA_ENDURA`） | 0.087 | 0.959 | 0.580 | 0.018–0.959 | 0.413 s |
+| PT-400 | Kodak Portra 400（`KODAK_PORTRA_400`） | Kodak Endura Premier Paper（`KODAK_ENDURA_PREMIER`） | 0.068 | 0.981 | 0.593 | 0.016–0.981 | 0.412 s |
+| CP-200 | Fuji C200（`FUJI_C200`） | Fuji Crystal Archive Pro PDII（`FUJI_CA_PRO_PDII`） | 0.080 | 0.869 | 0.577 | 0.011–0.871 | 0.415 s |
+| FJ-400 | Fuji Superia X-Tra 400（`FUJI_SUPERIA_XTRA_400`） | Fuji Crystal Archive Maxima（`FUJI_CA_MAXIMA`） | 0.066 | 0.956 | 0.562 | 0.022–0.956 | 0.414 s |
+| EK-100 | Kodak Ektachrome 100D alt.（`KODAK_EKTACHROME_100D_ALT`，反转片） | —（反转片直出，无印片） | 0.014 | 0.967 | 0.607 | 0.001–0.967 | 0.333 s |
+| CS-800T | Kodak Vision3 500T 5219（`KODAK_5219`，钨丝灯） | Kodak Vision Premier 2393（`KODAK_2393`） | 0.005 | 0.884 | 0.538 | 0.001–0.884 | 0.425 s |
+| HP-400 | Kodak 5222 Dev 9（`KODAK_5222_DEV_9`，黑白） | Kodak Polymax Fine-Art Paper Grade 2（`KODAK_POLYMAX_GRADE_2`） | 0.065 | 0.872 | 0.410 | 0.065–0.872 | 0.135 s |
+| TX-400 | Kodak Tri-X 400 Dev 9（`KODAK_TRI_X_400_DEV_9`，黑白） | Kodak Polymax Fine-Art Paper Grade 2（`KODAK_POLYMAX_GRADE_2`） | 0.065 | 0.909 | 0.411 | 0.065–0.909 | 0.135 s |
+
+- 黑位/白位/中灰取自 `_v196_luts/<stock>.json`：黑位 = 输入 0 时三通道输出的最大通道，
+  白位 = 输入 1（sRGB 编码值）时三通道输出的最大通道，中灰 = 输入 0.5 时的输出；
+  九卷 `clip_high` / `clip_low` 全为 0（立方体域内无裁剪）。
+  **这张表就是「片基灰不是 0」的直接证据**：除 EK/CS 反转片外，黑位在 0.065–0.087。
+- **商标规避（用户红线）**：上表的厂商名/商品名只存在于本 README 与 `THIRD-PARTY-NOTICES.md`；包内源码与二进制不含它们——`_probe_v200_lut.mjs` 逐卷断言源码不含上游负片/相纸常量名，`_verify_ipa_v200.py` 的 ABSENT 清单继续守 `Kodak` / `Portra` / `HP5` / `Tri-X` 等针。
+- 图集格式：33³ → 35,937 项 × 3 通道 = 107,811 B/卷（u8）。铺成 `256×141` RGBA PNG
+  （36,096 像素，前 35,937 有效、尾部 159 像素 RGBA=0），像素 `i = y*256+x` 对应
+  LUT 第 i 项，索引 `((r*33+g)*33+b)`（r 最慢、b 最快），像素值 `round(clip(v,0,1)*255)`。
+  运行时 `base64ToBytes → decodePng → extractLutFromAtlas`，按卷惰性解码并缓存。
+- 体积（实测）：九卷 PNG 合计 **407,760 B**（单卷 19,503–58,327 B，`um-400` 51,698 B），
+  base64 合计 **543,692 字符**（≈531 KiB，进 `main.jsbundle`）；`lutAtlas.ts` 生成文件 591,692 B。
+  九卷 id/中文名/描述/颗粒/暗角/画幅等 UI 字段与 v1.9.5 完全一致，变的只是成片像素映射。
+- 注：`um-400` 的印片是 Fuji 相纸而 `gd-200` 是 Kodak Supra Endura——这是 SFL 数据里能提供的
+  组合；`hp-400`/`tx-400` 共用 Polymax Grade 2 相纸，区别来自底片显影（Dev 9）。
+
+*怎么改*：换卷映射改 `_v196_gen_luts.py` 的 `COMBOS`（九卷 id 必须与
+`src/constants/filmRender.ts` 的 `LUT_STOCK_IDS` 一致）→ 重跑两段生成链 → 更新本节与
+`THIRD-PARTY-NOTICES.md` 的映射表。改图集格式必须同步 `lut3d.ts` 的 `extractLutFromAtlas`
+与 `_probe_v200_lut.mjs` 的资产完整性断言。
+
+### 51.4 成片管线（两遍截图：先渲染照片，再合成出片）
+
+v2.0.0 的成片分两遍截图完成。原因：`captureRef` 只能截「当前挂载的 React 视图」，而 LUT 必须在 JS 里逐像素跑；所以先把**照片本身**（含重曝）按成片同等像素截成 PNG，纯 JS 渲染后再挂进最终合成视图出片。
+
+```
+pass 1  照片 pass（<FilmPhotoStage>）
+  a  归一化 normalizePhoto          JPEG，maxLongEdge 由画质档决定（2048 / 3024 / 4032）
+  b  居中裁切 centerCropPhoto       JPEG 0.98（v1.9.5 既有行为，唯一的有损步骤，不额外再压）
+  c  挂载 photo 模式合成视图       stageMode:'photo'，只画主图 + 第二张重曝（若有，叠在同一格）
+  d  view-shot 截 **PNG**          `captureOptions({format:'png'})` 拿无损容器；按成片同等像素：
+                                   窗口像素 = 窗口逻辑尺寸 × planPrintCushion().scale × 每点像素，
+                                   点尺寸 = 像素 / PixelRatio.get()（±1px 误差）
+  e  renderFilmToFile               读 PNG → decodePng → renderFilmFrame（LUT33 三线性 → halation → vignette → grain）
+                                   → encodePngRgba → 写缓存 film-<stock>-<seed>.png，得到 lutUri
+pass 2  最终合成分（<FilmCompositor stageMode:'final'>）
+  1  照片层换成 lutUri（渲染结果）；**不画声明式调色层 FilmLookLayers**；重曝已在 pass1 烘进像素，pass2 不再叠 overlayUri
+  2  纹理层保留 lightLeak 等装饰；grain/vignette 纹理层跳过（已由 pass1 烘焙）
+  3  日期 / 3.5 定位水印 / 4 相框不变（纯叠加，不参与调色）
+  5  captureRef 截 JPEG 0.98 不变
+```
+
+- **调用顺序与口径**（`src/utils/processFilmPhoto.ts`）：`onStage('capturing')` → 挂载 photo 视图 → `host.whenReady()` → `host.capture()` 得 PNG → `onStage('grading')` → `renderFilmToFile({sourceUri, stockId, preset:{id,grain,vignette}, seed})`（`renderFilmToFile` 支持 `onStage`，本版未接逐行百分比）。seed 唯一：`(capturedAt.getTime() ^ Date.now()) >>> 0 & 0x7fffffff`，同一次拍摄颗粒形态固定、不同次不同。
+- **就绪计数**（`src/hooks/useFilmStage.ts`）：photo pass 只等「主图（+重曝）」：`countPhotoPassImages = 1 + (overlayUri ? 1 : 0)`；最终合成分在 `lutUri` 存在时等「照片 + 相框」：`2 - countMissingStageImages()`，不再等 `FilmLookLayers` 的声明式层资源。改了图层结构必须同步这两处，否则会一直卡在「显影中」。
+- **为什么重曝要在 pass1 一起画**：pass2 的照片层整体换成 `lutUri`，若重曝留到 pass2 再叠，就会绕过 LUT 直接贴在渲染结果上，胶片观感不一致。所以「主图 + 重曝」在 pass1 按叠放顺序一起截，再整体查表。
+- **为什么渲染输入必须是 PNG**：`centerCropPhoto` 出来仍是 JPEG 0.98（v1.9.5 行为，不动它），但 pass1 的截图容器必须用 PNG——JPEG 再编码一次会把压缩块/振铃叠到待查表的像素上；PNG 无损，`pngCodec.ts` 才能逐像素精确还原（支持 8bit 非隔行 colorType 0/2/4/6，只覆盖本 App 会遇到的输入）。
+- **为什么不用原生库**：死规矩「零新依赖」，无 Skia/GL。`pngCodec.ts` 自写 inflate（stored/fixed/dynamic Huffman）与 chunk 解析；编码输出 colorType 6 + stored deflate（省 Hermes 的压缩 CPU；`captureRef` 临时 PNG 本就是 10MB 级，磁盘不是瓶颈）。
+- **声明式层为什么必须跳过**：LUT 已把 12 槽引擎想表达的效果（含 3D 串扰/片基灰/肩部）直接查表实现，再叠一层声明式调色等于二次调色、白做；`FilmCompositor` 在 `lutUri` 模式下不渲染 `<FilmLookLayers>`。
+- **兜底**：pass1 任一步失败（PNG 不支持 / 内存不足 / 渲染失败）→ `lutGrade:'fallback'`，回退 v1.9.5 全声明式路径；`warnings` 记「真胶片像素管线失败，已回退声明式调色层：…」，`ProcessedPhoto.renderMode='declarative'`，成片仍可用，进度不能卡死。
+- **进度**：渲染期间显示分阶段冲印文案：`normalizing`「正在整理底片」/ `capturing`「正在曝光显影」/ `grading`「正在冲印胶片」/ `saving`「正在存入相册」（`DevelopStage` 新增 `grading`，i18n 五语言同步），并显示队列张数。`renderFilmFrame` / `renderFilmToFile` 保留了 `FilmRenderStage = 'lut' | 'halation' | 'vignette' | 'grain' | 'done'` 的进度接口，但本版**没有接百分比**——像素渲染是一次同步循环，要百分比得把 `renderFilmFrame` 改成逐行回调；等真机性能数据证明需要再加。
+- **性能实测**（`applyFilmRender.ts` 注释，3.1MP）：Node 解码+渲染+编码 ≈0.2 s；Hermes 预计 0.6–1.2 s（真机待复测）。相对 v1.9.x 只多一次纯 JS 像素循环 + 一次临时 PNG 读写，没有网络、没有原生模块。
+- **确定性**：LUT 查表、颗粒 hash、暗角表都是纯函数 + 固定 seed，同一输入逐字节可复现；调试可固定 seed 复跑。
+
+*怎么改*：pass1 视图只允许画「照片内容」（主图 + 重曝）；任何装饰（相框/日期/水印/纹理/调色层）都不许进 pass1，否则会被 LUT 二次处理或被截进渲染输入。新增图层先判断它属于 pass1（参与 LUT 的像素）还是 pass2（纯叠加装饰）。改 `FilmPhotoStage` 的像素换算后必须回归「pass1 输出分辨率 == 成片照片窗口像素」，否则 LUT 渲染与相框对不齐。
+
+### 51.5 渲染参数与 T10–T12 验收口径
+
+所有常量集中在 `src/constants/filmRender.ts`（门禁直接读同一份），渲染顺序见 51.4：
+
+| 常量 | 值 | 含义 |
+|---|---|---|
+| `LUT_SIZE` | 33 | LUT 立方体边长（35,937 项） |
+| `HALATION_THRESHOLD` | 0.72 | post-LUT 亮度起晕阈值 |
+| `HALATION_COLOR` | `[1, 0.42, 0.24]` | 暖红 screen 叠加权重 |
+| `HALATION_RADIUS_DS` | 4 | 降采样后 box 模糊半径（px） |
+| `HALATION_BLUR_PASSES` | 3 | box 模糊重复遍数（≈高斯） |
+| `HALATION_DOWNSCALE_TARGET` | 512 | 长边 / 512 = 降采样倍率（2048 → 4） |
+| `HALATION_BY_STOCK` | cs-800t 0.22；ek-100 / hp-400 / tx-400 0.10；其余 0.14 | 逐卷光晕强度 |
+| `GRAIN_AMPLITUDE_PER_LEVEL` | 1.2 | 颗粒幅度 = 档位 × 1.2 |
+| `GRAIN_AMPLITUDE_MAX` | 0.18 | 颗粒幅度上限 |
+| `GRAIN_FINE_WEIGHT` / `GRAIN_COARSE_WEIGHT` | 0.5 / 1.15 | 每像素白噪权重 / 2×2 聚合粗颗粒权重 |
+| `GRAIN_SHADOW_BIAS` | 0.55 | 阴影偏置：亮度响应 `4L(1−L)(1−0.55L)`，暗部颗粒更明显 |
+| `VIGNETTE_BASE` / `VIGNETTE_GAIN` / `VIGNETTE_MAX` | 0.14 / 1.1 / 0.55 | 暗角强度 = 0.14 + preset.vignette × 1.1（封顶 0.55） |
+| `VIGNETTE_EXPONENT` | 1.4 | 径向幂次（`factor = 1 − s·r2n^1.4`，r2n 角=1） |
+
+- **颗粒**：确定性哈希白噪（细权重 0.5）+ 2×2 聚合粗团簇（权重 1.15）→ 亮度响应
+  `4L(1−L)(1−0.55L)`（中间调最强、阴影略强于高光、纯黑/纯白趋零），颗粒尺度 ≈1.51 px@2048；
+  同一卷同一张图 seed 固定、导出可复现。档位 0 / 0.04 / 0.075 / 0.115 / 0.16 对应幅度
+  0 / 0.048 / 0.09 / 0.138 / 0.18（0.16 档被上限 0.18 钳制）。
+- **halation**：亮度 ≥0.72 的高光 → 1/4 降采样 → 3× box（半径 4）→ 双线性放大 → 暖红 screen。
+  逐卷强度见上表（钨丝夜景 cs-800t 最重，反转片/黑白几乎不晕）。
+- **暗角**：`r2n = (x²+y²)/2`（角=1），`s = 0.14 + preset.vignette × 1.1`；
+  预设暗角 0.16→s=0.316、0.24→0.404、0.28→0.448、0.30→0.470，角部衰减分别约
+  **−0.56 / −0.75 / −0.85 / −0.91 EV**（旧版「轻暗角」问题在这一版调常量解决）。
+
+**T10–T12 验收口径**（`_v196_film_look_audit.md` §3.2 的设计目标，v2 用渲染参考脚本抽检；
+测量都在内画面上做，排除相框/日期）：
+
+| # | 指标 | 口径 |
+|---|---|---|
+| T10 | 颗粒 | 平坦中灰 patch RMS ∈ [0.020, 0.035]；通道相关 ≥0.95；颗粒尺度 1.5–3.0 px@2048；阴影/高光 RMS 比 1.3–2.0 |
+| T11 | Halation | 高光边缘 3–8 px 处 R 通道超出 ≥0.02，且 R>G>B；EK-100 反转片应≈0（本版给 0.10 的极弱值） |
+| T12 | 暗角 | 四角 −0.5 ~ −1.2 EV；色偏 ≤0.015；平滑无带状 |
+
+**本版实测（`_v200_t10_t12_final.mjs` → `_v200_t10_t12_final.json`，512² 灰卡 / identity LUT 只留被测项；build3 与工作树同步）**：
+
+| # | 实测 | 与口径对齐 |
+|---|---|---|
+| T10 | 默认 STD 档（level 0.075，amp 0.09）：颗粒 RMS L=64 → **2.08%**、L=128 → **2.32%**、L=192 → 1.53%；阴影/高光 RMS 比 **1.36**；通道相关 **1.000**；lag-1 自相关 **0.256**；尺度 **1.51 px@2048**。其他档：LT 0.04 → 1.25%（L128，有意更轻）、HV 0.115 → 3.55%、MAX 0.16 → 4.63%（幅度封顶 0.18） | STD 档五项全落区间（RMS 2.0–3.5%、相关 ≥0.95、尺度 1.5–3.0、阴影/高光 1.3–2.0）；LT 有意低于 2.0% 下界、HV/MAX 高于 3.5% 上界属档位设计，默认档才是验收对象 |
+| T11 | 白块边缘 3–8 px：cs-800t 0.22 → max R 超出 **6.3%**（mean 3.1%）、gd-200 0.14 → **3.9%**（mean 1.8%）、ek-100 0.10 → **2.7%**（mean 1.3%）；R>G>B 全成立 | 按 max 口径三档全部 ≥0.02 达标；ek-100 有意极弱（反转片，均值 1.3%） |
+| T12 | 角部 EV：0.16 → **−0.557**、0.24 → **−0.752**、0.28 → **−0.850**、0.30 → **−0.913**；四角色偏 0、四角 EV 差 0 | 四档全部落在 −0.5 ~ −1.2 EV；色偏 ≤0.015、平滑无带状 |
+
+*怎么改*：这些数字必须**三处同步**——`src/constants/filmRender.ts`、`_v200_contract.md` §3、
+本节 + `_probe_v200_lut.mjs`。颗粒默认档要更重/更轻改 `GRAIN_AMPLITUDE_PER_LEVEL`
+（与 `GRAIN_AMPLITUDE_MAX` 一起，改完跑 `_v200_t10_t12_final.mjs` 重测 RMS 与尺度）；
+暗角要更深抬 `VIGNETTE_GAIN`（0.16 档附近每 +0.04 预设约 −0.09 EV）；
+阴影/高光颗粒比要更悬殊抬 `GRAIN_SHADOW_BIAS`（0.55 时为 1.36，上限受 `4L(1−L)` 本身约束）。
+halation 强度按卷改 `HALATION_BY_STOCK`（`ek-100` / `hp-400` / `tx-400` 刻意低），
+门禁断言的是同一组常量与单调性（换卷后逐卷重跑）。
+
+### 51.6 取景器还是声明式近似（所见≠所得，如实说明）
+
+- 实时取景器**不跑 JS LUT**：逐帧给 12 槽声明式层做低开销混合；LUT 在 Hermes 上单帧要
+  数百 ms～秒级，会掉帧、发热，且取景画面本来就被 live 面砍层。
+- 取景器保留 12 槽结构，但 v2.0.0 **没有重拟合**槽参数（`src/constants/presets.ts` 的
+  `color` 字段仍是 v1.9.5 的值，只服务实时预览），所以本版「预览 vs 成片」的差距比理想情况
+  更大。后续若要缩小差距，用离线脚本以 LUT 输出为目标重拟合这 12 槽（脚本放工作区根、
+  不进 App）；目标只是色调接近，**不承诺逐像素一致**。
+- 因此本版明确：**取景器预览 ≠ 成片**。成片多了片基灰、肩部、逐像素颗粒、halation、
+  暗角（§51.5），预览只能近似色相/明暗倾向。UI 不宣称「所见即所得」；
+  用户投诉「预览和成片不一样」属于已知且如实记录的边界。
+- 九卷的取景器参数与成片 LUT 是两套数据：前者服务实时性，后者服务成片质量；
+  改一侧时另一侧要（重）拟合并跑对应探针（stocks / film_look）。
+
+*怎么改*：不要为了「一致」把 JS LUT 塞进 live 预览；如果重拟合预览参数，用离线脚本直接
+生成 `presets.ts` 的 `color` 字段（不要手抄），并更新相关探针期望值；两侧数据同源才不会再漂。
+
+### 51.7 门禁、tsc 与 IPA 核验
+
+- `tsc --noEmit` EXIT 0；`grep -rn "as any" src` 0 处；`package.json` 零新增依赖。
+- 门禁 **26 → 27 道**：新增 `_probe_v200_lut.mjs`（670 条断言：LUT 资产完整性 / PNG codec
+  回环 / LUT 查表精度 / 渲染参数与单调性 / 管线接线与兜底）；5 个受影响的旧探针已按
+  v2.0.0 口径修绿：`_probe_capture_quality.mjs`、`_probe_v188_sharp.cjs`、
+  `_probe_v189_flash.cjs`、`_probe_v190_wiring.cjs`、`_probe_v190_stocks.cjs`；
+  断言总数 48,331 → **@@GATE_ASSERTIONS@@**（目标 ≥49,000，只增不减）。
+- `_verify_ipa_v200.py`：PRESENT 只放压缩后仍会命中的真实字符串——九卷 LUT base64 唯一窗口
+  （各 48 字符，完整落在单一 120 字符切片内、逐卷互不重叠）、`LUT_ATLAS_LICENSE` 上游 MIT 归属声明（不含任何胶卷厂商/商品名）、五语「冲印中」文案、兜底告警「真胶片像素管线失败」、缓存名前缀 `film-`，以及
+  v1.9.5 的 11 个染色 hex（`presets.ts` 未改，取景器仍用）与 `chromaLock` 标记；
+  ABSENT 沿用 v1.9.3 / v1.9.4 的旧染色 hex（v1.9.5 的 11 个 hex 仍随 `presets.ts` 打包，
+  **不能**放进 ABSENT）；`EXPECTED_VERSION="2.0.0"`、`PREVIOUS_VERSION="1.9.5"`。
+- `expo export --platform ios --no-bytecode` bundle **@@BUNDLE_BYTES@@ B**：契约原估（t3mujin
+  时代）九卷 atlas ≤320KB，但 spectral 数据熵更高，实测九卷 PNG 407,760 B / base64
+  543,692 字符（≈531 KiB），**接受超预算**；bundle 由 export 实测回填 @@BUNDLE_BYTES@@，
+  预估约 1.9–1.95 MB。
+- IPA 核验 `RESULT: OK`：体积 / SHA-256 / Info.plist `2.0.0` / `main.jsbundle` 内新标记全在 /
+  旧染色 hex 全 0 / 九卷 LUT base64 唯一窗口逐卷命中。
+
+*怎么改*：门禁只增不减，新断言优先加在「资产完整性 / 查表精度 / 管线接线」三处；
+占位符 `@@GATE_ASSERTIONS@@` 由发布时 `_v200_fill.json` 回填（见 §51.8）。
+
+### 51.8 发布指纹（v2.0.0）
+
+*（实测值，发布时由 `_v200_fill.json` + `_patch_readme_v200.py` 回填；未发布时保留占位符原样）*
+
+| 项 | 值 |
+| --- | --- |
+| 本地提交 | `@@COMMIT@@`（v2.0.0 特性，@@COMMIT_STAT@@）+ 本文档回填提交（docs-only，`paths-ignore` 跳过 CI） |
+| 远端 master | `@@REMOTE_HEAD@@`（Git Data API 推送，TREE MATCH，tree `@@TREE@@`） |
+| CI run / job | run `@@RUN_ID@@` / job `@@JOB_ID@@`（macos-26-intel，build-ipa 全 success） |
+| artifact id / 体积 | `@@ARTIFACT_ID@@` / **@@ARTIFACT_BYTES@@ B**（`FretroCam-unsigned-ipa`） |
+| expo export bundle | **@@BUNDLE_BYTES@@ B**（v1.9.5 为 1,392,268 B；九卷 PNG 407,760 B / base64 543,692 字符，接受超预算；预估约 1.9–1.95 MB，以实测为准） |
+| IPA 文件 / 体积 / sha256 | `FretroCam-v2.0.0-unsigned.ipa` / **@@IPA_BYTES@@ B** / `@@IPA_SHA@@` |
+| Release id / asset id | release `@@RELEASE_ID@@`（tag `v2.0.0`）/ asset `@@ASSET_ID@@` |
+| IPA 回读核验 | `RESULT: OK` —— `main.jsbundle` **@@MAIN_JSBUNDLE_BYTES@@ B**、Info.plist `2.0.0` + `com.canyerylee.fretrocam` FOUND、九卷 LUT base64 唯一窗口逐卷命中、PRESENT @@PRESENT_COUNT@@ 命中零 missing、ABSENT 全 0 |
+| 下载地址 | @@RELEASE_URL@@ |
+
+*怎么改*：发布后把实测值写进工作区根 `_v200_fill.json`（键为占位符去掉 `@@`，如
+`"RELEASE_URL": "https://github.com/…/releases/download/v2.0.0/FretroCam-v2.0.0-unsigned.ipa"`），
+再跑一次 `python _patch_readme_v200.py` —— 幂等，已回填的占位符不会再匹配、不会重复插入。
+占位符键名清单（每个键两侧各加 `@@` 即为占位符）：`COMMIT` `COMMIT_STAT` `REMOTE_HEAD`
+`TREE` `RUN_ID` `JOB_ID` `ARTIFACT_ID` `ARTIFACT_BYTES` `BUNDLE_BYTES` `IPA_BYTES`
+`IPA_SHA` `RELEASE_ID` `ASSET_ID` `MAIN_JSBUNDLE_BYTES` `PRESENT_COUNT` `GATE_ASSERTIONS`
+`RELEASE_URL`。
+
+### 51.9 文件改动（以实际工作树为准）
+
+| 文件 | 改动 |
+|---|---|
+| `src/utils/pngCodec.ts` | **新增**。纯 JS PNG 编解码：inflate（stored/fixed/dynamic Huffman）、chunk/CRC/Adler、8bit 非隔行 colorType 0/2/4/6 → 统一 RGBA；编码 colorType 6 + stored deflate |
+| `src/utils/lut3d.ts` | **新增**。`extractLutFromAtlas`（256×141 图集 → 33³ `Uint8Array`）、整数三线性 `applyLut3D(InPlace)`、`sampleLut3D`；对参考 u8 逐字节 max diff 0 |
+| `src/utils/filmRender.ts` | **新增**。`renderFilmFrame(rgba,w,h,opts)` 原地渲染 LUT→halation→vignette→grain，`FilmRenderStage` 回调；导出 `filmLookParamsFor` / `grainNoiseAt` 供门禁 |
+| `src/utils/base64.ts` | **新增**。自写 `decodeBase64`（零依赖、UTF-8 安全，不用 `atob`） |
+| `src/utils/lutAssets.ts` | **新增**。`getLutForStock` / `hasLutForStock` / `clearLutCache` / `cachedLutStockIds`：base64 → 解码 → 抽表 → 按卷惰性缓存 |
+| `src/constants/lutAtlas.ts` | **新增（生成文件，勿手改）**。`LUT_SIZE=33`、九卷 `LUT_ATLAS_BASE64`、`LUT_ATLAS_LICENSE`（上游 MIT 归属声明，商标规避：不含任何胶卷厂商/商品名）；591,101 B |
+| `src/constants/filmRender.ts` | **新增**。§51.5 全部渲染常量 + `grainAmplitudeFor` / `vignetteStrengthFor` / `halationFor` |
+| `src/components/FilmPhotoStage.tsx` | **新增**。pass1 截图视图：只画主图 + 重曝；按成片像素换算窗口尺寸；不画相框/日期/水印/纹理/调色层 |
+| `src/utils/applyFilmRender.ts` | **新增**。文件层渲染：`File`/`Paths` 读写、`decodePng`→`renderFilmFrame`→`encodePngRgba`→写缓存 PNG，返回 `{uri,width,height,params}`；不吞异常（兜底在 processFilmPhoto） |
+| `src/utils/processFilmPhoto.ts` | 改两遍截图：pass1 挂 photo 视图截 PNG → `renderFilmToFile` → pass2 挂 final 视图出片；`onStage` 四阶段；失败写 `lutGrade:'fallback'` 回退 v1.9.5 路径；`renderMode` / `layers` 记录 |
+| `src/types/index.ts` | `FilmStageInput` 加 `stageMode?: 'photo' \| 'final'`、`lutUri?: string \| null`；`ProcessedPhoto` 加 `renderMode?: 'lut' \| 'declarative'`；`DevelopStage` 加 `'grading'` |
+| `src/components/FilmCompositor.tsx` | 新增 `stageMode` 分支：final 模式下照片层用 `lutUri`、跳过 `<FilmLookLayers>`、pass2 不再叠 `overlayUri`；photo 模式由 `FilmStageComposer` 转交 |
+| `src/components/FilmStageComposer.tsx` | `stageMode==='photo'` 时渲染 `<FilmPhotoStage>` |
+| `src/hooks/useFilmStage.ts` | 就绪计数按模式分开：photo pass = 主图(+重曝)，final+LUT = 照片+相框（不等声明式图层） |
+| `src/components/DevelopOverlay.tsx` | `STAGE_TEXT` 增加 `grading`（「正在冲印胶片」），四阶段 `normalizing`/`capturing`/`grading`/`saving` 文案随 i18n 切换 |
+| `src/utils/captureOptions.ts` | 新增 `format: 'jpg' \| 'png'`：pass1 截 PNG 供 LUT，pass2 仍 JPEG |
+| `src/i18n/locales/*.ts` | 五个语言文件加 `develop.stage.grading` 及配套文案 |
+| `src/constants/presets.ts` | 九卷色参**保留**（取景器预览用），不删；id/name/描述/画幅等冻结 |
+| `app.json` | version `1.9.5` → `2.0.0` |
+| `THIRD-PARTY-NOTICES.md` | 新增「胶片 LUT 数据（spectral_film_lut，MIT）」归属段（来源、版权行、离线生成、不打包源码、九卷映射） |
+| `README.md` | 本节 §51 + TOC 条目 |
+| `_probe_v200_lut.mjs`（根） | **新增第 27 道门禁**（670 条断言：图集完整性 / codec 回环 / 查表精度 / 渲染参数 / 管线接线） |
+| `_verify_ipa_v200.py`（根） | v2.0.0 PRESENT/ABSENT 核验（由 v195 派生；PRESENT=九卷 base64 唯一窗口等） |
+
+工作区根（不进仓库）：`_v200_contract.md`、`_v200_architecture_decision.md`、
+`_v200_progress_note.md`、`_v196_gen_luts.py`、`_v196_luts/`、`_v200_gen_atlas.py`、
+`_v200_lut_provenance.json`、`_v200_luts/`、`_v200_render_ref.py`、`_v200_spike/`、
+`_v196_src/`、`_v200_fill.json`、`_patch_readme_v200.py`、`_release_v200.py`、
+`_v200_t10_t12_final.mjs`、`_v200_t10_t12_final.json`、`_probe_v200_lut.mjs`、`README.v195.bak.md`。
 
 ---
 

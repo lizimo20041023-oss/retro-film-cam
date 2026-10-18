@@ -132,6 +132,7 @@ export const fr: Messages = {
   'develop.error.title': 'Développement échoué',
   'develop.queue.count': 'File {count}',
   'develop.stage.capturing': 'Exposition et développement',
+  'develop.stage.grading': 'Étalonnage du film',
   'develop.stage.normalizing': 'Préparation du négatif',
   'develop.stage.saving': "Enregistrement dans l'album",
   'develop.tapToContinue': "Touchez l'écran pour continuer",

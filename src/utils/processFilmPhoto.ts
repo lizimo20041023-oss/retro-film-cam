@@ -73,6 +73,7 @@ import type {
   WatermarkZone,
 } from '../types';
 import type { LocaleId } from '../i18n/types';
+import { renderFilmToFile } from './applyFilmRender';
 import { planPhotoCrop } from './cameraGeometry';
 import { planCapture } from './captureOptions';
 import { describeError } from './describeError';
@@ -512,7 +513,7 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
    * 注意传的是 `scenePreset` 而不是 `preset`：`ProcessedPhoto.layers` 是回报给调用方/
    * 日志的"这张到底上了哪些层"，必须包含场景自适应补偿（有场景数据时）。
    */
-  const layers = buildGradeLayers(scenePreset).map((layer) => layer.label);
+  const declarativeLayers = buildGradeLayers(scenePreset).map((layer) => layer.label);
 
   /*
    * 5.5) 尺寸规划：画质档（`captureQuality.ts`）最终就是在**这里**变成成片像素的。
@@ -582,14 +583,66 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     overlayUri: input.overlayUri ?? null,
     overlayOpacity: input.overlayOpacity,
   };
+  /*
+   * 6) 真胶片像素管线（v2.0.0）· pass1：**只截照片**，再在 JS 里查 33³ LUT。
+   *
+   * 为什么必须两遍截图：LUT 是逐像素的三维查表，没法用 `mixBlendMode` 表达
+   * （声明式混合只能做"可分离"的颜色运算，做不出染料串色 / 片基灰 / 肩部压缩，
+   * 根因见 `_v200_contract.md` §0）。所以先把照片区单独截成 PNG（无损），
+   * 在 JS 里洗成"已上卷"的 PNG，再挂第二遍合成把相框 / 日期 / 水印压上去截成片。
+   *
+   * 失败一律兜底：LUT 资产缺失、PNG 解码失败、写盘失败、内存不足 —— 任何一步抛错，
+   * 都退回 v1.9.x 的声明式调色层（`stageInput.lutUri` 保持 null）。产品红线是
+   * **用户永远拿得到照片**，不能因为一次像素渲染失败变成"快门没反应"。
+   */
   input.onStage?.('capturing');
+  let lutUri: string | null = null;
+  let renderMode: 'lut' | 'declarative' = 'declarative';
+  let renderLayers: string[] | null = null;
+  try {
+    host.mount({ ...stageInput, stageMode: 'photo', lutUri: null });
+    await host.whenReady();
+    const photoPngUri = await host.capture();
+    input.onStage?.('grading');
+    /*
+     * 种子取"快门时间戳 ^ 当前毫秒"：同一张照片重试两次会得到不同颗粒（用户不会察觉），
+     * 但同一次显影内部固定 —— 这是 `renderFilmToFile` 的确定性契约。
+     * `>>> 0` 后再 & 掉符号位，保证跨平台落在 31 位非负整数。
+     */
+    const seed = ((capturedAt.getTime() ^ Date.now()) >>> 0) & 0x7fffffff;
+    const rendered = renderFilmToFile({
+      sourceUri: photoPngUri,
+      stockId: capturePreset.id,
+      preset: { id: capturePreset.id, grain: capturePreset.grain, vignette: capturePreset.vignette },
+      seed,
+    });
+    lutUri = rendered.uri;
+    renderMode = 'lut';
+    renderLayers = [
+      `lut:${capturePreset.id}`,
+      `halation ${rendered.params.halation.toFixed(2)}`,
+      `vignette ${rendered.params.vignette.toFixed(2)}`,
+      `grain ${rendered.params.grain.toFixed(3)}`,
+    ];
+  } catch (error) {
+    warnings.push(`真胶片像素管线失败，已回退声明式调色层：${describeError(error)}`);
+  } finally {
+    // 失败也必须收掉显影层，否则界面会卡在"显影中"
+    host.unmount();
+  }
+
+  /*
+   * 6.5) pass2：把"洗好的照片"（`lutUri`）连同相框 / 日期 / 水印一起截成成片。
+   * 有 `lutUri` 时合成层会跳过声明式调色层与重曝叠图（它们已经烘进像素）。
+   */
+  input.onStage?.('capturing');
+  const finalStageInput: FilmStageInput = { ...stageInput, stageMode: 'final', lutUri };
   let uri = '';
   try {
-    host.mount(stageInput);
+    host.mount(finalStageInput);
     await host.whenReady();
     uri = await host.capture();
   } finally {
-    // 失败也必须收掉显影层，否则界面会卡在"显影中"
     host.unmount();
   }
 
@@ -608,7 +661,8 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     capturedAtIso: capturedAt.toISOString(),
     rawUri: cropped.uri,
     durationMs: Date.now() - startedAt,
-    layers,
+    layers: renderLayers ?? declarativeLayers,
+    renderMode,
     warnings,
   };
 }

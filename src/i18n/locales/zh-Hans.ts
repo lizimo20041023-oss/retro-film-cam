@@ -135,6 +135,7 @@ export const zhHans = {
   'develop.error.title': '显影失败',
   'develop.queue.count': '队列 {count}',
   'develop.stage.capturing': '正在曝光显影',
+  'develop.stage.grading': '正在冲印胶片',
   'develop.stage.normalizing': '正在整理底片',
   'develop.stage.saving': '正在存入相册',
   'develop.tapToContinue': '轻触画面继续拍摄',

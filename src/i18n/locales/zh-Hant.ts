@@ -124,6 +124,7 @@ export const zhHant: Messages = {
   'develop.error.title': '顯影失敗',
   'develop.queue.count': '佇列 {count}',
   'develop.stage.capturing': '正在曝光顯影',
+  'develop.stage.grading': '正在沖印底片',
   'develop.stage.normalizing': '正在整理底片',
   'develop.stage.saving': '正在存入相簿',
   'develop.tapToContinue': '輕觸畫面繼續拍攝',
