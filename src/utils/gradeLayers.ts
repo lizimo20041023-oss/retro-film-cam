@@ -1,79 +1,112 @@
 /**
- * 五层同源胶片管线（v1.9.0 手术：同源叠加，不再平涂色块）
+ * 零模糊同源胶片管线（v1.9.1「去雾斩 CCD · Zero-Blur」）
  *
  * ## 为什么整层重写
  *
- * v1.8.x 的 buildGradeLayers 是「一层一个色块」的平涂思路：色温一层、饱和一层、对比度一层、
- * 分区染色两层、S 曲线一层…… 这些 layer 用的都是**与照片无关的纯色**，靠 mixBlendMode 的
- * 数学往照片上糊。结果是照片本身的高光/暗部结构没有被胶片「放大」，只是被一张张色纸盖住，
- * 出来是数码味的平灰图 —— 用户 m07595 直接把这种观感否成「HDR 感 / 塑料感」。
+ * v1.9.0 的「同源五层」方向是对的（把同一张底片用混合模式叠回自己），但数值与模糊半径
+ * 全错：实拍 8 张样片被用户 m08443 判成「又糊、又暗、又蒙一层廉价 CCD 柔光雾」。病根：
  *
- * ## v1.9.0：同源五层
+ *   ① `highlight-bloom` 用了 14px 高斯 + screen：模糊把高光能量摊进**黑场**，
+ *      screen 再把这份能量加回每个像素 —— 黑场 Y=0 变成 Y=bloom×0.36，整图乳白起雾；
+ *   ② dark 场景 halation 再 +0.50，夜景被泼了一层牛奶；
+ *   ③ `lens-softness` 用 1.2px normal 把原图本身抹糊了一层，刀锐尽失；
+ *   ④ `shadow-crush` multiply 0.35~0.50，Y² 把白雪/樱花压成脏灰。
  *
- * 新的管线只做一件事 —— **把同一张底片用不同模糊半径和混合模式叠回它自己**：
+ * v1.9.1 的唯一目标：**零模糊（Zero-Blur）纯正胶片反差管线**。整条管线不再出现任何
+ * `blurRadius > 0` 的图层，也不再用任何「平涂色纸」假装反差 —— 反差全部由**同一张底片的
+ * 无模糊副本**经 overlay / screen / multiply 数学叠回自己产生。
  *
- *   1. 树脂柔焦 lens-softness   photo, blurRadius 1.2, normal    —— 镜头树脂/低通的轻微晕散
- *   2. 暗部压片 shadow-crush    photo, multiply                  —— 暗部按 Y² 压下去（黑要黑死）
- *   3. 高光溢出 highlight-bloom  photo, blurRadius 14, screen     —— 高光按 1-(1-Y)² 溢出（亮要亮炸）
- *   4. 暖红光晕 halation        color, screen, #FF4028            —— 高光边缘的暖红卤化光晕
- *   5. 化学染色 color 层        shadow-tint / highlight-tint      —— 暗部偏冷、高光偏暖的化学分离
+ * ## 三条同源无模糊 photo 层（v1.9.1 光学核心）
  *
- * 其中 1~3 层是 `kind:'photo'` 的「同一张照片副本」（同源），4~5 层是允许的纯色层：光晕只做
- * 暖红扩散，染色只做化学分离，都不做「提对比/拉饱和」这类本该由照片自己决定的事。另有两层
- * 纹理层（颗粒/暗角）与可选的漏光层，它们是物理介质（片基/蒙版/漏光），不是调色。
+ * 设照片某像素亮度 Y ∈ [0,1]（gamma 编码值），把**同一张底片、blurRadius=0** 的副本
+ * 以不同混合模式叠回自己：
  *
- * ### 为什么 multiply 是 Y²、screen 是 1-(1-Y)²
+ *   1. `s-curve-contrast`  overlay，opacity ≤ 0.72
+ *        Y < 0.5：Y' = 2Y²            （暗部往下踩实）
+ *        Y ≥ 0.5：Y' = 1 − 2(1−Y)²    （亮部往上提亮）
+ *        中灰 Y=0.5 是不动点，黑场/白场也不动 → f(0)=0、f(1)=1，**黑不死、白不脏**。
  *
- * 设照片某像素亮度 Y（0~1 的 gamma 编码值），把它自己的副本（同源）以 multiply 叠回自己：
- *     Y × Y = Y²
- * 暗部被平方级压深：Y=0.2 → 0.04（几乎黑死），Y=0.5 → 0.25。这正是胶片暗部「密度上来」的
- * 观感；而平涂色纸不管照片暗部多亮，压下去的量是常数，所以会糊成一片。
+ *   2. `exposure-lift`    screen，opacity ≤ 0.5
+ *        Y' = Y + Y − Y² = 2Y − Y²   （中间调/高光干净提亮）
+ *        Y=0 → 0：**黑色显示器、夜空、黑场一个像素都不起雾**；Y=1 → 1，白场不切断。
  *
- * 以 screen 叠回自己：
- *     Y + Y - Y² = 1 - (1-Y)²
- * 高光被平方级提亮：Y=0.8 → 0.96，Y=0.5 → 0.75；且 Y=1 时恒为 1（不切断白场）。胶片高光
- * 在乳剂层饱和后向周围卤化银扩散，表现为「亮部往外鼓」，数学上就是 screen 的二次方靠近 1。
+ *   3. `shadow-crush`     multiply，opacity ≤ 0.12（硬上限，v1.9.0 的 0.72 已作废）
+ *        Y' = Y²                      （黑位托底：暗部密度上来，黑要黑死）
+ *        只允许 0.04~0.12 的轻压：v1.9.0 的 0.25~0.55 会把高调雪景压成脏灰。
  *
- * 先 blur 再 blend 的意义：blurRadius 决定「多少能量能从亮部漏进暗部」。blur 1.2 只做轻微
- * 晕散（树脂/低通），blur 14 把高光抽成一层大范围的柔光（halation 则是更大半径的暖红版）。
+ * 三条曲线的共同点：**都过 (0,0) 与 (1,1)** —— 这是零模糊管线的铁律。任何不满足这对
+ * 不动点的混合（normal 色纸、screen 大面积漫射、exclusion 等）都会在纯黑或纯白处留下
+ * 偏移，也就是用户说的「雾」「脏」「乳白」。
  *
- * ### 为什么 view-shot 截得到真实高斯模糊
+ * ### 为什么 14px screen 一定会起雾（数学）
  *
- * photo 层是 `<Image blurRadius>`（RN 给 GPU 的高斯模糊）+ 外层 View 的 mixBlendMode。
- * 拍摄链路 `processFilmPhoto → FilmCompositor → react-native-view-shot 的 drawViewHierarchy`
- * 是在**原生视图树**上截图（不是 JS 像素遍历），所以合成结果里带的是真正的逐像素高斯模糊与
- * 混合结果 —— 预览看到什么，成片就是什么。这也意味着管线里**不能用任何 JS 像素级调色**
+ * screen 的公式是 `C = 1 − (1−A)(1−B)`。若 B 是**被模糊过的高光副本**，在原本纯黑的
+ * 区域 B ≈ 平均高光亮度 × 核面积占比 > 0，于是 C > 0：屏幕黑场不再是 0，而是被薄薄地
+ * 加了一层灰白。模糊半径越大，漏进黑场的能量越多，整图观感就越「乳白」。v1.9.1 直接
+ * 删除 blurRadius，B = A（同源像素），screen 的黑场保持 `1−(1−0)(1−0)=0`。
+ *
+ * ### 为什么 view-shot 截得到真实混合
+ *
+ * photo 层是 `<Image blurRadius={0}>` + 外层 View 的 `mixBlendMode`。拍摄链路
+ * `processFilmPhoto → FilmCompositor → react-native-view-shot 的 drawViewHierarchy`
+ * 是在**原生视图树**上截图（不是 JS 像素遍历），所以合成结果里带的是真正的原生混合 ——
+ * 预览看到什么，成片就是什么。这也意味着管线里**不能用任何 JS 像素级调色**
  * （会 O(n) 卡死 JS 线程），只能用 RN/原生支持的层。
  *
- * ### live（取景器）面为什么不做 photo 层
+ * ### 12 层顺序（v1.9.1 冻结，探针按 key 逐项核对）
  *
- * 取景器是 30~60fps 的实时合成。photo 层每帧都要跑一次全屏高斯模糊 + 混合，是纯粹烧 GPU/CPU
- * 的负载 —— v1.8.6 的「发热纪律」要求取景器只保留最便宜的色纸/纹理层。因此 live 面：
- *   · 滤掉所有 photo 层（树脂柔焦/暗部压片/高光溢出/光晕都不进 live）；
- *   · 滤掉颗粒纹理层（v1.8.3 起取景器不画颗粒）；
- *   · 丢弃 shadow-tint / highlight-tint 两条全屏染色层（用户 m05280 降发热）；
- *   · 只把 temperature / tint / halation 三条色纸层用 liveLookOpacity 压到 0.04~0.08 做「观感示意」；
- *   · mono 去色层保留 opacity 1（黑白卷的取景器必须当场看到黑白）。
+ *   1  temperature        color   overlay          色温色纸（|v| × 0.22）
+ *   2  tint               color   overlay          色调色纸（|v| × 0.22）
+ *   3  s-curve-contrast   photo   overlay  blur 0  零模糊真 S 曲线（2Y² / 1−2(1−Y)²）
+ *   4  exposure-lift      photo   screen   blur 0  零模糊曝光提亮（2Y−Y²）
+ *   5  shadow-crush       photo   multiply blur 0  黑位轻托底（Y²，≤ 0.12）
+ *   6  mono-desaturate    color   color            真黑白去色（仅 mono 卷，#808080）
+ *   7  shadow-tint        color   soft-light|overlay  暗部化学染色（≤ 0.28）
+ *   8  highlight-tint     color   soft-light|overlay  高光色彩密度（≤ 0.30）
+ *   9  halation           color   screen           暖红光晕（#FF4028，opacity ≤ 0.06）
+ *  10  grain              texture overlay          颗粒
+ *  11  vignette           texture multiply         暗角（≤ 0.32）
+ *  12  light-leak         texture screen           漏光
+ *
+ * 0 值层不出现在数组里；但投影顺序必须与上表一致。
+ *
+ * ### 化学染色层的铁律
+ *
+ * 染色层允许的模式只有 `soft-light` / `overlay`（见 `sanitizeTintBlendMode`）。
+ * 它们在中灰附近温和作用、在黑场/白场附近收敛，不会像 exclusion / multiply / screen
+ * 那样污染黑场白场 —— v1.9.0 的 `exclusion` 暗部染色正是「黑场发灰」的另一个来源。
  *
  * ### 自适应增量（见 adaptiveGrade.ts）
  *
- * 有场景统计时，planAdaptiveGrade 给出四场景增量，直接叠到本管线对应层 opacity 上：
- *   shadowCrush + shadowCrushDelta    （暗部场景为负：保持暗）
- *   highlightBloom + highlightBloomDelta
+ * 有场景统计时，planAdaptiveGrade 给出四场景增量，叠到本管线对应层：
+ *   sCurveContrast + sCurveContrastDelta   （暗/平/亮/高反差都加，靠 S 曲线拉反差）
+ *   exposureLift + exposureLiftDelta       （暗部场景 +0.21 补偿曝光）
+ *   shadowCrushTarget ?? shadowCrush       （高反差/平光目标 0.08；dark/bright 目标 0）
  *   shadowTintOpacity × separationScale
  *   highlightTintOpacity × separationScale × colorDensityScale
  *   vignette + vignetteDelta
- *   halation + halationDelta
- * 并全部 clamp（crush 0~0.72 / bloom 0~0.60 / tint 0~0.40 / halation 0~1）。
- * 场景不可用（scene == null 或样本不足）时 plan 为 null，层表与静态预设逐字节一致。
+ *   halation + halationDelta（v1.9.1 恒 0：光晕不再当反差工具）
+ * 并全部 clamp。场景不可用（scene == null 或样本不足）时 plan 为 null，
+ * 层表与静态预设逐字节一致。
+ *
+ * ### live（取景器）面为什么不做 photo 层
+ *
+ * 取景器是 30~60fps 的实时合成，每帧全屏混合 + 截图是纯粹烧 GPU 的负载 ——
+ * v1.8.6 的「发热纪律」要求取景器只保留最便宜的色纸/纹理层。因此 live 面：
+ *   · 滤掉所有 photo 层（S 曲线/曝光提亮/黑位托底都不进 live）；
+ *   · 滤掉颗粒纹理层；
+ *   · 丢弃 shadow-tint / highlight-tint 两条全屏染色层；
+ *   · 只把 temperature / tint / halation 三条色纸层用 liveLookOpacity 压到 0.04~0.08；
+ *   · mono 去色层保留 opacity 1（黑白卷取景器必须当场看到黑白）；
+ *   · 暗角 / 漏光原样保留。
  */
 import { grainLayerOpacity } from '../constants/grain';
 import { GRAINLESS_PRESET_IDS } from '../constants/presets';
-import type { GradeLayer, ResolvedFilmPreset } from '../types';
+import type { BlendMode, GradeLayer, ResolvedFilmPreset } from '../types';
 import { applyAdaptiveColor, planAdaptiveGrade } from './adaptiveGrade';
 
 /* ========================================================================== *
- * 冻结常量（v1.9.0 光学配方；探针按名字逐项核对，改数值必须同步改探针）
+ * 冻结常量（v1.9.1 零模糊配方；探针按名字逐项核对，改数值必须同步改探针）
  * ========================================================================== */
 
 /** 色温暖端色纸（overlay 提亮暖色）。 */
@@ -87,30 +120,44 @@ const TINT_MAGENTA = '#E657E6';
 /** 真黑白去色载体（color 混合模式只取它 0 饱和度的色相）。 */
 const NEUTRAL_GRAY = '#808080';
 /** 卤化光晕的暖红载体（screen）。 */
-const HALATION_RED = '#FF4028';
+export const HALATION_RED = '#FF4028';
 
-/** 树脂柔焦的高斯半径（px）。 */
-export const LENS_SOFTNESS_BLUR_PX = 1.2;
-/** 高光溢出的高斯半径（px）。 */
-export const HIGHLIGHT_BLOOM_BLUR_PX = 14;
-/** 暖红光晕的渲染上限系数：最浓 opacity = 0.18。 */
-export const HALATION_RENDER_CAP = 0.18;
+/**
+ * 零模糊真 S 曲线层 opacity 上限（v1.9.1 手术一）。
+ *
+ * overlay 自叠在 Y<0.5 走 2Y²、Y≥0.5 走 1−2(1−Y)²；opacity 只是这条曲线的「浓度」。
+ * 0.72 已经足够把九卷的 sCurveContrast（0.24~0.48）+ 场景增量推到胶片级反差，
+ * 再高就会在中间调出现数码味的分层（用户 m08443 明令禁止的重口反差）。
+ */
+export const S_CURVE_OPACITY_MAX = 0.72;
 
-/** 色温层每 1.0 强度对应的 opacity（|temperature| × 0.38）。 */
-const TEMPERATURE_GAIN = 0.38;
-/** 色调层每 1.0 强度对应的 opacity（|tint| × 0.24）。 */
-const TINT_GAIN = 0.24;
+/** 零模糊曝光提亮层 opacity 上限（screen 自叠 2Y−Y²；0 黑场不动、1 白场不动）。 */
+export const EXPOSURE_LIFT_OPACITY_MAX = 0.5;
 
-/** 自适应叠加后的压暗上限。 */
-const SHADOW_CRUSH_MAX = 0.72;
-/** 自适应叠加后的高光溢出上限。 */
-const HIGHLIGHT_BLOOM_MAX = 0.6;
-/** 化学染色层 opacity 上限（自适应缩放后）。 */
-const TINT_OPACITY_MAX = 0.4;
-/** 光晕值上限（opacity = 值 × 0.18）。 */
-const HALATION_VALUE_MAX = 1;
-/** 暗角 opacity 上限（自适应加 vignetteDelta 后）。 */
-export const VIGNETTE_OPACITY_MAX = 0.72;
+/**
+ * 黑位托底层 opacity 硬上限（v1.9.1 手术一.4）。
+ *
+ * v1.9.0 的 0.72（实际配置到 0.25~0.55）已作废：Y² 在低不透明度下已经是「密度上来」的
+ * 油润黑，再高会把白雪/樱花压成用户投诉的「脏灰」。
+ */
+export const SHADOW_CRUSH_OPACITY_MAX = 0.12;
+
+/** 暖红光晕渲染不透明度上限（v1.9.1：直接 clamp(value,0,0.06)，不再 ×0.18）。 */
+export const HALATION_OPACITY_MAX = 0.06;
+
+/** 暗角 opacity 上限（自适应加 vignetteDelta 后；九卷静态值全部落在 0.18~0.32）。 */
+export const VIGNETTE_OPACITY_MAX = 0.32;
+
+/** 色温层每 1.0 强度对应的 opacity（|temperature| × 0.22）。 */
+const TEMPERATURE_GAIN = 0.22;
+/** 色调层每 1.0 强度对应的 opacity（|tint| × 0.22）。 */
+const TINT_GAIN = 0.22;
+
+/** 暗部染色 opacity 上限（自适应分离度缩放后）。 */
+const SHADOW_TINT_OPACITY_MAX = 0.28;
+/** 高光染色 opacity 上限（自适应分离度 × 密度缩放后）。 */
+const HIGHLIGHT_TINT_OPACITY_MAX = 0.3;
+
 /** 漏光层 opacity 上限。 */
 export const LIGHT_LEAK_OPACITY_MAX = 0.1;
 /** 漏光层增益。 */
@@ -149,28 +196,33 @@ function round4(value: number): number {
 }
 
 /* ========================================================================== *
- * buildGradeLayers —— 五层同源管线 + 化学染色 + 物理介质
+ * 染色层混合模式消毒
+ * ========================================================================== */
+
+/**
+ * 把预设里写来的染色混合模式消毒成 v1.9.1 白名单：**只允许 soft-light / overlay**。
+ *
+ * 为什么必须消毒（不是「建议」）：exclusion / multiply / screen / difference 这些模式
+ * 在纯黑或纯白处不收敛 —— 暗部染色用 exclusion 会把黑场抬成灰，用 multiply 会把白场
+ * 压脏。用户 m08443 的「蒙一层廉价 CCD 柔光雾」有相当一部分来自这两条染色层。
+ *
+ * 规则：mode === 'overlay' 保留；其余（含 undefined / 脏字符串）一律回 'soft-light'。
+ */
+export function sanitizeTintBlendMode(mode: BlendMode): 'soft-light' | 'overlay' {
+  return mode === 'overlay' ? 'overlay' : 'soft-light';
+}
+
+/* ========================================================================== *
+ * buildGradeLayers —— 零模糊 12 层管线
  * ========================================================================== */
 
 /**
  * 由预设构造成片/合成的完整层栈（composite 面）。
  *
- * 层序（v1.9.0 冻结，探针按 key 逐项核对）：
- *   1 temperature         color  overlay     白平衡色温色纸
- *   2 tint                color  overlay     白平衡色调色纸
- *   3 lens-softness       photo  normal      树脂柔焦（blur 1.2）
- *   4 mono-desaturate     color  color       真黑白去色（仅 mono 卷，#808080）
- *   5 shadow-crush        photo  multiply    暗部压片（同源 Y²）
- *   6 highlight-bloom     photo  screen      高光溢出（同源 1-(1-Y)²，blur 14）
- *   7 shadow-tint         color  预设混合模式  暗部化学染色
- *   8 highlight-tint      color  预设混合模式  高光化学染色
- *   9 halation            color  screen      暖红光晕（#FF4028，opacity = 值 × 0.18）
- *  10 grain               texture overlay    颗粒
- *  11 vignette            texture multiply   暗角
- *  12 light-leak          texture screen     漏光
- *
- * 第 3/5/6 层是 `kind:'photo'` 的同源照片副本（由 FilmLookLayers 用 photoUri 渲染，
- * blurRadius 交给 RN Image）；第 7/8 层的模式由预设决定；第 10~12 层是物理介质纹理。
+ * 层序见文件头「12 层顺序」（v1.9.1 冻结，探针按 key 逐项核对）。
+ * 第 3/4/5 层是 `kind:'photo'` 的同源零模糊照片副本（由 FilmLookLayers 用 photoUri
+ * 渲染，`blurRadius` 显式 0）；第 7/8 层的模式由预设决定（消毒后）；
+ * 第 10~12 层是物理介质纹理。
  *
  * 自适应：planAdaptiveGrade(preset.scene, preset) 命中时把四场景增量叠进层 opacity，
  * 并把 applyAdaptiveColor 的白平衡偏移应用到第 1/2 层的输入色温/色调上。
@@ -198,7 +250,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
   /* 2 色调 · overlay 色纸 ------------------------------------------------- */
   const tint = color.tint;
   if (Math.abs(tint) > 0.01) {
-    // 与 v1.8.x 方向一致：tint > 0 = 偏绿，tint < 0 = 偏品红。
+    // 方向：tint > 0 = 偏绿，tint < 0 = 偏品红。
     layers.push({
       kind: 'color',
       key: 'tint',
@@ -209,20 +261,53 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  /* 3 树脂柔焦 · photo normal blur 1.2 ----------------------------------- */
-  const lensSoftness = clamp01(color.lensSoftness);
-  if (lensSoftness > 0.01) {
+  /* 3 零模糊真 S 曲线 · photo overlay blur 0（2Y² / 1−2(1−Y)²） ------------ */
+  const sCurveBase = clamp01(color.sCurveContrast) + (adaptive === null ? 0 : adaptive.sCurveContrastDelta);
+  const sCurveContrast = clamp(sCurveBase, 0, S_CURVE_OPACITY_MAX);
+  if (sCurveContrast > 0.01) {
     layers.push({
       kind: 'photo',
-      key: 'lens-softness',
-      label: `树脂柔焦 ${round2(lensSoftness)}（1.2px 高斯 · normal）`,
-      blendMode: 'normal',
-      opacity: round4(lensSoftness),
-      blurRadius: LENS_SOFTNESS_BLUR_PX,
+      key: 's-curve-contrast',
+      label: `零模糊 S 曲线 ${round2(sCurveContrast)}（同源 overlay · 2Y²/1−2(1−Y)²）`,
+      blendMode: 'overlay',
+      opacity: round4(sCurveContrast),
+      blurRadius: 0,
     });
   }
 
-  /* 4 真黑白去色 · color #808080（仅 mono 卷） ---------------------------- */
+  /* 4 零模糊曝光提亮 · photo screen blur 0（2Y−Y²） ------------------------ */
+  const exposureBase =
+    clamp01(color.exposureLift) + (adaptive === null ? 0 : adaptive.exposureLiftDelta);
+  const exposureLift = clamp(exposureBase, 0, EXPOSURE_LIFT_OPACITY_MAX);
+  if (exposureLift > 0.01) {
+    layers.push({
+      kind: 'photo',
+      key: 'exposure-lift',
+      label: `零模糊曝光提亮 ${round2(exposureLift)}（同源 screen · 2Y−Y²）`,
+      blendMode: 'screen',
+      opacity: round4(exposureLift),
+      blurRadius: 0,
+    });
+  }
+
+  /* 5 黑位托底 · photo multiply blur 0（Y²，硬上限 0.12） ------------------ */
+  const crushBase =
+    adaptive !== null && adaptive.shadowCrushTarget !== null
+      ? adaptive.shadowCrushTarget
+      : clamp01(color.shadowCrush);
+  const shadowCrush = clamp(crushBase, 0, SHADOW_CRUSH_OPACITY_MAX);
+  if (shadowCrush > 0.01) {
+    layers.push({
+      kind: 'photo',
+      key: 'shadow-crush',
+      label: `黑位托底 ${round2(shadowCrush)}（同源 multiply · Y²）`,
+      blendMode: 'multiply',
+      opacity: round4(shadowCrush),
+      blurRadius: 0,
+    });
+  }
+
+  /* 6 真黑白去色 · color #808080（仅 mono 卷） ---------------------------- */
   if (preset.mono) {
     layers.push({
       kind: 'color',
@@ -234,79 +319,53 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  /* 5 暗部压片 · photo multiply（同源 Y²） -------------------------------- */
-  const crushBase = clamp01(color.shadowCrush) + (adaptive === null ? 0 : adaptive.shadowCrushDelta);
-  const shadowCrush = clamp(crushBase, 0, SHADOW_CRUSH_MAX);
-  layers.push({
-    kind: 'photo',
-    key: 'shadow-crush',
-    label: `暗部压片 ${round2(shadowCrush)}（同源 multiply · Y²）`,
-    blendMode: 'multiply',
-    opacity: round4(shadowCrush),
-  });
-
-  /* 6 高光溢出 · photo screen blur 14（同源 1-(1-Y)²） -------------------- */
-  const bloomBase =
-    clamp01(color.highlightBloom) + (adaptive === null ? 0 : adaptive.highlightBloomDelta);
-  const highlightBloom = clamp(bloomBase, 0, HIGHLIGHT_BLOOM_MAX);
-  layers.push({
-    kind: 'photo',
-    key: 'highlight-bloom',
-    label: `高光溢出 ${round2(highlightBloom)}（14px blur · screen · 1-(1-Y)²）`,
-    blendMode: 'screen',
-    opacity: round4(highlightBloom),
-    blurRadius: HIGHLIGHT_BLOOM_BLUR_PX,
-  });
-
-  /* 7 暗部化学染色 -------------------------------------------------------- */
+  /* 7 暗部化学染色（只允许 soft-light / overlay） -------------------------- */
   const separationScale = adaptive === null ? 1 : adaptive.separationScale;
   const shadowTintOpacity = clamp01(color.shadowTintOpacity);
   if (color.shadowTint.length > 0 && shadowTintOpacity > 0.01) {
-    const opacity = clamp(shadowTintOpacity * separationScale, 0, TINT_OPACITY_MAX);
+    const blendMode = sanitizeTintBlendMode(color.shadowTintBlendMode);
+    const opacity = clamp(shadowTintOpacity * separationScale, 0, SHADOW_TINT_OPACITY_MAX);
     layers.push({
       kind: 'color',
       key: 'shadow-tint',
-      label: `暗部染色 ${color.shadowTintBlendMode} ${round2(opacity)}`,
+      label: `暗部染色 ${blendMode} ${round2(opacity)}`,
       color: color.shadowTint,
-      blendMode: color.shadowTintBlendMode,
+      blendMode,
       opacity: round4(opacity),
     });
   }
 
-  /* 8 高光化学染色 -------------------------------------------------------- */
+  /* 8 高光色彩密度（只允许 soft-light / overlay） -------------------------- */
   const densityScale = adaptive === null ? 1 : adaptive.colorDensityScale;
   const highlightTintOpacity = clamp01(color.highlightTintOpacity);
   if (color.highlightTint.length > 0 && highlightTintOpacity > 0.01) {
+    const blendMode = sanitizeTintBlendMode(color.highlightTintBlendMode);
     const opacity = clamp(
       highlightTintOpacity * separationScale * densityScale,
       0,
-      TINT_OPACITY_MAX,
+      HIGHLIGHT_TINT_OPACITY_MAX,
     );
     layers.push({
       kind: 'color',
       key: 'highlight-tint',
-      label: `柔光染色 ${color.highlightTintBlendMode} ${round2(opacity)}`,
+      label: `柔光染色 ${blendMode} ${round2(opacity)}`,
       color: color.highlightTint,
-      blendMode: color.highlightTintBlendMode,
+      blendMode,
       opacity: round4(opacity),
     });
   }
 
-  /* 9 暖红光晕 · color screen（opacity = 值 × 0.18） ---------------------- */
-  const halationValue = clamp(
-    clamp01(color.halation) + (adaptive === null ? 0 : adaptive.halationDelta),
-    0,
-    HALATION_VALUE_MAX,
-  );
-  if (halationValue > 0.01) {
-    const opacity = clamp01(halationValue) * HALATION_RENDER_CAP;
+  /* 9 暖红光晕 · color screen（v1.9.1：opacity = clamp(value,0,0.06)） ----- */
+  const halationBase = clamp01(color.halation) + (adaptive === null ? 0 : adaptive.halationDelta);
+  const halation = Math.min(HALATION_OPACITY_MAX, clamp01(halationBase));
+  if (halation > 0.01) {
     layers.push({
       kind: 'color',
       key: 'halation',
-      label: `暖红光晕 ${round2(opacity)}（#FF4028 · screen）`,
+      label: `暖红光晕 ${round2(halation)}（#FF4028 · screen）`,
       color: HALATION_RED,
       blendMode: 'screen',
-      opacity: round4(opacity),
+      opacity: round4(halation),
     });
   }
 
@@ -325,7 +384,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  /* 11 暗角 --------------------------------------------------------------- */
+  /* 11 暗角（v1.9.1 上限 0.32；v1.9.0 的 0.72 作废） ---------------------- */
   const vignetteBase = preset.vignette + (adaptive === null ? 0 : adaptive.vignetteDelta);
   const vignette = clamp(vignetteBase, 0, VIGNETTE_OPACITY_MAX);
   if (vignette > 0.01) {
@@ -393,10 +452,11 @@ const LIVE_COMPRESSED_COLOR_LAYER_KEYS = new Set(['temperature', 'tint', 'halati
  * 构造某个面（composite / live）实际要渲染的层表。
  *
  * - composite：`buildGradeLayers` 原样返回（成片/合成/贴纸截图用）。
- * - live：滤掉**所有** `kind:'photo'` 同源层（v1.9.0 起树脂柔焦/暗部压片/高光溢出/光晕都不进
- *   取景器，v1.8.6 发热纪律）+ 颗粒纹理层 + shadow-tint/highlight-tint 两条全屏染色层；
- *   剩余色纸层 temperature/tint/halation 走 liveLookOpacity 压到 0.04~0.08；
- *   mono 去色层保留 opacity 1（黑白卷取景器必须当场是黑白）；暗角/漏光保留原 opacity。
+ * - live：滤掉**所有** `kind:'photo'` 同源层（零模糊 S 曲线/曝光提亮/黑位托底都不进
+ *   取景器 —— 每帧全屏混合 + 截图是纯烧 GPU，v1.8.6 发热纪律）+ 颗粒纹理层 +
+ *   shadow-tint/highlight-tint 两条全屏染色层；剩余色纸层 temperature/tint/halation
+ *   走 liveLookOpacity 压到 0.04~0.08；mono 去色层保留 opacity 1（黑白卷取景器必须
+ *   当场是黑白）；暗角/漏光保留原 opacity。
  */
 export function planFilmLooks(
   preset: ResolvedFilmPreset,
@@ -407,7 +467,7 @@ export function planFilmLooks(
 
   const liveLayers: GradeLayer[] = [];
   for (const layer of layers) {
-    // 同源 photo 层：取景器一律不画（每帧全屏高斯模糊 = 发热）。
+    // 同源 photo 层：取景器一律不画（每帧全屏混合 = 发热）。
     if (layer.kind === 'photo') continue;
     // 颗粒：v1.8.3 起取景器不画。
     if (layer.kind === 'texture' && layer.textureId === 'grain') continue;
@@ -427,7 +487,7 @@ export function planFilmLooks(
  * 这张卷在「曝光/画质流水线」里需要预热的图片数：背景 2 张 + 纹理层数 + 同源 photo 层数。
  *
  * 背景 2 = 相框皮肤 + 漏光/纸纹底（见 useFilmStage）；纹理层和 photo 层都要等图片 onLoad
- * 才算「就绪」，所以都需要计入。v1.9.0 契约不变：um-400 = 7、ek-100 = 6、hp-400 = 7。
+ * 才算「就绪」，所以都需要计入。v1.9.1 契约：um-400 = 7、ek-100 = 6、hp-400 = 7。
  */
 export function countStageImages(preset: ResolvedFilmPreset): number {
   const layers = buildGradeLayers(preset);

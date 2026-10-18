@@ -2,34 +2,43 @@
  * 胶片预设表 —— 纯数据。加预设**不需要改任何逻辑代码**。
  *
  * ─────────────────────────────────────────────────────────────────────────
- * v1.9.0（用户 m07595 手术二/四）：九支传奇底片 + 5 层同源光学显影管线
+ * v1.9.1（用户 m08443「去雾斩 CCD」手术）：九支传奇底片 + Zero-Blur 零模糊管线
  * ─────────────────────────────────────────────────────────────────────────
  *  iOS 上 RN 的 `filter` 只支持 brightness / opacity，做不了对比度、饱和度、色温。
  *  所以所有调色都是「图层 + mixBlendMode 混合」（native compositingFilter）。
- *  v1.9.0 把旧的"半透明色纸"逻辑整套废除，换成**同一张底片的多份副本自叠**：
  *
- *   base            原图（opacity 1）
- *   lensSoftness    Image 副本 blurRadius=1.2,  normal,     opacity 0.22~0.34
- *                   = 树脂镜头去锐化，抹平 Smart HDR 的数码锐化白边
- *   shadowCrush     Image 副本,                 multiply,   opacity 0.25~0.55
- *                   = Y' = Y²，暗部浓墨重压（树荫/柏油/深色车体沉成油润黑）
- *   highlightBloom  Image 副本 blurRadius=14,   screen,     opacity 0.20~0.48
- *                   = Y' = 1-(1-Y)²，只提亮高光 + 明暗交界奶油 Bloom
- *   shadowTint*     纯色,   multiply / exclusion, opacity 0.12~0.28（化学暗部偏色）
- *   highlightTint*  纯色,   soft-light / overlay / screen, opacity 0.18~0.36（色彩密度）
- *   halation        纯色 '#FF4028', screen, opacity = clamp01(v) × 0.18
+ *  v1.9.1 把 v1.9.0 的「树脂柔焦 + 14px 高斯高光溢出」整套废除 —— 那正是实拍
+ *  翻车「又糊、又暗、又蒙一层廉价 CCD 柔光雾」的病根：1.2px 的 blurRadius 把原图
+ *  抹糊，14px 的 screen 漫射把黑场灌成乳白。现行配方是**同一张底片的无模糊副本
+ *  自叠**，三支光学层的 blurRadius 恒为 0（显式字段）：
+ *
+ *   base            原图（100% 刀锐，opacity 1）
+ *   sCurveContrast  Image 副本, overlay,  opacity 0.24~0.48
+ *                   = 零模糊真 S 曲线：Y<0.5 → 2Y²，Y≥0.5 → 1−2(1−Y)²
+ *   exposureLift    Image 副本, screen,   opacity 0.14~0.22
+ *                   = Y' = 2Y−Y²：只提亮，Y=0 恒为 0（夜空/黑场绝不起雾）
+ *   shadowCrush     Image 副本, multiply, opacity 0.03~0.12
+ *                   = Y' = Y²：轻量黑位托底（v1.9.0 的 0.25~0.55 已废除，
+ *                     旧值把白雪/樱花压成脏灰）
+ *   shadowTint*     纯色, 只允许 soft-light / overlay, opacity ≤ 0.28（化学暗部偏色）
+ *   highlightTint*  纯色, 只允许 soft-light / overlay, opacity ≤ 0.30（色彩密度）
+ *   halation        纯色 '#FF4028', screen, 渲染不透明度 = clamp(v, 0, 0.06)
+ *                   （v1.9.0 的 ×0.18 + 大面积光晕已废除：夜景会被泼成牛奶）
  *   grain           grain.png 平铺 + overlay，绝对不透明度（见 constants/grain.ts）
- *   vignette        vignette.png 拉伸 + multiply，贴图中心 56% 半径 alpha=0
+ *   vignette        vignette.png 拉伸 + multiply，贴图中心 70% 半径 alpha=0
  *   lightLeak       light-leak.png + screen，opacity ≤ 0.10
  *
- *  ── 数值纪律（v1.9.0）────────────────────────────────────────────────────
- *  · 九支卷全部来自用户 m07595 指定的光学配方，**不再靠 ±0.05 的微弱数值区分性格**。
- *  · 所有 photo 层只由倍率决定：`blurRadius` 固定 1.2 / 14，不要拿别的模糊半径。
- *  · 色层不透明度上限：shadowTint ≤ 0.28、highlightTint ≤ 0.36、halation × 0.18 ≤ 0.18。
- *  · 严禁整幅浅白/米色 normal 层（会变成白雾）；彩色层必须走 multiply/soft-light/overlay/screen。
+ *  ── 数值纪律（v1.9.1）────────────────────────────────────────────────────
+ *  · 九支卷全部来自用户 m08443 手术三的冻结配方，**不再靠 ±0.05 的微弱数值区分性格**。
+ *  · 三个光学键全部是**同源无模糊自叠**：photo 层的 blurRadius 必须为 0。
+ *  · overlay / screen / multiply 三条数学都满足 f(0)=0、f(1)=1：黑场永不起雾、
+ *    白场永不发脏 —— 这是 v1.9.1 与 v1.9.0 最根本的分界。
+ *  · 色层纪律：染色只用 soft-light / overlay（multiply / exclusion / screen 会
+ *    污染黑场白场）；shadowTint ≤ 0.28、highlightTint ≤ 0.30、halation ≤ 0.06、
+ *    vignette ≤ 0.32（全部收窄，v1.9.0 的宽上限已作废）。
  *  · 用户颗粒档位会在运行时覆盖 `grain`（`applyGrainLevel`），"某卷无颗粒"用 GRAINLESS_PRESET_IDS。
  *
- *  ── 防侵权纪律（用户 m06500 红线，v1.9.0 继续）────────────────────────────
+ *  ── 防侵权纪律（用户 m06500 红线，v1.9.1 继续）────────────────────────────
  *  · 代号（name）只用字母+数字：UM-400 / GD-200 / PT-400 / CP-200 / FJ-400 /
  *    EK-100 / CS-800T / HP-400 / TX-400，**不含任何厂商名/商品名**。
  *  · 旧代号（su-200 / ri-100 / …）只活在 `LEGACY_PRESET_ID_ALIASES` 里做旧照片兼容，
@@ -62,23 +71,24 @@ export const PRESET_DEFAULTS = {
   temperature: 0,
   /** 色调：同上，九卷静态值全 0。 */
   tint: 0,
-  /** Layer 1 树脂柔焦强度。0 = 不出图层。 */
-  lensSoftness: 0,
-  /** Layer 2 暗部浓墨重压强度。0 = 不出图层。 */
+  /** Layer 3 零模糊真 S 曲线（同源 overlay 自叠）强度。0 = 不出图层。 */
+  sCurveContrast: 0,
+  /** Layer 4 零模糊曝光提亮（同源 screen 自叠）强度。0 = 不出图层。 */
+  exposureLift: 0,
+  /** Layer 5 黑位托底（同源 multiply 自叠）强度。0 = 不出图层。 */
   shadowCrush: 0,
-  /** Layer 3 高光奶油提亮强度。0 = 不出图层。 */
-  highlightBloom: 0,
   /**
-   * Layer 4a/4b：化学冷暖分离色。空串 = 该卷没有这一层；
-   * 混合模式与不透明度都由每支卷按用户 m07595 的配方给出。
+   * Layer 7/8 化学冷暖分离色。空串 = 该卷没有这一层；
+   * 混合模式 v1.9.1 铁律**只允许 soft-light / overlay**（渲染侧会 sanitize），
+   * 不透明度由每支卷的冻结配方给出。
    */
   shadowTint: '',
-  shadowTintBlendMode: 'multiply',
+  shadowTintBlendMode: 'soft-light',
   shadowTintOpacity: 0,
   highlightTint: '',
   highlightTintBlendMode: 'soft-light',
   highlightTintOpacity: 0,
-  /** Layer 4c 暖红光晕：渲染不透明度 = clamp01(v) × 0.18。 */
+  /** Layer 9 暖红光晕：渲染不透明度 = clamp(v, 0, 0.06)（v1.9.0 的 ×0.18 已废除）。 */
   halation: 0,
   /**
    * 颗粒**强度**（v1.8.3 起 = 图层绝对不透明度，硬上限 0.11）。
@@ -87,7 +97,7 @@ export const PRESET_DEFAULTS = {
   grain: 0.045,
   /** 灰尘与划痕（历史字段，v1.8.3 起不再产生图层）。 */
   dust: 0,
-  /** 暗角贴图边缘最大不透明度（v1.9.0 贴图中心 56% 半径 alpha=0）。 */
+  /** 暗角贴图边缘最大不透明度（v1.9.1 贴图中心 70% 半径 alpha=0）。 */
   vignette: 0.18,
   lightLeak: 0,
   lightLeakFlip: false,
@@ -119,16 +129,16 @@ export const DEFAULT_TIMESTAMP: Omit<ResolvedTimestampConfig, 'fontFamily' | 'an
 };
 
 /**
- * v1.9.0 的 9 支传奇底片。顺序 = 胶片抽屉里的卡片顺序，第一支是默认卷。
+ * v1.9.1 的 9 支传奇底片。顺序 = 胶片抽屉里的卡片顺序，第一支是默认卷。
  *
- * 全部参数按用户 m07595 的手术四配方表落值：
+ * 全部参数按用户 m08443 手术三的零模糊基准表落值：
  *   1 UM-400  = 高反差拍立得街拍卷（默认王牌，对标 Dazz #Inst C 气质）
  *   2 GD-200  = 金色日光
  *   3 PT-400  = 大师人像
  *   4 CP-200  = 复古琥珀
  *   5 FJ-400  = 日系青绿
  *   6 EK-100  = 反转片高密（无颗粒）
- *   7 CS-800T = 电影钨丝灯
+ *   7 CS-800T = 电影钨丝灯（唯一带 0.05 暖红光晕）
  *   8 HP-400  = 纪实人文黑白
  *   9 TX-400  = 硬朗高反差黑白
  *
@@ -140,129 +150,132 @@ export const PRESETS: FilmPreset[] = [
     name: 'UM-400',
     description: '高反差拍立得 · 街拍王牌',
     color: {
-      // 基准：lensSoftness .30 / shadowCrush .42 / highlightBloom .36 / vignette .46
-      lensSoftness: 0.3,
-      shadowCrush: 0.42,
-      highlightBloom: 0.36,
-      // 暗部深普鲁士青黑 multiply；高光/天空钴青 soft-light。
-      shadowTint: '#061626',
-      shadowTintBlendMode: 'multiply',
-      shadowTintOpacity: 0.22,
-      highlightTint: '#125FA5',
+      // 零模糊基准：sCurve .38 / lift .16 / crush .08 / vignette .28
+      sCurveContrast: 0.38,
+      exposureLift: 0.16,
+      shadowCrush: 0.08,
+      // 暗部深普鲁士蓝 soft-light；高光钴青琥珀 soft-light。
+      shadowTint: '#0F4C8C',
+      shadowTintBlendMode: 'soft-light',
+      shadowTintOpacity: 0.18,
+      highlightTint: '#FFC46B',
       highlightTintBlendMode: 'soft-light',
-      highlightTintOpacity: 0.28,
+      highlightTintOpacity: 0.16,
     },
     grain: 0.045,
-    vignette: 0.46,
+    vignette: 0.28,
   },
   {
     id: 'gd-200',
     name: 'GD-200',
     description: '金色日光 · 暖阳日常',
     color: {
-      lensSoftness: 0.24,
-      shadowCrush: 0.34,
-      highlightBloom: 0.32,
-      // 暗部暖琥珀棕 multiply；高光浓郁金黄 soft-light。
-      shadowTint: '#301A0A',
-      shadowTintBlendMode: 'multiply',
-      shadowTintOpacity: 0.18,
-      highlightTint: '#FFC655',
+      sCurveContrast: 0.3,
+      exposureLift: 0.18,
+      shadowCrush: 0.05,
+      // 暗部暖琥珀棕 soft-light；高光浓郁金黄 soft-light。
+      shadowTint: '#3A2614',
+      shadowTintBlendMode: 'soft-light',
+      shadowTintOpacity: 0.12,
+      highlightTint: '#FFC85A',
       highlightTintBlendMode: 'soft-light',
-      highlightTintOpacity: 0.3,
+      highlightTintOpacity: 0.26,
     },
     grain: 0.045,
-    vignette: 0.36,
+    vignette: 0.22,
   },
   {
     id: 'pt-400',
     name: 'PT-400',
     description: '大师人像 · 奶油肤色',
     color: {
-      lensSoftness: 0.26,
-      shadowCrush: 0.28,
-      highlightBloom: 0.34,
-      // 暗部通透微青灰 exclusion；肤色与高光奶油暖桃 soft-light。
-      shadowTint: '#0E1C24',
-      shadowTintBlendMode: 'exclusion',
-      shadowTintOpacity: 0.12,
-      highlightTint: '#FFD7BC',
+      sCurveContrast: 0.24,
+      exposureLift: 0.22,
+      shadowCrush: 0.03,
+      // 暗部通透微青灰 soft-light；肤色与高光奶油暖桃 soft-light。
+      shadowTint: '#33465A',
+      shadowTintBlendMode: 'soft-light',
+      shadowTintOpacity: 0.1,
+      highlightTint: '#FFD9C2',
       highlightTintBlendMode: 'soft-light',
-      highlightTintOpacity: 0.26,
+      highlightTintOpacity: 0.22,
     },
     grain: 0.045,
-    vignette: 0.28,
+    vignette: 0.18,
   },
   {
     id: 'cp-200',
     name: 'CP-200',
     description: '复古琥珀 · 九十年代',
     color: {
-      lensSoftness: 0.28,
-      shadowCrush: 0.32,
-      highlightBloom: 0.28,
-      // 90 年代怀旧茶褐暗部 multiply；复古米黄暖调 soft-light。
-      shadowTint: '#37240E',
-      shadowTintBlendMode: 'multiply',
-      shadowTintOpacity: 0.2,
-      highlightTint: '#F5B65C',
+      sCurveContrast: 0.28,
+      exposureLift: 0.16,
+      shadowCrush: 0.06,
+      // 90 年代怀旧茶褐暗部 soft-light；复古米黄暖调 soft-light。
+      shadowTint: '#3E2A12',
+      shadowTintBlendMode: 'soft-light',
+      shadowTintOpacity: 0.14,
+      highlightTint: '#F0B25A',
       highlightTintBlendMode: 'soft-light',
-      highlightTintOpacity: 0.28,
+      highlightTintOpacity: 0.2,
     },
     grain: 0.045,
-    vignette: 0.38,
+    vignette: 0.24,
   },
   {
     id: 'fj-400',
     name: 'FJ-400',
     description: '日系青绿 · 空气感',
     color: {
-      lensSoftness: 0.24,
-      shadowCrush: 0.35,
-      highlightBloom: 0.34,
-      // 暗部与树叶注入标志性翡翠青绿 multiply；高光清透冷白微青 soft-light。
-      shadowTint: '#08342E',
-      shadowTintBlendMode: 'multiply',
-      shadowTintOpacity: 0.22,
-      highlightTint: '#A0EBE1',
+      sCurveContrast: 0.32,
+      exposureLift: 0.2,
+      shadowCrush: 0.05,
+      // 暗部与树叶注入标志性翡翠青绿 soft-light；高光清透冷白微青 soft-light。
+      shadowTint: '#0E5C50',
+      shadowTintBlendMode: 'soft-light',
+      shadowTintOpacity: 0.16,
+      highlightTint: '#D6F2EC',
       highlightTintBlendMode: 'soft-light',
-      highlightTintOpacity: 0.24,
+      highlightTintOpacity: 0.14,
     },
     grain: 0.045,
-    vignette: 0.34,
+    vignette: 0.22,
   },
   {
     id: 'ek-100',
     name: 'EK-100',
     description: '反转片 · 高密红蓝',
     color: {
-      lensSoftness: 0.15,
-      shadowCrush: 0.46,
-      highlightBloom: 0.3,
+      sCurveContrast: 0.45,
+      exposureLift: 0.14,
+      shadowCrush: 0.1,
       // 反转片级色彩密度：overlay 红蓝加强；零颗粒（见 GRAINLESS_PRESET_IDS）。
       highlightTint: '#B03A48',
       highlightTintBlendMode: 'overlay',
-      highlightTintOpacity: 0.32,
+      highlightTintOpacity: 0.26,
     },
     grain: 0,
-    vignette: 0.44,
+    vignette: 0.3,
   },
   {
     id: 'cs-800t',
     name: 'CS-800T',
     description: '电影钨丝 · 霓虹光晕',
     color: {
-      lensSoftness: 0.28,
-      shadowCrush: 0.34,
-      highlightBloom: 0.42,
-      // 全局好莱坞钨丝灯冷翠蓝 soft-light（色彩密度层）；暖红除碳光晕走 halation。
-      highlightTint: '#0C4E94',
+      sCurveContrast: 0.34,
+      exposureLift: 0.18,
+      shadowCrush: 0.06,
+      // 钨丝灯冷翠蓝 soft-light；暖红除碳光晕走 halation（全库唯一 0.05）。
+      shadowTint: '#123A6B',
+      shadowTintBlendMode: 'soft-light',
+      shadowTintOpacity: 0.18,
+      highlightTint: '#2E6FBF',
       highlightTintBlendMode: 'soft-light',
-      highlightTintOpacity: 0.32,
-      halation: 1,
+      highlightTintOpacity: 0.22,
+      halation: 0.05,
     },
     grain: 0.045,
-    vignette: 0.4,
+    vignette: 0.26,
   },
   {
     id: 'hp-400',
@@ -270,12 +283,12 @@ export const PRESETS: FilmPreset[] = [
     description: '纪实黑白 · 银盐灰阶',
     mono: true,
     color: {
-      lensSoftness: 0.26,
-      shadowCrush: 0.32,
-      highlightBloom: 0.3,
+      sCurveContrast: 0.32,
+      exposureLift: 0.18,
+      shadowCrush: 0.06,
     },
     grain: 0.045,
-    vignette: 0.35,
+    vignette: 0.2,
   },
   {
     id: 'tx-400',
@@ -283,18 +296,18 @@ export const PRESETS: FilmPreset[] = [
     description: '硬朗黑白 · 森山冲击',
     mono: true,
     color: {
-      lensSoftness: 0.24,
-      shadowCrush: 0.5,
-      highlightBloom: 0.38,
+      sCurveContrast: 0.48,
+      exposureLift: 0.16,
+      shadowCrush: 0.12,
     },
     grain: 0.045,
-    vignette: 0.48,
+    vignette: 0.26,
   },
   // ↓↓↓ 在这里继续加你的预设 ↓↓↓
 ];
 
 /**
- * 该 id 的卷**永不产生颗粒纹理层**（v1.8.5 M2；v1.9.0 起是 ek-100 反转片）。
+ * 该 id 的卷**永不产生颗粒纹理层**（v1.8.5 M2；v1.9.0 起是 ek-100 反转片，v1.9.1 不变）。
  *
  * 为什么不是只把 `grain: 0` 写进数据：用户颗粒档位是全局设置，`applyGrainLevel()`
  * 会在运行时**无条件覆盖** `preset.grain`（CameraScreen / importPhoto / GalleryScreen
@@ -304,11 +317,11 @@ export const PRESETS: FilmPreset[] = [
  */
 export const GRAINLESS_PRESET_IDS: ReadonlySet<string> = new Set(['ek-100']);
 
-/** 冷启动用哪个预设（= 列表第一项，v1.9.0 起是 UM-400 王牌卷）。 */
+/** 冷启动用哪个预设（= 列表第一项，v1.9.1 起仍是 UM-400 王牌卷）。 */
 export const DEFAULT_PRESET_ID = 'um-400';
 
 /**
- * 旧代号 → 新代号的兼容映射（v1.9.0 底片库换代）。
+ * 旧代号 → 新代号的兼容映射（v1.9.0 底片库换代，v1.9.1 数值重做、映射不变）。
  *
  * 用途**只有一处**：旧版本拍下的照片在 `galleryStore` 里记着旧 `presetId`
  * （v1.8.9 的 gd-200/… 以及 v1.8.10~v1.8.11 的 su-200/…），重新冲印/回放时
@@ -361,9 +374,9 @@ export function resolvePreset(preset: FilmPreset): ResolvedFilmPreset {
   const resolvedColor: ResolvedColorGrade = {
     temperature: color.temperature ?? PRESET_DEFAULTS.temperature,
     tint: color.tint ?? PRESET_DEFAULTS.tint,
-    lensSoftness: color.lensSoftness ?? PRESET_DEFAULTS.lensSoftness,
+    sCurveContrast: color.sCurveContrast ?? PRESET_DEFAULTS.sCurveContrast,
+    exposureLift: color.exposureLift ?? PRESET_DEFAULTS.exposureLift,
     shadowCrush: color.shadowCrush ?? PRESET_DEFAULTS.shadowCrush,
-    highlightBloom: color.highlightBloom ?? PRESET_DEFAULTS.highlightBloom,
     shadowTint: color.shadowTint ?? PRESET_DEFAULTS.shadowTint,
     shadowTintBlendMode: color.shadowTintBlendMode ?? PRESET_DEFAULTS.shadowTintBlendMode,
     shadowTintOpacity: color.shadowTintOpacity ?? PRESET_DEFAULTS.shadowTintOpacity,

@@ -356,11 +356,12 @@ export interface LocationLayout {
  * 调色参数。每个值都有"中性点"，中性点 = 不产生任何图层 = 零开销。
  * 具体映射见 `src/utils/gradeLayers.ts` 顶部注释。
  *
- * v1.9.0（用户 m07595 手术二）起，这套参数描述的是 **5 层同源拍立得光学显影管线**：
- *   base 原图 → 树脂镜微柔焦 → 暗部浓墨重压 → 高光奶油提亮 → 化学冷暖分离 + 四角显影黑角
- * 字段不再是"半透明色纸"的挡位，而是"光学层"的强度：
- *   `lensSoftness` / `shadowCrush` / `highlightBloom` 三层全部由**同一张底片**的
- *   `Image` 副本（blurRadius + mixBlendMode）叠加实现，不做任何像素级 JS 计算。
+ * v1.9.1（用户 m08443「去雾斩 CCD」手术）起，这套参数描述的是 **零模糊（Zero-Blur）**
+ * 同源显影管线，彻底废除 v1.9.0 的 1.2px 树脂柔焦与 14px 高斯高光溢出：
+ *   base 原图（100% 刀锐） → 同源 overlay 真 S 曲线 → 同源 screen 零模糊曝光提亮
+ *   → 同源 multiply 轻量黑位托底 → 化学染色（只允许 soft-light / overlay）→ 物理介质
+ * 三个光学键全部由**同一张底片**的无模糊 `Image` 副本叠加实现，`blurRadius` 恒为 0；
+ * 数学上 overlay/screen/multiply 三条都满足 f(0)=0、f(1)=1，黑场永不起雾、白场永不发脏。
  */
 export interface ColorGradeConfig {
   /** 色温：-1 冷（偏蓝）~ 0 中性 ~ +1 暖（偏橙）。用户色温旋钮直接加减这一项。 */
@@ -368,47 +369,48 @@ export interface ColorGradeConfig {
   /** 色调：-1 品红 ~ 0 中性 ~ +1 偏绿。 */
   tint?: number;
   /**
-   * v1.9.0 手术二 · Layer 1 **拍立得树脂镜头微柔焦**：同一张底片的 `Image` 副本
-   * `blurRadius={1.2}` 以 normal 混合叠在基底上，opacity = 本值（0.22~0.34）。
-   * 作用 = 抹平 iPhone Smart HDR 在树叶/水面/砖墙上的数码锐化白边，还原 Dazz `#Inst C`
-   * 的柔润光学肌理。0 = 关（不出图层）。
+   * v1.9.1 手术一 · **零模糊真 S 曲线反差**：同源无模糊 `Image`（blurRadius 0）
+   * 以 'overlay' 自叠，opacity = 本值（0.24~0.48）。
+   * 数学：Y<0.5 → 2Y²（暗部压实）；Y≥0.5 → 1−2(1−Y)²（亮部提亮）。
+   * 这是胶片特性曲线的"真反差"，替代 v1.9.0 的重度 multiply 压暗。
    */
-  lensSoftness?: number;
+  sCurveContrast?: number;
   /**
-   * v1.9.0 手术二 · Layer 2 **暗部浓墨重压**：同一张底片以 'multiply' 自叠
-   * （数学上 Y' = Y²），opacity = 本值（0.25~0.55）。
-   * 作用 = 把灰蒙蒙的树荫/柏油路/深色车体压成深邃油润的胶片暗部，而不是蒙灰。
+   * v1.9.1 手术一 · **零模糊曝光提亮**：同源无模糊 `Image`（**blurRadius 0，严禁任何模糊**）
+   * 以 'screen' 自叠（数学 Y' = 2Y−Y²），opacity = 本值（0.14~0.22）。
+   * Y=0 时恒为 0 —— 黑色显示器/夜空绝不起雾；中间调/高光干净提亮。
+   */
+  exposureLift?: number;
+  /**
+   * v1.9.1 手术一 · **黑位托底**：同源无模糊 `Image` 以 'multiply' 自叠（Y'=Y²），
+   * opacity 只允许 0.04~0.12（v1.9.0 的 0.25~0.55 已废除：它把白雪/樱花压成脏灰）。
    */
   shadowCrush?: number;
   /**
-   * v1.9.0 手术二 · Layer 3 **高光奶油提亮 + 溢出**：同一张底片经 `blurRadius={14}`
-   * 高斯柔化后以 'screen' 叠加（数学上 Y' = 1-(1-Y)²），opacity = 本值（0.20~0.48）。
-   * 作用 = 只提亮高光（白云/白石/水面反光），并在明暗交界产生拍立得奶油 Bloom，
-   * 根除"高光发灰发闷"。
-   */
-  highlightBloom?: number;
-  /**
    * Layer 4a **暗部化学偏色**：空串 = 该卷没有这一层。整幅纯色 + `shadowTintBlendMode`。
-   * 深普鲁士蓝 / 墨绿 / 暖褐这类相乘色把暗部拉出化学显影的色相分离。
+   * 深普鲁士蓝 / 墨绿 / 暖褐这类化学色把暗部拉出色相分离。
    */
   shadowTint?: string;
-  /** 暗部化学偏色的混合模式（缺省 `multiply`；可用 `exclusion` 做轻薄冷调）。 */
+  /**
+   * 暗部化学偏色的混合模式：v1.9.1 铁律**只允许 `soft-light` 或 `overlay`**；
+   * 传入 multiply / exclusion / screen 等会破坏 f(0)=0 的模式时，渲染侧强制回退 soft-light。
+   */
   shadowTintBlendMode?: BlendMode;
-  /** 暗部化学偏色的不透明度（v1.9.0 值域 0.12~0.28）。 */
+  /** 暗部化学偏色的不透明度（v1.9.1 值域 0~0.28）。 */
   shadowTintOpacity?: number;
   /**
    * Layer 4b **高光/中间调色彩密度**：空串 = 该卷没有这一层。整幅纯色 + `highlightTintBlendMode`。
    * 钴青天空、金色阳光、暖桃肤色、钨丝灯蓝、硬反差红蓝密度都靠这一层。
    */
   highlightTint?: string;
-  /** 色彩密度层的混合模式（缺省 `soft-light`；可用 `overlay`/`screen`）。 */
+  /** 色彩密度层混合模式：同 v1.9.1 铁律（非 soft-light/overlay 一律回退 soft-light）。 */
   highlightTintBlendMode?: BlendMode;
-  /** 色彩密度层的不透明度（v1.9.0 值域 0.18~0.36）。 */
+  /** 色彩密度层的不透明度（v1.9.1 值域 0~0.30）。 */
   highlightTintOpacity?: number;
   /**
    * Layer 4c **暖红光晕（halation）**：一层 `#FF4028` 纯色 'screen'。
-   * 渲染不透明度 = clamp01(本值) × 0.18（v1.9.0 上限；CS-800T 这类要浓光晕的卷写 1）。
-   * 字段原名 `bloom`，v1.8.5 更名并改语义；v1.9.0 起不再用模糊副本实现，纯色层不铺白。
+   * 渲染不透明度 = clamp(本值, 0, 0.06)；v1.9.1 起 8 款卷恒为 0，只有 CS-800T 保留 0.05。
+   * 理由（用户 m08443）：带模糊的大面积光晕会把夜空/黑色背景漫成乳白雾。
    */
   halation?: number;
 }

@@ -102,13 +102,13 @@ function clampChannel(value: number): number {
 
 /** 中灰：所有近似都以它为起点，相当于"标准场景的中间调"。 */
 const BASE_GRAY = 132;
-/** Layer2 暗部浓墨对色块底部的满量程下压（shadowCrush ≈ 0.5 时压 ≈ 23 阶）。 */
+/** v1.9.1 黑位托底（同源 multiply 自叠）对色块底部的满量程下压（shadowCrush 0.12 时 ≈ 5.5 阶）。 */
 const CRUSH_RANGE = 46;
-/** Layer3 高光奶油对色块顶部的满量程抬升（highlightBloom ≈ 0.48 时抬 ≈ 16 阶）。 */
-const BLOOM_RANGE = 34;
-/** Layer1 树脂柔焦带来的轻微奶雾（0.34 时 ≈ +2 阶）。 */
-const SOFTNESS_RANGE = 6;
-/** 化学分离色的偏移倍率：不透明度 × 通道差 × 1.2（0.36 × 127 × 1.2 ≈ 55 阶）。 */
+/** v1.9.1 零模糊真 S 曲线（同源 overlay 自叠）对色块顶部的满量程抬升（sCurve 0.48 时 ≈ 14 阶）。 */
+const S_RANGE = 30;
+/** v1.9.1 零模糊曝光提亮（同源 screen 自叠）对色块顶部的满量程抬升（exposureLift 0.22 时 ≈ 4 阶）。 */
+const LIFT_RANGE = 18;
+/** 化学分离色的偏移倍率：不透明度 × 通道差 × 1.2（0.30 × 127 × 1.2 ≈ 46 阶）。 */
 const CHEMISTRY_GAIN = 1.2;
 
 type SwatchZone = {
@@ -130,25 +130,20 @@ function hexChannels(hex: string | undefined): readonly [number, number, number]
   return channels.some((channel) => Number.isNaN(channel)) ? null : channels;
 }
 
-/** multiply 混色的等价通道运算：`base × (1 - opacity × (1 - tint/255))`。 */
-function multiplyTint(base: number, tint: number, opacity: number): number {
-  return base * (1 - opacity * (1 - tint / 255));
-}
-
 /** soft-light / overlay 在中间调附近的线性近似：按通道差往 tint 方向偏移。 */
 function lightTint(base: number, tint: number, opacity: number, weight: number): number {
   return base + (tint - 128) * opacity * weight * CHEMISTRY_GAIN;
 }
 
 /**
- * v1.9.0 光学配方 → 三段色阶（高光 / 中间调 / 暗部）。
+ * v1.9.1 零模糊配方 → 三段色阶（高光 / 中间调 / 暗部）。
  *
- * 映射纪律（与 `gradeLayers.ts` 的 12 层顺序一一对应）：
- *  1. `lensSoftness`  → 三档统一轻微抬亮（树脂奶雾，量很小）
- *  2. `shadowCrush`   → 只压暗部（底部最大、中间调少量、顶部不动）
- *  3. `highlightBloom`→ 只抬高光（顶部最大、中间调少量、暗部不动）
- *  4. `shadowTint*`   → 暗部 multiply，权重 底部 1.0 / 中间 0.45 / 顶部 0.15
- *  5. `highlightTint*`→ 高光 soft-light/overlay，权重 顶部 1.0 / 中间 0.4 / 底部 0.25
+ * 映射纪律（与 `gradeLayers.ts` 的 12 层顺序一一对应，全部 blurRadius 0 自叠）：
+ *  1. `sCurveContrast`→ overlay 自叠：底部压深（×0.8）、中间调微抬（×0.05）、顶部提亮（×1）
+ *  2. `exposureLift`  → screen 自叠：三档统一提亮（底部 0.3 / 中间调 0.6 / 顶部 1）
+ *  3. `shadowCrush`   → multiply 自叠：只压暗部（底部最大、顶部轻抬 0.15）
+ *  4. `shadowTint*`   → 化学暗部偏色（soft-light / overlay），权重 底部 1.0 / 中间 0.45 / 顶部 0.15
+ *  5. `highlightTint*`→ 色彩密度层（soft-light / overlay），权重 顶部 1.0 / 中间 0.4 / 底部 0.25
  *  6. `mono`          → 三档全部取 BT.709 亮度（`#808080 + 'color'` 的去色等价）
  *
  * 暗角（vignette）不参与色块：它只影响四角亮度，画进这条 34pt 的横向色带会读成
@@ -156,36 +151,37 @@ function lightTint(base: number, tint: number, opacity: number, weight: number):
  */
 function swatchZones(preset: FilmPreset): SwatchZone {
   const color = preset.color;
-  const lensSoftness = color.lensSoftness ?? 0;
+  const sCurveContrast = color.sCurveContrast ?? 0;
+  const exposureLift = color.exposureLift ?? 0;
   const shadowCrush = color.shadowCrush ?? 0;
-  const highlightBloom = color.highlightBloom ?? 0;
   const shadowTint = hexChannels(color.shadowTint);
   const shadowOpacity = color.shadowTintOpacity ?? 0;
   const highlightTint = hexChannels(color.highlightTint);
   const highlightOpacity = color.highlightTintOpacity ?? 0;
 
-  // 每档的"胶片亮度"：先算浓墨/奶油对灰度的影响，再叠加化学分离色。
+  // 每档的"胶片亮度"：先算 S 曲线/曝光提亮/黑位托底对灰度的影响，再叠加化学分离色。
   const zones: {
     readonly level: number;
     readonly shadowWeight: number;
     readonly highlightWeight: number;
   }[] = [
     {
-      level: BASE_GRAY - shadowCrush * CRUSH_RANGE - lensSoftness * SOFTNESS_RANGE * 0.3,
+      level:
+        BASE_GRAY -
+        shadowCrush * CRUSH_RANGE -
+        sCurveContrast * S_RANGE * 0.8 +
+        exposureLift * LIFT_RANGE * 0.3,
       shadowWeight: 1,
       highlightWeight: 0.25,
     },
     {
-      level:
-        BASE_GRAY -
-        shadowCrush * CRUSH_RANGE * 0.18 +
-        highlightBloom * BLOOM_RANGE * 0.12 +
-        lensSoftness * SOFTNESS_RANGE,
+      level: BASE_GRAY + sCurveContrast * S_RANGE * 0.05 + exposureLift * LIFT_RANGE * 0.6,
       shadowWeight: 0.45,
       highlightWeight: 0.4,
     },
     {
-      level: BASE_GRAY + highlightBloom * BLOOM_RANGE + lensSoftness * SOFTNESS_RANGE,
+      level:
+        BASE_GRAY + shadowCrush * CRUSH_RANGE * 0.15 + sCurveContrast * S_RANGE + exposureLift * LIFT_RANGE,
       shadowWeight: 0.15,
       highlightWeight: 1,
     },
@@ -196,7 +192,7 @@ function swatchZones(preset: FilmPreset): SwatchZone {
     for (let index = 0; index < 3; index += 1) {
       let channel = zone.level;
       if (shadowTint !== null) {
-        channel = multiplyTint(channel, shadowTint[index], shadowOpacity * zone.shadowWeight);
+        channel = lightTint(channel, shadowTint[index], shadowOpacity, zone.shadowWeight);
       }
       if (highlightTint !== null) {
         channel = lightTint(channel, highlightTint[index], highlightOpacity, zone.highlightWeight);
@@ -266,9 +262,9 @@ interface BadgeTone {
 /**
  * 按色块顶部的**相对亮度**选角标底色。
  *
- * 色块颜色是 `swatchZones()` 现算出来的 `rgb(r, g, b)`；`highlightBloom` 高的卷
- * （奶油高光）能到 `rgb(210, …)` 这种接近白纸的值，黑底白字会直接消失，所以这里
- * 必须真的看一眼亮度。解析失败（将来色值换成 hex/rgba）就退回黑底 —— 宁可对比
+ * 色块颜色是 `swatchZones()` 现算出来的 `rgb(r, g, b)`；`sCurveContrast` / `exposureLift`
+ * 双高的卷（黑位托底 + 提亮）能到 `rgb(210, …)` 这种接近白纸的值，黑底白字会直接消失，
+ * 所以这里必须真的看一眼亮度。解析失败（将来色值换成 hex/rgba）就退回黑底 —— 宁可对比
  * 弱一点，也不要因为一行解析把整张卡画崩。
  */
 function badgeToneFor(zone: string): BadgeTone {

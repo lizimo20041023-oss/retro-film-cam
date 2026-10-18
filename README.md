@@ -67,6 +67,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [43. v1.8.10：底片库整套重做（九支新代号 + 仿色 + 旧照片兼容）](#43-v1810底片库整套重做九支新代号--仿色--旧照片兼容)
 - [44. v1.8.11：场景自适应冲印（按光线测光补偿）与水印位置两轴可设](#44-v1811场景自适应冲印按光线测光补偿与水印位置两轴可设)
 - [45. v1.9.0：五道手术（非阻塞快门 + 极速测光 / 12 层同源显影 / 反 HDR 四场景 / 九支新卷 / 4×4 水印矩阵保留）](#45-v190五道手术非阻塞快门--极速测光--12-层同源显影--反-hdr-四场景--九支新卷--4x4-水印矩阵保留)
+- [46. v1.9.1：去糊、去雾、去灰（零模糊 S 曲线 / 零模糊曝光提亮 / 四场景去雾 / 九卷零模糊基准 / 70% 暗角）](#46-v191去糊去雾去灰零模糊-s-曲线--零模糊曝光提亮--四场景去雾--九卷零模糊基准--70-暗角)
 
 ---
 
@@ -6382,6 +6383,192 @@ v1.8.11 的水印位置能力是"用户已经可用的功能"，这一版**一�
 `_run_gates_v190.ps1`、`_verify_ipa_v190.py` / `_release_v190.py` / `_commit_v190_msg.txt`、
 `_gate_v190_run.out.txt`、`_gate_v190_local_verify.txt`、`_export_v190_lead/`；
 删除了 `_probe_v1810_stocks.cjs` / `_probe_v1811_wiring.cjs`（被 v190 两探针替代）。
+## 46. v1.9.1：去糊、去雾、去灰（零模糊 S 曲线 / 零模糊曝光提亮 / 四场景去雾 / 九卷零模糊基准 / 70% 暗角）
+
+### 46.1 用户需求（对照 8 张实拍样片）
+
+v1.9.0 的 12 层同源显影在纸面上是对的，但真机 8 张实拍样片给出的结论很直接：
+**整组照片「又糊、又暗、又蒙了一层廉价 CCD 柔光雾」**。用户逐条点名了四个病根：
+
+1. `highlight-bloom` 的 **14px 大半径模糊** 配上 `screen` 混合，把光晕从「高光边缘」扩散成
+   「全图乳白」，连纯黑背景都被抬成灰雾；
+2. `adaptiveGrade` 的暗场景把 `halation` 往上推了 **+0.50**，夜景与室内直接满屏白雾；
+3. `lens-softness` 的 **1.2px `blurRadius` 全图重采样** 把原本清晰的底片抹糊；真正的
+   Dazz #Inst C 是「刀锐清晰」而不是柔焦；
+4. `shadow-crush` 用 `multiply` + Y² 以 0.35~0.50 的强度压暗部，把白雪、樱花压成脏灰色；
+   另外染色层用了 `exclusion` / `screen` / 高透明度 `multiply`，会污染黑场与白场；
+   暗角中心透明区只有 56%，画面中央的山体与海湾被压黑。
+
+用户要求三道手术（`gradeLayers.ts` 零模糊化、`adaptiveGrade.ts` 去雾化、九卷零模糊基准重定），
+硬约束与历次版本一致：不改框架、不加依赖、同步更新全部探针断言与快照，
+26 道门禁 + `tsc --noEmit` + GitHub Actions IPA 打包 100% 绿灯。
+
+操作化冻结版是工作区磁盘文件 `_v191_contract.md`（§0 文件所有权 / §1 types 12 键 /
+§2 九卷表 / §3 零模糊 12 层与常量 / §4 四场景表 / §5 FilmCard 派生公式 /
+§6 探针归属 / §7 验收命令）。本节的数值全部与契约一致。
+
+### 46.2 病根定位（源码级）
+
+| 症状 | 源码位置 | 旧数值 | 为什么会这样 |
+| --- | --- | --- | --- |
+| 整图糊 | `src/utils/gradeLayers.ts` 的 `lens-softness` 层 | `blurRadius: 1.2` + `normal` | 同一张原图以模糊副本叠回自身，等于对整幅图做了一次不可逆重采样；放大看边缘全发虚 |
+| 乳白雾 | `src/utils/gradeLayers.ts` 的 `highlight-bloom` 层 | `blurRadius: 14` + `screen` | `screen` 的 `f(0)=0` 本身没错，但 14px 模糊把「高光附近」摊到全图；黑背景沾到模糊光斑就被抬亮 |
+| 夜间/室内白雾 | `src/utils/adaptiveGrade.ts` 暗场景增量表 | `halation +0.50` | 光晕层是 `screen` 混合，强度翻倍后整片阴影都在发光 |
+| 白雪变脏灰 | `src/utils/gradeLayers.ts` 的 `shadow-crush` 层 | `multiply` 0.35~0.50 + Y² | Y² 对高亮区也生效（0.8²=0.64），白色被乘成 0.64 的灰；且 `multiply` 染色层不受控 |
+| 黑场/白场被染色 | `shadow-tint` / `highlight-tint` 的 blendMode | 允许 `exclusion` / `screen` / 高透明度 `multiply` | `exclusion` 对纯黑/纯白是「反转」，黑场会被染成彩色 |
+| 画面中央压黑 | `assets/textures/vignette.png` 生成器 | `INNER_RADIUS = 0.56` | 中心透明区太小，山体/海湾本就位于画面中部 |
+
+### 46.3 手术一：`gradeLayers.ts` 零模糊 12 层
+
+层序、键名与 `kind` 全部保持 v1.9.0 的冻结接口，只把「模糊」从显影管线里彻底拿掉：
+
+| # | key | 同源层 | 混合 | 强度上限 | 数学 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `temperature` | 用户旋钮 | `overlay` | 原有 | 色温 |
+| 2 | `tint` | 用户旋钮 | `soft-light` | 原有 | 色调 |
+| 3 | `s-curve-contrast` | 原图 | `overlay` | `S_CURVE_OPACITY_MAX = 0.72` | `Y<0.5 → 2Y²`；`Y≥0.5 → 1−2(1−Y)²`（真 S，`f(0)=0`、`f(0.5)=0.5`、`f(1)=1`） |
+| 4 | `exposure-lift` | 原图 | `screen` | `EXPOSURE_LIFT_OPACITY_MAX = 0.5` | `Y' = 2Y−Y²`（`f(0)=0`，零模糊提亮，黑场不动） |
+| 5 | `shadow-crush` | 原图 | `multiply` | `SHADOW_CRUSH_OPACITY_MAX = 0.12` | 只压 Y² 的暗部，上限从 0.50 砍到 0.12 |
+| 6 | `mono-desaturate` | 原图 | color | — | B&W 卷去色（`#808080`） |
+| 7 | `shadow-tint` | 原图 | **仅 `soft-light` / `overlay`** | `sanitizeTintBlendMode` 钳制 | `exclusion` / `screen` 被当非法值降级 |
+| 8 | `highlight-tint` | 原图 | **仅 `soft-light` / `overlay`** | 同上 | 同上 |
+| 9 | `halation` | 原图 | `screen` | `HALATION_OPACITY_MAX = 0.06` | 红色 `#FF4028`，只有 4 个卷允许非零 |
+| 10 | `grain` | 贴图 | normal | 既有 | 颗粒 PNG |
+| 11 | `vignette` | 贴图 | `multiply` | `VIGNETTE_OPACITY_MAX = 0.32` | 中心 70% 透明 |
+| 12 | `light-leak` | 贴图 | normal | 既有 | 漏光 PNG |
+
+关键点：
+
+- 3/4/5 三层都是**同一张原图自叠**（`kind: 'photo'`），但三层全部显式 `blurRadius: 0`；
+  取景器 `planFilmLooks` 的 live 过滤规则不变（photo 层、颗粒、染色层仍被丢弃）。
+- 删除 `LENS_SOFTNESS_BLUR_PX` / `HIGHLIGHT_BLOOM_BLUR_PX` / `HALATION_RENDER_CAP`
+  三个旧常量；`halation` 不再走「声明值 × 0.18」的隐藏换算，直接 clamp 到 0~0.06。
+- `sanitizeTintBlendMode()` 是新的出口：任何 `exclusion` / `screen` 进染色层都会被降级为
+  `soft-light`，源码级杜绝黑场/白场污染。
+- 层标签改为「零模糊 S 曲线」「零模糊曝光提亮」「黑位托底」；
+  `countStageImages` 口径随层数不变：`um-400` = 7 张同源图、`ek-100` = 6 张。
+
+### 46.4 手术二：`adaptiveGrade.ts` 去雾四场景表
+
+分类顺序与阈值全部保留（dark → bright → high-contrast → flat → neutral），只换增量表：
+
+| 场景 | sCurveContrast | exposureLift | shadowCrushTarget | vignetteDelta | colorDensity | separation | halation |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| dark | **+0.15** | **+0.21** | **0** | 0 | 1.0 | 1.0 | **0**（`HALATION_DELTA_MAX = 0.03` 夹取） |
+| high-contrast | **+0.22** | **+0.12** | **0.08** | 0 | 1.0 | 1.0 | 0 |
+| flat | **+0.28** | **+0.10** | **0.08** | 0 | **1.25** | **1.25** | 0 |
+| bright | **+0.18** | **+0.10** | **0** | **+0.16** | **1.20** | 1.0 | 0 |
+| neutral | 0 | 0 | 0 | 0 | 1.0 | 1.0 | 0 |
+
+要点：
+
+- 旧字段 `shadowCrushDelta` / `highlightBloomDelta` 已从 `AdaptivePlan` 删除，改为
+  `shadowCrushTarget: number | null`（`null` = 完全不干预）与 `sCurveContrastDelta` /
+  `exposureLiftDelta`；
+- 暗场景不再「加光晕」，改成「加 S 曲线 + 提亮曝光」，这是去雾的关键；
+- 白平衡/Tint 偏移上限 `WB_SHIFT_MAX = 0.14` / `TINT_SHIFT_MAX = 0.08` 不变；
+- 无 `scene` 时逐字节回到 v1.9.0 静态路径（`planAdaptiveGrade` 退化契约未变）。
+
+### 46.5 手术三：九卷零模糊基准
+
+字段序 = `sCurveContrast / exposureLift / shadowCrush / vignette / halation`：
+
+| 代号 | 名称 | 参数 | 染色（全部 soft-light） | 备注 |
+| --- | --- | --- | --- | --- |
+| `um-400` | 极光 400 | .38 / .16 / .08 / .28 / 0 | 阴影 `#0F4C8C`.18 / 高光 `#FFC46B`.16 | 默认卷 |
+| `gd-200` | 拾光 200 | .30 / .18 / .05 / .22 / 0 | 阴影 `#3A2614`.12 / 高光 `#FFC85A`.26 | 暖调 |
+| `pt-400` | 徕卡 400 | .24 / .22 / .03 / .18 / 0 | 阴影 `#33465A`.10 / 高光 `#FFD9C2`.22 | 奶油暖桃 |
+| `cp-200` | 峡湾 200 | .28 / .16 / .06 / .24 / 0 | 阴影 `#3E2A12`.14 / 高光 `#F0B25A`.20 | — |
+| `fj-400` | 翡翠 400 | .32 / .20 / .05 / .22 / 0 | 阴影 `#0E5C50`.16 / 高光 `#D6F2EC`.14 | 翡翠青绿 |
+| `ek-100` | 雪原 100 | .45 / .14 / .10 / .30 / 0 | 阴影 `#B03A48`.26（**overlay**，唯一例外） | 唯一零颗粒卷 |
+| `cs-800t` | 寒潮 800T | .34 / .18 / .06 / .26 / **.05** | 阴影 `#123A6B`.18 / 高光 `#2E6FBF`.22 | 唯一允许光晕的卷 |
+| `hp-400` | 石墨 400 | .32 / .18 / .06 / .20 / 0 | — | mono |
+| `tx-400` | 玄铁 400 | **.48 / .16 / .12** / .26 / 0 | — | mono，最强 S 曲线 |
+
+- 九卷的 `lensSoftness` / `highlightBloom` 字段从 `ColorGradeConfig` 整体删除，预设里不再出现；
+- 兼容映射（11 条旧 id → 新 id）、`DEFAULT_PRESET_ID='um-400'`、
+  `GRAINLESS_PRESET_IDS={'ek-100'}` 全部保留；
+- `FilmCard.tsx` 的渐变卡按新字段派生：
+  底 = `132 − shadowCrush×46 − sCurveContrast×30×0.8 + exposureLift×18×0.3`；
+  中 = `132 + sCurveContrast×30×0.05 + exposureLift×18×0.6`；
+  顶 = `132 + shadowCrush×46×0.15 + sCurveContrast×30 + exposureLift×18`；
+  常量 `CRUSH_RANGE=46` / `S_RANGE=30` / `LIFT_RANGE=18` / `CHEMISTRY_GAIN=1.2`。
+
+### 46.6 暗角重烤：中心透明区 56% → 70%
+
+`scripts/generate_vignette.py` 改 `INNER_RADIUS = 0.70`，alpha 剖面按
+`0.0 / 0.30 / 0.50 / 0.60 / 0.70 / 0.78 / 0.86 / 0.94 / 1.0` 采样，
+RGB 恒 `(4,12,20)`。重生成 `assets/textures/vignette.png`：
+
+- 1024×1024 RGBA，**117,771 B**，sha256 `7e9c6e8e8699a148434357ff04931d7c5feae74f6036a8e261d58885a5e6cc7e`；
+- alpha 实测：rho 0.70 = 0 / 0.78 = 45 / 0.86 = 140 / 0.94 = 228 / 1.0 = 255；
+- `_plate_stats.json` 同步按 70% 内圈重生成（centerAlpha 0 / edgeAlpha 0.993）；
+- `_haze_audit.mjs` 的径向暗角 9 预设 × 12 条断言全绿，中心不再被压暗。
+
+### 46.7 门禁（26 道，36,791 条断言 + 暗角 9/9）
+
+| # | 门禁 | 断言 | # | 门禁 | 断言 |
+| --- | --- | --- | --- | --- | --- |
+| G01 | `_probe_date_engine.cjs` | 3372 | G14 | `_purity_audit.mjs` | 64 |
+| G02 | `_probe_film_look.cjs` | 2083 | G15 | `_probe_v186_perf.cjs` | 241 |
+| G03 | `_probe_geo_lock.cjs` | 16207 | G16 | `_probe_v188_sharp.cjs` | 137 |
+| G04 | `_probe_noframe_v181.cjs` | 455 | G17 | `_probe_v189_flash.cjs` | 56 |
+| G05 | `_probe_noframe_watermark.cjs` | 458 | G18 | `_probe_v190_stocks.cjs` | 787 |
+| G06 | `_probe_skin_material.cjs` | 1069 | G19 | `_probe_v190_optics.cjs` | 816 |
+| G07 | `_probe_v180_seams.mjs` | 1459 | G20 | `_probe_v190_meter.mjs` | 254 |
+| G08 | `_probe_lead_integration.mjs` | 315 | G21 | `_probe_v190_async.cjs` | 150 |
+| G09 | `_probe_capture_quality.mjs` | 78 | G22 | `_probe_v190_wiring.cjs` | 1279 |
+| G10 | `_probe_v184_camera.cjs` | 940 | G23 | `_probe_v1811_adaptive.cjs` | 2347 |
+| G11 | `_probe_v185_place.cjs` | 468 | G24 | `_probe_v1811_scene.mjs` | 478 |
+| G12 | `_probe_v185_frame.cjs` | 1781 | G25 | `_probe_v1811_watermark.cjs` | 1497 |
+| G13 | `_haze_audit.mjs` | 9/9（9 预设 × 12 条 0 失败） | — | **合计** | **36,791 条断言 + 暗角 9/9** |
+
+- `tsc --noEmit -p tsconfig.json` → EXIT 0；26 门禁全 EXIT 0 / 0 失败
+  （`_run_gates_v191.ps1`，日志 `_gate_v191_run.out.txt`）。
+- `_haze_audit.mjs` 同时做结构门禁（9 卷 × 12 条）与径向暗角（9 卷 × 12 条），各 0 失败；
+  其中 `normalMid` 预算由 0.06 重标定为 0.07：正文已说明，pt-400 新 `highlightTint` 0.22
+  的声明成本是 0.0615，仍远低于历史雾层（0.15+），属于预算口径更新而非放宽雾限。
+- `_probe_v190_meter.mjs` 唯一红项是**探针口径过期**（仍读 v1.9.0 已删除的
+  `shadowCrushDelta` / `highlightBloomDelta`），按 v1.9.1 新字段重写后 254 条全绿，源码无回归。
+- 本地包核验 `python _verify_ipa_v191.py --local <bundle>` → `RESULT(local): OK`，
+  bundle `index-da5c6fc22dde743914ddb7d0c6b998ce.js` = **1,386,100 B**
+  （v1.9.0 为 1,385,027 B，+1,073 B）；`--grain` / `--vignette` 单验均 OK。
+
+### 46.8 发布指纹
+
+*（发布完成后回填，见下方表格）*
+
+| 项 | 值 |
+| --- | --- |
+| 本地提交 | 待回填 |
+| 远端 master | 待回填 |
+| CI run / job | 待回填 |
+| artifact id / 体积 | 待回填 |
+| IPA 文件 / 体积 / sha256 | 待回填 |
+| Release id / asset id | 待回填 |
+| IPA 回读核验 | 待回填 |
+| 下载地址 | 待回填 |
+
+### 46.9 文件改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/types/index.ts` | `ColorGradeConfig` 重写为 12 键：删 `lensSoftness?` / `highlightBloom?`，新增 `sCurveContrast` / `exposureLift` / `shadowCrush`；染色 blendMode 文档限定 `soft-light` / `overlay`；注释写明零模糊数学 |
+| `src/utils/gradeLayers.ts` | **整文件重写**：零模糊 12 层（3 条同源 photo 层全部 `blurRadius: 0`）+ 五个强度上限常量 + `sanitizeTintBlendMode`；删三个旧模糊常量 |
+| `src/utils/adaptiveGrade.ts` | **整文件重写**：去雾四场景增量表、`shadowCrushTarget: number \| null`、`HALATION_DELTA_MAX = 0.03`；删 `halation +0.50` |
+| `src/constants/presets.ts` | **整文件重写**：九卷零模糊基准参数与 soft-light 染色；保留 11 条兼容映射、默认卷、零颗粒卷 |
+| `src/components/FilmCard.tsx` | 渐变卡改为 `S_RANGE=30` / `LIFT_RANGE=18` 的派生公式；角标映射不变 |
+| `src/constants/textures.ts` | vignette 注释 68% → 70%，标注 v1.9.1 重烤 |
+| `scripts/generate_vignette.py` | `INNER_RADIUS = 0.70`、alpha 剖面元组与 docstring 更新 |
+| `assets/textures/vignette.png` | 重生成：中心 70% 透明、RGB (4,12,20)、117,771 B |
+| `app.json` | version `1.9.0` → `1.9.1` |
+| `README.md` | 本节 §46 + TOC |
+
+工作区根（不进仓库）：`_v191_contract.md`、`_patch_verify_v191.py`、
+`_run_gates_v191.ps1`、`_gate_v191_run.out.txt`、`_gate_v191_local_verify.txt`、
+`_verify_ipa_v191.py` / `_release_v191.py` / `_commit_v191_msg.txt`、`_export_v191_lead/`；
+A/B 组探针由 `zero-blur-optics` / `optics-engine` 就地更新，
+C 组由 `quality-gate` 全量复跑（26 道门禁 + 暗角单验）。
 
 ---
 

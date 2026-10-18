@@ -55,7 +55,7 @@ export const TEXTURES: Record<TextureId, TextureSpec> = {
     name: '暗角',
     source: require('../../assets/textures/vignette.png'),
     defaultResizeMode: 'stretch',
-    note: '从中心透明 → 边缘深青黑的径向渐变（中心 68% 半径 alpha=0，四角 alpha=255，smoothstep 无硬边），拉伸铺满，v1.8.7 起用 multiply 压暗四角。为什么这次 multiply 安全：中心 alpha=0 —— 没有上层像素参与混合，纯白不会被压灰；v1.8.0 那次是整张不透明白底铺满，才有白雾。multiply 四角"乘"暗比 normal"盖"黑纱保留更多中间调。',
+    note: '从中心透明 → 边缘深青黑的径向渐变（v1.9.1 重烤：中心 70% 半径 alpha=0，四角 alpha=255，smoothstep 无硬边），拉伸铺满，v1.8.7 起用 multiply 压暗四角。为什么这次 multiply 安全：中心 alpha=0 —— 没有上层像素参与混合，纯白不会被压灰（v1.9.1 把透明区从 56% 扩到 70%，中间的山体/海湾不再被暗角压黑）；v1.8.0 那次是整张不透明白底铺满，才有白雾。multiply 四角"乘"暗比 normal"盖"黑纱保留更多中间调。',
   },
   lightLeak: {
     id: 'lightLeak',
