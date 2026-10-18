@@ -109,21 +109,21 @@ function clampChannel(value: number): number {
   return value;
 }
 
-/** 中灰：所有近似都以它为起点，相当于"标准场景的中间调"（v1.9.4 取 110 让九卷三档都落在 [6,250] 内且不封顶）。 */
-const BASE_GRAY = 110;
+/** 中灰：所有近似都以它为起点，相当于"标准场景的中间调"（v1.9.5 取 100 让九卷三档都落在 [6,250] 内且不封顶）。 */
+const BASE_GRAY = 100;
 /**
  * v1.9.4 黑位托底（同源 multiply 自叠）对色块底部的满量程下压：
- * 覆盖 0~0.05 量程（0.05 时 ≈ 12 阶；全库只有 TX-400 会用到）。
+ * 覆盖 0~0.05 量程（0.05 时 ≈ 12 阶；全库只有 HP-400 会用到）。
  */
 const CRUSH_RANGE = 800;
 /**
  * v1.9.4 零模糊真 S 曲线（同源 overlay 自叠）对色块顶部的满量程抬升：
- * 覆盖 0.40~0.60 量程（0.60 时 ≈ 30 阶，底部同步 −1.35 倍压深）。
+ * 覆盖 0.23~0.60 量程（0.60 时 ≈ 30 阶，底部同步 −1.35 倍压深）。
  */
 const S_RANGE = 90;
 /**
  * v1.9.4 零模糊曝光提亮（同源 screen 自叠）对色块顶部的满量程抬升：
- * 覆盖 0.16~0.26 量程（0.26 时 ≈ 32 阶，中间调同步 ×0.4）。
+ * 覆盖 0~0.28 量程（0.28 时 ≈ 32 阶，中间调同步 ×0.4；HP-400 的 0 不产生该层）。
  */
 const LIFT_RANGE = 380;
 /**
@@ -138,10 +138,16 @@ const VIGNETTE_RANGE = 240;
 const CHROMA_RANGE = 0.14;
 /** 色度锁权重下限（chromaLock = 0.54 时的吃料系数；缺省/mono 卷按 1.0 处理）。 */
 const CHROMA_FLOOR = 0.86;
-/** 化学暗部偏色的偏移倍率：染色不透明度^1.5 × 通道差 × 权重 × 6.0 × 色度锁系数。 */
-const SHADOW_GAIN = 6.0;
+/** 化学暗部偏色的偏移倍率：染色不透明度^1.5 × 通道差 × 权重 × 7.0 × 色度锁系数。 */
+const SHADOW_GAIN = 7.0;
 /** 化学高光偏色的偏移倍率：染色不透明度^1.5 × 通道差 × 权重 × 8.0 × 色度锁系数。 */
 const HIGHLIGHT_GAIN = 8.0;
+/**
+ * 顶部色阶的公共提亮底量：v1.9.5 的九卷高光染色多为"减色型"深色（#049BA4 / #814212 等），
+ * 顶部档 highlightWeight = 1 会被整档拉暗、破坏"底部 < 中间调 < 高光"的亮度单调；
+ * 这里给顶部补一个与预设参数无关的固定提亮，把单调性从染色手里拿回来。
+ */
+const TOP_LIFT = 10;
 /**
  * 染色不透明度的**非线性吃料指数**：胶片乳剂的染色密度不是线性叠加的，
  * 这里按 `opacity^1.5` 近似 —— 低不透明度的分离色更克制、高不透明度才吃饱，
@@ -204,9 +210,10 @@ function lightTint(
  *  2. `chromaLock`    → color 色度锁：不直接改明度，而是把染色层的吃料按 0.86~1.0 缩放；
  *                       色度锁越高 → 颜色越接近原色 → swatch 饱和度越高
  *  3. `exposureLift`  → screen 自叠：顶部提亮（×0.33）、中间调（×0.4）、底部（×0.2）
- *  4. `shadowTint*`   → 化学暗部偏色（只 soft-light），权重 底部 1.0 / 中间 0.45 / 顶部 0.15，增益 ×6.0
+ *  3b. `TOP_LIFT`     → 与预设无关的顶部固定提亮（+10 阶），抵消深色高光染色的整档拉暗
+ *  4. `shadowTint*`   → 化学暗部偏色（只 soft-light），权重 底部 1.0 / 中间 0.45 / 顶部 0.15，增益 ×7.0
  *  5. `highlightTint*`→ 德味暖调分色（只 soft-light），权重 顶部 1.0 / 中间 0.4 / 底部 0.2，增益 ×8.0
- *  6. `shadowCrush`   → multiply 自叠：只压暗部（底部 ×0.3，中间调 ×0.06；只有 TX-400 > 0）
+ *  6. `shadowCrush`   → multiply 自叠：只压暗部（底部 ×0.3，中间调 ×0.06；只有 HP-400 > 0）
  *  7. `vignette`      → 只压四角；横向色带把它映射到**下沿**（底部 −VIGNETTE_RANGE×0.42）
  *  8. `mono`          → 三档全部取 BT.709 亮度（`#808080 + 'color'` 的去色等价）
  *
@@ -253,7 +260,7 @@ function swatchZones(preset: FilmPreset): SwatchZone {
       highlightWeight: 0.4,
     },
     {
-      level: BASE_GRAY + sCurveContrast * S_RANGE * 0.55 + exposureLift * LIFT_RANGE * 0.33,
+      level: BASE_GRAY + sCurveContrast * S_RANGE * 0.55 + exposureLift * LIFT_RANGE * 0.33 + TOP_LIFT,
       shadowWeight: 0.15,
       highlightWeight: 1,
     },

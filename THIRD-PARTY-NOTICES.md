@@ -76,6 +76,19 @@ SOFTWARE.
 （新增「点画面对焦」的原生实现，共 3 个 Swift 文件、+204 行、0 删除）。
 该修改同样以 MIT 许可提供；`patch-package` 在 `npm ci` 时自动套用。
 
+## 胶片预设调色数据（t3mujinpack，MIT）
+
+v1.9.5 起，九卷调色参数由 [t3mujinpack](https://github.com/t3mujin/t3mujinpack) 的
+九款胶片 Hald CLUT **离线转译**而来：只取拟合后的调色参数，不打包任何 LUT 文件；
+App 内没有 LUT / 运行时转换，也没有新增依赖。
+
+- 来源：https://github.com/t3mujin/t3mujinpack
+- 许可证：MIT，`Copyright (c) 2017 João Almeida`
+- 使用方式：离线拟合（`_v195_fit_all3.py`），转译口径见 README §50
+- 归因：九卷调色参数是该预设数据的衍生作品，继续以 MIT 许可提供
+
+该数据的 MIT 全文与上表相同，版权人为 `Copyright (c) 2017 João Almeida`。
+
 ## 素材
 
 `assets/` 下的全部图片（8 张相框、7 张纹理、11 个界面图标、App 图标）

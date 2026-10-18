@@ -71,6 +71,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [47. v1.9.2：亮白通透（层序倒置 + 无 crush + 高明度染色 + 80% 内圈暗角 + RGBA 颗粒 + 地名后缀）](#47-v192亮白通透层序倒置--无-crush--高明度染色--80-内圈暗角--rgba-颗粒--地名后缀)
 - [48. v1.9.3：德味高密光学曲线（像素级平铺真银盐颗粒 / color-burn 色彩密度 / 九卷重标定 / 夜景纯黑 / 简繁归一 / 日期底托）](#48-v193德味高密光学曲线像素级平铺真银盐颗粒--color-burn-色彩密度--九卷重标定--夜景纯黑--简繁归一--日期底托)
 - [49. v1.9.4：真·德味明度色度解耦引擎（v1.9.3 实拍翻车根治）](#49-v194真德味明度色度解耦引擎v193-实拍翻车根治)
+- [50. v1.9.5：开源胶片预设转译（t3mujinpack MIT → 九卷调色重标定）](#50-v195开源胶片预设转译t3mujinpack-mit--九卷调色重标定)
 
 ---
 
@@ -7120,6 +7121,148 @@ v1.9.4 的答案不是把反差调小（那只会退回清爽数码照），而�
 `_verify_ipa_v194.py`、`_release_v194.py`、`_commit_v194_msg.txt`、`_export_v194_lead/`；
 A 组探针由 `zero-blur-optics` 就地更新、B 组由 `optics-engine` 更新、C 组由
 `quality-gate` 全量复跑（26 道门禁 + 颗粒/暗角单验）。
+
+## 50. v1.9.5：开源胶片预设转译（t3mujinpack MIT → 九卷调色重标定）
+
+> 用户诉求：「能不能去找开源的胶片预设文件导入我这个 app 中呢」→ 定为「离线转译成内置卷」；
+> 随后扩大到「多找些开源的……替换掉我现有的」→ 用一套 MIT 开源胶片预设，重标定全部九卷。
+
+### 50.1 为什么是「离线转译」而不是「运行时导入」
+
+当时评估了三条路线：
+
+- **A 离线转译**：把开源预设离线拟合成九卷的调色参数，运行时仍是原来的 12 槽声明式管线。
+- **B 运行时 JSON 导入器**：App 内建 schema + 校验 + 文件管理，用户导入外部 JSON。
+- **C 直接读 `.xmp`/`.cube`**：需要 document-picker 或 Skia 之类的新依赖，等于把声明式显影管线
+  改成 LUT 引擎。
+
+C 会破坏「零新依赖、纯 JS/RN、九卷冻结契约」三条硬约束；B 还要额外做 schema、错误提示与
+持久化，且开源 `.cube` 的质量/许可参差。A 不动引擎、不动依赖、不动九卷 id/name，只把
+「调色参数」换成开源胶片实测转译值 —— 因此选 A。**App 里没有 LUT 运行时，也没有新增任何依赖。**
+
+### 50.2 源与许可
+
+- 来源：[t3mujinpack](https://github.com/t3mujin/t3mujinpack)（darktable 胶片预设包，MIT，
+  `Copyright (c) 2017 João Almeida`），含 53 张 Level-12 Hald CLUT 与 118 个 `.dtstyle`，
+  自述「只操作 Lab 色调曲线」。
+- 只取「调色语义」，不打包任何 LUT 文件：九款胶片按语义映射到九卷（Ultra Max 400→UM-400、
+  Gold 200→GD-200、Portra 400→PT-400、ColorPlus 200→CP-200、Superia 400→FJ-400、
+  Ektachrome 100 G→EK-100、Superia 1600→CS-800T、HP5 Plus 400→HP-400、Tri-X 400→TX-400）。
+- 许可证处理：`THIRD-PARTY-NOTICES.md` 新增「胶片预设调色数据（t3mujinpack，MIT）」一节，
+  收录来源、版权人与「衍生作品继续以 MIT 提供」的说明；App 内不出现任何厂商/商品名。
+
+### 50.3 转译口径（口径 A：sRGB 直喂）
+
+Hald CLUT 是 `level 12`（1728×1728，144³ 个格点，行主序、**r 变化最快**）。用同包自带的
+`Hald_CLUT_Identity.tif` 校验解码：三通道误差均 0.33/255，解码器可信。转译前先用一张真实
+照片做口径对照：LUT 直接吃 sRGB 编码值（口径 A）自然；先转线性光再喂 LUT 会出现霓虹/海报化的
+伪色。**因此定案 A**。
+
+拟合靶子选 `照片像素分布` 而不是 RGB 立方：先在 6³ 立方 + 灰阶 + 随机点上拟合，结果所有卷都
+钉死在参数边界（lift 顶格、S 曲线顶格），拿到真实照片上一看反而出现荧光染色 —— 立方角点把
+染色拉飞了。最终采样集 = 两张实拍照片各 1,500 px（480 宽重采样）+ 65 级灰阶 + 11 个题材补点
+（肤色/天空/草木/暖木/冷灰）+ 稀疏立方，权重按亮度高斯（中心 0.5、σ 0.3）加强中间调；目标函数
+是加权 `mean ΔE76 + 0.25·p95`，手工差分进化（pop 90 × 170 代）加坐标精修。另一条被否掉的
+做法是把 LUT 灰阶曲线的黑白点钉回 0/1 再拟合（见 §50.4 的教训），会让对比度放大、引擎更够不着。
+
+**黑白场不动点优先**：t3mujin 的成片 LUT 带约 3.5% 片基灰与轻微曝光抬升；而 v1.9.4 的
+zero-blur 管线铁律是 `(0,0)`/`(1,1)` 端点不动（夜景纯黑、白场不糊）。转译**有意丢弃**片基灰与
+曝光偏移，只取 LUT 的 tone 形状、色相/饱和与分离色调，端点钉回 —— 这是本版最大的显式取舍。
+
+### 50.4 九卷新参数
+
+| 卷 | exposureLift | sCurveContrast | chromaLock | 暗部染色 | 高光染色 | crush | 层数 |
+|---|---|---|---|---|---|---|---|
+| UM-400 | 0.28 | 0.60 | 0.54 | `#B9E5EB` @ .16 | `#049BA4` @ .02 | — | 5 |
+| GD-200 | 0.28 | 0.60 | 0.68 | `#81C8FA` @ .11 | `#E98C02` @ .14 | — | 5 |
+| PT-400 | 0.28 | 0.25 | 0.56 | — | `#814212` @ .14 | — | 4 |
+| CP-200 | 0.28 | 0.60 | 0.59 | — | `#F4E5EA` @ .14 | — | 4 |
+| FJ-400 | 0.28 | 0.44 | 0.68 | `#E1EFF2` @ .17 | `#0E670F` @ .05 | — | 5 |
+| EK-100 | 0.28 | 0.46 | 0.68 | `#52DD18` @ .04 | `#83BBCC` @ .09 | — | 5 |
+| CS-800T | 0.28 | 0.33 | 0.68 | — | `#AFF6FB` @ .14 | — | 4 |
+| HP-400 | 0.00 | 0.49 | mono `#808080` | — | — | 0.05 | 3 |
+| TX-400 | 0.28 | 0.23 | mono `#808080` | — | — | — | 3 |
+
+层序与 v1.9.4 完全一致（12 槽：lift `screen` → sCurve `overlay` → chroma-lock `color` →
+temperature/tint `soft-light` → shadow-tint → highlight-tint → shadow-crush `multiply` →
+halation → grain `soft-light` → vignette `multiply` → light-leak），染色一律走零模糊
+`soft-light`。九卷的 id、中文名、描述、颗粒、暗角、光晕、画幅、分辨率字段都没动；
+`ek-100` 仍是唯一无颗粒卷（`GRAINLESS_PRESET_IDS`），`cs-800t` 的 halation 0.04 保留。
+
+### 50.5 拟合实测 ΔE76（真实照片像素分布，目标 = LUT 直喂）
+
+| 卷 | 转译前 mean / p95 | 转译后 mean / p95 |
+|---|---|---|
+| UM-400 | 3.29 / 5.48 | **2.02 / 3.13** |
+| GD-200 | 3.83 / 9.57 | **3.55 / 6.13** |
+| PT-400 | 3.79 / 6.69 | **2.63 / 4.86** |
+| CP-200 | 4.36 / 7.97 | **2.70 / 4.49** |
+| FJ-400 | 2.13 / 5.06 | **1.99 / 3.89** |
+| EK-100 | 3.81 / 7.04 | **2.94 / 5.22** |
+| CS-800T | 3.86 / 6.81 | **2.57 / 3.85** |
+| HP-400 | 4.50 / 9.85 | **1.85 / 3.89** |
+| TX-400 | 6.44 / 15.54 | **4.31 / 8.19** |
+
+（「转译前」= v1.9.4 手调参数在同一分布上的拟合度，作为对手基准；表中「转译后」= 本版新参数。
+另有一条被否决的「LUT 黑白点钉回」靶子，在真实照片上普遍更差，未采用。）
+
+### 50.6 层序、门禁与验证
+
+- `src/utils/gradeLayers.ts` / `adaptiveGrade.ts` / `FilmLookLayers.tsx` **零改动**：引擎、
+  层序、封顶常量、纹理与自适应边界全部沿用 v1.9.4。
+- 调色层数（`buildGradeLayers` 的静态调色层，不含 grain/vignette/halation）：UM/GD/FJ/EK 5 层、
+  PT/CP/CS 4 层、HP 3 层、TX 3 层 —— 与 `_v195_contract.md` §1.1 逐项一致；加上纹理层后的
+  总层数 7/7/6/6/7/6/7/5/5（EK 无颗粒、CS 多一条 halation、HP 无曝光层）。
+- `npx tsc --noEmit` EXIT 0；`grep -rn "as any" src` 0 处。
+- **26 道门禁全绿：GATES TOTAL 26 / FAILED 0，编号断言合计 48,331 条**
+  （v1.9.4 基线 47,633，只增不减）；haze/purity 阈值按实测重核——**均未超阈，阈值数字零改动**
+  （实测最大 `veilMid` cp-200 0.1258 < 0.13、`veilHigh` 0.0920 < 0.10，whiteLoss 全 0，
+  超预算 0/9；purity 64 条 `RESULT: PURE`）。
+- `expo export --platform ios --no-bytecode` bundle **1,392,268 B**；
+  `_verify_ipa_v195.py --local` → `RESULT(local): OK`（v1.9.5 PRESENT 11 个新染色 hex 全在，
+  v1.9.4 的 8 个旧 hex 全不在；`--grain` / `--vignette` 资产单验均 `RESULT: OK`）。
+- 胶片卡 swatch 只重算量程常量（`BASE_GRAY 100` / `SHADOW_GAIN 7.0` / 新增 `TOP_LIFT 10`），
+  **只影响 34pt 横向色带的取样公式，不进成像管线**；九卷 swatch 两两距离 36 对全部达标
+  （最小 max 差 26 = UM↔TX，最小 total 差 90 = UM↔CS，阈值 15/50）。
+- 无真机复测：建议同一机位各拍一张对照 v1.9.4，重点看九卷新色调与夜景纯黑是否仍然成立。
+
+### 50.9 已知文档差异（保留，不影响行为）
+
+- `src/constants/presets.ts` 块注释与 `src/types/index.ts` 文档字面量仍写 v1.9.4 的量程
+  （`0.16~0.26` 等）—— 旧探针以源码字面量做断言（stocks S5.17 / wiring S1.20），改注释需同步
+  改断言，本版不做；**实际参数一律以 §50.4 与 `presets.ts` 的 `color` 字段为准**。
+- `FilmCard.tsx` 函数 doc 首行仍写「v1.9.4 明度/色度解耦配方」（stocks S6.32 断言该字面量）。
+- 三处均为注释/文档字符串，不参与成像。
+
+### 50.7 发布指纹（v1.9.5）
+
+*（实测值，2026-10-19 发布回填）*
+
+| 项 | 值 |
+| --- | --- |
+| 本地提交 | `@@COMMIT@@`（v1.9.5 特性，@@COMMIT_STAT@@）+ 本文档回填提交（docs-only，`paths-ignore` 跳过 CI） |
+| 远端 master | `@@REMOTE_HEAD@@`（Git Data API 推送，TREE MATCH，tree `@@TREE@@`） |
+| CI run / job | run `@@RUN_ID@@` / job `@@JOB_ID@@`（macos-26-intel，build-ipa 全 success） |
+| artifact id / 体积 | `@@ARTIFACT_ID@@` / **@@ARTIFACT_BYTES@@ B**（`FretroCam-unsigned-ipa`） |
+| IPA 文件 / 体积 / sha256 | `FretroCam-v1.9.5-unsigned.ipa` / **@@IPA_BYTES@@ B** / `@@IPA_SHA@@` |
+| Release id / asset id | release `@@RELEASE_ID@@`（tag `v1.9.5`）/ asset `@@ASSET_ID@@` |
+| IPA 回读核验 | `RESULT: OK` —— `main.jsbundle` **@@MAIN_JSBUNDLE_BYTES@@ B**、Info.plist `1.9.5` + `com.canyerylee.fretrocam` FOUND、10 张相框全在、grain.png 281,634 B sha `0fc81816…ee83`（1200×1600 RGBA、透明 86.37%、mean α 0.0508、512-lag 自相关 ≤0.0021）、vignette.png 119,560 B sha `0555a67d…68c6`（0.74 内圈全透明）、PRESENT @@PRESENT_COUNT@@ 命中零 missing、ABSENT 全 0 |
+| 下载地址 | https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.9.5/FretroCam-v1.9.5-unsigned.ipa |
+
+### 50.8 文件改动
+
+| 文件 | 改动 |
+|------|------|
+| `src/constants/presets.ts` | 九卷 8 个调色字段按 t3mujinpack 转译值重写（lift / sCurve / chromaLock / 暗部·高光染色 / crush），其余字段与结构零改动 |
+| `src/components/FilmCard.tsx` | swatch 量程常量重算（`BASE_GRAY 100` / `SHADOW_GAIN 7.0` / 新增 `TOP_LIFT 10`），仅胶片卡色块取样，不进成像管线 |
+| `THIRD-PARTY-NOTICES.md` | 新增 t3mujinpack MIT 归属段（来源、版权人、离线转译、无 LUT 打包） |
+| `app.json` | version `1.9.4` → `1.9.5` |
+| `README.md` | 本节 §50 + TOC |
+
+工作区根（不进仓库）：`_v195_contract.md`、`_v195_hald.py`、`_v195_fit_all3.py`、
+`_v195_render_strip.py`、`_verify_ipa_v195.py`、`_release_v195.py`、`_run_gates_v195.ps1`、
+`_gate_v195_run.out.txt`、`_gate_v195_report.txt`、`_export_v195_lead/`；A 组探针由
+`zero-blur-optics` 更新、B 组由 `optics-engine` 更新、C 组由 `quality-gate` 全量复跑。
 
 ---
 
