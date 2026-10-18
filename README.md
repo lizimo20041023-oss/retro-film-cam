@@ -6918,7 +6918,18 @@ alpha 径向剖面 `.72=0 / .80=50 / .88=153 / .94=224 / 1.00=255`。九卷 vign
 
 ### 48.8 发布指纹（本版实测）
 
-*（发布后回填）*
+*（实测值，2026-10-19 发布回填）*
+
+| 项 | 值 |
+| --- | --- |
+| 本地提交 | `db0fe7c`（v1.9.3 特性）+ 本文档回填提交（docs-only，`paths-ignore` 跳过 CI） |
+| 远端 master | `c3c5ad682db7f5758bdbafb05ff45207b4839f11`（Git Data API 推送，TREE MATCH） |
+| CI run / job | run `39142124729` / job `117718516927`（macos-26-intel，全 success） |
+| artifact id / 体积 | `12142107923` / **10,536,724 B**（`FretroCam-unsigned-ipa`） |
+| IPA 文件 / 体积 / sha256 | `FretroCam-v1.9.3-unsigned.ipa` / **10,651,320 B** / `9c39588a704260802168283f8e7c96c74f4e0ef569b54459d540ee146933a30c` |
+| Release id / asset id | release `416552814`（tag `v1.9.3`）/ asset `653875952` |
+| IPA 回读核验 | `RESULT: OK` —— 115 entries、`main.jsbundle` **2,114,134 B**、Info.plist `1.9.3` + `com.canyerylee.fretrocam` FOUND、10 张相框、grain.png 280,121 B sha `5aa05b0d…`（512² RGB、lumaMean 127.90／σ39.19、暗 7.21%／亮 7.23%、<8px 88.2%）、vignette.png 118,166 B sha `4ab7add9…`（中心 0／四角 255／RGB(4,12,20)、剖面 .72=0／.80=50／.88=153／.94=224／1.00=255）、PRESENT 全命中零 missing、ABSENT 全 0 |
+| 下载地址 | https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v1.9.3/FretroCam-v1.9.3-unsigned.ipa |
 
 ### 48.9 文件改动
 
