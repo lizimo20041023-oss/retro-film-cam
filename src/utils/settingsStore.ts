@@ -71,8 +71,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
    * `stockMode: 'manual'` 是必须的默认值：老用户升级上来仍按"自己挑的那一卷"拍，
    * 不会被场景引擎悄悄换卷 —— 想让它接管，要用户自己点底片库顶部的 AUTO 入口。
    *
-   * `presetIntensity: 'rich'`（130%）是用户点名的默认值：默认拍出来就要有强烈的
-   * 胶片味。v2.0.x 的旧观感（100%）落在 `'standard'` 档，想回去的人自己选。
+   * `presetIntensity: 'rich'`（92%）是用户点名的默认值：默认拍出来就要有强烈的
+   * 胶片味。v2.1.2 之前 100% 的观感落在 `'max'` 档，想回去的人自己选。
    */
   stockMode: 'manual',
   presetIntensity: 'rich',

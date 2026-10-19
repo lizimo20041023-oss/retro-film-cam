@@ -55,7 +55,7 @@ export const zhHans = {
   'film.intensity.title': 'PRESET INTENSITY · 预设强度',
   'film.intensity.hint': '整卷统一强度 · AUTO 交给场景引擎',
   'film.intensity.a11y': '预设强度，当前 {label}',
-  'film.intensity.auto.hint': '场景自适应（70%~145%）',
+  'film.intensity.auto.hint': '场景自适应（70%~95%）',
   'film.stockMode.auto': 'AUTO 智能底片',
   'film.stockMode.auto.hint': '按拍摄画面自动选卷与强度',
   'film.stockMode.manual.hint': '手动选卷',

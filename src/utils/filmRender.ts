@@ -13,15 +13,16 @@
  *   2. 33³ LUT 三线性插值 —— **全整型定点**（`Uint8Array` 一维下标 + `>> 16` 插值），
  *      循环内零对象、零数组分配；
  *   3. 暗角 —— 257 项 16.16 定点乘数表 + 中心 70% smoothstep 平台（−0.25~−0.55 EV）；
- *   4. 颗粒 —— 2×2 团簇哈希噪声，`w = 4Y(1−Y)+0.15`，彩卷 0.85 : 1.0 : 1.15，
- *      强度是 0/9/18/30/44 的 8bit 像素幅度；
+ *   4. 颗粒 —— 2×2 团簇哈希噪声，`w = (4Y(1−Y)+0.15) / 1.15`，**单色亮度颗粒**：
+ *      R/G/B 加同一个 delta，幅度是 0 / 2.5 / 5 / 8.5 / 13 的像素单位（0~255 尺度）；
  *   5. halation —— **只在循环里记录「Luma ≥ 0.88」的像素**，循环结束后只对这些像素的
  *      5×5 邻域做**纯 R 通道**微扩散（G/B 一个字节都不碰）。没有全屏模糊、没有 screen 叠加，
  *      所以不可能再出白雾。
- *   6. 预设强度（v2.1.0 手术二）—— 在 ② 与 ③ 之间：LUT 输出与原图按 `intensityScale`
- *      （0.35~1.60）插值/外推，`out = orig + round((lut − orig) · intensity)`，全整型 Q16。
+ *   6. 预设强度（v2.1.0 手术二 → v2.1.2 无外推）—— 在 ② 与 ③ 之间：LUT 输出与原图按
+ *      `intensityScale`（0.35~1.00）插值，`out = orig + round((lut − orig) · intensity)`，
+ *      全整型 Q16。刻度恒 ≤ 1，所以只会往原图方向回收，**不存在外推**。
  *      暗角 EV / 颗粒幅度 / halation 幅度也乘同一个 intensity，再各自夹到
- *      `utils`→`constants/filmRender` 里的上下限。缺省 1 = 与 v2.0.1 逐字节相同。
+ *      `utils`→`constants/filmRender` 里的上下限。intensity = 1 = 与 v2.0.1 逐字节相同。
  *
  * 阶段回调用 `'lut' → 'halation' → 'done'`：halation 是主循环之后的小收尾（只处理高光像素），
  * 报点跟着真实工作边界走，不编造中间态。
@@ -32,9 +33,9 @@
 import type { SceneStats } from '../types';
 import {
   GRAIN_PIXEL_EFFECTIVE_MAX,
-  GRAIN_RGB_WEIGHTS,
   GRAIN_WEIGHT_FLOOR,
   GRAIN_WEIGHT_GAIN,
+  GRAIN_WEIGHT_PEAK,
   HALATION_EFFECTIVE_MAX,
   HALATION_KERNEL,
   HALATION_RADIUS,
@@ -43,7 +44,6 @@ import {
   SCENE_GAMMA_NEUTRAL,
   VIGNETTE_CENTER_PLATEAU,
   VIGNETTE_EV_MAX,
-  VIGNETTE_EV_MIN,
   VIGNETTE_RADIUS_SCALE,
   grainPixelFor,
   halationFor,
@@ -63,14 +63,20 @@ export interface FilmLookParams {
   halation: number;
   /** 角部 EV magnitude（0 / 0.25~0.55），见 `vignetteEvFor`。 */
   vignette: number;
-  /** 8bit 颗粒幅度（0 / 9 / 18 / 30 / 44），见 `grainPixelFor`。 */
+  /** 颗粒像素幅度（0 / 2.5 / 5 / 8.5 / 13，0~255 尺度），见 `grainPixelFor`。 */
   grain: number;
   /** 场景自适应输入 gamma（0.88~1.06，无场景时 1）。 */
   gamma: number;
-  /** 黑白卷：颗粒三通道同步。 */
+  /**
+   * 黑白卷标记（历史字段）。
+   *
+   * v2.1.2 起颗粒是**纯单色亮度颗粒**：无论 mono 与否，R/G/B 加的都是同一个 delta，
+   * 所以这一项不再改变像素结果；保留只为 `FilmLookParams` / `RenderedFilmFile` 的
+   * 回报字段兼容（日志/探针仍能看到「这卷是不是黑白」）。
+   */
   mono: boolean;
   /**
-   * 预设强度乘数（v2.1.0，0.35~1.60；缺省 1）。
+   * 预设强度乘数（v2.1.0，0.35~1.00；缺省 1 = 标定上限）。
    *
    * `filmLookParamsFor` 只给中性 1（预设数据里没有强度）；真正生效的值由
    * `filmLookWithIntensity` 算出、写回这里，所以 `RenderedFilmFile.params` 带的是
@@ -87,27 +93,27 @@ export interface FilmRenderOptions {
   halation: number;
   /** 角部 EV magnitude（0 = 不做暗角）。 */
   vignette: number;
-  /** 8bit 颗粒幅度 0~44（0 = 无颗粒）。 */
+  /** 颗粒像素幅度 0~13（0~255 尺度，0 = 无颗粒）。 */
   grain: number;
   /** 确定性种子：同一 seed + 同一输入 → 逐字节一致的输出。 */
   seed: number;
   /** 输入 gamma（缺省 1 = 恒等）。 */
   gamma?: number;
   /**
-   * 预设强度乘数（v2.1.0，0.35~1.60；缺省 1 = 100%，逐字节等于 v2.0.1）。
+   * 预设强度乘数（v2.1.0，0.35~1.00；缺省 1 = 100%，逐字节等于 v2.0.1）。
    *
-   * 生效方式（全整型）：LUT 输出与原图按 Q16 定点插值/外推；
-   * 暗角 EV、颗粒幅度、halation 幅度乘同一个数后再夹 `VIGNETTE_EV_MIN/MAX`、
-   * `GRAIN_PIXEL_EFFECTIVE_MAX`、`HALATION_EFFECTIVE_MAX`。
+   * 生效方式（全整型）：LUT 输出与原图按 Q16 定点插值（刻度恒 ≤ 1，不外推）；
+   * 暗角 EV、颗粒幅度、halation 幅度乘**同一个**数（不再有暗角下限那种非线性补偿），
+   * 之后只夹 `VIGNETTE_EV_MAX`、`GRAIN_PIXEL_EFFECTIVE_MAX`、`HALATION_EFFECTIVE_MAX` 三个上限。
    */
   intensity?: number;
-  /** 黑白卷：颗粒三通道用同一个 delta。 */
+  /** 黑白卷标记（历史字段：颗粒已统一为单色亮度颗粒，不再按通道加权）。 */
   mono?: boolean;
   /** 阶段回调（'lut' 开始 → 'halation' 收尾 → 'done'）。 */
   onProgress?: (stage: FilmRenderStage) => void;
 }
 
-/** 由预设解析像素管线参数（`scene` 用于自适应 gamma；`mono` 只影响颗粒通道权重）。 */
+/** 由预设解析像素管线参数（`scene` 用于自适应 gamma；`mono` 只是回报标记，不影响颗粒）。 */
 export function filmLookParamsFor(preset: {
   id: string;
   grain: number;
@@ -133,16 +139,23 @@ interface ScaledFilmLook {
   intensity: number;
 }
 
+/** 取到 0.1：颗粒幅度是小数（2.5 / 8.5 …），不能像旧版那样 round 成整数。 */
+function roundTenth(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
 /**
- * 把「基础观感量」乘上预设强度（v2.1.0 手术二）。
+ * 把「基础观感量」乘上预设强度（v2.1.0 手术二 → v2.1.2 无外推）。
  *
- *   intensity 缺省 / 非法 → 1（`clampIntensityScale` 的口径：≤0 或非有限数回中性）；
+ *   intensity 缺省 / 非法 → 0.92（`clampIntensityScale` 的口径：≤0 或非有限数回默认 rich 档）；
+ *   刻度恒在 [0.35, 1.00]，只往回收、绝不越过基准值；
  *   halation = clamp(base · intensity, 0, HALATION_EFFECTIVE_MAX)
- *   vignette = base <= 0 ? 0 : clamp(base · intensity, VIGNETTE_EV_MIN, VIGNETTE_EV_MAX)
- *   grain    = round(clamp(base · intensity, 0, GRAIN_PIXEL_EFFECTIVE_MAX))
+ *   vignette = base <= 0 ? 0 : min(base · intensity, VIGNETTE_EV_MAX)
+ *   grain    = round1(base · intensity) → 夹 [0, GRAIN_PIXEL_EFFECTIVE_MAX]，0.1 步进
  *
- * ⚠️ 暗角的 0.15 下限只对"本来就有暗角"的卷生效：预设 `vignette = 0` 的恒等用例
- * （v2.0.1 探针 S1.8/S1.31）不能被强度"无中生有"出一个暗角。
+ * ⚠️ 暗角**不做**下限补偿（v2.1.2）：35% 档就是 base × 0.35，不会因为你"最低档也要有胶片味"
+ * 被抬到 0.15 EV；但预设 `vignette = 0` 的恒等用例（v2.0.1 探针 S1.8/S1.31）仍然是 0 ——
+ * 强度不能"无中生有"出一个暗角。
  */
 function scaleFilmLook(
   halation: number,
@@ -156,11 +169,8 @@ function scaleFilmLook(
   const baseGrain = Number.isFinite(grain) ? Math.min(255, Math.max(0, grain)) : 0;
   return {
     halation: Math.min(HALATION_EFFECTIVE_MAX, Math.max(0, baseHalation * scale)),
-    vignette:
-      baseVignette <= 0
-        ? 0
-        : Math.min(VIGNETTE_EV_MAX, Math.max(VIGNETTE_EV_MIN, baseVignette * scale)),
-    grain: Math.round(Math.min(GRAIN_PIXEL_EFFECTIVE_MAX, Math.max(0, baseGrain * scale))),
+    vignette: baseVignette <= 0 ? 0 : Math.min(VIGNETTE_EV_MAX, baseVignette * scale),
+    grain: roundTenth(Math.min(GRAIN_PIXEL_EFFECTIVE_MAX, Math.max(0, baseGrain * scale))),
     intensity: scale,
   };
 }
@@ -247,12 +257,17 @@ function buildVignetteTable(evMagnitude: number): Uint32Array | null {
   return table;
 }
 
-/** 颗粒亮度权重表：`w(Y) = 4·Y·(1−Y) + 0.15`（Y = luma/255）。 */
+/**
+ * 颗粒亮度权重表：`w(Y) = (4·Y·(1−Y) + 0.15) / 1.15`（Y = luma/255）。
+ *
+ * 除以峰值 `GRAIN_WEIGHT_PEAK` 之后，中间调的权重恰为 1.0：`grainPixelFor()` 给的幅度
+ * 就是像素里真实出现的最大 |delta|，R/G/B 共用同一个 delta（单色亮度颗粒）。
+ */
 function buildGrainWeightTable(): Float32Array {
   const table = new Float32Array(256);
   for (let i = 0; i < 256; i += 1) {
     const y = i / 255;
-    table[i] = GRAIN_WEIGHT_GAIN * y * (1 - y) + GRAIN_WEIGHT_FLOOR;
+    table[i] = (GRAIN_WEIGHT_GAIN * y * (1 - y) + GRAIN_WEIGHT_FLOOR) / GRAIN_WEIGHT_PEAK;
   }
   return table;
 }
@@ -339,10 +354,11 @@ export function renderFilmFrame(
   const blockShift = 1; // 2×2 团簇（GRAIN_CLUSTER_SIZE = 2）
   const blocksPerRow = (width + (1 << blockShift) - 1) >>> blockShift;
   const blockNoise = grain > 0 ? new Float32Array(Math.max(1, blocksPerRow)) : null;
-  const mono = options.mono === true;
-  const ampR = mono ? grain : grain * GRAIN_RGB_WEIGHTS[0];
-  const ampG = grain;
-  const ampB = mono ? grain : grain * GRAIN_RGB_WEIGHTS[2];
+  /*
+   * 颗粒幅度只有**一个**（v2.1.2 用户 m00001：纯单色亮度颗粒）：
+   * R/G/B 加的是同一个 delta，彩卷也好黑白卷也好都不再分通道 —— 颗粒里不可能出
+   * 红/绿/紫伪色。v2.1.0 那套三通道差异化权重已整体删除，不再保留任何通道系数。
+   */
 
   /*
    * halation（用户红线②）：**半分辨率高光掩膜**。
@@ -474,13 +490,14 @@ export function renderFilmFrame(
         blue = (y0 * ifr + y1 * fr + 128) >>> 8;
       }
 
-      // ②.5 预设强度（v2.1.0）：LUT 输出与「进 LUT 前的原图」插值/外推，全整型 Q16
+      // ②.5 预设强度（v2.1.0 → v2.1.2 无外推）：LUT 输出与「进 LUT 前的原图」插值，全整型 Q16
       /*
        * `out = orig + round((lut − orig) · intensity)`，intensity 用 Q16 定点表示：
        *   · 整型乘 + `+32768 >> 16` 恰好等价于 `Math.round`（含负数：算术右移 = floor，
        *     floor(x + 0.5) 就是 JS 的 round 语义），单像素零分配；
-       *   · intensity = 1 时整段被 `intensityQ === 0` 跳过，输出与 v2.0.1 逐字节相同；
-       *   · intensity > 1 是外推（色相偏移/通道反差一起放大），< 1 是向原图回插。
+       *   · intensity = 1（max 档）时整段被 `intensityQ === 0` 跳过，输出与 v2.0.1 逐字节相同；
+       *   · intensity 恒在 [0.35, 1.00]（`clampIntensityScale` 封顶），所以只会在
+       *     `[orig, lut]` 之间取值、往原图方向回插，**不存在外推**。
        */
       if (intensityQ !== 0) {
         red = clampByte(r0 + (((red - r0) * intensityQ + 32768) >> 16));
@@ -496,15 +513,15 @@ export function renderFilmFrame(
         blue = (blue * mul + 32768) >>> 16;
       }
 
-      // ④ 颗粒：2×2 团簇、Y 权重、彩卷 0.85:1.0:1.15
+      // ④ 颗粒：2×2 团簇 + 亮度权重 + **单色**亮度 delta（R/G/B 同一个值，不可能出伪色）
       if (grainWeight !== null) {
         const luma = (red * LUMA_R + green * LUMA_G + blue * LUMA_B) >>> LUMA_SHIFT;
         const cluster = (blockNoise as Float32Array)[x >>> blockShift];
         const weight = (grainWeight as Float32Array)[luma];
-        const baseDelta = cluster * weight;
-        red = clampByte(red + ((baseDelta * ampR) | 0));
-        green = clampByte(green + ((baseDelta * ampG) | 0));
-        blue = clampByte(blue + ((baseDelta * ampB) | 0));
+        const delta = Math.round(cluster * weight * grain);
+        red = clampByte(red + delta);
+        green = clampByte(green + delta);
+        blue = clampByte(blue + delta);
       }
 
       // ⑤ halation：只把高光比例累进半分辨率掩膜（真正的扩散在循环之后）

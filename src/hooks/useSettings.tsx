@@ -53,7 +53,7 @@ export interface SettingsContextValue {
    */
   setStockMode: (next: StockMode) => void;
   /**
-   * 预设强度档位（v2.1.0 手术二）：六档，默认 `'rich'`（130%）。
+   * 预设强度档位：六档，默认 `'rich'`（92%，v2.1.2 起无 >1 外推）。
    * 取景器参数栏、底片库顶部、设置页三处共用这一个设置。
    */
   setPresetIntensity: (next: PresetIntensityTier) => void;

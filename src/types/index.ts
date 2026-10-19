@@ -541,6 +541,8 @@ export interface FilmPreset {
    *
    * **全项目只有一种颗粒：单色亮度颗粒。** 每个像素只取一个灰度随机标量，
    * 同一个偏量同时加到 R / G / B 上（`assets/textures/grain.png` 三通道逐像素恒等）。
+   * 像素管线里它经 `grainPixelFor()` 映射成 0 / 2.5 / 5 / 8.5 / 13 的单色亮度幅度
+   * （0~255 尺度，R/G/B 同一个 delta）。
    * 曾经还有一个 `grainChroma`（预烘焙的品红↔绿块状彩噪贴图），
    * 它会在 CCD / DIGI 两款上糊出满屏紫绿斑点，已彻底删除 —— **不要再加回来**。
    */
@@ -602,11 +604,13 @@ export interface ResolvedFilmPreset {
 export type GrainLevelId = 'off' | 'light' | 'std' | 'heavy' | 'max';
 
 /**
- * 预设强度档位 id（v2.1.0 用户 m03050 手术二，数据在 `src/constants/intensity.ts`）。
+ * 预设强度档位 id（v2.1.0 用户 m03050 手术二 → v2.1.2 用户 m00001 无外推，
+ * 数据在 `src/constants/intensity.ts`）。
  *
- * 五档固定倍率 + 一档智能：`subtle 35%` / `soft 65%` / `standard 100%` /
- * `rich 130%`（默认）/ `max 160%` / `auto`（按场景自动，成片 70%~145%）。
- * 渲染侧只认 `intensityScale`（0.35~1.60 的浮点乘数），档位只是 UI 语义。
+ * 五档固定倍率 + 一档智能：`subtle 35%` / `soft 60%` / `standard 80%` /
+ * `rich 92%`（默认）/ `max 100%` / `auto`（按场景自动，成片 70%~95%）。
+ * 渲染侧只认 `intensityScale`（0.35~1.00 的浮点乘数，**只做区间内插值、不外推**），
+ * 档位只是 UI 语义。
  */
 export type PresetIntensityTier = 'subtle' | 'soft' | 'standard' | 'rich' | 'max' | 'auto';
 
@@ -615,7 +619,7 @@ export type PresetIntensityTier = 'subtle' | 'soft' | 'standard' | 'rich' | 'max
  *
  * - `'manual'`：用户从九卷里手动挑一卷；
  * - `'auto'`：`recommendStockAndIntensity(scene)` 按当前画面自动选卷 + 自动强度，
- *   成片左下角印 `AUTO -> UM-400 · 130%` 徽标。
+ *   成片左下角印 `AUTO -> UM-400 · 95%` 徽标。
  */
 export type StockMode = 'manual' | 'auto';
 
@@ -811,14 +815,14 @@ export interface FilmStageInput {
   /** 重曝上面那张的不透明度（0~1），不填 = 0.5。只有 `overlayUri` 有值时才有意义。 */
   overlayOpacity?: number;
   /**
-   * 预设强度（v2.1.0 用户 m03050 手术二）：0.35~1.60 的全局风格乘数。
+   * 预设强度（v2.1.0 用户 m03050 手术二 → v2.1.2 无外推）：0.35~1.00 的全局风格乘数。
    *
    * 取景器/兜底声明式图层按它缩放染色、S 曲线、颗粒、暗角；像素管线（`lutUri` 非空）
    * 的强度已经烘进像素，这个字段只用于**没有 lutUri 的预览路径**。不填 = 1（100%）。
    */
   intensity?: number;
   /**
-   * 成片左下角的 AUTO 徽标（v2.1.0 手术三）：`'AUTO -> UM-400 · 130%'`。
+   * 成片左下角的 AUTO 徽标（v2.1.0 手术三）：`'AUTO -> UM-400 · 95%'`。
    * 只有底片模式为 `'auto'` 或强度档位为 `'auto'` 时才有值；不填/null = 不画。
    */
   autoBadge?: string | null;
@@ -909,9 +913,9 @@ export interface ProcessedPhoto {
    * 可能与 UI 上挂着的预设不同（`presetId` 保持"用户当时的选择"）。
    */
   effectivePresetId?: string;
-  /** v2.1.0：实际生效的预设强度乘数（0.35~1.60）。 */
+  /** v2.1.0：实际生效的预设强度乘数（v2.1.2 起 0.35~1.00，无外推）。 */
   intensity?: number;
-  /** v2.1.0：AUTO 场景引擎的说明文本，例如 `AUTO -> UM-400 · 130%`。 */
+  /** v2.1.0：AUTO 场景引擎的说明文本，例如 `AUTO -> UM-400 · 95%`。 */
   autoBadge?: string | null;
   /** 非致命问题，例如"归一化失败已退回原图"。 */
   warnings: string[];
@@ -1103,8 +1107,9 @@ export interface AppSettings {
    */
   stockMode: StockMode;
   /**
-   * 预设强度档位（v2.1.0 手术二），默认 **`'rich'`（130%）** —— 用户明确要求
-   * "默认拍出来就有强烈的胶片味"。
+   * 预设强度档位（v2.1.0 手术二，v2.1.2 改为无外推区间），默认 **`'rich'`（92%）**
+   * —— 用户明确要求"默认拍出来就有强烈的胶片味"，同时所有档位都留在 LUT 标定
+   * 区间内（0.35~1.00），不再有 `>1` 的外推档。
    */
   presetIntensity: PresetIntensityTier;
   /**

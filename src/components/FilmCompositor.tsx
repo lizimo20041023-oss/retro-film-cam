@@ -580,22 +580,6 @@ function FilmCompositorImpl({
   const photoUri = gradedUri ?? rawUri;
   const windowRect = layout.window;
   /*
-   * v2.1.0 · AUTO 徽标（`stage.autoBadge`）：成片**照片画面左下角**的一行等宽小字，
-   * 告诉用户"这一张的底片/强度是场景引擎选的"（`processFilmPhoto` 只在 AUTO 参与时
-   * 给这个字段赋值；手动路径为 null，因此这条路对老成片零行为变化）。
-   *
-   * 位置与字号全部按画布等比：成片画布从 2048 到 4032 像素都走同一段代码，
-   * 写死 pt 会在某个画质档上变成"看不清的蚂蚁字"或"糊住半张脸"。
-   * 左下角天然落在中心 70% 区域之外；若画内机位的日期也占了左下角，渲染处会再
-   * 上抬一个身位避开（见 `autoBadge` 的 `bottom` 计算）。
-   */
-  const autoBadge =
-    typeof stage.autoBadge === 'string' && stage.autoBadge.trim() !== ''
-      ? stage.autoBadge.trim()
-      : null;
-  const autoBadgeFontSize = Math.max(9, Math.round(layout.width * 0.032));
-  const autoBadgeInset = Math.max(6, Math.round(windowRect.width * 0.035));
-  /*
    * v1.8.1 无相框（`00 NO FRAME`）：相纸与材质整组不画。
    *
    * 这一档的 `layout.window` 就是整块画布（全铺窗口），照片自己填满 `layout`，
@@ -1167,48 +1151,6 @@ function FilmCompositorImpl({
           contrastShadow
         />
       ) : null}
-
-      {/*
-        v2.1.0 · AUTO 徽标（左下角，白字 + 暗底 + 1 圈浅描边）。
-        刻意**不进** ③ 的 `pieces` 数组：它不是排版层算出来的水印行（跟着白边/水印区
-        走），而是压在照片上的一个独立角标 —— 坐标只跟 `windowRect` 有关。
-        暗底是必要的：左下角在浅色画面（雪地/白墙）上白字会消失，等于没印。
-      */}
-      {autoBadge !== null ? (
-        <View
-          pointerEvents="none"
-          style={[
-            styles.autoBadge,
-            {
-              left: windowRect.left + autoBadgeInset,
-              // `bottom` 相对整个舞台：窗口下沿到舞台底 + 内距；画内日期在左下角时上抬。
-              bottom:
-                layout.height -
-                (windowRect.top + windowRect.height) +
-                autoBadgeInset +
-                (inPhotoDate !== null ? Math.round(autoBadgeFontSize * 2.2) : 0),
-              paddingHorizontal: Math.round(autoBadgeFontSize * 0.55),
-              paddingVertical: Math.round(autoBadgeFontSize * 0.18),
-              borderRadius: Math.round(autoBadgeFontSize * 0.4),
-            },
-          ]}
-        >
-          <Text
-            allowFontScaling={false}
-            numberOfLines={1}
-            style={[
-              styles.autoBadgeText,
-              {
-                fontFamily: preset.timestamp.fontFamily ?? timestampFontFamily,
-                fontSize: autoBadgeFontSize,
-                letterSpacing: Math.round(autoBadgeFontSize * 0.08),
-              },
-            ]}
-          >
-            {autoBadge}
-          </Text>
-        </View>
-      ) : null}
         </View>
       </View>
     </ViewShot>
@@ -1374,20 +1316,6 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     top: 0,
-  },
-  /** v2.1.0 · AUTO 徽标：暗底 + 1px 浅描边（白字在浅色画面上也读得出来）。 */
-  autoBadge: {
-    position: 'absolute',
-    backgroundColor: 'rgba(0, 0, 0, 0.55)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255, 255, 255, 0.4)',
-  },
-  autoBadgeText: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-    textShadowColor: 'rgba(0, 0, 0, 0.85)',
-    textShadowRadius: 2,
-    textShadowOffset: { width: 0, height: 1 },
   },
   stamp: {
     position: 'absolute',

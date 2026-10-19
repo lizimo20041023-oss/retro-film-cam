@@ -20,10 +20,10 @@
  *    HP-400  纯黑白 + 温柔宽容灰阶
  *    TX-400  纯黑白 + 极端高反差（shadowCrush 0.10）
  *
- *  渲染侧强度旋钮（v2.1.0 手术二）消费 `applyPresetIntensity()`：把本表的
- *  声明式参数整体乘 `intensityScale`（0.35~1.60）后各自夹回合法上限，>1 即
- *  超频外推。取景器实时预览与 `scene === null` 的成片兜底路径都走这条声明式
- *  缩放；成片主链路（LUT + 像素管线）另有一套强度实现。
+ *  渲染侧强度旋钮消费 `applyPresetIntensity()`：把本表的声明式参数整体乘
+ *  `intensityScale`（0.35~1.00，v2.1.2 起禁止 >1 外推）后各自夹回合法上限。
+ *  取景器实时预览与成片兜底路径走这条声明式缩放；成片主链路（LUT + 像素
+ *  管线）另有一套强度实现。
  *
  * ─────────────────────────────────────────────────────────────────────────
  * v1.9.4（「真·德味明度色度解耦引擎」）：九支传奇底片 + 同源显影管线
@@ -109,6 +109,7 @@ import type {
   ResolvedFilmPreset,
   ResolvedTimestampConfig,
 } from '../types';
+import { clampIntensityScale } from './intensity';
 import { DEFAULT_CAPTURE_QUALITY, resolveCaptureLongEdge } from './captureQuality';
 
 /** 调色/颗粒/暗角等参数的默认值：不写就用它。 */
@@ -512,18 +513,19 @@ export function resolvePreset(preset: FilmPreset): ResolvedFilmPreset {
 /**
  * 预设强度缩放（v2.1.0 用户 m03050 手术二的**声明式侧**）。
  *
- * 渲染侧只认 `intensityScale`（0.35~1.60 的全局风格乘数，档位数据见
- * `constants/intensity.ts`）：取景器实时预览与 `scene === null` 的成片兜底路径
+ * 渲染侧只认 `intensityScale`（0.35~1.00 的全局风格乘数，档位数据见
+ * `constants/intensity.ts`）：取景器实时预览与成片兜底路径
  * 都是「预设图层 + 不透明度」，所以强度在这里就是**把声明式参数整体乘一下**。
  *
  * 规则（与契约 v2.1.0 §2 一致）：
  *   · sCurveContrast / exposureLift / chromaLock / shadowCrush 乘 scale 后各自夹回
- *     合法上限（0.62 / 0.28 / 0.22 / 0.12）—— `scale > 1` 时就是超频外推，
- *     但永远不越过引擎硬上限；
+ *     合法上限（0.62 / 0.28 / 0.22 / 0.12）—— v2.1.2 起 scale 上限 1.00，
+ *     不再做 >1 外推，避免通道截断与伪色；
  *   · shadowTintOpacity / highlightTintOpacity 乘 scale 后夹 `[0, 0.5]`；
  *   · temperature / tint 乘 scale 后夹 `±0.3`（用户 WB 旋钮另有自己的夹取）；
  *   · vignette 乘 scale 后夹 `0.28`；grain **不缩放**（颗粒由用户档位独立控制）；
- *   · scale 非法（NaN / ±Infinity / ≤ 0）一律回落 1，保证调用方传错不崩；
+ *   · scale 非法（NaN / ±Infinity / ≤ 0）一律回落 0.92（与 `clampIntensityScale`
+ *     同一口径 = 默认 rich 档），保证调用方传错不崩；
  *   · 其余字段（id/name/description/dust/lightLeak/mono/timestamp/scene…）原样。
  *
  * 纯函数、**不修改入参**：返回一份新的 `ResolvedFilmPreset`，旧对象可以安全复用
@@ -533,7 +535,7 @@ export function applyPresetIntensity(
   preset: ResolvedFilmPreset,
   intensityScale: number,
 ): ResolvedFilmPreset {
-  const scale = Number.isFinite(intensityScale) && intensityScale > 0 ? intensityScale : 1;
+  const scale = clampIntensityScale(intensityScale);
   const color = preset.color;
 
   return {

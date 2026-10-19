@@ -46,7 +46,7 @@ export const zhHant: Messages = {
   'film.intensity.title': 'PRESET INTENSITY · 預設強度',
   'film.intensity.hint': '整卷統一強度 · AUTO 交給場景引擎',
   'film.intensity.a11y': '預設強度，目前 {label}',
-  'film.intensity.auto.hint': '場景自適應（70%~145%）',
+  'film.intensity.auto.hint': '場景自適應（70%~95%）',
   'film.stockMode.auto': 'AUTO 智能底片',
   'film.stockMode.auto.hint': '依拍攝畫面自動選卷與強度',
   'film.stockMode.manual.hint': '手動選卷',

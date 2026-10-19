@@ -3,10 +3,10 @@
  *
  * v2.0.0 把「LUT → halation → vignette → grain」做成四趟独立的整图遍历，
  * 每趟都要重新读一遍 RGB（v1.9.0 的 `photo + blur + screen` 白雾图层也还在兜底路径里挂着）。
- * v2.1.0 再叠一条用户要求（m03050 手术二）：**预设强度倍率**。`intensityScale` 是
- * 0.35~1.60 的全局风格乘数（见 `constants/intensity.ts`）：LUT 输出与原图按它插值/外推，
- * 暗角 EV、颗粒幅度、halation 幅度都乘它、再各自夹到本文件的上下限。缺省 1 = 逐字节等于
- * v2.0.1 的输出（旧探针不受影响）。
+ * v2.1.0 再叠一条用户要求（m03050 手术二）：**预设强度倍率**。v2.1.2（用户 m00001）把它
+ * 收敛成**无外推**的 0.35~1.00 全局风格乘数（见 `constants/intensity.ts`）：LUT 输出与原图
+ * 按它插值，暗角 EV、颗粒幅度、halation 幅度都乘它、再各自夹到本文件的上下限。
+ * scale = 1 = 逐字节等于 v2.0.1 的输出（旧探针不受影响）。
  *
  * v2.0.1 按用户红线重做：
  *
@@ -14,8 +14,8 @@
  *     只有 CS-800T（0.22）与极弱的 UM-400 / GD-200（0.03）有值，其余六卷恒 0。
  *     没有任何全屏 `blur + screen` 图层，G/B 通道严格 0 增量 —— 不可能再出乳白雾。
  *   · **颗粒烘焙进同一个像素循环**（不是外部透明图层）：2×2 团簇哈希噪声、
- *     Y 归一化亮度权重 `w = 4·Y·(1−Y) + 0.15`、彩卷 RGB 权重 0.85 : 1.0 : 1.15、
- *     黑白卷三通道同步。强度用**8bit 像素幅度** 0 / 9 / 18 / 30 / 44。
+ *     Y 归一化亮度权重 `w = (4·Y·(1−Y) + 0.15) / 1.15`、**单色亮度颗粒**（R/G/B 同一个
+ *     delta，没有任何彩卷三通道权重）。强度用**像素幅度** 0 / 2.5 / 5 / 8.5 / 13。
  *   · **暗角限制在 −0.25 ~ −0.55 EV**，中心 70% 完全通透（smoothstep 平台），
  *     不再是中心就开始压的幂函数。
  *   · **LUT 输入长边锁在 1440~1800px**：这是 JS 像素循环的硬预算。
@@ -27,7 +27,7 @@
 import { INTENSITY_SCALE_MAX, INTENSITY_SCALE_MIN } from './intensity';
 
 /**
- * 预设强度倍率区间（v2.1.0 手术二）：0.35 = 35%（subtle）… 1.60 = 160%（max）。
+ * 预设强度倍率区间（v2.1.2 用户 m00001）：0.35 = 35%（subtle）… 1.00 = 100%（max）。
  *
  * 数据源是 `constants/intensity.ts`（UI 那三个入口共用一张档位表）；这里 re-export，
  * 是为了让**像素管线**的常量收口在同一个模块 —— Node 探针只 import 本文件就能核对上下限，
@@ -113,31 +113,33 @@ export function halationFor(stockId: string): number {
 }
 
 /* ========================================================================== *
- * 颗粒：烘焙进 LUT 像素循环的 8bit 幅度
+ * 颗粒：烘焙进 LUT 像素循环的单色亮度幅度
  * ========================================================================== */
 
 /**
- * 颗粒强度档位（预设 `grain` 值 → 8bit 像素幅度）。
+ * 颗粒强度档位（预设 `grain` 值 → 像素幅度，0~255 尺度）。
  *
  * `grain` 是 `GRAIN_LEVELS` 的 opacity（0 / 0.04 / 0.075 / 0.115 / 0.16，约 30 条老断言钉死，
- * 本版**不许改那五个值**），这里只把同一档位映射成像素单位幅度：0 / 9 / 18 / 30 / 44。
- * 中间的任意 grain 值按线性插值取整；超出 0.16 夹到 44。
+ * 本版**不许改那五个值**），这里只把同一档位映射成像素单位幅度：
+ * 0 / 2.5 / 5.0 / 8.5 / 13.0（v2.1.2 用户 m00001：纯单色亮度颗粒，比 v2.1.0 的
+ * 0 / 9 / 18 / 30 / 44 收敛）。中间的任意 grain 值按线性插值取到 0.1；超出 0.16 夹到 13.0。
  */
 export const GRAIN_PIXEL_LEVELS: readonly { readonly grain: number; readonly pixels: number }[] = [
   { grain: 0, pixels: 0 },
-  { grain: 0.04, pixels: 9 },
-  { grain: 0.075, pixels: 18 },
-  { grain: 0.115, pixels: 30 },
-  { grain: 0.16, pixels: 44 },
+  { grain: 0.04, pixels: 2.5 },
+  { grain: 0.075, pixels: 5 },
+  { grain: 0.115, pixels: 8.5 },
+  { grain: 0.16, pixels: 13 },
 ];
 
-/** 颗粒像素幅度上限（= 最大档 44，用户红线）。 */
-export const GRAIN_PIXEL_MAX = 44;
+/** 颗粒像素幅度上限（= 最大档 13.0，用户红线）。 */
+export const GRAIN_PIXEL_MAX = 13;
 
 /**
- * grain（预设档位值 0~0.16）→ 8bit 像素幅度（0~44）。
+ * grain（预设档位值 0~0.16）→ 像素幅度（0~13，0.1 步进）。
  *
- * 五个档位精确命中 0 / 9 / 18 / 30 / 44；其它值线性插值后四舍五入，最后夹 [0, 44]。
+ * 五个档位精确命中 0 / 2.5 / 5 / 8.5 / 13；其它值线性插值后取到 0.1，最后夹 [0, 13]。
+ * 幅度允许小数：像素循环里乘完亮度权重再 `Math.round` 成整数 delta（R/G/B 同一个值）。
  */
 export function grainPixelFor(grain: number): number {
   if (!Number.isFinite(grain) || grain <= 0) return 0;
@@ -151,7 +153,7 @@ export function grainPixelFor(grain: number): number {
       if (span <= 0) return hi.pixels;
       const t = (grain - lo.grain) / span;
       const pixels = lo.pixels + (hi.pixels - lo.pixels) * t;
-      return Math.min(GRAIN_PIXEL_MAX, Math.max(0, Math.round(pixels)));
+      return Math.min(GRAIN_PIXEL_MAX, Math.max(0, Math.round(pixels * 10) / 10));
     }
   }
   return last.pixels;
@@ -168,8 +170,14 @@ export const GRAIN_WEIGHT_GAIN = 4;
 /** 颗粒亮度权重下限（暗部/高光也有底噪，避免颗粒只出现在中间调）。 */
 export const GRAIN_WEIGHT_FLOOR = 0.15;
 
-/** 彩卷三通道颗粒权重（R : G : B）—— 银盐颗粒在乳剂里各层响应不同，红光最少、蓝光最多。 */
-export const GRAIN_RGB_WEIGHTS: readonly [number, number, number] = [0.85, 1, 1.15];
+/**
+ * 亮度权重曲线的峰值：`Y = 0.5` 处的 `4 × 0.25 + 0.15 = 1.15`。
+ *
+ * 权重表按它归一化（`w / GRAIN_WEIGHT_PEAK`），于是「中间调 delta 的最大值」恰好等于
+ * `grainPixelFor()` 给的幅度 —— 表里的 2.5 / 5 / 8.5 / 13 就是真实像素振幅，不再被旧表
+ * 的 1.15 倍偷偷放大（v2.1.2 用户 m00001：GRAIN_WEIGHT 表与幅度表配合改）。
+ */
+export const GRAIN_WEIGHT_PEAK = GRAIN_WEIGHT_GAIN * 0.25 + GRAIN_WEIGHT_FLOOR;
 
 /** 颗粒团簇边长（2×2 同值，肉眼才成「盐粒」而不是电视雪花）。 */
 export const GRAIN_CLUSTER_SIZE = 2;
@@ -218,37 +226,38 @@ export function vignetteStrengthFor(vignette: number): number {
 }
 
 /* ========================================================================== *
- * 预设强度倍率（v2.1.0 手术二）：所有观感量乘 intensity 后再夹取
+ * 预设强度倍率（v2.1.0 手术二 → v2.1.2 无外推）：所有观感量乘 intensity 后再夹取
  * ========================================================================== */
 
-/** 中性强度（100%）：不乘任何东西，输出与 v2.0.1 逐字节相同。 */
+/** 中性强度（100%）：不乘任何东西，输出与 v2.0.1 逐字节相同（= `max` 档，标定上限）。 */
 export const INTENSITY_NEUTRAL = 1;
 
 /**
- * 强度缩放后的暗角 EV 下限 / 上限（magnitude，正数）。
+ * 强度缩放后的暗角 EV 上限（magnitude，正数）。
  *
- * 用户要求（m03050）「暗角 EV 乘 intensity 后夹 [0.15, 0.85]」：
- *   · 下限 0.15 —— 35% 档也不能把暗角抹到完全看不见（否则最低档就"没有胶片味"）；
- *   · 上限 0.85 —— 160% 档也不许把四角压成纯黑（−0.85 EV ≈ 只剩 55% 亮度）。
- * 预设本身 `vignette <= 0`（不做暗角）时**不套这个下限**：0 就是 0，见 `filmLookWithIntensity`。
+ * 用户要求（m00001）「强度只在原图与 LUT 之间插值，所有档位 scale ≤ 1」：
+ * 上限 0.85 在 scale ≤ 1 时根本不会触发（最深的卷 0.55 × 1.00 = 0.55），
+ * 这个盖子只防将来有人把 `VIGNETTE_EV_SOFT/DEEP` 调深。
+ *
+ * v2.1.2 起**取消了下限**：原来那层 `max(base · scale, 0.15)` 会让 35% 档的暗角
+ * 逼近 60%（0.15 / 0.25），与「所有观感量乘同一个 scale」的口径矛盾。
+ * 现在暗角就是 `base · scale`，`base <= 0` 的卷仍然是 0（不无中生有）。
  */
-export const VIGNETTE_EV_MIN = 0.15;
-
-/** 强度缩放后的暗角 EV 上限（见 `VIGNETTE_EV_MIN`）。 */
 export const VIGNETTE_EV_MAX = 0.85;
 
 /**
- * 强度缩放后的颗粒幅度上限（8bit 像素单位）。
+ * 强度缩放后的颗粒幅度上限（0~255 像素单位，0.1 步进）。
  *
- * v2.0.1 的颗粒上限是 44（最大档 0.16）；160% 强度下允许到 70，再高就不是"胶片颗粒"
- * 而是"电视雪花"了。取整在 `filmLookWithIntensity` 里做（保持全整型热路径）。
+ * v2.1.2 的颗粒表最大档是 13.0（单色亮度颗粒）；`scale ≤ 1` 时有效值不会超过它，
+ * 这个盖子只防「将来有人把 `GRAIN_PIXEL_LEVELS` 调到 13 以上」。取整在
+ * `filmLookWithIntensity` 里做（保持全整型热路径）。
  */
-export const GRAIN_PIXEL_EFFECTIVE_MAX = 70;
+export const GRAIN_PIXEL_EFFECTIVE_MAX = 13;
 
 /**
  * 强度缩放后的 halation 强度上限（0~1）。
  *
- * 最深的 cs-800t 是 0.22，×1.60 = 0.352，离上限还远；这个盖子只防"将来有人把表调到 0.5"。
+ * 最深的 cs-800t 是 0.22，×1.00 = 0.22，离上限还远；这个盖子只防"将来有人把表调到 0.6 以上"。
  */
 export const HALATION_EFFECTIVE_MAX = 0.6;
 

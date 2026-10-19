@@ -188,8 +188,8 @@ export interface ProcessFilmPhotoInput {
    */
   intensityTier?: PresetIntensityTier | null;
   /**
-   * **已经解析好的**强度倍率（0.35~1.60）。UI 三处入口传它最直接：
-   * 传了就以它为准（`intensityTier` 只用于让 `autoBadge` 文案知道"AUTO 参与了强度"）。
+   * **已经解析好的**强度倍率（0.35~1.00）。UI 三处入口传它最直接：
+   * 传了就以它为准（`intensityTier` 仍透传给场景引擎，但算出的倍率不生效）。
    * 不传 = 用场景引擎算出的 `intensityScale`。
    */
   intensityScale?: number;
@@ -561,9 +561,9 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
    * 4.6) AUTO 底片 / 自动强度（v2.1.0 手术三，用户 m03050）：
    *
    *      `recommendStockAndIntensity` 是纯函数（`utils/sceneMatch.ts`），吃同一份
-   *      `SceneStats`，返回「最匹配的卷 + 强度倍率 + 徽标文案」。两条独立的路：
+   *      `SceneStats`，返回「最匹配的卷 + 强度倍率」。两条独立的路：
    *      · `stockMode === 'auto'` → 场景选卷，`preset` 那卷只做 UI 展示；
-   *      · `intensityTier === 'auto'` → 卷不动，只按场景调强度（70%~145%）。
+   *      · `intensityTier === 'auto'` → 卷不动，只按场景调强度（70%~95%）。
    *      两者都不 auto 时它原样把用户选的卷还回来（`match.stockId === preset.id`），
    *      所以手动模式的像素路径与 v2.0.1 逐字节相同。
    *
@@ -763,11 +763,9 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
   /*
    * 7) 唯一一次挂载 + 截图：把"洗好的照片"（`lutUri`）连同相框 / 日期 / 水印截成成片。
    *    有 `lutUri` 时合成层会跳过声明式调色层与重曝叠图（它们已经烘进像素）。
-   *
-   *    `autoBadge`（v2.1.0 手术三）只在底片或强度走了 AUTO 时有值，印在成片左下角。
    */
   input.onStage?.('capturing');
-  const finalStageInput: FilmStageInput = { ...stageInput, lutUri, autoBadge: match.label };
+  const finalStageInput: FilmStageInput = { ...stageInput, lutUri };
   let uri = '';
   try {
     host.mount(finalStageInput);
@@ -798,6 +796,7 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     /* v2.1.0：AUTO 场景引擎的结果（`presetId` 仍是"用户当时挂的那卷"） */
     effectivePresetId: effectivePreset.id,
     intensity: intensityScale,
+    /* v2.1.2：AUTO 标签只给取景器 toast 用，**不进 stage**（绝不烧进成片画布）。 */
     autoBadge: match.label,
     warnings,
   };

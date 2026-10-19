@@ -78,7 +78,7 @@ export const CAPSULE_ICON_GAP = 5;
 export const CAPSULE_WORD_GAP = 4;
 /**
  * 胶囊最小宽 64：四颗胶囊（v2.1.0 加了强度档）挤在一条行里，每颗的可用宽度比三颗
- * 时代少了约 30pt；64 仍放得下 13 的图标 + 4 个 11pt 等宽字符（`130%` / `AUTO`），
+ * 时代少了约 30pt；64 仍放得下 13 的图标 + 4 个 11pt 等宽字符（`92%` / `AUTO`），
  * 再窄读数就要和图标打架。
  */
 export const CAPSULE_MIN_WIDTH = 64;
@@ -242,7 +242,7 @@ export function formatScrubExposure(value: number): string {
 }
 
 /**
- * 「预设强度」胶囊/分段条的显示文本：AUTO 档写 `AUTO`，其余写百分比（`130%`）。
+ * 「预设强度」胶囊/分段条的显示文本：AUTO 档写 `AUTO`，其余写百分比（`92%`）。
  *
  * 为什么不写乘数：用户选的是档位、看的是百分比；`1.3` 这种只在渲染侧存在的数字
  * 出现在 UI 上没人认。

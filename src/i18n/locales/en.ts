@@ -48,7 +48,7 @@ export const en: Messages = {
   'film.intensity.title': 'PRESET INTENSITY · Intensity',
   'film.intensity.hint': 'One intensity for the whole roll · AUTO lets the scene engine decide',
   'film.intensity.a11y': 'Preset intensity, currently {label}',
-  'film.intensity.auto.hint': 'Adapts to the scene (70%–145%)',
+  'film.intensity.auto.hint': 'Adapts to the scene (70%–95%)',
   'film.stockMode.auto': 'AUTO Smart Film',
   'film.stockMode.auto.hint': 'Picks the stock and intensity from the scene',
   'film.stockMode.manual.hint': 'Pick a stock manually',

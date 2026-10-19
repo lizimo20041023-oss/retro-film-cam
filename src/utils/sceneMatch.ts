@@ -6,20 +6,20 @@
  *
  * 两种工作模式（由 `settings.stockMode` / `settings.presetIntensity` 决定）：
  * 1. **AUTO 底片**（`stockMode === 'auto'`）：整卷也由场景决定，强度用规则表里的固定值
- *    （135% / 125% / 125% / 115% / 120% / 75%）。
+ *    （94% / 75% / 92% / 88% / 90% / 95%）。
  * 2. **手动底片 + AUTO 强度**（`presetIntensity === 'auto'`）：底片保持用户选的那卷，
- *    只按场景在 **70%~145%** 之间调强度。
+ *    只按场景在 **70%~95%** 之间调强度（v2.1.2 用户 m00001：强度不再越过 100% 档位）。
  *
  * 规则顺序（先命中先赢，见用户 m03050 的 6 大场景表）：
- *   ① 夜景/暗光      shadowShare > 0.52                        → CS-800T · 125%
+ *   ① 夜景/暗光      shadowShare > 0.52                        → CS-800T · 94%
  *   ② 高调雪景/顺光人像 highlightShare > 0.48 && saturation < 0.22 → PT-400 · 75%
  *   ③ 晴天逆光/大光比 (highlightShare > 0.15 && shadowShare > 0.18) || contrast > 0.22
- *                                                              → EK-100 · 125%
- *   ④ 森林绿植/海湾蓝天 warmth < -0.05 且 meanLuma >= 0.35       → FJ-400 · 115%
- *   ⑤ 黄金时刻/暖调街巷 warmth > 0.08                            → GD-200 · 120%
+ *                                                              → EK-100 · 92%
+ *   ④ 森林绿植/海湾蓝天 warmth < -0.05 且 meanLuma >= 0.35       → FJ-400 · 88%
+ *   ⑤ 黄金时刻/暖调街巷 warmth > 0.08                            → GD-200 · 90%
  *      （warmth 偏中等时用 CP-200，保留复古琥珀性格）
- *   ⑥ 室内静物/平光近景 contrast < 0.18                          → UM-400 · 135%
- *   兜底 neutral                                                  → PT-400 · 100%
+ *   ⑥ 室内静物/平光近景 contrast < 0.18                          → UM-400 · 95%
+ *   兜底 neutral                                                  → PT-400 · 80%
  *
  * 纯函数、零依赖（不 import RN / Expo），Node 探针可直接跑。
  */
@@ -30,15 +30,15 @@ import {
   clampIntensityScale,
   intensityPercentText,
   intensityScaleForTier,
+  INTENSITY_AUTO_MAX,
   INTENSITY_AUTO_MIN,
-  INTENSITY_SCALE_MAX,
 } from '../constants/intensity';
 
 /** 场景匹配结果。 */
 export interface StockRecommendation {
   /** 实际生效的胶卷 id（九卷之一，永远不是 `'auto'`）。 */
   stockId: LutStockId;
-  /** 渲染侧全局风格乘数 0.70~1.45（AUTO 模式）或档位固定值。 */
+  /** 渲染侧全局风格乘数：AUTO 模式 0.70~0.95，手动档位 0.35~1.00。 */
   intensityScale: number;
   /** 命中的场景类型，UI/探针用来解释「为什么选这卷」。 */
   sceneKind: SceneMatchSceneKind;
@@ -48,8 +48,8 @@ export interface StockRecommendation {
   intensityAuto: boolean;
   /**
    * 成片左下角徽标文本（`null` = 不需要画）：
-   * - AUTO 底片：`AUTO -> UM-400 · 130%`
-   * - 手动底片 + AUTO 强度：`UM-400 · AUTO 135%`
+   * - AUTO 底片：`AUTO -> UM-400 · 95%`
+   * - 手动底片 + AUTO 强度：`UM-400 · AUTO 92%`
    */
   label: string | null;
   /** 匹配理由（中文短句，调试/无障碍文案用）。 */
@@ -66,28 +66,28 @@ export type SceneMatchSceneKind =
   | 'flat-indoor'
   | 'neutral';
 
-/** AUTO 模式下每个场景选哪卷、给多少强度（用户表里的固定值）。 */
+/** AUTO 模式下每个场景选哪卷、给多少强度（用户表里的固定值，全部落在 70%~95%）。 */
 const AUTO_STOCK_BY_SCENE: Readonly<
   Record<SceneMatchSceneKind, { stockId: LutStockId; scale: number }>
 > = {
-  night: { stockId: 'cs-800t', scale: 1.25 },
+  night: { stockId: 'cs-800t', scale: 0.94 },
   'bright-highkey': { stockId: 'pt-400', scale: 0.75 },
-  backlight: { stockId: 'ek-100', scale: 1.25 },
-  'cool-green': { stockId: 'fj-400', scale: 1.15 },
-  golden: { stockId: 'gd-200', scale: 1.2 },
-  'flat-indoor': { stockId: 'um-400', scale: 1.35 },
-  neutral: { stockId: 'pt-400', scale: 1 },
+  backlight: { stockId: 'ek-100', scale: 0.92 },
+  'cool-green': { stockId: 'fj-400', scale: 0.88 },
+  golden: { stockId: 'gd-200', scale: 0.9 },
+  'flat-indoor': { stockId: 'um-400', scale: 0.95 },
+  neutral: { stockId: 'pt-400', scale: 0.8 },
 };
 
-/** 手动底片 + AUTO 强度时，每个场景给多少强度（70%~145% 区间内）。 */
+/** 手动底片 + AUTO 强度时，每个场景给多少强度（70%~95% 区间内，与 `INTENSITY_AUTO_MIN/MAX` 同步）。 */
 const AUTO_INTENSITY_BY_SCENE: Readonly<Record<SceneMatchSceneKind, number>> = {
-  night: 1.25,
+  night: 0.94,
   'bright-highkey': 0.75,
-  backlight: 1.25,
-  'cool-green': 1.15,
-  golden: 1.2,
-  'flat-indoor': 1.35,
-  neutral: 1,
+  backlight: 0.92,
+  'cool-green': 0.88,
+  golden: 0.9,
+  'flat-indoor': 0.95,
+  neutral: 0.8,
 };
 
 /** 场景分类的优先级（先命中先赢）。 */
@@ -178,10 +178,10 @@ export function classifyMatchScene(
   return 'neutral';
 }
 
-/** 手动底片 + AUTO 强度：按场景取强度（夹在 70%~145%）。 */
+/** 手动底片 + AUTO 强度：按场景取强度（夹在 70%~95%）。 */
 export function autoIntensityForScene(sceneKind: SceneMatchSceneKind): number {
   const base = AUTO_INTENSITY_BY_SCENE[sceneKind];
-  return Math.min(INTENSITY_SCALE_MAX, Math.max(INTENSITY_AUTO_MIN, base));
+  return Math.min(INTENSITY_AUTO_MAX, Math.max(INTENSITY_AUTO_MIN, base));
 }
 
 /** 黄金时刻细分：暖得很重 → GD-200；暖但偏中等 → CP-200（复古琥珀）。 */
@@ -241,18 +241,15 @@ export function recommendStockAndIntensity(
     stockId = 'um-400';
   }
 
-  // ② 强度：手动档位优先；AUTO 强度按场景；两者都缺 = 标准 100%。
+  // ② 强度：手动档位优先；AUTO 强度按场景（已在 `autoIntensityForScene` 里夹到 70%~95%）；
+  //    两者都缺 = 100%。手动档位**不套** AUTO 的下限，否则 subtle 35% 会被抬到 70%
+  //    （v2.1.2 用户 m00001：档位表本身已经是 0.35~1.00 的合法值）。
   let intensityScale: number;
-  if (!intensityAuto) {
-    intensityScale = intensityScaleForTier(options.intensityTier) ?? 1;
-    intensityScale = clampIntensityScale(intensityScale);
-  } else {
+  if (intensityAuto) {
     intensityScale = autoIntensityForScene(sceneKind);
+  } else {
+    intensityScale = clampIntensityScale(intensityScaleForTier(options.intensityTier) ?? 1);
   }
-  intensityScale = Math.min(
-    INTENSITY_SCALE_MAX,
-    Math.max(INTENSITY_AUTO_MIN, clampIntensityScale(intensityScale)),
-  );
 
   // ③ 徽标：只有「AUTO 参与」时才印，格式按用户 m03050 的示例。
   const percent = intensityPercentText(intensityScale);

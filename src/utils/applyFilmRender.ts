@@ -61,9 +61,9 @@ export interface RenderFilmToFileInput {
    */
   seed: number;
   /**
-   * 预设强度乘数（v2.1.0 手术二）：0.35~1.60，缺省 1 = 100%。
+   * 预设强度乘数：0.35~1.00（v2.1.2 起禁 >1 外推），缺省 0.92 = 默认 rich 档。
    *
-   * 它是"整卷观感的全局乘数"：LUT 输出与原图插值/外推、暗角 EV、颗粒幅度、
+   * 它是"整卷观感的全局乘数"：LUT 输出与原图插值（不外推）、暗角 EV、颗粒幅度、
    * halation 幅度都乘它（夹取规则在 `utils/filmRender.ts` 的 `filmLookWithIntensity`）。
    */
   intensity?: number;

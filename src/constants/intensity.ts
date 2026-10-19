@@ -1,16 +1,17 @@
 /**
- * 预设强度档位表（v2.1.0 用户 m03050 手术二）。
+ * 预设强度档位表（v2.1.2 用户 m00001：单遍干净管线）。
  *
  * 用户在设置页 / 底片库顶部 / 取景器参数栏三处选强度：
- *   subtle 35% · soft 65% · standard 100% · rich 130%（**默认**）· max 160% · auto
+ *   subtle 35% · soft 60% · standard 80% · rich 92%（**默认**）· max 100% · auto
  *
- * 渲染侧只认 `intensityScale`（0.35~1.60 的全局风格乘数）：
- *   · `scale <= 1`：`out = orig + (lut - orig) * scale`（在原图与 100% 胶片输出之间插值）
- *   · `scale > 1`：同一公式自然变成**超频外推**，LUT 的色相偏移/通道反差/暗角一起被放大
- *   · 声明式兜底/取景器路径把染色层、S 曲线、颗粒、暗角的不透明度都乘 `scale`
+ * 渲染侧只认 `intensityScale`（0.35~1.00 的全局风格乘数），**只做区间内插值、绝不外推**：
+ *   · `out = orig + (lut − orig) * scale`，`scale` 恒在 [0.35, 1.00]；
+ *   · `scale = 1.00`（max 档）就是 LUT 标定的原味上限，不存在越过标定值的超频档位；
+ *   · 声明式兜底/取景器路径把染色层、S 曲线、颗粒、暗角的不透明度都乘 `scale`，
+ *     同样只往回收、不超过各自基准值。
  *
  * `auto` 档没有固定倍率：由 `utils/sceneMatch.ts` 的 `recommendStockAndIntensity()`
- * 按场景在 70%~145% 之间决定。
+ * 按场景在 70%~95% 之间决定。
  */
 
 import type { PresetIntensityTier } from '../types';
@@ -39,55 +40,58 @@ export const PRESET_INTENSITY_OPTIONS: readonly PresetIntensityOption[] = [
   {
     id: 'soft',
     label: '清透',
-    percent: '65%',
-    scale: 0.65,
+    percent: '60%',
+    scale: 0.6,
     description: '通透克制，保留大部分原图色彩。',
   },
   {
     id: 'standard',
     label: '標準',
-    percent: '100%',
-    scale: 1,
-    description: 'LUT 标定的原始浓度。',
+    percent: '80%',
+    scale: 0.8,
+    description: '八成浓度，胶片感与画面细节兼顾。',
   },
   {
     id: 'rich',
     label: '濃郁',
-    percent: '130%',
-    scale: 1.3,
-    description: '默认档：胶片味直接拉满，一眼可辨。',
+    percent: '92%',
+    scale: 0.92,
+    description: '默认档：接近满浓度，一眼可辨。',
   },
   {
     id: 'max',
     label: '極致',
-    percent: '160%',
-    scale: 1.6,
-    description: '超频外推，暗部沉底、色相最凶。',
+    percent: '100%',
+    scale: 1,
+    description: 'LUT 标定的满浓度，不越过标定上限。',
   },
   {
     id: 'auto',
     label: 'AUTO',
     percent: 'AUTO',
     scale: null,
-    description: '按场景智能匹配强度（70%~145%）。',
+    description: '按场景智能匹配强度（70%~95%）。',
   },
 ];
 
-/** 默认档位（用户 m03050 明确要求默认 `rich` = 130%）。 */
+/** 默认档位（用户 m00001 明确要求默认 `rich` = 92%）。 */
 export const DEFAULT_PRESET_INTENSITY: PresetIntensityTier = 'rich';
 
-/** 固定档位的乘数范围。 */
+/** 固定档位的乘数范围（上限 1.00：任何档位都不再越过 LUT 标定值）。 */
 export const INTENSITY_SCALE_MIN = 0.35;
-export const INTENSITY_SCALE_MAX = 1.6;
+export const INTENSITY_SCALE_MAX = 1;
 
-/** AUTO 强度的可调范围（用户 m03050 手术三）。 */
+/** AUTO 强度的可调范围（与 `utils/sceneMatch.ts` 的 `AUTO_INTENSITY_BY_SCENE` 同步）。 */
 export const INTENSITY_AUTO_MIN = 0.7;
-export const INTENSITY_AUTO_MAX = 1.45;
+export const INTENSITY_AUTO_MAX = 0.95;
 
-/** 把任意乘数夹到合法区间（非法输入回落 1 = standard）。 */
+/** 非法乘数的回落值：0.92 = `rich`（默认档），不再回落老的 1.00。 */
+export const INTENSITY_SCALE_FALLBACK = 0.92;
+
+/** 把任意乘数夹到合法区间（非法输入回落 0.92 = 默认 rich 档）。 */
 export function clampIntensityScale(scale: number): number {
   if (!Number.isFinite(scale) || scale <= 0) {
-    return 1;
+    return INTENSITY_SCALE_FALLBACK;
   }
   return Math.min(INTENSITY_SCALE_MAX, Math.max(INTENSITY_SCALE_MIN, scale));
 }
@@ -107,7 +111,7 @@ export function intensityScaleForTier(
   return null;
 }
 
-/** 乘数 → `'130%'` 文本（AUTO 场景引擎的徽标用）。 */
+/** 乘数 → `'92%'` 文本（AUTO 场景引擎的徽标用）。 */
 export function intensityPercentText(scale: number): string {
   return `${Math.round(clampIntensityScale(scale) * 100)}%`;
 }

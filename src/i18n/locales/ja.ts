@@ -46,7 +46,7 @@ export const ja: Messages = {
   'film.intensity.title': 'PRESET INTENSITY · プリセット強度',
   'film.intensity.hint': 'フィルム全体の強さ · AUTO はシーン判定に任せる',
   'film.intensity.a11y': 'プリセット強度、現在 {label}',
-  'film.intensity.auto.hint': 'シーンに合わせて自動調整（70%~145%）',
+  'film.intensity.auto.hint': 'シーンに合わせて自動調整（70%~95%）',
   'film.stockMode.auto': 'AUTO スマートフィルム',
   'film.stockMode.auto.hint': '撮影画面からフィルムと強度を自動選択',
   'film.stockMode.manual.hint': '手動で選択',
