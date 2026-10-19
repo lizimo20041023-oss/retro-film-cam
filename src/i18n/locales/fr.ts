@@ -46,6 +46,14 @@ export const fr: Messages = {
     'Touchez une pellicule pour la choisir · le bouton en bas à droite change à tout moment',
   'film.card.a11y': '{name}, {description}',
   'film.card.selected': 'Sélectionné',
+  'film.intensity.title': 'PRESET INTENSITY · Intensité',
+  'film.intensity.hint': 'Une intensité pour toute la pellicule · AUTO laisse le moteur de scène décider',
+  'film.intensity.a11y': 'Intensité du préréglage, actuelle : {label}',
+  'film.intensity.auto.hint': 'S’adapte à la scène (70 %–145 %)',
+  'film.stockMode.auto': 'AUTO Pellicule intelligente',
+  'film.stockMode.auto.hint': 'Choisit la pellicule et l’intensité selon la scène',
+  'film.stockMode.manual.hint': 'Choisir une pellicule manuellement',
+  'film.stockMode.a11y': 'Pellicule intelligente auto, {state}',
 
   /* ---------------- noms des cadres (barre du haut) ----------------
      Restez court : la barre du haut est une seule ligne en 10pt monospace,
@@ -136,9 +144,11 @@ export const fr: Messages = {
   'develop.stage.normalizing': 'Préparation du négatif',
   'develop.stage.saving': "Enregistrement dans l'album",
   'develop.tapToContinue': "Touchez l'écran pour continuer",
+  'develop.auto.badge': 'Sélection AUTO : {badge}',
 
   /* ---------------- erreurs ---------------- */
   'error.noPhoto': "L'appareil photo n'a renvoyé aucune photo. Réessayez.",
+  'error.filmRender': 'Échec du développement (pipeline LUT). La photo n’a pas été enregistrée. Réessayez.',
   'save.denied.retry':
     "Pas d'autorisation d'écriture dans l'album. Touchez à nouveau Enregistrer et choisissez « Autoriser ».",
   'save.denied.settings':
@@ -261,6 +271,8 @@ export const fr: Messages = {
   'camera.bar.ev.a11y':
     'Correction d\'exposition {value}. Appui long et glissement pour régler, touchez pour réinitialiser',
   'camera.bar.ev.hint': 'Balayez vers le haut ou le bas pour régler l\'exposition',
+  'camera.bar.intensity': 'INT',
+  'camera.bar.intensity.a11y': 'Intensité du préréglage {label}, appuyez pour ouvrir les niveaux',
   'camera.tool.import': 'Importer',
   'camera.tool.double': 'Double expo',
   'camera.tool.timer': 'Retard',

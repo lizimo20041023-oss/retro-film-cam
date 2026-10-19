@@ -52,6 +52,14 @@ export const zhHans = {
   'film.drawer.hint': '轻触选择底片 · 点击右下角胶卷按钮可随时切换',
   'film.card.a11y': '{name}，{description}',
   'film.card.selected': '已选择',
+  'film.intensity.title': 'PRESET INTENSITY · 预设强度',
+  'film.intensity.hint': '整卷统一强度 · AUTO 交给场景引擎',
+  'film.intensity.a11y': '预设强度，当前 {label}',
+  'film.intensity.auto.hint': '场景自适应（70%~145%）',
+  'film.stockMode.auto': 'AUTO 智能底片',
+  'film.stockMode.auto.hint': '按拍摄画面自动选卷与强度',
+  'film.stockMode.manual.hint': '手动选卷',
+  'film.stockMode.a11y': '自动智能底片，{state}',
 
   /* ---------------- 相框名（顶栏那行小字里显示） ----------------
      名字一律 2~5 个字：顶栏是单行等宽小字，名字长了会把右边的预设名挤掉。
@@ -139,9 +147,11 @@ export const zhHans = {
   'develop.stage.normalizing': '正在整理底片',
   'develop.stage.saving': '正在存入相册',
   'develop.tapToContinue': '轻触画面继续拍摄',
+  'develop.auto.badge': 'AUTO 选择：{badge}',
 
   /* ---------------- 错误 / 失败文案 ---------------- */
   'error.noPhoto': '相机没有返回照片，请重试。',
+  'error.filmRender': '冲印失败（LUT 像素管线），成片未保存，请重试。',
   'save.denied.retry': '没有相册写入权限，请再点一次保存，并在弹窗里选「允许」。',
   'save.denied.settings':
     '相册权限被拒绝且不再询问，请到 系统设置 → 隐私与安全性 → 照片 里打开权限。',
@@ -255,6 +265,8 @@ export const zhHans = {
   'camera.bar.focal.a11y': '焦段 {label}，长按滑动调整，轻点展开档位',
   'camera.bar.ev.a11y': '曝光补偿 {value}，长按滑动调整，轻点归零',
   'camera.bar.ev.hint': '上下滑动调整曝光',
+  'camera.bar.intensity': '强度',
+  'camera.bar.intensity.a11y': '预设强度 {label}，轻点展开档位',
   'camera.tool.import': '导入',
   'camera.tool.double': '重曝',
   'camera.tool.timer': '定时',

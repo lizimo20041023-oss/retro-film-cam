@@ -109,51 +109,63 @@ function clampChannel(value: number): number {
   return value;
 }
 
-/** 中灰：所有近似都以它为起点，相当于"标准场景的中间调"（v1.9.5 取 100 让九卷三档都落在 [6,250] 内且不封顶）。 */
-const BASE_GRAY = 100;
+/** 中灰：所有近似都以它为起点，相当于"标准场景的中间调"（v2.1.0 取 88 让九卷染色三档都落在 [6,250] 内且不封顶）。 */
+const BASE_GRAY = 88;
 /**
  * v1.9.4 黑位托底（同源 multiply 自叠）对色块底部的满量程下压：
- * 覆盖 0~0.05 量程（0.05 时 ≈ 12 阶；全库只有 HP-400 会用到）。
+ * 覆盖 0~0.12 量程（0.10 时 ≈ 24 阶；全库只有 TX-400 会用到）。
  */
 const CRUSH_RANGE = 800;
 /**
- * v1.9.4 零模糊真 S 曲线（同源 overlay 自叠）对色块顶部的满量程抬升：
- * 覆盖 0.23~0.60 量程（0.60 时 ≈ 30 阶，底部同步 −1.35 倍压深）。
+ * 零模糊真 S 曲线（同源 overlay 自叠）对色块顶部的满量程抬升：
+ * 覆盖 0.30~0.62 量程（0.62 时 ≈ 31 阶，底部同步 −1.35 倍压深）。
  */
-const S_RANGE = 90;
+const S_RANGE = 50;
 /**
- * v1.9.4 零模糊曝光提亮（同源 screen 自叠）对色块顶部的满量程抬升：
- * 覆盖 0~0.28 量程（0.28 时 ≈ 32 阶，中间调同步 ×0.4；HP-400 的 0 不产生该层）。
+ * 零模糊曝光提亮（同源 screen 自叠）对色块顶部的满量程抬升：
+ * 覆盖 0.06~0.28 量程（0.28 时 ≈ 50 阶，中间调同步 ×0.4）。
  */
-const LIFT_RANGE = 380;
+const LIFT_RANGE = 180;
 /**
- * v1.9.4 暗角对色块底部的边缘下压：覆盖 0.16~0.28 量程
- * （0.16 时 ≈ 16 阶、0.28 时 ≈ 28 阶 —— 暗角只压四角，这里映射到横向色带的下沿做示意）。
+ * v1.9.4 暗角对色块底部的边缘下压：覆盖 0.10~0.28 量程
+ * （0.10 时 ≈ 10 阶、0.28 时 ≈ 28 阶 —— 暗角只压四角，这里映射到横向色带的下沿做示意）。
  */
-const VIGNETTE_RANGE = 240;
+const VIGNETTE_RANGE = 100;
 /**
- * v1.9.4 色度锁（chroma-lock）的色相/饱和度权重满量程：
- * 契约区间 0.54~0.68 映射到 CHROMA_FLOOR~1.0（色度锁越高 → 越接近原图色 → swatch 越饱和）。
+ * 色度锁（chroma-lock）的色相/饱和度权重满量程：
+ * v2.1.0 契约区间 0.10~0.22 映射到 CHROMA_FLOOR~1.0（色度锁越高 → 越接近原图色 → swatch 越饱和）。
  */
-const CHROMA_RANGE = 0.14;
-/** 色度锁权重下限（chromaLock = 0.54 时的吃料系数；缺省/mono 卷按 1.0 处理）。 */
-const CHROMA_FLOOR = 0.86;
-/** 化学暗部偏色的偏移倍率：染色不透明度^1.5 × 通道差 × 权重 × 7.0 × 色度锁系数。 */
-const SHADOW_GAIN = 7.0;
-/** 化学高光偏色的偏移倍率：染色不透明度^1.5 × 通道差 × 权重 × 8.0 × 色度锁系数。 */
-const HIGHLIGHT_GAIN = 8.0;
+const CHROMA_RANGE = 0.12;
+/** 色度锁区间下限：chromaLock = 0.10 时的吃料系数（再低就按 0.10 算）。 */
+const CHROMA_MIN = 0.1;
+/** 色度锁权重下限（chromaLock = 0.10 时的吃料系数；缺省/mono 卷按 1.0 处理）。 */
+const CHROMA_FLOOR = 0.3;
+/** 化学暗部偏色的偏移倍率：染色不透明度^1.5 × 通道差 × 权重 × 1.8 × 色度锁系数。 */
+const SHADOW_GAIN = 1.8;
+/** 化学高光偏色的偏移倍率：染色不透明度^1.5 × 通道差 × 权重 × 7.0 × 色度锁系数。 */
+const HIGHLIGHT_GAIN = 7.0;
 /**
- * 顶部色阶的公共提亮底量：v1.9.5 的九卷高光染色多为"减色型"深色（#049BA4 / #814212 等），
- * 顶部档 highlightWeight = 1 会被整档拉暗、破坏"底部 < 中间调 < 高光"的亮度单调；
+ * 顶部色阶的公共提亮底量：v2.1.0 的九卷染色对比度很强，顶部档 highlightWeight = 1
+ * 会被深色方向整档拉偏、破坏"底部 < 中间调 < 高光"的亮度单调；
  * 这里给顶部补一个与预设参数无关的固定提亮，把单调性从染色手里拿回来。
  */
 const TOP_LIFT = 10;
 /**
  * 染色不透明度的**非线性吃料指数**：胶片乳剂的染色密度不是线性叠加的，
  * 这里按 `opacity^1.5` 近似 —— 低不透明度的分离色更克制、高不透明度才吃饱，
- * 同时让九卷 swatch 在 [6,250] 通道域里两两可辨（线性档在契约九卷参数下无解）。
+ * 同时让九卷 swatch 在 [6,250] 通道域里两两可辨（线性档在 v2.1.0 强染色参数下无解）。
  */
 const SATURATION_EXPONENT = 1.5;
+/**
+ * 静态 `temperature` 对色块的冷暖位移满量程：warm +R/−B，cool 反向
+ * （映射 `gradeLayers.ts` 的 soft-light 暖/冷亮色层；±0.26 色温 ≈ ±18 阶）。
+ */
+const TEMPERATURE_RANGE = 70;
+/**
+ * 静态 `tint` 对色块的绿/品红位移满量程：正绿 +G，负品红 +R/+B
+ * （映射 Tint 旋钮的 soft-light 绿/品红亮色层；±0.12 色调 ≈ ±5 阶）。
+ */
+const TINT_RANGE = 40;
 
 
 type SwatchZone = {
@@ -183,8 +195,27 @@ function chromaScaleOf(chromaLock: number | undefined): number {
   if (chromaLock === undefined || chromaLock <= 0) {
     return 1;
   }
-  const normalized = Math.min(1, Math.max(0, (chromaLock - 0.54) / CHROMA_RANGE));
+  const normalized = Math.min(1, Math.max(0, (chromaLock - CHROMA_MIN) / CHROMA_RANGE));
   return CHROMA_FLOOR + normalized * (1 - CHROMA_FLOOR);
+}
+
+/**
+ * 静态色温/色调对色块的**通道位移**（v2.1.0 九卷性格的一部分）：
+ * 暖色温 +R / −B、冷色温反向、绿 tint +G、品红 tint +R/+B。
+ *
+ * 与 `gradeLayers.ts` 的 soft-light 暖/冷、绿/品红亮色层同向，只是把"多层软光"
+ * 近似成每通道一个固定标量位移；量级小（±0.26 色温 ≈ ±18 阶），不会盖过染色层。
+ */
+function chromaShift(temperature: number, tint: number, channel: number): number {
+  const warm = temperature * TEMPERATURE_RANGE;
+  const green = tint * TINT_RANGE;
+  if (channel === 0) {
+    return warm - green * 0.5;
+  }
+  if (channel === 1) {
+    return green - warm * 0.35;
+  }
+  return -warm - green * 0.5;
 }
 
 /**
@@ -203,19 +234,20 @@ function lightTint(
 }
 
 /**
- * v1.9.4 明度/色度解耦配方 → 三段色阶（高光 / 中间调 / 暗部）。
+ * v2.1.0「九卷强性格」配方 → 三段色阶（高光 / 中间调 / 暗部）。
  *
- * 映射纪律（与 `gradeLayers.ts` 的 v1.9.4 图层顺序 1~12 对应，photo 层全部 blurRadius 0 自叠）：
+ * 映射纪律（与 `gradeLayers.ts` 的图层顺序 1~12 对应，photo 层全部 blurRadius 0 自叠）：
  *  1. `sCurveContrast`→ overlay 自叠：底部压深（×1.35）、中间调微抬（×0.055）、顶部提亮（×0.55）
- *  2. `chromaLock`    → color 色度锁：不直接改明度，而是把染色层的吃料按 0.86~1.0 缩放；
- *                       色度锁越高 → 颜色越接近原色 → swatch 饱和度越高
+ *  2. `chromaLock`    → color 色度锁：不直接改明度，而是把染色层的吃料按 0.30~1.0 缩放；
+ *                       v2.1.0 把契约区间下调到 0.10~0.22，染色终于留得住
  *  3. `exposureLift`  → screen 自叠：顶部提亮（×0.33）、中间调（×0.4）、底部（×0.2）
  *  3b. `TOP_LIFT`     → 与预设无关的顶部固定提亮（+10 阶），抵消深色高光染色的整档拉暗
- *  4. `shadowTint*`   → 化学暗部偏色（只 soft-light），权重 底部 1.0 / 中间 0.45 / 顶部 0.15，增益 ×7.0
- *  5. `highlightTint*`→ 德味暖调分色（只 soft-light），权重 顶部 1.0 / 中间 0.4 / 底部 0.2，增益 ×8.0
- *  6. `shadowCrush`   → multiply 自叠：只压暗部（底部 ×0.3，中间调 ×0.06；只有 HP-400 > 0）
+ *  4. `shadowTint*`   → 化学暗部偏色（只 soft-light），权重 底部 1.0 / 中间 0.45 / 顶部 0.15，增益 ×1.8
+ *  5. `highlightTint*`→ 德味暖调分色（只 soft-light），权重 顶部 1.0 / 中间 0.4 / 底部 0.2，增益 ×7.0
+ *  6. `shadowCrush`   → multiply 自叠：只压暗部（底部 ×0.3，中间调 ×0.06；只有 TX-400 0.10）
  *  7. `vignette`      → 只压四角；横向色带把它映射到**下沿**（底部 −VIGNETTE_RANGE×0.42）
- *  8. `mono`          → 三档全部取 BT.709 亮度（`#808080 + 'color'` 的去色等价）
+ *  8. `temperature` / `tint` → 卷静态色温/色调的通道位移（暖 +R/−B、绿 +G、品红 +R/+B）
+ *  9. `mono`          → 三档全部取 BT.709 亮度（`#808080 + 'color'` 的去色等价）
  *
  * 暗角不参与中间调/顶部的计算：它只影响四角亮度，画进这条 34pt 的横向色带如果
  * 全档都减，会读成"整条都变暗"，反而失真 —— 因此只让下沿承担边缘感，
@@ -226,6 +258,8 @@ function swatchZones(preset: FilmPreset): SwatchZone {
   const sCurveContrast = color.sCurveContrast ?? 0;
   const exposureLift = color.exposureLift ?? 0;
   const shadowCrush = color.shadowCrush ?? 0;
+  const temperature = color.temperature ?? 0;
+  const tintChroma = color.tint ?? 0;
   const vignette = preset.vignette ?? 0;
   const shadowTint = hexChannels(color.shadowTint);
   const shadowOpacity = color.shadowTintOpacity ?? 0;
@@ -290,7 +324,7 @@ function swatchZones(preset: FilmPreset): SwatchZone {
           chromaScale,
         );
       }
-      channels.push(channel);
+      channels.push(channel + chromaShift(temperature, tintChroma, index));
     }
     if (preset.mono === true) {
       // `#808080 + mixBlendMode:'color'` 的效果 = 三通道全部换成亮度（真黑白）。

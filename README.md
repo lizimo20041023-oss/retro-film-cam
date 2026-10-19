@@ -74,6 +74,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [50. v1.9.5：开源胶片预设转译（t3mujinpack MIT → 九卷调色重标定）](#50-v195开源胶片预设转译t3mujinpack-mit--九卷调色重标定)
 - [51. v2.0.0：真胶片 LUT 成片管线](#51-v200真胶片-lut-成片管线)
 - [52. v2.0.1：四组红线修正（LUT 重标定 + 单遍整型渲染 + 单次截图）](#52-v201四组红线修正lut-重标定--单遍整型渲染--单次截图)
+- [53. v2.1.0：三条手术（九卷 LUT 重烘焙 + 预设强度 6 档 + 场景智能匹配）](#53-v210三条手术九卷-lut-重烘焙--预设强度-6-档--场景智能匹配)
 
 ---
 
@@ -7765,6 +7766,278 @@ photo(原图)
 **不动**：`src/constants/presets.ts`（取景器色参仍 v1.9.5）、`grain.ts`、`textures.ts`、`GRAIN_LEVELS` 五档值、兜底文案「真胶片像素管线失败」、`package.json` 依赖。
 
 工作区根（不进仓库）：`_v201_contract.md`、`_v201_calibrate_lut.py`、`_v201_gen_atlas.py`、`_v201_make_gen_atlas.py`、`_v201_luts/`、`_v201_lut_provenance.json`、`_v201_calibration.json`、`_v201_windows.json`、`_v201_accept.mjs`、`_v201_fill.json`、`_patch_readme_v201.py`、`_release_v201.py`、`_run_gates_v201.py`、`_gate_v201_run.out.txt`、`_verify_ipa_v201.py`。
+
+## 53. v2.1.0：三条手术（九卷 LUT 重烘焙 + 预设强度 6 档 + 场景智能匹配）
+
+> 用户诉求（m03050）：实拍 8 张，**九卷成片 99% 相同**——换卷等于没换。本版不动相框/日期/水印引擎、
+> 不换胶片曲线源（spectral_film_lut MIT，离线生成），只做三条手术：① 九卷 LUT 逐卷注入**强色度性格**
+> （彩卷两两平均 ΔE00 ≥22）；② 新增用户可控的**预设强度 6 档**（默认 rich 130%，含 AUTO 智能档）；
+> ③ 新增**场景智能选卷/强度**（AUTO 底片 / 手动卷 + AUTO 强度），并在成片左下角给 AUTO 徽标。
+> 同时把「严禁静默回退」写进像素管线：成片 100% 走 LUT，失败直接报错，不再悄悄回退。
+
+### 53.1 根因：为什么九卷看起来一样
+
+用户实拍 8 张成片肉眼 99% 相同，根因不是 LUT 不生效，而是**九卷的 LUT 本身性格太弱**：
+
+- **量化实测**（`_v210_diag_deltae.py`，745 个采样点 = 中性轴 11 + 5³ 粗网格 125 + 随机 600 +
+  主题补点 9；CIEDE2000，sRGB→线性→D65 Lab）：彩卷 7 卷**两两平均 ΔE00 min 3.22 / mean 6.47**。
+  ΔE00≈2.3 是人眼刚可分辨的 JND，平均 6 附近意味着九卷落在**同一视觉带**里——
+  用户看到的「不同」只是亮度/颗粒的轻微差别，不是色彩性格。
+- **中性轴九卷重合**：v2.0.x 的九卷 LUT 在中性灰轴上几乎完全重合（差异 ≤1 个 u8 量级），
+  只带有极轻微的色相偏移和亮度差，拍白墙、阴天、室内这类低饱和场景时几乎无法区分。
+- **结构原因**：v2.0.x 的九卷性格只有极弱色度差异（`chromaLock 0.54~0.68` 把染色压平、
+  静态 `temperature/tint` 全为 0、染色层 opacity 都压在 0.10~0.16），换卷的收益被压到看不见；
+  而且**没有强度控制**——用户既不能把性格调淡，也不能把性格推浓。
+- v1.9.5 的 t3mujinpack 走的是「tonecurve 拟合」，v2.0.0/v2.0.1 解决了「有没有 3D LUT」和
+  「LUT 标得准不准」，但都没有解决「**换卷能不能一眼看出来**」。
+
+结论：v2.1.0 要让差异发生在**色度**上，并且把差异做成用户可调的档位；AUTO 则替用户做场景决策。
+
+### 53.2 三条手术 → 落地口径对照
+
+| 用户要求（m03050） | 落地实现 | 位置 |
+| --- | --- | --- |
+| ① 九卷"一眼可辨"，彩卷两两平均 ΔE00 ≥22 | 九卷 LUT 逐卷色度重烘焙（tag `bp-mt-2.1.0`）；`chromaLock` 降到 0.10~0.22、染色 opacity 提到 0.18~0.34、静态 temperature/tint 写进九卷参数；彩卷两两平均 ΔE00 实测 min **@@V210_LUT_DELTAE_MIN@@** / mean **@@V210_LUT_DELTAE_MEAN@@** | `_v210_luts/` → `src/constants/lutAtlas.ts`、`src/constants/presets.ts` |
+| ② 用户可控强度（6 档，含 AUTO） | `intensityScale` 全局乘数 0.35~1.60：≤1 向原图线性插值、>1 超频外推；UI 先落两处入口（底片库 / 取景器参数栏） | `src/constants/intensity.ts`、`src/utils/filmRender.ts`、UI |
+| ③ 场景智能选卷 / 自动强度 | `recommendStockAndIntensity(scene, {stockMode, manualStockId, intensityTier})`；6 大场景 + neutral；AUTO 强度 70%~145% 夹 | `src/utils/sceneMatch.ts`、`src/utils/processFilmPhoto.ts` |
+| ④ 严禁静默回退 | 成片 100% 走 LUT 像素管线：失败 **throw**（不再回退原图/声明式）；`renderMode` 恒 `'lut'`；声明式图层只活于取景器预览 | `src/utils/processFilmPhoto.ts`、`src/utils/applyFilmRender.ts` |
+| ⑤ 胶卷染色层必须在 chromaLock 之上 | 12 槽层序**不变**（chroma-lock 在 temperature/tint/shadow-tint/highlight-tint 之前），但 `chromaLock` 0.54~0.68 → **0.10~0.22**、染色 opacity → **0.18~0.34** | `src/constants/presets.ts`、`src/utils/gradeLayers.ts` |
+| ⑥ AUTO 成片左下角提示 | `ProcessedPhoto.autoBadge` → `FilmStageInput.autoBadge` → `FilmCompositor` 左下角等宽小字徽标（暗底 55% + 白描边），格式 `AUTO -> UM-400 · 130%` / `UM-400 · AUTO 135%` | `src/components/FilmCompositor.tsx` |
+| ⑦ 门禁 100% 绿、断言只增不减 | 30 个探针 + tsc = **31 道主门**；旧探针按 v2.1.0 语义/数值重定标（只改期望、不删断言）+ 4 支新探针 | `_probe_v210_*.mjs`、`_run_gates_v210.py`（工作区根） |
+
+### 53.3 九卷 v2.1.0 性格参数（`presets.ts`，已落盘）
+
+旧值统一 `temperature=0 / tint=0`；v2.1.0 的 `color` 字段新表（染色层 blendMode 全部 `soft-light`）：
+
+| 卷 | temp | tint | sCurve | chromaLock | exposureLift | shadowCrush | vignette | shadowTint(op) | highlightTint(op) | 其他 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| UM-400 | +0.10 | 0 | 0.62 | 0.14 | 0.22 | 0 | 0.28 | #061C2C .32 | #F2E8D5 .30 | grain 0.075 |
+| GD-200 | +0.22 | 0 | 0.52 | 0.16 | 0.24 | 0 | 0.24 | #2E1608 .26 | #FFC346 .32 | |
+| PT-400 | −0.12 | 0 | 0.30 | 0.20 | 0.28 | 0 | 0.10 | #D8E4E6 .24 | #FFDAC3 .28 | 新增 shadowTint |
+| CP-200 | +0.16 | 0 | 0.48 | 0.15 | 0.18 | 0 | 0.22 | #3A2416 .30 | #EBB44B .30 | 新增 shadowTint |
+| FJ-400 | −0.20 | +0.12 | 0.50 | 0.12 | 0.20 | 0 | 0.20 | #0C735F .32 | #D7ECF2 .26 | |
+| EK-100 | 0 | 0 | 0.62 | 0.22 | 0.14 | 0 | 0.26 | #16303C .20 | #EEF3FA .22 | grain 0 |
+| CS-800T | −0.24 | −0.10 | 0.44 | 0.18 | 0.16 | 0 | 0.26 | #145FB9 .32 | #C9E4FF .24 | halation 0.04 |
+| HP-400 | 0 | 0 | 0.42 | — | 0.10 | 0 | 0.16 | — | — | mono |
+| TX-400 | 0 | 0 | 0.62 | — | 0.06 | 0.10 | 0.28 | — | — | mono |
+
+- 彩色 7 卷全部有 shadowTint + highlightTint（14 层染色）；`PRESET_DEFAULTS` 结构、`resolvePreset`、
+  层 id/label、12 槽层序**均不变**。
+- **归属反转**（旧探针必须改、否则会红）：唯一 `shadowCrush` 卷是 **TX-400(0.10)**（HP-400 归零）；
+  `exposure-lift` 九卷全有（HP 0.10 / TX 0.06）；`sCurve` 量程 [0.30, 0.62]；`chromaLock` 量程
+  [0.10, 0.22]；染色 opacity [0.18, 0.34]；`vignette` [0.10, 0.28]；`temperature` 非零 6 卷、
+  `tint` 非零 FJ-400 / CS-800T。
+- **LUT 二次烘焙**：九卷 LUT 逐卷色度重烘焙（tag `bp-mt-2.1.0`），亮度轴沿用 v2.0.1 标定
+  （`bp-mt-2.0.1`）不动；彩卷两两平均 ΔE00 目标 ≥22，实测 min **@@V210_LUT_DELTAE_MIN@@** /
+  mean **@@V210_LUT_DELTAE_MEAN@@**。图集：九卷 PNG 合计 **@@V210_LUT_ATLAS_BYTES@@ B**、
+  base64 **@@V210_LUT_ATLAS_B64_CHARS@@ 字符**（v2.0.1 为 406,830 B / 542,456 字符；格式不变：
+  256×141 RGBA、`i=y*256+x` ↔ LUT 第 i 项、索引 `((r*33+g)*33+b)`、尾部 159 像素透明）。
+- `applyPresetIntensity(preset, scale)` 的 preset 侧夹取：temperature/tint ×scale 夹 ±0.30；
+  sCurve ≤0.62；exposureLift ≤0.28；chromaLock ≤0.22；shadowCrush ≤0.12；染色 opacity ×scale
+  夹 [0,0.5]；vignette 夹 [0,0.28]；**grain 不缩放**；scale 非法（NaN/≤0/±Inf）回落 1；
+  返回新对象、不改入参。`PRESET_INTENSITY_LIMITS` 导出同名上限。
+- `gradeLayers.ts` 上限同步：`S_CURVE_OPACITY_MAX 0.62`、`TINT_OPACITY_MAX 0.5`、
+  `CHROMA_LOCK_OPACITY_MIN/MAX 0.1/0.22`、`SHADOW_CRUSH_OPACITY_MAX 0.12`
+  （exposure-lift 0.28 / vignette 0.28 不变）。
+
+*怎么改*：九卷性格只改 `presets.ts` 的 `color` 表 + LUT 重烘焙脚本，两处必须成对改（色参给取景器
+声明式预览、LUT 给成片）；改完跑 `_probe_v210_lut.mjs` 与 `_probe_v210_intensity.mjs`，
+并同步本表、§53.4、`_v210_diag_deltae.py` 的 ΔE 数字。
+
+### 53.4 预设强度 6 档与数学（`src/constants/intensity.ts` + `filmRender.ts`）
+
+| 档位 | `intensityScale` | 显示 | 说明 |
+| --- | --- | --- | --- |
+| subtle | 0.35 | 35% | 性格最淡，接近未调色原图 |
+| soft | 0.65 | 65% | 淡性格 |
+| standard | 1.00 | 100% | 基准（= v2.0.1 的 LUT 输出逐字节相同） |
+| **rich（默认）** | 1.30 | 130% | 用户点名默认档：性格明显但不脏 |
+| max | 1.60 | 160% | 推满 |
+| auto | null | AUTO | 场景引擎决定（见 §53.5，70%~145%） |
+
+- 常量：`INTENSITY_SCALE_MIN=0.35`、`MAX=1.6`、`AUTO_MIN=0.7`、`AUTO_MAX=1.45`、
+  `DEFAULT_PRESET_INTENSITY='rich'`；`intensityScaleForTier(auto/未知)=null`；
+  `intensityPercentText(scale)` → `'130%'`。
+- 像素管线乘数（`filmRender.ts`，单遍整型）：进 LUT 前记原图 `r0/g0/b0`，LUT 输出后逐通道
+  `out = clampByte(r0 + (((lut - r0) * intensityQ + 32768) >> 16))`，`intensityQ = round(intensity * 65536)`；
+  `intensity===1` 时整段跳过（与 v2.0.1 逐字节相同）——**成片只缩放一次**。
+- 渲染参数同步缩放并夹取：暗角 EV ×intensity ∈ **[0.15, 0.85]**；颗粒像素幅度 ×intensity
+  ∈ **[0, 70]**（8bit 单位）；halation ×intensity ∈ **[0, 0.6]**。常量：
+  `INTENSITY_NEUTRAL=1`、`VIGNETTE_EV_MIN=0.15`、`VIGNETTE_EV_MAX=0.85`、
+  `GRAIN_PIXEL_EFFECTIVE_MAX=70`、`HALATION_EFFECTIVE_MAX=0.6`（`constants/filmRender.ts`）。
+- **预览不叠乘**：取景器预览按 `applyPresetIntensity(resolvePreset(preset), scale)` 走一次声明式
+  12 槽；成片由像素管线乘一次；`stage.intensity` 只作展示/透传，**不参与像素计算**。
+  AUTO 档预览用 `scale=1` 并在胶囊/徽标上显示 AUTO，成片由场景引擎定值。
+
+*怎么改*：档位/百分比只改 `intensity.ts` 的 `PRESET_INTENSITY_OPTIONS`；改乘数语义要同步
+`filmRender.ts` 的 `intensityQ` 路径与 `_probe_v210_intensity.mjs` 的期望值；夹取上限改动必须
+同步 `PRESET_INTENSITY_LIMITS`、`gradeLayers.ts` 与本节。
+
+### 53.5 场景智能匹配（`src/utils/sceneMatch.ts`）
+
+分类顺序（先命中先返回，阈值取自 `sceneStats`）：`night`（`shadowShare>0.52`）→
+`bright-highkey`（`highlightShare>0.48 && saturation<0.22`）→ `backlight`
+（`(highlightShare>0.15 && shadowShare>0.18) || contrast>0.22`）→ `cool-green`
+（`warmth<-0.05 && meanLuma>=0.35`）→ `golden`（`warmth>0.08`）→ `flat-indoor`
+（`contrast<0.18`）→ `neutral`。
+
+| 场景 | 自动卷 | 自动强度 |
+| --- | --- | --- |
+| flat-indoor 室内静物/桌面 | UM-400 | 135% |
+| night 夜景/暗光/霓虹 | CS-800T | 125% |
+| backlight 逆光/大光比 | EK-100 | 125% |
+| cool-green 森林/海湾 | FJ-400 | 115% |
+| golden 黄金时刻/暖街 | GD-200（warmth>0.22）否则 CP-200 | 120% |
+| bright-highkey 高调雪景/顺光人像 | PT-400 | 75% |
+| neutral 其余 | PT-400 | 100% |
+
+- **两种 AUTO 语义**：AUTO 底片 = 换卷 + 场景强度（`stockAuto && intensityAuto`）；
+  手动卷 + AUTO 强度 = **保留用户卷**、强度取场景值（70%~145% 夹，`stockAuto=false`）；
+  手动卷 + 手动强度 = 用户档位，不做任何替换。
+- `recommendStockAndIntensity(scene, {stockMode, manualStockId, intensityTier})` →
+  `{stockId, intensityScale, sceneKind, stockAuto, intensityAuto, label, reason}`；
+  label 规则：AUTO 底片 `AUTO -> UM-400 · 130%`、手动卷 + AUTO 强度 `UM-400 · AUTO 135%`、
+  手动手动 `null`。
+- 成片路径（`processFilmPhoto`）：`probeScene` → `recommend` → **换卷只换身份**
+  （grain / captureLongEdge / normalizeMaxLongEdge 保留用户设置）→
+  `clampIntensityScale(input.intensityScale ?? match.intensityScale)` →
+  `renderFilmToFile({intensity})` → 返回 `effectivePresetId / intensity / autoBadge`。
+- AUTO 徽标：`ProcessedPhoto.autoBadge` → `FilmStageInput.autoBadge` → `FilmCompositor`
+  画面左下角等宽小字（暗底 55% + 白描边；避让日期水印；仅非空时渲染）。
+
+*怎么改*：场景阈值只改 `sceneMatch.ts` 的 `classifyMatchScene`，六场景映射只改
+`AUTO_STOCK_BY_SCENE`；改完同步本表、`_probe_v210_scene.mjs` 与 `_probe_v210_pipeline.mjs`
+的 AUTO 断言；不要把场景决策写进 `presets.ts` 或 UI 组件。
+
+### 53.6 像素管线与严禁静默回退
+
+- v2.0.1 的**单次截图**结构不变：`normalizePhoto` → `centerCropPhoto` → `prepareLutSource`
+  （长边 1440~1800，PNG）→ `renderFilmToFile`（decodePng → 单遍整型渲染 → PNG store 写盘）→
+  **恰好一次** `host.mount` + `host.capture`（JPG 0.98，画布 2048/3024/4032）。
+- v2.1.0 在 `renderFilmToFile` 参数里新增 `intensity`：0.35~1.60 的全局乘数按 §53.4 的 Q16
+  路径在**同一次**单遍渲染里生效，不额外遍历、不额外截图。
+- **失败即 throw**：像素管线任何异常
+  `throw new Error("真胶片像素管线失败，成片未保存：<详情>")`；`processFilmPhoto` 不再静默
+  返回原图、不再 `renderMode='declarative'` 兜底、不再写相册。UI 层把错误显示为
+  「冲印失败（LUT 像素管线），成片未保存，请重试。」（i18n `error.filmRender` 五语言），
+  原始错误 `console.warn` 保留给开发者；本次拍摄停在 error 状态，不入库。
+- `renderMode` 恒为 `'lut'`（类型保留兼容旧调用）；声明式 12 槽图层只活于**取景器预览**
+  （`FilmLookLayers`），成片路径在 `lutUri` 非空时跳过声明式调色，AUTO 徽标/相框/日期照常合成。
+- 取景器仍为声明式近似（性能与发热考虑，不跑 JS LUT），预览 ≠ 成片——本版继续如实声明，
+  不宣称所见即所得（见 §53.10）。
+
+*怎么改*：失败文案只改 i18n 的 `error.filmRender` 与 `processFilmPhoto.ts` 的 throw 文案；
+不要为了"能出片"恢复兜底——门禁 `_probe_v210_pipeline.mjs` 会检查**无静默回退**（源码断言
+`throw` 存在、`renderMode` 不出现 declarative 兜底分支）。
+
+### 53.7 门禁、tsc 与版本锚点
+
+- `tsc --noEmit -p tsconfig.json` EXIT 0；零 `as any`；`package.json` 零改动（零新依赖）；
+  `app.json:5` version `2.1.0`。
+- 门禁 **30 → 31 道主门**（**31** 道 = 30 个探针 + tsc）：新增 4 支 v2.1.0 探针——
+  `_probe_v210_lut.mjs`（替换 `_probe_v201_lut.mjs`：九卷色度 ΔE / 烘焙 tag / 图集完整性）、
+  `_probe_v210_intensity.mjs`（6 档常量 / Q16 插值 / 夹取上限 / 首尾逐字节）、
+  `_probe_v210_scene.mjs`（六场景分类 / AUTO 映射 / 70%~145% 夹）、
+  `_probe_v210_pipeline.mjs`（由 `_probe_v201_pipeline.mjs` 改名：intensity 参数 + 单次截图 +
+  无静默回退）。
+- 旧探针按 v2.1.0 语义/数值重定标，**只改期望值、不删断言**（实测失败面）：
+  `_probe_v190_stocks.cjs` 6 处、`_probe_v190_wiring.cjs` S3.135（`map['shadow-crush']`
+  归属反转）、`_probe_v184_camera.cjs` 13 处、`_probe_v188_sharp.cjs` 7 处、
+  `_probe_film_look.cjs` 270 处、`_probe_v190_optics.cjs` 1703 处、
+  `_probe_v1811_adaptive.cjs` 230 处、`_haze_audit.cjs` 结构 25 处、`_probe_v180_seams.cjs`
+  19 处（均由九卷参数重写导致）；`_probe_capture_quality.mjs` 按 throw 语义改期望；
+  `_probe_v190_meter.cjs` 需 stub `./intensity` 导入。
+- 断言：v2.0.1 基线 **49,411**（同口径 49,193；另有 EXTRA 颗粒/暗角 2 项）；v2.1.0
+  目标 ≥49,411 + 新探针，实测 **@@V210_GATES_ASSERTIONS@@** 条，条件只增不减。
+- 版本锚点：`app.json:5`（2.1.0）、`_probe_v188_sharp.cjs`、`_probe_v189_flash.cjs`、
+  `_probe_v190_stocks.cjs`、`_probe_v190_wiring.cjs`、`_probe_v210_*.mjs`、
+  `_verify_ipa_v210.py`（`EXPECTED_VERSION="2.1.0"` / `PREVIOUS_VERSION="2.0.1"`）。
+- 跑批：`python _run_gates_v210.py`（log `_gate_v210_run.out.txt`），要求 `FAILED 0`；
+  IPA 核验 `_verify_ipa_v210.py` → `RESULT: OK`。
+
+*怎么改*：门禁只增不减；改九卷/强度/场景任一数字时，`presets.ts`/`intensity.ts`/`sceneMatch.ts`、
+新探针期望值、§53.3–§53.5、§53.7 必须同一提交同步，否则门禁会红。
+
+### 53.8 发布指纹（v2.1.0）
+
+*（实测值，发布时由 `_v210_fill.json` + `_patch_readme_v210.py` 回填；未发布时保留占位符原样）*
+
+| 项 | 值 |
+| --- | --- |
+| 本地提交 | `@@V210_COMMIT@@`（v2.1.0 特性，@@V210_COMMIT_STAT@@）+ 本文档回填提交（docs-only，`paths-ignore` 跳过 CI） |
+| 远端 master | `@@V210_REMOTE_HEAD@@`（Git Data API 推送，TREE MATCH，tree `@@V210_TREE@@`） |
+| CI run / job | run `@@V210_RUN_ID@@` / job `@@V210_JOB_ID@@`（macOS runner，build-ipa 全 success） |
+| artifact id / 体积 | `@@V210_ARTIFACT_ID@@` / **@@V210_ARTIFACT_BYTES@@ B**（`FretroCam-unsigned-ipa`） |
+| 九卷 LUT 二次烘焙 | 彩卷两两平均 ΔE00 min **@@V210_LUT_DELTAE_MIN@@** / mean **@@V210_LUT_DELTAE_MEAN@@**；图集 **@@V210_LUT_ATLAS_BYTES@@ B** / base64 **@@V210_LUT_ATLAS_B64_CHARS@@ 字符**；tag `bp-mt-2.1.0` |
+| 门禁 | **31 道 / 0 失败 / @@V210_GATES_ASSERTIONS@@ 条断言**（v2.0.1 基线 49,411，目标 ≥49,411 + 新探针，只增不减） |
+| expo export bundle | **@@V210_BUNDLE_BYTES@@ B**，sha256 `@@V210_BUNDLE_SHA256@@`（九卷图集见上；仍接受超预算，以 export 实测为准） |
+| IPA 文件 / 体积 / sha256 | `FretroCam-v2.1.0-unsigned.ipa` / **@@V210_IPA_BYTES@@ B** / `@@V210_IPA_SHA256@@` |
+| Release id / asset id | release `@@V210_RELEASE_ID@@`（tag `v2.1.0`）/ asset `@@V210_RELEASE_ASSET_ID@@` |
+| IPA 回读核验 | `RESULT: OK` —— Info.plist `2.1.0` FOUND、九卷 LUT base64 唯一窗口逐卷命中、`LUT_ATLAS_CALIBRATION='bp-mt-2.1.0'` 命中、PRESENT 零 missing、ABSENT 全 0 |
+| 下载地址 | @@V210_IPA_URL@@ |
+
+*怎么改*：发布后把实测值写进工作区根 `_v210_fill.json`（键为占位符去掉 `@@V210_` 前缀与后缀
+`@@`，如 `"IPA_URL": "https://github.com/…/releases/download/v2.1.0/FretroCam-v2.1.0-unsigned.ipa"`），
+再跑一次 `python _patch_readme_v210.py` —— 幂等，已回填的占位符不会再匹配、不会重复插入。
+占位符键名清单（每个键写成 `@@V210_<KEY>@@`）：`COMMIT` `COMMIT_STAT` `REMOTE_HEAD` `TREE`
+`RUN_ID` `JOB_ID` `ARTIFACT_ID` `ARTIFACT_BYTES` `GATES_ASSERTIONS` `BUNDLE_BYTES`
+`BUNDLE_SHA256` `IPA_BYTES` `IPA_SHA256` `RELEASE_ID` `RELEASE_ASSET_ID` `IPA_URL`
+`LUT_DELTAE_MIN` `LUT_DELTAE_MEAN` `LUT_ATLAS_BYTES` `LUT_ATLAS_B64_CHARS`。
+
+### 53.9 文件改动（以实际工作树为准）
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/constants/intensity.ts` | **新增**：6 档 `PRESET_INTENSITY_OPTIONS`（subtle/soft/standard/rich/max/auto）、`DEFAULT_PRESET_INTENSITY='rich'`、`INTENSITY_SCALE_MIN/MAX`、`AUTO_MIN/MAX`、`clampIntensityScale`、`intensityScaleForTier`、`intensityPercentText`、`intensityOption` |
+| `src/utils/sceneMatch.ts` | **新增**：`classifyMatchScene`（六场景 + neutral 阈值）、`AUTO_STOCK_BY_SCENE`、`recommendStockAndIntensity`（AUTO 底片 / 手动卷 + AUTO 强度 70%~145%）、label 生成 |
+| `src/constants/presets.ts` | 九卷 `color` 参数按 §53.3 重写（temperature/tint/sCurve/chromaLock/exposureLift/shadowCrush/vignette/染色）；新增 `applyPresetIntensity(preset, scale)` 与 `PRESET_INTENSITY_LIMITS`；`PRESET_DEFAULTS`/`resolvePreset`/层 id 不变 |
+| `src/constants/filmRender.ts` | 新增强度夹取常量：`INTENSITY_NEUTRAL`、`VIGNETTE_EV_MIN/MAX`、`GRAIN_PIXEL_EFFECTIVE_MAX`、`HALATION_EFFECTIVE_MAX` |
+| `src/constants/lutAtlas.ts` | 图集重生成（tag `bp-mt-2.1.0`，体积/字节占位见 §53.3；生成文件勿手改） |
+| `src/utils/filmRender.ts` | 单遍渲染新增 `intensity` 参数：Q16 线性插值/超频外推、暗角/颗粒/halation 按强度夹取；`intensity===1` 逐字节同 v2.0.1 |
+| `src/utils/applyFilmRender.ts` | 透传 `intensity` 到渲染入口；保持单次 `mount/capture` |
+| `src/utils/processFilmPhoto.ts` | 接 `stockMode/intensityTier/intensityScale`：probeScene → recommend → 换卷只换身份 → clamp → 渲染；失败 **throw**；返回 `effectivePresetId/intensity/autoBadge` |
+| `src/utils/gradeLayers.ts` | 层上限同步：`S_CURVE_OPACITY_MAX 0.62`、`TINT_OPACITY_MAX 0.5`、`CHROMA_LOCK_OPACITY_MIN/MAX 0.1/0.22`、`SHADOW_CRUSH_OPACITY_MAX 0.12` |
+| `src/types/index.ts` | 加 `PresetIntensityTier`、`StockMode`、`AppSettings.stockMode/presetIntensity`、`FilmStageInput.intensity/autoBadge`、`ProcessedPhoto.effectivePresetId/intensity/autoBadge`、`ProcessFilmPhotoInput` 新字段 |
+| `src/utils/settingsStore.ts` | 持久化 `stockMode`（默认 manual）/`presetIntensity`（默认 rich），白名单校验 + 非法值回落 |
+| `src/hooks/useSettings.tsx` | 新增 `setStockMode` / `setPresetIntensity` |
+| `src/components/FilmCard.tsx` | 九卷卡片按新性格参数重排/渲染（色卡与描述同步 v2.1.0） |
+| `src/components/FilmDrawer.tsx` | 顶部 **AUTO 智能底片** 入口（选卷即回 manual）+ **预设强度 6 档**分段控件（rich 默认，AUTO 显示场景自适应说明） |
+| `src/components/ViewfinderBar.tsx` | 参数栏第 4 颗常驻「强度」胶囊 + 六档展开选择条（AUTO 显 AUTO，否则 NN%） |
+| `src/components/ParameterScrubBar.tsx` | 手势状态机扩到 4 颗胶囊：收拢轻点展开、展开轻点按落点提交档位、350ms 收拢 |
+| `src/components/CameraScreen.tsx` | 拍摄快照带 `stockMode/intensityTier`；预览用 `applyPresetIntensity`（AUTO 档预览 1.0）；AUTO 成功 toast；管线错误显示 `error.filmRender` |
+| `src/components/FilmCompositor.tsx` | `stage.autoBadge` → 成片左下角等宽小字徽标（暗底 55% + 白描边，避让日期水印） |
+| `src/i18n/locales/*.ts` | 五语言新增 12 键：底片模式 / 强度档 / AUTO 徽标 / 冲印失败错误文案 |
+| `app.json` | version `2.0.1` → `2.1.0` |
+| `README.md` | 本节 §53 + TOC 条目 |
+| `THIRD-PARTY-NOTICES.md` | 补 v2.1.0 LUT 二次烘焙说明（仍 MIT，不含上游厂商/商品名） |
+| `_verify_ipa_v210.py`（根） | v2.1.0 PRESENT/ABSENT 核验（`EXPECTED_VERSION="2.1.0"` / `PREVIOUS_VERSION="2.0.1"`） |
+| `_probe_v210_lut.mjs` / `_probe_v210_intensity.mjs` / `_probe_v210_scene.mjs` / `_probe_v210_pipeline.mjs`（根） | 新增/替换的 4 支 v2.1.0 门禁探针 |
+
+**不动**：`package.json`（零新依赖）、相框/纹理资产、日期/水印引擎、`src/utils/pngCodec.ts`、
+`src/utils/lut3d.ts` 的查表结构（v2.0.1 单遍整型实现保留）。
+
+工作区根（不进仓库）：`_v210_contract.md`、`_v210_diag_deltae.py`（745 样本 ΔE 诊断）、
+LUT 烘焙/优化脚本（`_v210_*`，以实际工作区为准）、`_v210_readme_section.md`、
+`_v210_fill.json`、`_patch_readme_v210.py`、`_release_v210.py`、`_run_gates_v210.py`、
+`_gate_v210_run.out.txt`、`_verify_ipa_v210.py`。
+
+### 53.10 已知偏差（如实记录，只增不删）
+
+- **设置页第三入口未做**：v2.1.0 只在两处放强度/底片模式入口（底片库、取景器参数栏），
+  `SettingsScreen` 的第三入口留到下一版；现有两处已覆盖拍摄路径，不阻塞使用。
+- **无真机/模拟器**：视觉验收靠 Node/V8 渲染 + Python 参考；§52.5/§53 的性能数字是 V8 实测，
+  Hermes 无 JIT，真机预计 3~6×（如实标注，不把 V8 数字冒充真机）。
+- **取景器为声明式近似**：实时预览走 12 槽声明式图层、不跑 JS LUT（性能与发热），预览≠成片；
+  AUTO 预览的强度用 1.0、成片由场景引擎定值。
+- **ΔE 采样口径**：745 个采样点（中性轴 11 + 5³ 粗网格 125 + 随机 600 + 主题补点 9），
+  不是 33³ 全网格两两比对；CIEDE2000 按 sRGB→线性→D65 Lab 计算，数字用于横向比较而非绝对阈值。
+- **LUT 二次烘焙只动色度/性格**：亮度轴沿用 v2.0.1 标定（`bp-mt-2.0.1`），不重跑黑白场锚点；
+  若未来重标定，须同时重跑 §52.3 的验收与 §53.3 的 ΔE。
+- **九卷 UI 文案不出现厂商/商品名**：防商标风险，上游常量映射只留在 `_v201_lut_provenance.json`
+  与 README 的 LUT 溯源表。
+
+*怎么改*：偏差记录只增不删；修掉一条就改成"已修复"+版本号，不要直接删行——发布说明与
+`_verify_ipa_v210.py` 的核验口径都依赖这些如实声明。
 
 ---
 

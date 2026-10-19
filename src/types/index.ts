@@ -602,6 +602,24 @@ export interface ResolvedFilmPreset {
 export type GrainLevelId = 'off' | 'light' | 'std' | 'heavy' | 'max';
 
 /**
+ * 预设强度档位 id（v2.1.0 用户 m03050 手术二，数据在 `src/constants/intensity.ts`）。
+ *
+ * 五档固定倍率 + 一档智能：`subtle 35%` / `soft 65%` / `standard 100%` /
+ * `rich 130%`（默认）/ `max 160%` / `auto`（按场景自动，成片 70%~145%）。
+ * 渲染侧只认 `intensityScale`（0.35~1.60 的浮点乘数），档位只是 UI 语义。
+ */
+export type PresetIntensityTier = 'subtle' | 'soft' | 'standard' | 'rich' | 'max' | 'auto';
+
+/**
+ * 底片选择模式（v2.1.0 用户 m03050 手术三）。
+ *
+ * - `'manual'`：用户从九卷里手动挑一卷；
+ * - `'auto'`：`recommendStockAndIntensity(scene)` 按当前画面自动选卷 + 自动强度，
+ *   成片左下角印 `AUTO -> UM-400 · 130%` 徽标。
+ */
+export type StockMode = 'manual' | 'auto';
+
+/**
  * 一档颗粒强度 —— 设置页里那排分段按钮的一项。
  *
  * ⚠️ v1.8.3（用户 m01534 · 模块 C1）起，档位**不再乘在预设上**，而是直接给出
@@ -793,6 +811,18 @@ export interface FilmStageInput {
   /** 重曝上面那张的不透明度（0~1），不填 = 0.5。只有 `overlayUri` 有值时才有意义。 */
   overlayOpacity?: number;
   /**
+   * 预设强度（v2.1.0 用户 m03050 手术二）：0.35~1.60 的全局风格乘数。
+   *
+   * 取景器/兜底声明式图层按它缩放染色、S 曲线、颗粒、暗角；像素管线（`lutUri` 非空）
+   * 的强度已经烘进像素，这个字段只用于**没有 lutUri 的预览路径**。不填 = 1（100%）。
+   */
+  intensity?: number;
+  /**
+   * 成片左下角的 AUTO 徽标（v2.1.0 手术三）：`'AUTO -> UM-400 · 130%'`。
+   * 只有底片模式为 `'auto'` 或强度档位为 `'auto'` 时才有值；不填/null = 不画。
+   */
+  autoBadge?: string | null;
+  /**
    * "已上卷"的照片 uri（v2.0.1 单次截图的产物）。有它时合成层：
    *   ① 照片层用它代替 `rawUri`；
    *   ② **不再渲染** `<FilmLookLayers>`（调色/颗粒/暗角/漏光已经烘进像素）；
@@ -874,6 +904,15 @@ export interface ProcessedPhoto {
    * 不填的旧调用点按 `'declarative'` 理解。
    */
   renderMode?: 'lut' | 'declarative';
+  /**
+   * v2.1.0：这次成片**实际生效**的底片 id。`stockMode === 'auto'` 时由场景引擎选出，
+   * 可能与 UI 上挂着的预设不同（`presetId` 保持"用户当时的选择"）。
+   */
+  effectivePresetId?: string;
+  /** v2.1.0：实际生效的预设强度乘数（0.35~1.60）。 */
+  intensity?: number;
+  /** v2.1.0：AUTO 场景引擎的说明文本，例如 `AUTO -> UM-400 · 130%`。 */
+  autoBadge?: string | null;
   /** 非致命问题，例如"归一化失败已退回原图"。 */
   warnings: string[];
 }
@@ -1058,6 +1097,16 @@ export interface AppSettings {
   placeDetail: PlaceDetail;
   /** 颗粒档位（原来在取景器底部那条横向滑块上，现在挪进设置）。 */
   grainLevel: GrainLevelId;
+  /**
+   * 底片选择模式（v2.1.0 用户 m03050 手术三），默认 `'manual'`。
+   * `'auto'` = 每张照片按 `sceneStats` 由 `recommendStockAndIntensity()` 自动选卷。
+   */
+  stockMode: StockMode;
+  /**
+   * 预设强度档位（v2.1.0 手术二），默认 **`'rich'`（130%）** —— 用户明确要求
+   * "默认拍出来就有强烈的胶片味"。
+   */
+  presetIntensity: PresetIntensityTier;
   /**
    * 地名用哪种语言印。**和界面语言刻意分开** —— 界面可以是日语，但地名仍想印简体。
    * `'auto'` = 跟界面语言走：界面语言是 `zh-Hans` / `zh-Hant` / `ja` / `en` 就用它，

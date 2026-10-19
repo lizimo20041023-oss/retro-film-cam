@@ -43,6 +43,14 @@ export const zhHant: Messages = {
   'film.drawer.hint': '輕觸選擇底片 · 點擊右下角膠卷按鈕可隨時切換',
   'film.card.a11y': '{name}，{description}',
   'film.card.selected': '已選擇',
+  'film.intensity.title': 'PRESET INTENSITY · 預設強度',
+  'film.intensity.hint': '整卷統一強度 · AUTO 交給場景引擎',
+  'film.intensity.a11y': '預設強度，目前 {label}',
+  'film.intensity.auto.hint': '場景自適應（70%~145%）',
+  'film.stockMode.auto': 'AUTO 智能底片',
+  'film.stockMode.auto.hint': '依拍攝畫面自動選卷與強度',
+  'film.stockMode.manual.hint': '手動選卷',
+  'film.stockMode.a11y': '自動智能底片，{state}',
 
   /* ---------------- 相框名（頂列那行小字裡顯示） ---------------- */
   'frame.polaroid600': '一次成像',
@@ -128,9 +136,11 @@ export const zhHant: Messages = {
   'develop.stage.normalizing': '正在整理底片',
   'develop.stage.saving': '正在存入相簿',
   'develop.tapToContinue': '輕觸畫面繼續拍攝',
+  'develop.auto.badge': 'AUTO 選擇：{badge}',
 
   /* ---------------- 錯誤 / 失敗文案 ---------------- */
   'error.noPhoto': '相機沒有回傳照片，請重試。',
+  'error.filmRender': '沖印失敗（LUT 像素管線），成片未儲存，請重試。',
   'save.denied.retry': '沒有相簿寫入權限，請再點一次儲存，並在彈窗裡選「允許」。',
   'save.denied.settings':
     '相簿權限被拒絕且不再詢問，請到 系統設定 → 隱私權與安全性 → 照片 裡打開權限。',
@@ -244,6 +254,8 @@ export const zhHant: Messages = {
   'camera.bar.focal.a11y': '焦段 {label}，長按滑動調整，輕點展開檔位',
   'camera.bar.ev.a11y': '曝光補償 {value}，長按滑動調整，輕點歸零',
   'camera.bar.ev.hint': '上下滑動調整曝光',
+  'camera.bar.intensity': '強度',
+  'camera.bar.intensity.a11y': '預設強度 {label}，輕點展開檔位',
   'camera.tool.import': '匯入',
   'camera.tool.double': '重曝',
   'camera.tool.timer': '定時',

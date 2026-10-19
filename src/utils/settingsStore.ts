@@ -24,6 +24,8 @@ import type {
   LocationMode,
   NoFrameAspect,
   PlaceDetail,
+  PresetIntensityTier,
+  StockMode,
   WatermarkAlign,
   WatermarkLayout,
   WatermarkZone,
@@ -63,6 +65,17 @@ export const DEFAULT_SETTINGS: AppSettings = {
   adaptiveGrade: true,
   placeDetail: 'archive',
   grainLevel: DEFAULT_GRAIN_LEVEL_ID,
+  /*
+   * 底片模式与预设强度（v2.1.0 用户 m03050 手术二/三）。
+   *
+   * `stockMode: 'manual'` 是必须的默认值：老用户升级上来仍按"自己挑的那一卷"拍，
+   * 不会被场景引擎悄悄换卷 —— 想让它接管，要用户自己点底片库顶部的 AUTO 入口。
+   *
+   * `presetIntensity: 'rich'`（130%）是用户点名的默认值：默认拍出来就要有强烈的
+   * 胶片味。v2.0.x 的旧观感（100%）落在 `'standard'` 档，想回去的人自己选。
+   */
+  stockMode: 'manual',
+  presetIntensity: 'rich',
   geoLocale: 'auto',
   /*
    * `captureQuality: 'standard'` 是**必须**的默认值：`high` / `max` 会把成片
@@ -121,6 +134,25 @@ const WATERMARK_ZONES: readonly WatermarkZone[] = [
 /** 水印横向对齐白名单（v1.8.11）：auto 跟版式，其余三档是显式覆盖。 */
 const WATERMARK_ALIGNS: readonly WatermarkAlign[] = ['auto', 'left', 'center', 'right'];
 const PLACE_DETAILS: readonly PlaceDetail[] = ['archive', 'full'];
+/**
+ * 底片模式 / 预设强度档位白名单（v2.1.0）。
+ *
+ * 和 `CAPTURE_QUALITIES` / `FRAME_VARIANTS` 同一个理由**故意不 import
+ * `constants/intensity.ts`**：这里只判断"认不认这个字符串"，不读档位数值；
+ * 两边不同步时 `pick<T>` 的泛型会在 `tsc` 上先炸，不会静默跑偏。
+ *
+ * 老存储里没有这两个键 → `pick` 直接给默认值，不需要写迁移代码
+ *（这正是"键单独一整个 JSON 存、以后加字段不用迁移"那条设计的收益）。
+ */
+const STOCK_MODES: readonly StockMode[] = ['manual', 'auto'];
+const PRESET_INTENSITY_TIERS: readonly PresetIntensityTier[] = [
+  'subtle',
+  'soft',
+  'standard',
+  'rich',
+  'max',
+  'auto',
+];
 const GRAIN_IDS: readonly GrainLevelId[] = GRAIN_LEVELS.map((level) => level.id);
 /** 地名语言四种（v1.8.5 起含 ja），外加一个"跟界面语言走"。 */
 const GEO_LOCALES: readonly (GeoLocale | 'auto')[] = ['auto', 'zh-Hans', 'zh-Hant', 'ja', 'en'];
@@ -291,6 +323,12 @@ function sanitize(raw: unknown): AppSettings {
     adaptiveGrade: pickBoolean(raw.adaptiveGrade, DEFAULT_SETTINGS.adaptiveGrade),
     placeDetail: pick(raw.placeDetail, PLACE_DETAILS, DEFAULT_SETTINGS.placeDetail),
     grainLevel: pick(raw.grainLevel, GRAIN_IDS, DEFAULT_SETTINGS.grainLevel),
+    stockMode: pick(raw.stockMode, STOCK_MODES, DEFAULT_SETTINGS.stockMode),
+    presetIntensity: pick(
+      raw.presetIntensity,
+      PRESET_INTENSITY_TIERS,
+      DEFAULT_SETTINGS.presetIntensity,
+    ),
     geoLocale: pick(raw.geoLocale, GEO_LOCALES, DEFAULT_SETTINGS.geoLocale),
     captureQuality: pick(
       raw.captureQuality,

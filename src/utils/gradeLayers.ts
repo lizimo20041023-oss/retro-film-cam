@@ -29,11 +29,11 @@
  *   2. `s-curve-contrast` overlay，opacity = clamp(sCurve(+Δ), 0, 0.60)
  *        Y < 0.5：Y' = 2Y²；Y ≥ 0.5：Y' = 1 − 2(1−Y)²
  *        f(0)=0、f(0.5)=0.5、f(1)=1 —— 黑场白场都不动。
- *   3. `chroma-lock`   color，opacity = chromaLock 夹 [0.54, 0.68]
+ *   3. `chroma-lock`   color，opacity = chromaLock 夹 [0.10, 0.22]（v2.1.0 下调）
  *        color(cb, cs) = 用 cb 的明度 + cs 的色相/饱和度。
  *        cs 与 cb 是同一张底片 ⇒ 明度来自「槽 1/2 雕塑后的自己」，色度来自**原图**。
  *        这就是明度/色度解耦：overlay 撕裂色相的问题被这一步按权重锁回原图。
- *   4. `shadow-crush`  multiply，opacity = clamp(crush, 0, 0.05)（仅 TX-400 0.05）
+ *   4. `shadow-crush`  multiply，opacity = clamp(crush, 0, 0.12)（仅 TX-400 0.10）
  *        Y' = Y²                       黑位托底。
  *
  * 共同点：都过 (0,0) 与 (1,1) —— 零模糊管线铁律。任何不满足这对不动点的混合
@@ -43,18 +43,18 @@
  * > 同源层复用同一张底片副本、`blurRadius: 0`，成片合成仍走 `react-native-view-shot`
  * > 的 `drawViewHierarchy` 截帧（与 v1.9.2 口径一致）。
  *
- * ## 三、层序（v1.9.4 冻结，探针按 key 逐项核对；0 值层不出现）
+ * ## 三、层序（v1.9.4 冻结层序；v2.1.0 只上调封顶，不改层序；0 值层不出现）
  *
  *   0  base 原图（宿主渲染，不在 layers 里，100% 刀锐）
  *   1  exposure-lift      photo   screen      blur 0  ≤ 0.28（夜景 target 0.06 覆盖）
- *   2  s-curve-contrast   photo   overlay     blur 0  ≤ 0.60（德味核心反差）
- *   3  chroma-lock        photo   color       blur 0  彩色夹 [0.54,0.68]
+ *   2  s-curve-contrast   photo   overlay     blur 0  ≤ 0.62（v2.1.0 上调；德味核心反差）
+ *   3  chroma-lock        photo   color       blur 0  彩色夹 [0.10,0.22]
  *                         color   color       #808080 / opacity 1（mono 卷）
- *   4  temperature        color   soft-light  色温亮色纸（|v| × 0.22 ≤ 0.20）
- *   5  tint               color   soft-light  色调亮色纸（|v| × 0.22 ≤ 0.20）
- *   6  shadow-tint        color   soft-light  ≤ 0.20
- *   7  highlight-tint     color   soft-light  ≤ 0.20
- *   8  shadow-crush       photo   multiply    blur 0  ≤ 0.05（仅 >0.005，TX-400）
+ *   4  temperature        color   soft-light  色温亮色纸（|v| × 0.22 ≤ 0.50）
+ *   5  tint               color   soft-light  色调亮色纸（|v| × 0.22 ≤ 0.50）
+ *   6  shadow-tint        color   soft-light  ≤ 0.50
+ *   7  highlight-tint     color   soft-light  ≤ 0.50
+ *   8  shadow-crush       photo   multiply    blur 0  ≤ 0.12（仅 >0.005，TX-400 0.10）
  *   9  halation           texture lightLeak screen  ≤ 0.04（仅 >0.005，CS-800T）
  *  10  grain              texture grain       soft-light  stretch  档位绝对不透明度 ≤ 0.16
  *  11  vignette           texture stretch     multiply  ≤ 0.28（中心 74% 全透明）
@@ -70,7 +70,7 @@
  * ## 五、自适应增量（见 adaptiveGrade.ts）
  *
  * 有场景统计时，planAdaptiveGrade 给出四场景增量，叠到本管线对应层：
- *   sCurveContrast + sCurveContrastDelta        （四场景只加不减，夹 [0,0.20]，再夹 0.60）
+ *   sCurveContrast + sCurveContrastDelta        （四场景只加不减，夹 [0,0.20]，再夹 0.62）
  *   exposureLift：`exposureLiftTarget !== null` 时**整体覆盖**（dark = 0.06）；
  *                 否则 + exposureLiftDelta（只有 bright +0.06），再夹 0.28
  *   vignette + vignetteDelta                    （再夹 0.28）
@@ -112,31 +112,42 @@ const NEUTRAL_GRAY = '#808080';
 export const HALATION_RED = '#FF4028';
 
 /**
- * 零模糊真 S 曲线层 opacity 上限（v1.9.4 = 0.60）。
+ * 零模糊真 S 曲线层 opacity 上限（v1.9.4 = 0.60；**v2.1.0 = 0.62**）。
  *
- * 九卷 0.40~0.60：overlay 在暗部 2Y² 踩出浓黑、亮部推亮，黑场/白场都不动。
- * 0.60 是最终封顶（含场景增量），再往上会把暗部细节压死且撕裂色相更狠。
+ * 九卷 0.30~0.62：overlay 在暗部 2Y² 踩出浓黑、亮部推亮，黑场/白场都不动。
+ * 0.62 是 v2.1.0 手术一（强性格预设）的最终封顶（含场景增量），与
+ * `PRESET_INTENSITY_LIMITS.sCurveContrast` 必须逐字一致；再往上会把暗部细节压死
+ * 且撕裂色相更狠。
  */
-export const S_CURVE_OPACITY_MAX = 0.6;
+export const S_CURVE_OPACITY_MAX = 0.62;
 
-/** 零模糊曝光提亮层 opacity 上限（v1.9.4 = 0.28；九卷 0.16~0.26）。 */
+/** 零模糊曝光提亮层 opacity 上限（v1.9.4 = 0.28；九卷 0~0.28，HP-400 = 0 不出层）。 */
 export const EXPOSURE_LIFT_OPACITY_MAX = 0.28;
 
 /**
- * 同源 color 色度锁的 opacity 下限（彩色卷）。
+ * 同源 color 色度锁的 opacity 下限（彩色卷，v2.1.0 = 0.10）。
  *
- * 0.54 是「必须锁住」的最低剂量：低于它 overlay 撕裂的色相回不来；
- * 上限 0.68 —— 再高就完全吃回原图色度，S 曲线的德味色相偏移被抹平。
+ * v1.9.4 时代 0.54 是「必须锁住」的最低剂量；v2.1.0 手术一把九卷化学染色
+ * 加重到 opacity 0.18~0.34 后，0.54 的色度锁会把染色整体洗回原图色度 ——
+ * 所以**下调到 0.10~0.22**：只保留「防 128 分界线通道撕裂」的作用，不再洗染色。
+ * 下限 0.10 = 仍能压住 overlay 撕裂的最小剂量；上限 0.22 =
+ * 与 `PRESET_INTENSITY_LIMITS.chromaLock` 一致的引擎硬上限。
  */
-export const CHROMA_LOCK_OPACITY_MIN = 0.54;
-/** 同源 color 色度锁的 opacity 上限（彩色卷）。 */
-export const CHROMA_LOCK_OPACITY_MAX = 0.68;
+export const CHROMA_LOCK_OPACITY_MIN = 0.1;
+/** 同源 color 色度锁的 opacity 上限（彩色卷，v2.1.0 = 0.22）。 */
+export const CHROMA_LOCK_OPACITY_MAX = 0.22;
 
-/** 色温/色调/暗部染色/高光染色四条 color 层共用的 opacity 上限（v1.9.4）。 */
-export const TINT_OPACITY_MAX = 0.2;
+/**
+ * 色温/色调/暗部染色/高光染色四条 color 层共用的 opacity 上限。
+ *
+ * v1.9.4 = 0.20；**v2.1.0 = 0.50**（九卷化学染色提到 0.18~0.34，旧 0.20 封顶
+ * 会把暗部/高光分色削平，九卷"换卷没区别"的根因之一）。
+ * 与 `PRESET_INTENSITY_LIMITS.tintOpacity` 逐字一致。
+ */
+export const TINT_OPACITY_MAX = 0.5;
 
-/** 黑位托底层 opacity 硬上限（v1.9.4：八卷 0，仅 TX-400 保留 0.05）。 */
-export const SHADOW_CRUSH_OPACITY_MAX = 0.05;
+/** 黑位托底层 opacity 硬上限（v1.9.4 = 0.05；**v2.1.0 = 0.12**，仅 TX-400 = 0.10）。 */
+export const SHADOW_CRUSH_OPACITY_MAX = 0.12;
 
 /** 暖红光晕渲染不透明度上限（v1.9.4：只有 CS-800T 的 0.04）。 */
 export const HALATION_OPACITY_MAX = 0.04;
@@ -347,7 +358,7 @@ export function buildGradeLayers(preset: ResolvedFilmPreset): GradeLayer[] {
     });
   }
 
-  /* 8 黑位托底 · photo multiply blur 0（Y²，仅 TX-400 的 0.05） ------------- */
+  /* 8 黑位托底 · photo multiply blur 0（Y²，仅 TX-400 的 0.10；封顶 0.12） --- */
   const shadowCrush = clamp(clamp01(color.shadowCrush), 0, SHADOW_CRUSH_OPACITY_MAX);
   if (shadowCrush > LAYER_EPSILON) {
     layers.push({

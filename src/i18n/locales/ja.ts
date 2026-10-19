@@ -43,6 +43,14 @@ export const ja: Messages = {
   'film.drawer.hint': 'タップでフィルムを選択 · 右下のフィルムボタンでいつでも切り替え',
   'film.card.a11y': '{name}、{description}',
   'film.card.selected': '選択中',
+  'film.intensity.title': 'PRESET INTENSITY · プリセット強度',
+  'film.intensity.hint': 'フィルム全体の強さ · AUTO はシーン判定に任せる',
+  'film.intensity.a11y': 'プリセット強度、現在 {label}',
+  'film.intensity.auto.hint': 'シーンに合わせて自動調整（70%~145%）',
+  'film.stockMode.auto': 'AUTO スマートフィルム',
+  'film.stockMode.auto.hint': '撮影画面からフィルムと強度を自動選択',
+  'film.stockMode.manual.hint': '手動で選択',
+  'film.stockMode.a11y': 'オートスマートフィルム、{state}',
 
   /* ---------------- フレーム名（上部バーの小さい文字） ----------------
      名前は短く。日本語は特に長くなりやすいので 2〜5 文字に抑えています。 */
@@ -130,9 +138,11 @@ export const ja: Messages = {
   'develop.stage.normalizing': 'フィルムを準備中',
   'develop.stage.saving': 'アルバムに保存中',
   'develop.tapToContinue': '画面をタップして撮影を続ける',
+  'develop.auto.badge': 'AUTO 選択：{badge}',
 
   /* ---------------- エラー文案 ---------------- */
   'error.noPhoto': 'カメラが写真を返しませんでした。もう一度お試しください。',
+  'error.filmRender': '現像に失敗しました（LUT ピクセルパイプライン）。写真は保存されていません。もう一度お試しください。',
   'save.denied.retry':
     'アルバムへの書き込み権限がありません。もう一度保存を押して、ダイアログで「許可」を選んでください。',
   'save.denied.settings':
@@ -250,6 +260,8 @@ export const ja: Messages = {
   'camera.bar.focal.a11y': '焦点距離 {label}。長押ししてスライドで調整、タップで段階を開く',
   'camera.bar.ev.a11y': '露出補正 {value}。長押ししてスライドで調整、タップでリセット',
   'camera.bar.ev.hint': '上下にスワイプして露出を調整',
+  'camera.bar.intensity': '強度',
+  'camera.bar.intensity.a11y': 'プリセット強度 {label}、タップで段階を開く',
   'camera.tool.import': '読み込み',
   'camera.tool.double': '多重露光',
   'camera.tool.timer': 'タイマー',

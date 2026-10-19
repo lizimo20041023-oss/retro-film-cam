@@ -1,5 +1,6 @@
 /**
- * 取景器下方那一条参数栏：收拢态 = 三颗**常驻**胶囊，展开态 = 一块 86%×48 的液态玻璃面板。
+ * 取景器下方那一条参数栏：收拢态 = 四颗**常驻**胶囊（v2.1.0 起：三颗参数 + 一颗预设强度），
+ * 展开态 = 一块 86%×48 的液态玻璃面板。
  *
  * ── 为什么几何常量住在这个文件里（task-6 的结构性修复，别搬回去）─────────────
  * 上一轮这些常量（`CAPSULE_WIDTH` / `RULER_RANGE_PX` / `MARK_GAP` …）住在
@@ -13,21 +14,32 @@
  * 放这里；手势层需要哪几个数字就 import 哪几个（`FocalOption` 走 `import type`，
  * 类型导入会被编译期完全抹掉，不构成运行时依赖）。
  *
- * 本文件里没有一行手势代码 —— 三颗胶囊的点击、长按、滑动都在 `ParameterScrubBar` 的
+ * 本文件里没有一行手势代码 —— 四颗胶囊的点击、长按、滑动都在 `ParameterScrubBar` 的
  * 捕获阶段被接走（见那个文件的 `onStartShouldSetPanResponderCapture`）。
  */
 import { memo, useEffect, useRef, useState } from 'react';
 import { Animated, Easing, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
+import { PRESET_INTENSITY_OPTIONS, intensityOption } from '../constants/intensity';
 import { ASSUMED_LENS_NATIVE_MM } from '../constants/lenses';
 import { UI_MONO, useTheme } from '../constants/theme';
 import { useI18n } from '../i18n';
 import { GLASS_TEXT_COLOR, glassTextShadow, LiquidGlassView } from './LiquidGlassView';
 
 import type { FocalOption } from './ParameterScrubBar';
+import type { PresetIntensityTier } from '../types';
 
-/** 三颗参数胶囊的身份。这个词表由本文件定义、手势层引用。 */
+/** 三颗**可滑**参数胶囊（wb/zoom/ev）的身份；「预设强度」是六档离散值，不属于可滑集合。这个词表由本文件定义、手势层引用。 */
 export type ScrubbableParameter = 'wb' | 'zoom' | 'ev';
+
+/**
+ * 参数栏里可以展开的**全部**胶囊（v2.1.0 起四颗）：三颗连续参数 + 一颗「预设强度」。
+ *
+ * 强度是六档离散值，手势语义与连续参数不同（只做"轻点展开 → 轻点选档"，没有刻度尺、
+ * 不参与滑动），但它的宽度、命中区、无障碍动作和另外三颗完全同构 —— 所以共用同一条
+ * 胶囊行，只把它登记进 `CapsuleParameter`，让手势层按 dial 分支处理。
+ */
+export type CapsuleParameter = ScrubbableParameter | 'intensity';
 
 // ── 一次两态过渡（数字的来历见各处注释）────────────────────────────────────
 /**
@@ -54,7 +66,7 @@ export const DIAL_WIDTH_RATIO = `${DIAL_WIDTH_FRACTION * 100}%`;
  */
 export const DIAL_HEIGHT = 48;
 export const CAPSULE_HEIGHT = 30;
-/** 三颗胶囊之间的 8pt：够手指区分"这是三颗"，又小到仍读作"一组"。 */
+/** 四颗胶囊之间的 8pt：够手指区分"这是四颗"，又小到仍读作"一组"。 */
 export const CAPSULE_GAP = 8;
 /** 胶囊左右内边距 9：图标到圆头的呼吸位。圆角是 `CAPSULE_HEIGHT / 2` 的胶囊圆。 */
 export const CAPSULE_PAD_H = 9;
@@ -64,8 +76,12 @@ export const CAPSULE_ROW_EDGE = 10;
 export const GLYPH_SIZE = 13;
 export const CAPSULE_ICON_GAP = 5;
 export const CAPSULE_WORD_GAP = 4;
-/** 胶囊最小宽 86：小屏上也不至于缩成一颗药丸。 */
-export const CAPSULE_MIN_WIDTH = 86;
+/**
+ * 胶囊最小宽 64：四颗胶囊（v2.1.0 加了强度档）挤在一条行里，每颗的可用宽度比三颗
+ * 时代少了约 30pt；64 仍放得下 13 的图标 + 4 个 11pt 等宽字符（`130%` / `AUTO`），
+ * 再窄读数就要和图标打架。
+ */
+export const CAPSULE_MIN_WIDTH = 64;
 /**
  * 用户要的"磨砂深灰底"与"1px 白描边"。
  *
@@ -226,6 +242,16 @@ export function formatScrubExposure(value: number): string {
 }
 
 /**
+ * 「预设强度」胶囊/分段条的显示文本：AUTO 档写 `AUTO`，其余写百分比（`130%`）。
+ *
+ * 为什么不写乘数：用户选的是档位、看的是百分比；`1.3` 这种只在渲染侧存在的数字
+ * 出现在 UI 上没人认。
+ */
+export function formatIntensityTier(tier: PresetIntensityTier): string {
+  return tier === 'auto' ? 'AUTO' : intensityOption(tier).percent;
+}
+
+/**
  * 倍率写法：0.5 → `0.5×`，1 → `1×`，35/26 → `1.35×`（去掉无意义的小数 0）。
  *
  * 两位小数而不是一位：v1.8.4 的 35mm 档倍率是 `35/26 = 1.346…`，一位小数会显示
@@ -271,7 +297,7 @@ export function focalReadoutLines(focalMm: number, options: readonly FocalOption
 
 // ── 胶囊内容与命中区（手势层与渲染层共用的唯一来源）─────────────────────────
 export interface CapsuleSpec {
-  readonly dial: ScrubbableParameter;
+  readonly dial: CapsuleParameter;
   /** 单行读数（色温/曝光）。焦段用 `lines`。 */
   readonly value: string;
   /** 双行读数（焦段）。色温/曝光为空。 */
@@ -282,7 +308,7 @@ export interface CapsuleSpec {
   readonly width: number;
 }
 
-const DIAL_ORDER: readonly ScrubbableParameter[] = ['wb', 'zoom', 'ev'];
+const DIAL_ORDER: readonly CapsuleParameter[] = ['wb', 'zoom', 'ev', 'intensity'];
 /** 11pt 等宽字体一个字符的估值（等宽，估得比较准；宁可略大，见 `buildCapsules`）。 */
 const VALUE_CHAR_PX = 6.6;
 /** 10pt 双行读数的估值。 */
@@ -310,7 +336,7 @@ function capsuleWidth(value: string, lines: readonly string[], word: string): nu
 }
 
 /**
- * 三颗胶囊的内容与宽度 —— **手势层和渲染层都调这一个函数**。
+ * 四颗胶囊的内容与宽度 —— **手势层和渲染层都调这一个函数**。
  *
  * 为什么要"估"宽：`LiquidGlassView` 的玻璃层是 `StyleSheet.absoluteFill` 铺满的，
  * 它的宽度完全由外层 View 决定，内容撑不开；而手势命中区又必须和真实布局像素对齐。
@@ -318,7 +344,7 @@ function capsuleWidth(value: string, lines: readonly string[], word: string): nu
  * 教训就是"同一套几何算两遍就一定漂"）。
  *
  * 估错了会怎样：宁可宽一点（视觉上松一点），也不能窄 —— 窄了文字会被裁。
- * 真的塞不下时**先丢中文词、再压到上限**：一行三颗胶囊 + 两个 8pt 间距 + 左右各 10pt
+ * 真的塞不下时**先丢中文词、再压到上限**：一行四颗胶囊 + 三个 8pt 间距 + 左右各 10pt
  * 的窗口约束是硬红线，绝不能把胶囊挤出屏幕。
  */
 export function buildCapsules(input: {
@@ -326,11 +352,13 @@ export function buildCapsules(input: {
   readonly focalMm: number;
   readonly exposure: number;
   readonly focalOptions: readonly FocalOption[];
-  readonly words: Readonly<Record<ScrubbableParameter, string>>;
+  readonly intensityTier: PresetIntensityTier;
+  readonly words: Readonly<Record<CapsuleParameter, string>>;
   readonly windowWidth: number;
 }): readonly CapsuleSpec[] {
   const wbValue = formatScrubTemperature(input.temperature);
   const evValue = formatScrubExposure(input.exposure);
+  const intensityValue = formatIntensityTier(input.intensityTier);
   const zoomLines = focalReadoutLines(input.focalMm, input.focalOptions);
   const available = Math.max(
     CAPSULE_MIN_WIDTH,
@@ -339,7 +367,14 @@ export function buildCapsules(input: {
   );
 
   return DIAL_ORDER.map((dial) => {
-    const value = dial === 'wb' ? wbValue : dial === 'ev' ? evValue : '';
+    const value =
+      dial === 'wb'
+        ? wbValue
+        : dial === 'ev'
+          ? evValue
+          : dial === 'intensity'
+            ? intensityValue
+            : '';
     const lines = dial === 'zoom' ? zoomLines : [];
     const word = input.words[dial];
     const natural = capsuleWidth(value, lines, word);
@@ -365,7 +400,7 @@ export function capsuleRowWidth(capsules: readonly CapsuleSpec[]): number {
 }
 
 export interface CapsuleHitZone {
-  readonly dial: ScrubbableParameter;
+  readonly dial: CapsuleParameter;
   /** 相对胶囊行左边缘的区间。 */
   readonly from: number;
   readonly to: number;
@@ -414,12 +449,29 @@ function SunGlyph() {
   );
 }
 
-function glyphFor(dial: ScrubbableParameter) {
+/**
+ * 强度图标：三根递升的竖条 —— 底片密度/浓度最直观的写法，和「强度」这个词同构。
+ * 13pt 的框里 4/7/10 三档高度递增，颜色与文字同源。
+ */
+function IntensityGlyph() {
+  return (
+    <View style={styles.glyph}>
+      <View style={[styles.intensityBar, styles.intensityBarShort]} />
+      <View style={[styles.intensityBar, styles.intensityBarMid]} />
+      <View style={[styles.intensityBar, styles.intensityBarTall]} />
+    </View>
+  );
+}
+
+function glyphFor(dial: CapsuleParameter) {
   if (dial === 'wb') {
     return <ThermoGlyph />;
   }
   if (dial === 'zoom') {
     return <LensGlyph />;
+  }
+  if (dial === 'intensity') {
+    return <IntensityGlyph />;
   }
   return <SunGlyph />;
 }
@@ -510,9 +562,54 @@ function FocalSegmentRow({
   );
 }
 
-// ── 收拢态：三颗胶囊 ───────────────────────────────────────────────────────
+// ── 展开态：「预设强度」的六档分段条 ─────────────────────────────────────────
 /**
- * 三颗胶囊**常驻**：没有任何"镜头列表为空就藏起来"的门控（真机上那条报告是误诊）。
+ * 强度六档：每段一个单行标签（`35%` / `100%` / `AUTO`），当前档琥珀底 + 深色字。
+ *
+ * 为什么不用刻度尺：强度是离散档位，没有连续量可滑。轻点在段上直接提交，这和焦段
+ * "滑选只预览、松手才提交"不同 —— 六档一次点选就是最终决定，中间态没有意义。
+ * 段宽/落点换算与焦段共用 `focalSegmentWidth` / `focalSegmentIndexAtOffset`。
+ */
+function IntensitySegmentRow({
+  tier,
+  innerWidth,
+  pointerColor,
+  activeInk,
+}: {
+  tier: PresetIntensityTier;
+  innerWidth: number;
+  pointerColor: string;
+  activeInk: string;
+}) {
+  const width = focalSegmentWidth(innerWidth, PRESET_INTENSITY_OPTIONS.length);
+  const activeIndex = PRESET_INTENSITY_OPTIONS.findIndex((option) => option.id === tier);
+  return (
+    <View style={styles.segmentRow}>
+      {PRESET_INTENSITY_OPTIONS.map((option, index) => {
+        const active = index === activeIndex;
+        return (
+          <View
+            key={option.id}
+            style={[
+              styles.segment,
+              { width },
+              active ? { backgroundColor: pointerColor, borderColor: pointerColor } : null,
+            ]}
+          >
+            <Text allowFontScaling={false} style={[styles.segmentMm, active ? { color: activeInk } : null]}>
+              {option.percent}
+            </Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+// ── 收拢态：四颗胶囊 ───────────────────────────────────────────────────────
+/**
+ * 四颗胶囊**常驻**（v2.1.0 起：三颗参数 + 一颗「预设强度」）：没有任何"镜头列表为空
+ * 就藏起来"的门控（真机上那条报告是误诊）。
  * 每颗都给无障碍动作，VoiceOver 的"激活"= 展开（焦段）/ 归零（色温、曝光），
  * "上/下滑动"= 走一格 —— 手势层不在无障碍路径上，所以这条线必须在这儿接。
  */
@@ -524,10 +621,10 @@ function CapsuleRow({
   onAdjust,
 }: {
   capsules: readonly CapsuleSpec[];
-  labels: Readonly<Record<ScrubbableParameter, string>>;
+  labels: Readonly<Record<CapsuleParameter, string>>;
   expand: Animated.Value;
-  onActivate: (dial: ScrubbableParameter) => void;
-  onAdjust: (dial: ScrubbableParameter, direction: 1 | -1) => void;
+  onActivate: (dial: CapsuleParameter) => void;
+  onAdjust: (dial: CapsuleParameter, direction: 1 | -1) => void;
 }) {
   const opacity = expand.interpolate({ inputRange: [0, 1], outputRange: [1, 0] });
   const scale = expand.interpolate({ inputRange: [0, 1], outputRange: [1, 0.94] });
@@ -587,12 +684,14 @@ function CapsuleRow({
 // ── 主组件 ─────────────────────────────────────────────────────────────────
 export interface ViewfinderBarProps {
   /** 正在展开/已展开的面板；`null` = 收拢。由手势层持有。 */
-  active: ScrubbableParameter | null;
+  active: CapsuleParameter | null;
   /** 顶部读数（由手势层格式化好，本文件不猜单位）。 */
   reading: string;
   temperature: number;
   focalMm: number;
   exposure: number;
+  /** 当前「预设强度」档（AUTO 档在胶囊里写 `AUTO`）。 */
+  intensityTier: PresetIntensityTier;
   /** 尺子位移（手势层持有，`Animated.Value` 不经过 React state）。 */
   scroll: Animated.Value;
   /** 可选焦段档位（有没有超广角/长焦由手势层决定）。 */
@@ -600,9 +699,9 @@ export interface ViewfinderBarProps {
   /** 当前档位下标；滑动预览由 `previewIndex` 覆盖。 */
   focalActiveIndex: number;
   previewIndex: number | null;
-  /** VoiceOver 的"激活"：焦段 = 展开分段条，色温/曝光 = 归零。 */
-  onActivate: (dial: ScrubbableParameter) => void;
-  onAdjust: (dial: ScrubbableParameter, direction: 1 | -1) => void;
+  /** VoiceOver 的"激活"：焦段/强度 = 展开档位条，色温/曝光 = 归零。 */
+  onActivate: (dial: CapsuleParameter) => void;
+  onAdjust: (dial: CapsuleParameter, direction: 1 | -1) => void;
 }
 
 function ViewfinderBarInner({
@@ -611,6 +710,7 @@ function ViewfinderBarInner({
   temperature,
   focalMm,
   exposure,
+  intensityTier,
   scroll,
   focalOptions,
   focalActiveIndex,
@@ -628,7 +728,7 @@ function ViewfinderBarInner({
    * 记住"最后一次展开的是哪个盘"。收拢的那 180ms 里 `active` 已经是 `null`，
    * 但面板还在树上淡出 —— 不记这一笔，读数行的名字会在淡出过程中闪一下"曝光"。
    */
-  const lastDial = useRef<ScrubbableParameter>(active ?? 'ev');
+  const lastDial = useRef<CapsuleParameter>(active ?? 'ev');
   if (active !== null) {
     lastDial.current = active;
   }
@@ -658,26 +758,38 @@ function ViewfinderBarInner({
   }, [active, expand]);
 
   const dialScale = expand.interpolate({ inputRange: [0, 1], outputRange: [1.03, 1] });
-  const words: Record<ScrubbableParameter, string> = {
+  const words: Record<CapsuleParameter, string> = {
     wb: t('camera.bar.temp'),
     zoom: t('camera.bar.focal'),
     ev: t('camera.bar.ev'),
+    intensity: t('camera.bar.intensity'),
   };
   const capsules = buildCapsules({
     temperature,
     focalMm,
     exposure,
     focalOptions,
+    intensityTier,
     words,
     windowWidth,
   });
-  const a11yLabels: Record<ScrubbableParameter, string> = {
+  const intensityText = formatIntensityTier(intensityTier);
+  const a11yLabels: Record<CapsuleParameter, string> = {
     wb: t('camera.bar.temp.a11y', { label: formatScrubTemperature(temperature) }),
     zoom: t('camera.bar.focal.a11y', { label: `${Math.round(focalMm)}mm` }),
     ev: t('camera.bar.ev.a11y', { value: formatScrubExposure(exposure) }),
+    intensity: t('camera.bar.intensity.a11y', { label: intensityText }),
   };
-  const dialName = shownDial === 'zoom' ? words.zoom : shownDial === 'wb' ? words.wb : words.ev;
-  const readingText = shownDial === 'ev' ? `${reading} EV` : reading;
+  const dialName =
+    shownDial === 'zoom'
+      ? words.zoom
+      : shownDial === 'wb'
+        ? words.wb
+        : shownDial === 'intensity'
+          ? words.intensity
+          : words.ev;
+  const readingText =
+    shownDial === 'ev' ? `${reading} EV` : shownDial === 'intensity' ? intensityText : reading;
   const innerWidth = focalSegmentInnerWidth(windowWidth);
 
   return (
@@ -695,7 +807,10 @@ function ViewfinderBarInner({
             <LiquidGlassView
               radius={DIAL_HEIGHT / 2}
               overlay={DIAL_OVERLAY}
-              style={[styles.dial, shownDial === 'zoom' ? styles.dialCenter : null]}
+              style={[
+                styles.dial,
+                shownDial === 'zoom' || shownDial === 'intensity' ? styles.dialCenter : null,
+              ]}
               accessible
               accessibilityRole="adjustable"
               accessibilityLabel={dialName}
@@ -710,6 +825,13 @@ function ViewfinderBarInner({
                   options={focalOptions}
                   activeIndex={focalActiveIndex}
                   previewIndex={previewIndex}
+                  innerWidth={innerWidth}
+                  pointerColor={ink.amber}
+                  activeInk={theme.scheme === 'dark' ? '#1A1206' : GLASS_TEXT_COLOR}
+                />
+              ) : shownDial === 'intensity' ? (
+                <IntensitySegmentRow
+                  tier={intensityTier}
                   innerWidth={innerWidth}
                   pointerColor={ink.amber}
                   activeInk={theme.scheme === 'dark' ? '#1A1206' : GLASS_TEXT_COLOR}
@@ -866,6 +988,16 @@ const styles = StyleSheet.create({
     shadowRadius: 2,
     shadowOpacity: 1,
   },
+  intensityBar: {
+    position: 'absolute',
+    bottom: 2,
+    width: 2,
+    borderRadius: 1,
+    backgroundColor: MARK_COLOR,
+  },
+  intensityBarShort: { left: 2, height: 4 },
+  intensityBarMid: { left: 5.5, height: 7 },
+  intensityBarTall: { left: 9, height: 10 },
   thermoStem: {
     position: 'absolute',
     left: 4.5,

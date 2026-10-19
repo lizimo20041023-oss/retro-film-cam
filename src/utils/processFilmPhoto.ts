@@ -50,8 +50,9 @@
  */
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { lutSourceLongEdgeFor } from '../constants/filmRender';
+import { clampIntensityScale } from '../constants/intensity';
 import { DEFAULT_NO_FRAME_ASPECT, resolveFrame } from '../constants/frames';
-import { resolvePreset } from '../constants/presets';
+import { PRESETS, applyPresetIntensity, findPresetIndex, resolvePreset } from '../constants/presets';
 import type {
   CapturedPhoto,
   DevelopStage,
@@ -63,12 +64,14 @@ import type {
   NoFrameAspect,
   NormalizedPhoto,
   PlaceDetail,
+  PresetIntensityTier,
   ProcessedPhoto,
   ResolvedFilmPreset,
   ResolvedPlace,
   SaveOutcome,
   SceneStats,
   Size,
+  StockMode,
   WatermarkAlign,
   WatermarkLayout,
   WatermarkZone,
@@ -79,9 +82,9 @@ import { planPhotoCrop } from './cameraGeometry';
 import { planCapture } from './captureOptions';
 import { describeError } from './describeError';
 import { computeFrameLayout, resolveFrameOrientation } from './geometry';
-import { buildGradeLayers } from './gradeLayers';
 import { normalizePhoto } from './normalizePhoto';
 import { probeScene } from './sceneProbe';
+import { recommendStockAndIntensity } from './sceneMatch';
 import { saveToLibrary } from './saveToLibrary';
 
 export interface ProcessFilmPhotoInput {
@@ -170,6 +173,26 @@ export interface ProcessFilmPhotoInput {
    * "没有数据"，同样退化，不抛。
    */
   adaptiveGrade?: boolean;
+  /**
+   * 底片模式（v2.1.0 手术三）：`'auto'` = 整卷由场景引擎选（`utils/sceneMatch.ts`），
+   * 不传 / `'manual'` = 用 `preset` 那卷（缺省行为，与 v2.0.1 完全一致）。
+   *
+   * AUTO 选出来的卷只在**成片**生效：取景器和底片库里挂着的还是用户选的 `preset`
+   * （所以返回值里 `presetId` 是"用户的选择"、`effectivePresetId` 才是"实际洗出来的卷"）。
+   */
+  stockMode?: StockMode;
+  /**
+   * 预设强度档位（v2.1.0 手术二）：`'auto'` = 场景引擎给倍率，其余档 = 固定倍率
+   * （subtle 0.35 / soft 0.65 / standard 1 / rich 1.3 / max 1.6）。
+   * 不传 = 交给 `recommendStockAndIntensity` 的缺省（标准 100%）。
+   */
+  intensityTier?: PresetIntensityTier | null;
+  /**
+   * **已经解析好的**强度倍率（0.35~1.60）。UI 三处入口传它最直接：
+   * 传了就以它为准（`intensityTier` 只用于让 `autoBadge` 文案知道"AUTO 参与了强度"）。
+   * 不传 = 用场景引擎算出的 `intensityScale`。
+   */
+  intensityScale?: number;
   /** 地名详细度；不传 = `'archive'`。只影响 `place` 的渲染，不影响经纬度档。 */
   placeDetail?: PlaceDetail;
   /**
@@ -534,19 +557,52 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
    */
   const adaptiveEnabled = input.adaptiveGrade !== false;
   const scene: SceneStats | null = adaptiveEnabled ? await probeScene(cropped.uri) : null;
-  const scenePreset: ResolvedFilmPreset = scene === null ? preset : { ...preset, scene };
+  /*
+   * 4.6) AUTO 底片 / 自动强度（v2.1.0 手术三，用户 m03050）：
+   *
+   *      `recommendStockAndIntensity` 是纯函数（`utils/sceneMatch.ts`），吃同一份
+   *      `SceneStats`，返回「最匹配的卷 + 强度倍率 + 徽标文案」。两条独立的路：
+   *      · `stockMode === 'auto'` → 场景选卷，`preset` 那卷只做 UI 展示；
+   *      · `intensityTier === 'auto'` → 卷不动，只按场景调强度（70%~145%）。
+   *      两者都不 auto 时它原样把用户选的卷还回来（`match.stockId === preset.id`），
+   *      所以手动模式的像素路径与 v2.0.1 逐字节相同。
+   *
+   *      换卷时**只换"卷的身份"**（名称/ISO/色彩/颗粒档/暗角/mono/水印配置…），
+   *      用户级的设置（颗粒刻度、成片长边、归一化长边）原样保留 —— AUTO 选的是卷，
+   *      不是把用户在设置页里拧的东西一起换掉。
+   */
+  const match = recommendStockAndIntensity(scene, {
+    stockMode: input.stockMode,
+    manualStockId: preset.id,
+    intensityTier: input.intensityTier,
+  });
+  let effectivePreset: ResolvedFilmPreset = preset;
+  if (match.stockId !== preset.id) {
+    const switched = resolvePreset(PRESETS[findPresetIndex(match.stockId)]);
+    effectivePreset = {
+      ...switched,
+      grain: preset.grain,
+      captureLongEdge: preset.captureLongEdge,
+      normalizeMaxLongEdge: preset.normalizeMaxLongEdge,
+    };
+  }
+  const intensityScale = clampIntensityScale(input.intensityScale ?? match.intensityScale);
+  const scenePreset: ResolvedFilmPreset =
+    scene === null ? effectivePreset : { ...effectivePreset, scene };
   /*
    * 采样成功**不进 warnings**：这不是"降级提示"，是正常路径。真正决定观感的证据在
    * `layers` 里（⑧.7 的两层 label 自带「暗部占比 / 高光占比 / 溢出」实测值），
    * 每次拍照往用户面前的提示区塞一行"平均亮度 43%"反而是噪音。
    */
 
-  // 5) 调色图层：这里就决定了成片长什么样（纯数据，可断言）
   /*
-   * 注意传的是 `scenePreset` 而不是 `preset`：`ProcessedPhoto.layers` 是回报给调用方/
-   * 日志的"这张到底上了哪些层"，必须包含场景自适应补偿（有场景数据时）。
+   * 5) 调色口径（v2.1.0）：**只有像素管线一条路**。
+   *
+   * v2.0.1 还保留 `buildGradeLayers(scenePreset)` 算一份声明式图层当兜底；用户要求
+   * （m03050 手术三）「像素管线失败必须报错，不许静默回退成声明式图层」之后，这条路
+   * 已经不存在了 —— 成片要么是洗好的 `lutUri`，要么整次显影抛错。
+   * 取景器的实时预览仍用声明式图层（`FilmLookLayers`），但那条链不经过本函数。
    */
-  const declarativeLayers = buildGradeLayers(scenePreset).map((layer) => layer.label);
 
   /*
    * 5.5) 尺寸规划：画质档（`captureQuality.ts`）最终就是在**这里**变成成片像素的。
@@ -579,10 +635,24 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
   }
 
   // 6) 挂载合成视图 → 等布局和图片就绪 → 截图 → 立刻卸载
+  /*
+   * v2.1.0 预设强度的**声明式**侧：`stageInput.preset` 先按强度乘数缩放好再交出去。
+   *
+   * 为什么在这里乘：挂载的合成层如果走 `<FilmLookLayers>` 声明式图层（无 `lutUri`
+   * 的重放/预览路径），它拿到的必须是**已缩放**的 preset —— 像素管线那份强度已经
+   * 烘进 `lutUri` 了，两条路径只有读同一个数才能"预览与成片一致"。
+   * 缩放只动声明式字段（sCurve / lift / chromaLock / crush / 染色 / temperature /
+   * vignette），`captureLongEdge` / `grain` / `id` 不动，所以画布尺寸与 LUT 渲染
+   * 都不受影响（LUT 那份用的是下面 `capturePreset` + `intensity` 参数）。
+   *
+   * ⚠️ 因为这里已经乘过一遍，`FilmCompositor` **不要**再拿 `stage.intensity` 二次
+   * `applyPresetIntensity` —— `stage.intensity` 只作展示/重放文案用。
+   */
+  const stagedPreset = applyPresetIntensity(capturePreset, intensityScale);
   const stageInput: FilmStageInput = {
     rawUri: cropped.uri,
     layout,
-    preset: capturePreset,
+    preset: stagedPreset,
     frame,
     capturedAt,
     locationText: input.locationText ?? null,
@@ -615,6 +685,12 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     exposureIndex: input.exposureIndex ?? undefined,
     overlayUri: input.overlayUri ?? null,
     overlayOpacity: input.overlayOpacity,
+    /*
+     * v2.1.0 预设强度。有 `lutUri` 时它已经烘进像素；声明式那份已经乘进
+     * `stageInput.preset`（见上面 `stagedPreset`）。这里这个数**只作展示/重放**
+     * 用，`FilmCompositor` 不要再拿它二次缩放，否则与 `stagedPreset` 叠乘。
+     */
+    intensity: intensityScale,
   };
   /*
    * 6) 真胶片像素管线（v2.0.1）· **单次截图**
@@ -629,14 +705,14 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
    * （`FilmCompositor` 按 `capturePreset.captureLongEdge` 算），洗好的照片图由合成层
    * 以 `cover` 铺满窗口 —— 这正是"照片像素层"该有的角色（用户红线只约定 LUT 输入尺寸）。
    *
-   * 失败一律兜底：LUT 资产缺失、PNG 解码失败、写盘失败、内存不足 —— 任何一步抛错，
-   * 都退回 v1.9.x 的声明式调色层（`lutUri` 保持 null）。产品红线是
-   * **用户永远拿得到照片**，不能因为一次像素渲染失败变成"快门没反应"。
+   * ⚠️ v2.1.0 起**失败不再兜底**（用户 m03050 手术三）：任何一步抛错都转成
+   * `throw new Error('真胶片像素管线失败，成片未保存：…')` 抛给调用方，
+   * 由 UI 明确告诉用户"这次没洗出来" —— 绝不静默返回一张没上卷的原图。
+   * 所以 `renderMode` 恒为 `'lut'`，`layers` 恒是像素管线的真实参数。
    */
   const lutSourceLongEdge = lutSourceLongEdgeFor(capturePreset.captureLongEdge);
-  let lutUri: string | null = null;
-  let renderMode: 'lut' | 'declarative' = 'declarative';
-  let renderLayers: string[] | null = null;
+  let lutUri: string;
+  let renderLayers: string[];
   try {
     input.onStage?.('grading');
     const lutSourceUri = await prepareLutSource(cropped, lutSourceLongEdge);
@@ -657,27 +733,36 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
         scene,
       },
       seed,
+      /* v2.1.0：强度乘数交给像素循环（LUT 插值 + 暗角/颗粒/halation 一起缩放） */
+      intensity: intensityScale,
     });
     lutUri = rendered.uri;
-    renderMode = 'lut';
     renderLayers = [
       `lut:${capturePreset.id}`,
+      /* 回报的是**生效值**（`rendered.params` 已经乘过强度并夹取） */
+      `intensity ${rendered.params.intensity.toFixed(2)}`,
       `halation ${rendered.params.halation.toFixed(2)}`,
       `vignette ${rendered.params.vignette.toFixed(2)}`,
       `grain ${rendered.params.grain.toFixed(3)}`,
       `gamma ${rendered.params.gamma.toFixed(3)}`,
     ];
   } catch (error) {
-    warnings.push(`真胶片像素管线失败，已回退声明式调色层：${describeError(error)}`);
+    /*
+     * 用户红线（m03050 手术三）：**严禁静默回退声明式图层**。以前这里只 push 一条
+     * warning 就继续返回原图，用户拿到的是一张"没上卷"的照片却以为成功了；
+     * 现在一律抛错，由调用方（`CameraScreen` / `GalleryScreen`）提示失败。
+     */
+    throw new Error(`真胶片像素管线失败，成片未保存：${describeError(error)}`);
   }
 
   /*
-   * 7) 唯一一次挂载 + 截图：把"洗好的照片"（`lutUri`，失败时为 null）连同相框 / 日期 /
-   *    水印一起截成成片。有 `lutUri` 时合成层会跳过声明式调色层与重曝叠图
-   *    （它们已经烘进像素）。
+   * 7) 唯一一次挂载 + 截图：把"洗好的照片"（`lutUri`）连同相框 / 日期 / 水印截成成片。
+   *    有 `lutUri` 时合成层会跳过声明式调色层与重曝叠图（它们已经烘进像素）。
+   *
+   *    `autoBadge`（v2.1.0 手术三）只在底片或强度走了 AUTO 时有值，印在成片左下角。
    */
   input.onStage?.('capturing');
-  const finalStageInput: FilmStageInput = { ...stageInput, lutUri };
+  const finalStageInput: FilmStageInput = { ...stageInput, lutUri, autoBadge: match.label };
   let uri = '';
   try {
     host.mount(finalStageInput);
@@ -703,8 +788,12 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     capturedAtIso: capturedAt.toISOString(),
     rawUri: cropped.uri,
     durationMs: Date.now() - startedAt,
-    layers: renderLayers ?? declarativeLayers,
-    renderMode,
+    layers: renderLayers,
+    renderMode: 'lut',
+    /* v2.1.0：AUTO 场景引擎的结果（`presetId` 仍是"用户当时挂的那卷"） */
+    effectivePresetId: effectivePreset.id,
+    intensity: intensityScale,
+    autoBadge: match.label,
     warnings,
   };
 }

@@ -13,13 +13,13 @@
  *     → `encodePngRgba`（zlib store 模式，不压缩；1800×1350 实测 ~30ms）
  *     → 写进 `Paths.cache`，返回 file:// uri 给唯一的最终 view-shot
  *
- * ⚠️ 这里**不吞异常**：任何一步失败都原样抛出去，由 `processFilmPhoto` 统一兜底
- * 回退到 v1.9.x 的声明式调色层 —— 用户永远拿得到照片，只是少了真胶片观感。
- * （这条兜底是产品红线：不能让一次 LUT 解码失败变成"快门没反应"。）
+ * ⚠️ 这里**不吞异常**：任何一步失败都原样抛出去。v2.1.0 起调用方
+ * （`processFilmPhoto`）**不再**回退声明式调色层 —— 用户要求"像素管线失败必须报错，
+ * 不许静默给一张没上卷的原图"（m03050 手术三）。
  */
 import { File, Paths } from 'expo-file-system';
 import type { SceneStats } from '../types';
-import { filmLookParamsFor, renderFilmFrame } from './filmRender';
+import { filmLookParamsFor, filmLookWithIntensity, renderFilmFrame } from './filmRender';
 import type { FilmLookParams, FilmRenderStage } from './filmRender';
 import { getLutForStock } from './lutAssets';
 import { decodePng, encodePngRgba } from './pngCodec';
@@ -44,6 +44,13 @@ export interface RenderFilmToFileInput {
    * 调用点用快门时间戳的整数部分（`Date.now() & 0x7fffffff`）。
    */
   seed: number;
+  /**
+   * 预设强度乘数（v2.1.0 手术二）：0.35~1.60，缺省 1 = 100%。
+   *
+   * 它是"整卷观感的全局乘数"：LUT 输出与原图插值/外推、暗角 EV、颗粒幅度、
+   * halation 幅度都乘它（夹取规则在 `utils/filmRender.ts` 的 `filmLookWithIntensity`）。
+   */
+  intensity?: number;
   /** 渲染阶段回调（显影进度条/阶段文案用）。 */
   onStage?: (stage: FilmRenderStage) => void;
 }
@@ -81,6 +88,12 @@ export function renderFilmToFile(input: RenderFilmToFileInput): RenderedFilmFile
     seed: input.seed,
     gamma: params.gamma,
     mono: params.mono,
+    /*
+     * 把强度交给像素循环（不要在这里先乘好再传）：`renderFilmFrame` 内部用
+     * `scaleFilmLook` 一次算出「暗角 EV / 颗粒幅度 / halation 幅度」的生效值，
+     * 这里再乘一遍就成了平方。
+     */
+    intensity: input.intensity,
     onProgress: input.onStage,
   });
   /*
@@ -89,5 +102,14 @@ export function renderFilmToFile(input: RenderFilmToFileInput): RenderedFilmFile
    */
   const target = new File(Paths.cache, `film-${input.stockId}-${input.seed}.png`);
   target.write(encodePngRgba(png.width, png.height, png.rgba));
-  return { uri: target.uri, width: png.width, height: png.height, params };
+  /*
+   * 回报**实际生效**的一版参数（强度已经乘进去、夹取也做完）：`processFilmPhoto`
+   * 直接把 `halation / vignette / grain` 写进 `layers`，探针读到的也是像素里真正用的数。
+   */
+  return {
+    uri: target.uri,
+    width: png.width,
+    height: png.height,
+    params: filmLookWithIntensity(params, input.intensity),
+  };
 }

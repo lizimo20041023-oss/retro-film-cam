@@ -1,5 +1,5 @@
 /**
- * 三颗参数胶囊的手势层 + 状态机。渲染全在 `ViewfinderBar`（那个文件是所有几何常量的
+ * 四颗胶囊（三颗可滑参数 + 一颗六档离散强度）的手势层 + 状态机。渲染全在 `ViewfinderBar`（那个文件是所有几何常量的
  * 所有者，本文件单向 import 它）。
  *
  * ── 真机上两个 bug 的根因与本轮的治法（task-6）──────────────────────────────
@@ -29,6 +29,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, PanResponder, StyleSheet, View, useWindowDimensions } from 'react-native';
 import type { GestureResponderEvent, PanResponderGestureState } from 'react-native';
 
+import { PRESET_INTENSITY_OPTIONS } from '../constants/intensity';
 import { ASSUMED_LENS_NATIVE_MM, TELEPHOTO_FOCAL_STOP, ZOOM_STOPS, factorToZoom } from '../constants/lenses';
 import { useCapsuleAutoHide } from '../hooks/useCapsuleAutoHide';
 import type { ZoomLensRole, ZoomStop } from '../constants/lenses';
@@ -42,13 +43,15 @@ import {
   capsuleRowWidth,
   focalSegmentIndexAtOffset,
   focalSegmentInnerWidth,
+  formatIntensityTier,
   formatScrubExposure,
   formatScrubTemperature,
   rulerPhase,
 } from './ViewfinderBar';
-import type { ScrubbableParameter } from './ViewfinderBar';
+import type { CapsuleParameter, ScrubbableParameter } from './ViewfinderBar';
+import type { PresetIntensityTier } from '../types';
 
-export type { ScrubbableParameter };
+export type { CapsuleParameter, ScrubbableParameter };
 
 /**
  * 长按判定 160ms：比 iOS 的 500ms 长按短得多，因为这里的"长按"只是"我要开始调了"，
@@ -280,7 +283,7 @@ export function magnetToZero(dial: ExtractableDial, offset: number, value: numbe
 }
 
 interface GestureState {
-  dial: ScrubbableParameter | null;
+  dial: CapsuleParameter | null;
   /** `tap` = 还没越过抖动阈值；`scrub` = 已经在滑。 */
   mode: 'tap' | 'scrub';
   /** 长按定时器已经开过刻度尺（这次手势就不是轻点了）。 */
@@ -305,6 +308,8 @@ export interface ParameterScrubBarProps {
   temperature: number;
   focalMm: number;
   exposure: number;
+  /** 「预设强度」当前档（六档；AUTO 由场景引擎按拍摄画面决定）。 */
+  intensityTier: PresetIntensityTier;
   /** 当前实际挂着的镜头（父级给，用于显示与可用性判断）。 */
   focalRole: ZoomLensRole;
   /** 能到的最小焦距：没有超广角时父级给主摄的 26mm。 */
@@ -314,6 +319,8 @@ export interface ParameterScrubBarProps {
   onTemperature: (value: number) => void;
   onFocal: (focalMm: number, role: ZoomLensRole, factor: number) => void;
   onExposure: (value: number) => void;
+  /** 强度换档：轻点某一段即提交（强度是离散档位，没有滑选预览的中间态）。 */
+  onIntensityTier: (tier: PresetIntensityTier) => void;
   /** VoiceOver 的"上一档/下一档"（也是键盘/无障碍的换档路径）。 */
   onCycleFocal: () => void;
   /**
@@ -332,18 +339,20 @@ function ParameterScrubBarInner({
   temperature,
   focalMm,
   exposure,
+  intensityTier,
   focalRole,
   focalMinMm,
   focalMaxMm,
   onTemperature,
   onFocal,
   onExposure,
+  onIntensityTier,
   onCycleFocal,
   wakeSignal,
 }: ParameterScrubBarProps) {
   const { t } = useI18n();
   const { width: windowWidth } = useWindowDimensions();
-  const [active, setActive] = useState<ScrubbableParameter | null>(null);
+  const [active, setActive] = useState<CapsuleParameter | null>(null);
   const [focalPreview, setFocalPreview] = useState<number | null>(null);
   const scroll = useRef(new Animated.Value(0)).current;
 
@@ -390,7 +399,7 @@ function ParameterScrubBarInner({
    * 读数不能在这一瞬间变成另一个盘的。`ViewfinderBar` 里也有一份同样的记忆
    * （它负责渲染），两份必须一致：所以两边都用"最后一个非 null 值"这条同样的规则。
    */
-  const lastActive = useRef<ScrubbableParameter>('ev');
+  const lastActive = useRef<CapsuleParameter>('ev');
   if (active !== null) {
     lastActive.current = active;
   }
@@ -406,29 +415,40 @@ function ParameterScrubBarInner({
     temperature,
     focalMm,
     exposure,
+    intensityTier,
     focalOptions,
     focalMinMm,
     onTemperature,
     onFocal,
     onExposure,
+    onIntensityTier,
     windowWidth,
-    words: { wb: t('camera.bar.temp'), zoom: t('camera.bar.focal'), ev: t('camera.bar.ev') } as Record<
-      ScrubbableParameter,
-      string
-    >,
+    words: {
+      wb: t('camera.bar.temp'),
+      zoom: t('camera.bar.focal'),
+      ev: t('camera.bar.ev'),
+      intensity: t('camera.bar.intensity'),
+    } as Record<CapsuleParameter, string>,
   });
   useEffect(() => {
     latest.current = {
       temperature,
       focalMm,
       exposure,
+      intensityTier,
       focalOptions,
       focalMinMm,
       onTemperature,
       onFocal,
       onExposure,
+      onIntensityTier,
       windowWidth,
-      words: { wb: t('camera.bar.temp'), zoom: t('camera.bar.focal'), ev: t('camera.bar.ev') },
+      words: {
+        wb: t('camera.bar.temp'),
+        zoom: t('camera.bar.focal'),
+        ev: t('camera.bar.ev'),
+        intensity: t('camera.bar.intensity'),
+      },
     };
   });
 
@@ -504,10 +524,10 @@ function ParameterScrubBarInner({
   }, []);
 
   const openDial = useCallback(
-    (dial: ScrubbableParameter) => {
+    (dial: CapsuleParameter) => {
       clearCollapse();
       setActive(dial);
-      if (dial === 'zoom') {
+      if (dial === 'zoom' || dial === 'intensity') {
         setFocalPreview(null);
         return;
       }
@@ -571,6 +591,17 @@ function ParameterScrubBarInner({
     );
   }, []);
 
+  /** 把 `pageX` 换算成「预设强度」六档里的第几档（几何与渲染层共用 focalSegment*）。 */
+  const intensityIndexAtPageX = useCallback((pageX: number) => {
+    const { windowWidth: width } = latest.current;
+    const left = width / 2 - (width * DIAL_WIDTH_FRACTION) / 2 + DIAL_PAD_H;
+    return focalSegmentIndexAtOffset(
+      pageX - left,
+      focalSegmentInnerWidth(width),
+      PRESET_INTENSITY_OPTIONS.length,
+    );
+  }, []);
+
   /** 把胶囊行的 `pageX` 换算成"按到了哪一颗"。 */
   const dialAtPageX = useCallback((pageX: number) => {
     const { windowWidth: width, ...rest } = latest.current;
@@ -611,6 +642,29 @@ function ParameterScrubBarInner({
       }
       const wasTap = state.mode === 'tap' && !state.held;
       clearHold();
+
+      if (dial === 'intensity') {
+        if (active === null) {
+          // 收拢态轻点 = 原地展开六档条；长按不松手没有额外语义，也收拢。
+          if (wasTap) {
+            openDial('intensity');
+            return;
+          }
+          setActive(null);
+          return;
+        }
+        // 展开态轻点某一段 = 直接提交这一档（强度是离散档位，没有滑选预览）。
+        if (wasTap) {
+          const index = intensityIndexAtPageX(event.nativeEvent.pageX);
+          const option = PRESET_INTENSITY_OPTIONS[index];
+          if (option !== undefined) {
+            void Haptics.selectionAsync();
+            latest.current.onIntensityTier(option.id);
+          }
+        }
+        scheduleCollapse(COLLAPSE_DELAY_MS);
+        return;
+      }
 
       if (dial === 'zoom') {
         if (state.mode === 'scrub') {
@@ -666,6 +720,7 @@ function ParameterScrubBarInner({
       currentValue,
       emit,
       focalIndexAtPageX,
+      intensityIndexAtPageX,
       openDial,
       scheduleCollapse,
     ],
@@ -675,7 +730,7 @@ function ParameterScrubBarInner({
     () =>
       PanResponder.create({
         /**
-         * **捕获阶段**就接管：三颗胶囊的点击/长按/滑动全在这里判，子视图不参与。
+         * **捕获阶段**就接管：四颗胶囊的点击/长按/滑动全在这里判，子视图不参与。
          * 为什么必须在捕获阶段：这个 View 里还有 `LiquidGlassView` 与 `Text`，
          * 让它们先拿到触摸会多一层不确定；而"按在哪一颗"本来就是纯坐标问题。
          */
@@ -708,6 +763,11 @@ function ParameterScrubBarInner({
             // 焦段：按下不展开（轻点才展开），但要记下当前档，滑选时好比较。
             const index = focalIndexAtPageX(pageX);
             state.focalIndex = index;
+            setFocalPreview(null);
+            return true;
+          }
+          if (dial === 'intensity') {
+            // 强度：同样按下不展开；六档条是轻点即选，没有滑动/长按语义。
             setFocalPreview(null);
             return true;
           }
@@ -756,6 +816,10 @@ function ParameterScrubBarInner({
             previewFocal(focalIndexAtPageX(event.nativeEvent.pageX));
             return;
           }
+          if (dial === 'intensity') {
+            // 强度是离散档位：拖动没有语义，等松手时按落点选档。
+            return;
+          }
           applyScrub(dial, state.startOffset + gestureState.dx);
         },
         onPanResponderRelease: (event) => {
@@ -778,7 +842,12 @@ function ParameterScrubBarInner({
         onPanResponderTerminate: () => {
           const state = gesture.current;
           clearHold();
-          if (state.dial !== null && state.dial !== 'zoom' && state.mode === 'scrub') {
+          if (
+            state.dial !== null &&
+            state.dial !== 'zoom' &&
+            state.dial !== 'intensity' &&
+            state.mode === 'scrub'
+          ) {
             if (state.pending !== null) {
               emit(state.dial, state.pending);
               state.pending = null;
@@ -815,9 +884,13 @@ function ParameterScrubBarInner({
 
   // ── 无障碍与键盘路径（手势层不在 VoiceOver 的路径上，所以这三条必须单列）────
   const handleActivate = useCallback(
-    (dial: ScrubbableParameter) => {
+    (dial: CapsuleParameter) => {
       if (dial === 'zoom') {
         openDial('zoom');
+        return;
+      }
+      if (dial === 'intensity') {
+        openDial('intensity');
         return;
       }
       // 色温/曝光：展开 + 归零。展开是为了让读数可见（否则用户只听到结果）。
@@ -828,9 +901,25 @@ function ParameterScrubBarInner({
   );
 
   const handleAdjust = useCallback(
-    (dial: ScrubbableParameter, direction: 1 | -1) => {
+    (dial: CapsuleParameter, direction: 1 | -1) => {
       if (dial === 'zoom') {
         onCycleFocal();
+        return;
+      }
+      if (dial === 'intensity') {
+        const currentIndex = Math.max(
+          0,
+          PRESET_INTENSITY_OPTIONS.findIndex((option) => option.id === latest.current.intensityTier),
+        );
+        const nextIndex = Math.min(
+          Math.max(currentIndex + direction, 0),
+          PRESET_INTENSITY_OPTIONS.length - 1,
+        );
+        const option = PRESET_INTENSITY_OPTIONS[nextIndex];
+        if (option !== undefined) {
+          latest.current.onIntensityTier(option.id);
+        }
+        openDial('intensity');
         return;
       }
       const step = dial === 'wb' ? WB_HAPTIC_STEP : EV_HAPTIC_STEP;
@@ -857,7 +946,9 @@ function ParameterScrubBarInner({
       ? formatScrubTemperature(temperature)
       : shownDial === 'ev'
         ? formatScrubExposure(exposure)
-        : `${Math.round(focalMm)}mm`;
+        : shownDial === 'intensity'
+          ? formatIntensityTier(intensityTier)
+          : `${Math.round(focalMm)}mm`;
 
   return (
     /**
@@ -865,7 +956,7 @@ function ParameterScrubBarInner({
      *
      * `pointerEvents` 换成 `'none'`（而不是只把 `opacity` 调到 0）的理由：透明但仍在
      * 命中的视图会把取景器上的"轻触对焦"吃掉 —— 那时用户看到的是空画面，点哪儿都不该
-     * 有反应，但实际会落在三颗看不见的胶囊上，去开底片抽屉或把参数归零。
+     * 有反应，但实际会落在四颗看不见的胶囊上，去开底片抽屉或把参数归零。
      *
      * `accessibilityElementsHidden` / `importantForAccessibility` 同理：VoiceOver 的
      * 焦点不该落在一行已经淡走的控件上（可见性靠 `opacity`，无障碍树不会自己跟着变）。
@@ -889,6 +980,7 @@ function ParameterScrubBarInner({
           temperature={temperature}
           focalMm={focalMm}
           exposure={exposure}
+          intensityTier={intensityTier}
           scroll={scroll}
           focalOptions={focalOptions}
           focalActiveIndex={focalActiveIndex}

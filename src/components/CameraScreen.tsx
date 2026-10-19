@@ -62,6 +62,7 @@ import { useSettings } from '../hooks/useSettings';
 import { CAPTURE_QUALITIES, findCaptureQualitySpec, resolveCaptureLongEdge } from '../constants/captureQuality';
 import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex, resolveFrame, wrapIndex } from '../constants/frames';
 import { applyGrainLevel, findGrainLevelIndex, grainLevelAt } from '../constants/grain';
+import { intensityScaleForTier } from '../constants/intensity';
 import {
   ASSUMED_LENS_NATIVE_MM,
   TELEPHOTO_FOCAL_STOP,
@@ -73,7 +74,13 @@ import {
   resolveStop,
   zoomToFactor,
 } from '../constants/lenses';
-import { DEFAULT_PRESET_ID, PRESETS, findPresetIndex, resolvePreset } from '../constants/presets';
+import {
+  DEFAULT_PRESET_ID,
+  PRESETS,
+  applyPresetIntensity,
+  findPresetIndex,
+  resolvePreset,
+} from '../constants/presets';
 import { DARK_THEME, ThemeScope, UI_MONO } from '../constants/theme';
 import { DEFAULT_ZOOM, ZOOM_MAX, toCameraZoom } from '../constants/zoom';
 import { describeError } from '../utils/describeError';
@@ -116,8 +123,10 @@ import type {
   LocationMode,
   NoFrameAspect,
   PlaceDetail,
+  PresetIntensityTier,
   ResolvedPlace,
   Size,
+  StockMode,
   WatermarkAlign,
   WatermarkLayout,
   WatermarkZone,
@@ -278,6 +287,10 @@ interface DevelopShotJob extends DevelopJobBase {
   /** 非 `null` = 这是双曝的合成张（第二张），旧的那张压在上面。 */
   overlayUri: string | null;
   overlayOpacity: number | undefined;
+  /** v2.1.0：按快门那一刻的底片模式（manual = 用户选的那卷；auto = 场景引擎选卷）。 */
+  stockMode: StockMode;
+  /** v2.1.0：按快门那一刻的预设强度档（auto = 场景引擎按画面决定倍率）。 */
+  intensityTier: PresetIntensityTier;
 }
 
 /** 相册导入产生的工单：一次可能出好几张，走 `importAndDevelop` 那条管线。 */
@@ -558,7 +571,7 @@ export function CameraScreen() {
   const fonts = useFilmFonts();
   const filmStage = useFilmStage();
   const locationStamp = useLocationStamp();
-  const { settings, setCaptureQuality } = useSettings();
+  const { settings, setCaptureQuality, setPresetIntensity } = useSettings();
   const { t, localeId } = useI18n();
   /*
    * v1.8.3 · 模块四 D1：**这一屏不再跟随系统深浅色**。
@@ -821,6 +834,24 @@ export function CameraScreen() {
     };
   }, [effectivePreset, temperatureOverride]);
   const resolved = useMemo(() => resolvePreset(gradedPreset), [gradedPreset]);
+  /**
+   * 取景器实时预览用的预设 = 冲印预设 **× 当前强度缩放**（v2.1.0）。
+   *
+   * 为什么在预览路径就乘：LUT 像素管线只在成片那一步跑，取景器看到的是声明式图层
+   * （染色/S 曲线/暗角）。如果这里不缩放，用户把强度从 35% 拨到 160% 时取景器
+   * 一点变化都没有 —— 那个旋钮在预览里就等于不存在，只能拍完才知道差别。
+   * AUTO 档没有固定倍率（`intensityScaleForTier` 返回 null），预览按 1.0 渲染并在
+   * 胶囊里显示 AUTO；真正的倍率由场景引擎在成片那一步决定。
+   *
+   * `applyPresetIntensity` 是纯函数、返回新对象（不改 `resolved`），成片链路用的
+   * 仍是未缩放的 `gradedPreset` —— 成片的强度由 `processFilmPhoto` 按工单里的
+   * `intensityTier` 再算一次，两条路不互相污染。
+   */
+  const previewIntensityScale = intensityScaleForTier(settings.presetIntensity) ?? 1;
+  const previewResolved = useMemo(
+    () => applyPresetIntensity(resolved, previewIntensityScale),
+    [resolved, previewIntensityScale],
+  );
   const frameName = frame.nameKey !== undefined ? t(frame.nameKey) : frame.name;
   const developing = status.kind === 'developing';
   const cameraGranted = cameraPermission?.granted === true;
@@ -1002,6 +1033,8 @@ export function CameraScreen() {
         noFrameAspect: job.noFrameAspect,
         preset: job.preset,
         digitalFactor: job.digitalFactor,
+        stockMode: job.stockMode,
+        intensityTier: job.intensityTier,
         stage: stageBox,
         host: filmStage.host,
         place,
@@ -1128,9 +1161,23 @@ export function CameraScreen() {
             if (result.photo.warnings.length > 0) {
               console.warn('[develop] warnings', result.photo.warnings);
             }
+            /*
+             * v2.1.0：底片或强度走了 AUTO 时，成片左下角会印一行像素徽标；这里再给
+             * 一条文字提示，让用户在成片保存提示之外知道"这一张是怎么被选出来的"。
+             * 不覆盖 `saveIssue`（相册写入失败的信息优先级更高）。
+             */
+            if (result.photo.autoBadge) {
+              setNotice(t('develop.auto.badge', { badge: result.photo.autoBadge }));
+            }
           }
         } catch (error) {
-          setStatus({ kind: 'error', message: describeError(error) });
+          /*
+           * v2.1.0：`processFilmPhoto` 的像素管线失败已从"静默回退声明式调色层"改成
+           * `throw` —— 也就是说这次冲印**没有成片**。不能用 `describeError` 把内部
+           * 堆栈/英文细节直接摆给用户，统一给一句明确的失败文案（原始错误进 console）。
+           */
+          console.warn('[develop] pixel pipeline failed', error);
+          setStatus({ kind: 'error', message: t('error.filmRender') });
         } finally {
           queue.shift();
           setQueueDepth(queue.length);
@@ -1930,6 +1977,8 @@ export function CameraScreen() {
       placeDetail: settings.placeDetail,
       grainLevel: settings.grainLevel,
       locationMode: settings.locationMode,
+      stockMode: settings.stockMode,
+      intensityTier: settings.presetIntensity,
     };
 
     try {
@@ -2012,6 +2061,8 @@ export function CameraScreen() {
     settings.placeDetail,
     settings.grainLevel,
     settings.locationMode,
+    settings.stockMode,
+    settings.presetIntensity,
     exposureCount,
     t,
   ]);
@@ -2252,7 +2303,7 @@ export function CameraScreen() {
           pointerEvents="none"
         >
           <FilmLookLayers
-            preset={resolved}
+            preset={previewResolved}
             width={viewfinderWindow.width}
             height={viewfinderWindow.height}
             surface="live"
@@ -2260,7 +2311,7 @@ export function CameraScreen() {
           />
         </View>
       ) : null,
-    [previewBox.width, previewBox.height, styles, viewfinderWindow, resolved],
+    [previewBox.width, previewBox.height, styles, viewfinderWindow, previewResolved],
   );
 
   const viewfinderNode = useMemo(
@@ -2461,12 +2512,14 @@ export function CameraScreen() {
             temperature={resolved.color.temperature}
             focalMm={focalMm}
             exposure={exposure}
+            intensityTier={settings.presetIntensity}
             focalRole={focalRole}
             focalMinMm={focalMinMm}
             focalMaxMm={focalMaxMm}
             onTemperature={handleTemperatureChange}
             onFocal={handleFocalScrub}
             onExposure={handleExposureChange}
+            onIntensityTier={setPresetIntensity}
             onCycleFocal={handleCycleFocal}
             wakeSignal={capsuleWake}
           />
@@ -2490,6 +2543,8 @@ export function CameraScreen() {
       resolved.color.temperature,
       focalMm,
       exposure,
+      settings.presetIntensity,
+      setPresetIntensity,
       focalRole,
       focalMinMm,
       focalMaxMm,

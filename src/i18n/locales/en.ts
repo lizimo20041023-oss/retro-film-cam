@@ -45,6 +45,14 @@ export const en: Messages = {
   'film.drawer.hint': 'Tap a film to choose it · the reel button at the bottom right switches anytime',
   'film.card.a11y': '{name}, {description}',
   'film.card.selected': 'Selected',
+  'film.intensity.title': 'PRESET INTENSITY · Intensity',
+  'film.intensity.hint': 'One intensity for the whole roll · AUTO lets the scene engine decide',
+  'film.intensity.a11y': 'Preset intensity, currently {label}',
+  'film.intensity.auto.hint': 'Adapts to the scene (70%–145%)',
+  'film.stockMode.auto': 'AUTO Smart Film',
+  'film.stockMode.auto.hint': 'Picks the stock and intensity from the scene',
+  'film.stockMode.manual.hint': 'Pick a stock manually',
+  'film.stockMode.a11y': 'Auto smart film, {state}',
 
   /* ---------------- frame names (shown in the top bar) ----------------
      Keep these short: the top bar is a single line of 10pt mono,
@@ -135,9 +143,11 @@ export const en: Messages = {
   'develop.stage.normalizing': 'Preparing the negative',
   'develop.stage.saving': 'Saving to your album',
   'develop.tapToContinue': 'Tap the screen to keep shooting',
+  'develop.auto.badge': 'AUTO picked: {badge}',
 
   /* ---------------- errors ---------------- */
   'error.noPhoto': 'The camera did not return a photo. Please try again.',
+  'error.filmRender': 'Developing failed (LUT pixel pipeline). The photo was not saved. Please try again.',
   'save.denied.retry': 'No permission to write to your album. Tap save again and choose "Allow".',
   'save.denied.settings':
     'Album access was denied for good. Open Settings → Privacy & Security → Photos and allow it.',
@@ -255,6 +265,8 @@ export const en: Messages = {
   'camera.bar.focal.a11y': 'Focal length {label}. Hold and slide to adjust, tap to open the stops',
   'camera.bar.ev.a11y': 'Exposure compensation {value}. Hold and slide to adjust, tap to reset',
   'camera.bar.ev.hint': 'Swipe up or down to adjust exposure',
+  'camera.bar.intensity': 'INT',
+  'camera.bar.intensity.a11y': 'Preset intensity {label}, tap to open the levels',
   'camera.tool.import': 'Import',
   'camera.tool.double': 'Double',
   'camera.tool.timer': 'Timer',

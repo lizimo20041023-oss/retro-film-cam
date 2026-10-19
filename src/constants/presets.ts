@@ -2,6 +2,30 @@
  * 胶片预设表 —— 纯数据。加预设**不需要改任何逻辑代码**。
  *
  * ─────────────────────────────────────────────────────────────────────────
+ * v2.1.0（「九卷强性格」+ 预设强度缩放）：声明式预览/兜底路径一眼分九卷
+ * ─────────────────────────────────────────────────────────────────────────
+ *  用户反馈「九卷换预设几乎没区别」（m03050）。根因是旧表 `chromaLock`
+ *  0.54~0.68 太强：同源 `color` 色度锁按 86%~100% 权重把染色层的色相锁回
+ *  原图 → 化学染色被原图色度洗掉，九卷只剩明度差异。v2.1.0 手术一把它
+ *  **下调到 0.10~0.22**（保留"防通道撕裂"作用，但不再压掉染色），同时把染色
+ *  层不透明度提到 0.18~0.34、允许九卷写静态 `temperature`/`tint`，让九卷在
+ *  同一场景下必须一眼分辨：
+ *    UM-400  极强 S 曲线 + 深普鲁士青黑暗部 + 奶油暖白高光 + 0.28 暗角
+ *    GD-200  全画面暖金：金黄高光 / 琥珀棕暗部（temperature +0.22）
+ *    PT-400  低反差高通透：暗部微提清透青灰，高光/中间调桃粉（黄色减淡）
+ *    CP-200  中间调橄榄琥珀 + 茶褐暗部，对比度适中
+ *    FJ-400  冷翠青绿（temperature -0.20 + 绿 tint），翡翠暗部 / 冷青高光
+ *    EK-100  全库最高反差与饱和度，黑位深，零颗粒
+ *    CS-800T 强冷蓝影调（temperature -0.24 + 冷蓝暗部），保留 0.04 光晕
+ *    HP-400  纯黑白 + 温柔宽容灰阶
+ *    TX-400  纯黑白 + 极端高反差（shadowCrush 0.10）
+ *
+ *  渲染侧强度旋钮（v2.1.0 手术二）消费 `applyPresetIntensity()`：把本表的
+ *  声明式参数整体乘 `intensityScale`（0.35~1.60）后各自夹回合法上限，>1 即
+ *  超频外推。取景器实时预览与 `scene === null` 的成片兜底路径都走这条声明式
+ *  缩放；成片主链路（LUT + 像素管线）另有一套强度实现。
+ *
+ * ─────────────────────────────────────────────────────────────────────────
  * v1.9.4（「真·德味明度色度解耦引擎」）：九支传奇底片 + 同源显影管线
  * ─────────────────────────────────────────────────────────────────────────
  *  iOS 上 RN 的 `filter` 只支持 brightness / opacity，做不了对比度、饱和度、色温。
@@ -23,31 +47,35 @@
  *
  *  ── 现行图层（顺序 = gradeLayers.ts 渲染顺序，详见契约 §1 的 12 槽）──────────
  *   base              原图（100% 刀锐，opacity 1）
- *   exposure-lift     photo 副本, screen,  opacity 0.16~0.26（夹 0.28）
+ *   exposure-lift     photo 副本, screen,  opacity 0.06~0.28（夹 0.28；九卷全有，HP-400 = 0.10）
  *                     = Y' = 2Y−Y²：只提亮，f(0)=0（夜空/黑场绝不起雾）
- *   s-curve-contrast  photo 副本, overlay, opacity 0.40~0.60（夹 0.60）
+ *   s-curve-contrast  photo 副本, overlay, opacity 0.30~0.62（夹 0.62）
  *                     = 零模糊真 S 曲线：Y<0.5 → 2Y²，Y≥0.5 → 1−2(1−Y)²，
  *                       f(0)=0、f(1)=1（白场永远到得了 255）
- *   chroma-lock       photo 副本, color,   opacity = chromaLock（0.54~0.68）
+ *   chroma-lock       photo 副本, color,   opacity = chromaLock（0.10~0.22）
  *                     = 明度取底、色相/饱和度取原图：德味明暗 + 原色色度，解通道撕裂
+ *                     v2.1.0 下调权重（旧 0.54~0.68 会把化学染色洗掉），只留防撕裂作用
  *                     黑白卷：满幅 #808080 color opacity 1.0（真黑白）
- *   temperature       高明度暖/冷亮色, soft-light（用户 WB 旋钮，≤0.20）
- *   tint              高明度绿/品红亮色, soft-light（用户 Tint 旋钮，≤0.20）
- *   shadow-tint       高明度亮色, **只 soft-light**（化学暗部偏色，≤0.20）
- *   highlight-tint    高明度亮色, **只 soft-light**（德味暖调分色，≤0.20）
- *   shadow-crush      photo 副本, multiply, 仅 TX-400 0.05（硬朗黑白脚底）
+ *   temperature       卷静态色温 + 用户 WB 旋钮, soft-light（夹 0.30）
+ *   tint              卷静态色调 + 用户 Tint 旋钮, soft-light（夹 0.30）
+ *   shadow-tint       化学暗部偏色, **只 soft-light**（0.18~0.34，夹 0.50）
+ *   highlight-tint    化学高光/中间调分色, **只 soft-light**（0.18~0.34，夹 0.50）
+ *   shadow-crush      photo 副本, multiply, 仅 TX-400 0.10（硬朗黑白脚底）
  *   halation          light-leak.png, screen, 仅 CS-800T 0.04
  *   grain             grain.png（全画幅非周期银盐板）+ soft-light，绝对不透明度（见 grain.ts）
- *   vignette          vignette.png 拉伸 + multiply（0.16~0.28，夹 0.28）
+ *   vignette          vignette.png 拉伸 + multiply（0.10~0.28，夹 0.28）
  *   light-leak        light-leak.png + screen（本代九卷全 0）
  *
- *  ── 数值纪律（v1.9.4）────────────────────────────────────────────────────
- *  · sCurveContrast ∈ [0.40, 0.60]；exposureLift ∈ [0.16, 0.26]；
- *    chromaLock ∈ [0.54, 0.68]（黑白卷不写，用 1.0 灰层）；
- *    vignette ∈ [0.16, 0.28]；shadowCrush = 0（仅 TX-400 0.05）；
+ *  ── 数值纪律（v2.1.0）────────────────────────────────────────────────────
+ *  · sCurveContrast ∈ [0.30, 0.62]；exposureLift ∈ [0.06, 0.28]（九卷全有，最小 0.06）；
+ *    chromaLock ∈ [0.10, 0.22]（黑白卷不写，用 1.0 灰层）；
+ *    vignette ∈ [0.10, 0.28]；shadowCrush = 0（仅 TX-400 0.10）；
  *    halation = 0（仅 CS-800T 0.04）。
- *  · 染色层（temperature / tint / shadow-tint / highlight-tint）**只允许 soft-light**，
- *    不透明度一律 ≤ 0.20；九卷化学染色色值全部高明度、以「保色不脏色」为准。
+ *  · 静态 temperature / tint 只在非零时取 ±0.10~0.26 量级（渲染侧夹 ±0.30）；
+ *    v2.1.0 起它们是九卷性格的一部分（GD 暖金 / FJ 冷翠 / CS 冷蓝…），
+ *    不再由「化学分离色」单独承担色温。
+ *  · 染色层（temperature / tint / shadow-tint / highlight-tint）**只允许 soft-light**；
+ *    shadow-tint / highlight-tint 不透明度 0.18~0.34（渲染侧夹 ≤ 0.50）。
  *  · 色层纪律（v1.9.2 起不变）：非基底 photo 层一律显式 mixBlendMode；
  *    photo 副本 blurRadius 恒 0（零模糊同源自叠）。
  *  · 用户颗粒档位会在运行时无条件覆盖 `grain`（`applyGrainLevel`，绝对档
@@ -85,20 +113,25 @@ import { DEFAULT_CAPTURE_QUALITY, resolveCaptureLongEdge } from './captureQualit
 
 /** 调色/颗粒/暗角等参数的默认值：不写就用它。 */
 export const PRESET_DEFAULTS = {
-  /** 色温：用户旋钮直接加减这一项；九卷静态值全 0（色温人格交给化学分离色）。 */
+  /**
+   * 色温：用户 WB 旋钮直接加减这一项。
+   * v2.1.0 起九卷可以写静态色温当性格（GD +0.22 暖金 / FJ -0.20 冷翠 / CS -0.24 冷蓝），
+   * 不写才落 0；渲染侧把「静态值 + 旋钮」一起夹 ±0.30。
+   */
   temperature: 0,
-  /** 色调：同上，九卷静态值全 0。 */
+  /** 色调：同上，九卷非零值取 ±0.10~0.26 量级（FJ 绿 / CS 品红）。 */
   tint: 0,
-  /** 零模糊真 S 曲线（同源 overlay 自叠）强度。九卷 0.40~0.60，0 = 不出图层。 */
+  /** 零模糊真 S 曲线（同源 overlay 自叠）强度。九卷 0.30~0.62，0 = 不出图层。 */
   sCurveContrast: 0,
   /**
-   * 同源 color 色度锁（chroma-lock）强度。彩色卷 0.54~0.68；0 = 不出图层。
+   * 同源 color 色度锁（chroma-lock）强度。彩色卷 0.10~0.22；0 = 不出图层。
+   * v2.1.0 从 0.54~0.68 下调——旧权重会把化学染色整体洗回原图色度，九卷趋同。
    * 黑白卷不写本项 —— 渲染侧用满幅 #808080 color opacity 1.0 的真去色层替代。
    */
   chromaLock: 0,
-  /** 零模糊曝光提亮（同源 screen 自叠）强度。九卷 0.16~0.26，0 = 不出图层。 */
+  /** 零模糊曝光提亮（同源 screen 自叠）强度。九卷 0.06~0.28，0 = 不出图层。 */
   exposureLift: 0,
-  /** 黑位托底（同源 multiply 自叠）强度。v1.9.4 九卷全 0，仅 TX-400 用 0.05。 */
+  /** 黑位托底（同源 multiply 自叠）强度。v2.1.0 九卷全 0，仅 TX-400 用 0.10。 */
   shadowCrush: 0,
   /**
    * 化学冷暖分离色。空串 = 该卷没有这一层；
@@ -152,20 +185,24 @@ export const DEFAULT_TIMESTAMP: Omit<ResolvedTimestampConfig, 'fontFamily' | 'an
 };
 
 /**
- * v1.9.4 的 9 支传奇底片。顺序 = 胶片抽屉里的卡片顺序，第一支是默认卷。
+ * v2.1.0 的 9 支传奇底片「强性格」表。顺序 = 胶片抽屉里的卡片顺序，第一支是默认卷。
  *
- * 全部参数按 v1.9.4 契约 §2「明度色度解耦」九卷冻结表落值：
- *   1 UM-400  = 高反差拍立得街拍卷（默认王牌，暖金高光 soft-light + 天青蓝暗部）
- *   2 GD-200  = 金色日光（金黄高光 soft-light）
- *   3 PT-400  = 大师人像（白皙暖桃高光 soft-light）
- *   4 CP-200  = 复古琥珀（琥珀高光 soft-light）
- *   5 FJ-400  = 日系青绿（薄荷青高光 soft-light）
- *   6 EK-100  = 反转片高密（零颗粒；暖米高光 soft-light）
- *   7 CS-800T = 电影钨丝灯（冰蓝高光 soft-light，唯一保留 0.04 光晕）
- *   8 HP-400  = 纪实人文黑白（无 chromaLock，灰层真去色）
- *   9 TX-400  = 硬朗高反差黑白（唯一保留 0.05 黑位托底）
+ * 全部参数按用户 m03050 手术一（九卷强性格）落值 —— 同一场景下九卷必须一眼分辨：
+ *   1 UM-400  = 极强 S 曲线 + 深普鲁士青黑暗部 + 奶油暖白高光 + 0.28 暗角（默认王牌）
+ *   2 GD-200  = 全画面暖金（temperature +0.22）：金黄高光 / 琥珀棕暗部
+ *   3 PT-400  = 低反差高通透：暗部微提清透青灰 + 蜜桃高光（黄色减淡）
+ *   4 CP-200  = 九十年代橄榄琥珀：茶褐暗部，对比度适中
+ *   5 FJ-400  = 冷翠青绿（temperature -0.20 + 绿 tint）：翡翠暗部 / 冷青高光
+ *   6 EK-100  = 全库最高反差与饱和度，黑位深，零颗粒
+ *   7 CS-800T = 强冷蓝电影夜戏（temperature -0.24 + 冷蓝暗部），保留 0.04 光晕
+ *   8 HP-400  = 纯黑白温柔宽容灰阶（无 chromaLock，灰层真去色）
+ *   9 TX-400  = 纯黑白极端高反差（唯一 shadowCrush 0.10）
  *
- * 彩色卷 chromaLock 必须落在 [0.54, 0.68]；黑白卷不写 chromaLock。
+ * 关键纪律（v2.1.0）：
+ *   · 彩色卷 chromaLock ∈ [0.10, 0.22]（旧 0.54~0.68 会把染色洗掉），黑白卷不写；
+ *   · 化学染色层只 soft-light，shadow/highlight 不透明度 0.18~0.34；
+ *   · 静态 temperature / tint 非零时取 ±0.10~0.26 量级；
+ *   · photo 副本 blurRadius 恒 0、12 槽层 id/label 不变（探针按层 id 断结构）。
  * 代号不含任何厂商名/商品名（用户 m06500 红线：防商标纠纷）。
  */
 export const PRESETS: FilmPreset[] = [
@@ -174,72 +211,84 @@ export const PRESETS: FilmPreset[] = [
     name: 'UM-400',
     description: '高反差拍立得 · 街拍王牌',
     color: {
-      // 解耦基准：sCurve .52 / chromaLock .62 / lift .22 / crush 0 / vignette .24
-      sCurveContrast: 0.60,
-      chromaLock: 0.54,
-      exposureLift: 0.28,
+      // 极强反差（0.62 上限）+ 微暖色温把高光推成奶油白；暗角拉满让街头更"拍立得"。
+      temperature: 0.1,
+      sCurveContrast: 0.62,
+      // v2.1.0：色度锁只留防撕裂的 0.14，把画面交给高浓度化学染色。
+      chromaLock: 0.14,
+      exposureLift: 0.22,
       shadowCrush: 0,
-      // 暖金高光 + 天青蓝暗部，全部 soft-light（色度锁已负责色彩密度）。
-      shadowTint: '#B9E5EB',
+      // 深普鲁士青黑压暗部（红/蓝通道饱和度靠它拉开）+ 奶油暖白高光。
+      shadowTint: '#061C2C',
       shadowTintBlendMode: 'soft-light',
-      shadowTintOpacity: 0.16,
-      highlightTint: '#049BA4',
+      shadowTintOpacity: 0.32,
+      highlightTint: '#F2E8D5',
       highlightTintBlendMode: 'soft-light',
-      highlightTintOpacity: 0.02,
+      highlightTintOpacity: 0.3,
     },
     grain: 0.025,
-    vignette: 0.24,
+    vignette: 0.28,
   },
   {
     id: 'gd-200',
     name: 'GD-200',
     description: '金色日光 · 暖阳日常',
     color: {
-      sCurveContrast: 0.60,
-      chromaLock: 0.68,
-      exposureLift: 0.28,
+      // 全画面暖金：静态 +0.22 色温 + 金黄高光 + 琥珀棕暗部，和 FJ 形成强冷暖反差。
+      temperature: 0.22,
+      sCurveContrast: 0.52,
+      chromaLock: 0.16,
+      exposureLift: 0.24,
       shadowCrush: 0,
-      shadowTint: '#81C8FA',
+      shadowTint: '#2E1608',
       shadowTintBlendMode: 'soft-light',
-      shadowTintOpacity: 0.11,
-      // 金黄高光 soft-light（保色不脏色）。
-      highlightTint: '#E98C02',
+      shadowTintOpacity: 0.26,
+      highlightTint: '#FFC346',
       highlightTintBlendMode: 'soft-light',
-      highlightTintOpacity: 0.14,
+      highlightTintOpacity: 0.32,
     },
     grain: 0.025,
-    vignette: 0.2,
+    vignette: 0.24,
   },
   {
     id: 'pt-400',
     name: 'PT-400',
     description: '大师人像 · 奶油肤色',
     color: {
-      sCurveContrast: 0.25,
-      chromaLock: 0.56,
+      // 低反差 + 高提亮 = 通透空气感；轻微冷色温把黄压下去，肤色走桃粉。
+      temperature: -0.12,
+      sCurveContrast: 0.3,
+      chromaLock: 0.2,
       exposureLift: 0.28,
       shadowCrush: 0,
-      // 白皙暖桃高光 soft-light（人像肤色最忌色相撕裂）。
-      highlightTint: '#814212',
+      // 暗部微提清透青灰（不是压黑），高光/中间调蜜桃粉。
+      shadowTint: '#D8E4E6',
+      shadowTintBlendMode: 'soft-light',
+      shadowTintOpacity: 0.24,
+      highlightTint: '#FFDAC3',
       highlightTintBlendMode: 'soft-light',
-      highlightTintOpacity: 0.14,
+      highlightTintOpacity: 0.28,
     },
     grain: 0.025,
-    vignette: 0.16,
+    vignette: 0.1,
   },
   {
     id: 'cp-200',
     name: 'CP-200',
     description: '复古琥珀 · 九十年代',
     color: {
-      sCurveContrast: 0.60,
-      chromaLock: 0.59,
-      exposureLift: 0.28,
+      // 九十年代暖调：中间调橄榄琥珀，暗部茶褐，反差中等偏上。
+      temperature: 0.16,
+      sCurveContrast: 0.48,
+      chromaLock: 0.15,
+      exposureLift: 0.18,
       shadowCrush: 0,
-      // 琥珀高光 soft-light（九十年代暖调）。
-      highlightTint: '#F4E5EA',
+      shadowTint: '#3A2416',
+      shadowTintBlendMode: 'soft-light',
+      shadowTintOpacity: 0.3,
+      highlightTint: '#EBB44B',
       highlightTintBlendMode: 'soft-light',
-      highlightTintOpacity: 0.14,
+      highlightTintOpacity: 0.3,
     },
     grain: 0.025,
     vignette: 0.22,
@@ -249,37 +298,43 @@ export const PRESETS: FilmPreset[] = [
     name: 'FJ-400',
     description: '日系青绿 · 空气感',
     color: {
-      sCurveContrast: 0.44,
-      chromaLock: 0.68,
-      exposureLift: 0.28,
+      // 冷翠青绿人格：静态 -0.20 色温 + 绿 tint，与 GD 的金色完全对立。
+      temperature: -0.2,
+      tint: 0.12,
+      sCurveContrast: 0.5,
+      chromaLock: 0.12,
+      exposureLift: 0.2,
       shadowCrush: 0,
-      shadowTint: '#E1EFF2',
+      // 暗部/中间调翡翠青绿，高光冷青（通透但不发灰）。
+      shadowTint: '#0C735F',
       shadowTintBlendMode: 'soft-light',
-      shadowTintOpacity: 0.17,
-      // 薄荷青高光 soft-light（通透空气感，不再靠 overlay 暗部）。
-      highlightTint: '#0E670F',
+      shadowTintOpacity: 0.32,
+      highlightTint: '#D7ECF2',
       highlightTintBlendMode: 'soft-light',
-      highlightTintOpacity: 0.05,
+      highlightTintOpacity: 0.26,
     },
     grain: 0.025,
-    vignette: 0.18,
+    vignette: 0.2,
   },
   {
     id: 'ek-100',
     name: 'EK-100',
     description: '反转片 · 浓郁高密',
     color: {
-      sCurveContrast: 0.46,
-      chromaLock: 0.68,
-      exposureLift: 0.28,
+      // 全库最高反差与饱和度：sCurve 上限 + 最高色度锁（0.22），提亮压低换更深的黑位。
+      temperature: 0,
+      sCurveContrast: 0.62,
+      chromaLock: 0.22,
+      exposureLift: 0.14,
       shadowCrush: 0,
-      shadowTint: '#52DD18',
+      // 中性高饱和：暗部压成冷墨青，高光保持干净冷白（不发黄）。
+      shadowTint: '#16303C',
       shadowTintBlendMode: 'soft-light',
-      shadowTintOpacity: 0.04,
-      // 反转片级明暗反差由 sCurve 负责；高光暖米 soft-light；零颗粒。
-      highlightTint: '#83BBCC',
+      shadowTintOpacity: 0.2,
+      highlightTint: '#EEF3FA',
       highlightTintBlendMode: 'soft-light',
-      highlightTintOpacity: 0.09,
+      highlightTintOpacity: 0.22,
+      // 反转片零颗粒由 GRAINLESS_PRESET_IDS 保证。
     },
     grain: 0,
     vignette: 0.26,
@@ -289,18 +344,24 @@ export const PRESETS: FilmPreset[] = [
     name: 'CS-800T',
     description: '电影钨丝 · 冷调夜戏',
     color: {
-      sCurveContrast: 0.33,
-      chromaLock: 0.68,
-      exposureLift: 0.28,
+      // 强冷蓝影调：静态 -0.24 色温 + 品红 tint 压绿，暗部直接沉进冷蓝。
+      temperature: -0.24,
+      tint: -0.1,
+      sCurveContrast: 0.44,
+      chromaLock: 0.18,
+      exposureLift: 0.16,
       shadowCrush: 0,
-      // 冰蓝高光 soft-light + 唯一保留的 0.04 暖红光晕。
-      highlightTint: '#AFF6FB',
+      shadowTint: '#145FB9',
+      shadowTintBlendMode: 'soft-light',
+      shadowTintOpacity: 0.32,
+      highlightTint: '#C9E4FF',
       highlightTintBlendMode: 'soft-light',
-      highlightTintOpacity: 0.14,
+      highlightTintOpacity: 0.24,
+      // 唯一保留的 0.04 暖红光晕（电影冷夜里的灯丝溢出）。
       halation: 0.04,
     },
     grain: 0.025,
-    vignette: 0.24,
+    vignette: 0.26,
   },
   {
     id: 'hp-400',
@@ -308,12 +369,13 @@ export const PRESETS: FilmPreset[] = [
     description: '纪实黑白 · 银盐灰阶',
     mono: true,
     color: {
-      sCurveContrast: 0.49,
-      exposureLift: 0,
-      shadowCrush: 0.05,
+      // 温柔宽容灰阶：中等 S 曲线 + 轻微提亮，暗部不死黑（与 TX 的极端反差拉开）。
+      sCurveContrast: 0.42,
+      exposureLift: 0.1,
+      shadowCrush: 0,
     },
     grain: 0.025,
-    vignette: 0.2,
+    vignette: 0.16,
   },
   {
     id: 'tx-400',
@@ -321,10 +383,10 @@ export const PRESETS: FilmPreset[] = [
     description: '硬朗黑白 · 森山冲击',
     mono: true,
     color: {
-      sCurveContrast: 0.23,
-      exposureLift: 0.28,
-      // 全库唯一保留的黑位托底（0.05）：硬朗黑白的最后一点脚底支撑。
-      shadowCrush: 0,
+      // 极端高反差：S 曲线顶格 + 压低提亮 + 全库唯一 0.10 黑位托底。
+      sCurveContrast: 0.62,
+      exposureLift: 0.06,
+      shadowCrush: 0.1,
     },
     grain: 0.025,
     vignette: 0.28,
@@ -333,7 +395,7 @@ export const PRESETS: FilmPreset[] = [
 ];
 
 /**
- * 该 id 的卷**永不产生颗粒纹理层**（v1.8.5 M2；v1.9.0 起是 ek-100 反转片，v1.9.4 不变）。
+ * 该 id 的卷**永不产生颗粒纹理层**（v1.8.5 M2；v1.9.0 起是 ek-100 反转片，v2.1.0 不变）。
  *
  * 为什么不是只把 `grain: 0` 写进数据：用户颗粒档位是全局设置，`applyGrainLevel()`
  * 会在运行时**无条件覆盖** `preset.grain`（CameraScreen / importPhoto / GalleryScreen
@@ -343,7 +405,7 @@ export const PRESETS: FilmPreset[] = [
  */
 export const GRAINLESS_PRESET_IDS: ReadonlySet<string> = new Set(['ek-100']);
 
-/** 冷启动用哪个预设（= 列表第一项，v1.9.4 起仍是 UM-400 王牌卷）。 */
+/** 冷启动用哪个预设（= 列表第一项，v2.1.0 起仍是 UM-400 王牌卷）。 */
 export const DEFAULT_PRESET_ID = 'um-400';
 
 /**
@@ -445,4 +507,93 @@ export function resolvePreset(preset: FilmPreset): ResolvedFilmPreset {
     normalizeMaxLongEdge: preset.normalizeMaxLongEdge ?? PRESET_DEFAULTS.normalizeMaxLongEdge,
     captureLongEdge: preset.captureLongEdge ?? PRESET_DEFAULTS.captureLongEdge,
   };
+}
+
+/**
+ * 预设强度缩放（v2.1.0 用户 m03050 手术二的**声明式侧**）。
+ *
+ * 渲染侧只认 `intensityScale`（0.35~1.60 的全局风格乘数，档位数据见
+ * `constants/intensity.ts`）：取景器实时预览与 `scene === null` 的成片兜底路径
+ * 都是「预设图层 + 不透明度」，所以强度在这里就是**把声明式参数整体乘一下**。
+ *
+ * 规则（与契约 v2.1.0 §2 一致）：
+ *   · sCurveContrast / exposureLift / chromaLock / shadowCrush 乘 scale 后各自夹回
+ *     合法上限（0.62 / 0.28 / 0.22 / 0.12）—— `scale > 1` 时就是超频外推，
+ *     但永远不越过引擎硬上限；
+ *   · shadowTintOpacity / highlightTintOpacity 乘 scale 后夹 `[0, 0.5]`；
+ *   · temperature / tint 乘 scale 后夹 `±0.3`（用户 WB 旋钮另有自己的夹取）；
+ *   · vignette 乘 scale 后夹 `0.28`；grain **不缩放**（颗粒由用户档位独立控制）；
+ *   · scale 非法（NaN / ±Infinity / ≤ 0）一律回落 1，保证调用方传错不崩；
+ *   · 其余字段（id/name/description/dust/lightLeak/mono/timestamp/scene…）原样。
+ *
+ * 纯函数、**不修改入参**：返回一份新的 `ResolvedFilmPreset`，旧对象可以安全复用
+ * （`PRESETS` 经过 `resolvePreset()` 后常被缓存，若原地改会污染下一次渲染）。
+ */
+export function applyPresetIntensity(
+  preset: ResolvedFilmPreset,
+  intensityScale: number,
+): ResolvedFilmPreset {
+  const scale = Number.isFinite(intensityScale) && intensityScale > 0 ? intensityScale : 1;
+  const color = preset.color;
+
+  return {
+    ...preset,
+    color: {
+      ...color,
+      temperature: clampSignedIntensity(color.temperature * scale, TEMPERATURE_LIMIT),
+      tint: clampSignedIntensity(color.tint * scale, TEMPERATURE_LIMIT),
+      sCurveContrast: clampIntensity(color.sCurveContrast * scale, S_CURVE_LIMIT),
+      chromaLock: clampIntensity(color.chromaLock * scale, CHROMA_LOCK_LIMIT),
+      exposureLift: clampIntensity(color.exposureLift * scale, EXPOSURE_LIFT_LIMIT),
+      shadowCrush: clampIntensity(color.shadowCrush * scale, SHADOW_CRUSH_LIMIT),
+      shadowTintOpacity: clampIntensity(color.shadowTintOpacity * scale, TINT_LIMIT),
+      highlightTintOpacity: clampIntensity(color.highlightTintOpacity * scale, TINT_LIMIT),
+    },
+    vignette: clampIntensity(preset.vignette * scale, VIGNETTE_LIMIT),
+  };
+}
+
+/** `applyPresetIntensity` 的引擎硬上限（调用方不应绕过这些数字，探针按它们断值）。 */
+export const PRESET_INTENSITY_LIMITS = {
+  /** 零模糊 S 曲线上限（旧引擎 0.60，v2.1.0 手术一抬到 0.62）。 */
+  sCurveContrast: 0.62,
+  /** 曝光提亮上限（不变）。 */
+  exposureLift: 0.28,
+  /** 色度锁上限（v2.1.0 从 0.68 下调到 0.22）。 */
+  chromaLock: 0.22,
+  /** 黑位托底上限（v2.1.0 从 0.05 抬到 0.12，TX-400 用 0.10）。 */
+  shadowCrush: 0.12,
+  /** 化学染色层不透明度上限（v2.1.0 从 0.20 抬到 0.50，九卷用 0.18~0.34）。 */
+  tintOpacity: 0.5,
+  /** 静态色温 / 色调上限（用户 WB 旋钮量 ±0.30）。 */
+  temperature: 0.3,
+  /** 暗角上限（不变）。 */
+  vignette: 0.28,
+} as const;
+
+const S_CURVE_LIMIT = PRESET_INTENSITY_LIMITS.sCurveContrast;
+const EXPOSURE_LIFT_LIMIT = PRESET_INTENSITY_LIMITS.exposureLift;
+const CHROMA_LOCK_LIMIT = PRESET_INTENSITY_LIMITS.chromaLock;
+const SHADOW_CRUSH_LIMIT = PRESET_INTENSITY_LIMITS.shadowCrush;
+const TINT_LIMIT = PRESET_INTENSITY_LIMITS.tintOpacity;
+const TEMPERATURE_LIMIT = PRESET_INTENSITY_LIMITS.temperature;
+const VIGNETTE_LIMIT = PRESET_INTENSITY_LIMITS.vignette;
+
+/** 把缩放后的值夹回 `[0, upper]`（NaN 兜底 0）。 */
+function clampIntensity(value: number, upper: number): number {
+  if (Number.isNaN(value) || value <= 0) {
+    return 0;
+  }
+  return value > upper ? upper : value;
+}
+
+/** 把缩放后的值夹回 `[-upper, upper]`（色温/色调可以负向）。 */
+function clampSignedIntensity(value: number, upper: number): number {
+  if (Number.isNaN(value)) {
+    return 0;
+  }
+  if (value > upper) {
+    return upper;
+  }
+  return value < -upper ? -upper : value;
 }

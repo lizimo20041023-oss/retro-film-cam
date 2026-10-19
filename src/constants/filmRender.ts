@@ -3,6 +3,11 @@
  *
  * v2.0.0 把「LUT → halation → vignette → grain」做成四趟独立的整图遍历，
  * 每趟都要重新读一遍 RGB（v1.9.0 的 `photo + blur + screen` 白雾图层也还在兜底路径里挂着）。
+ * v2.1.0 再叠一条用户要求（m03050 手术二）：**预设强度倍率**。`intensityScale` 是
+ * 0.35~1.60 的全局风格乘数（见 `constants/intensity.ts`）：LUT 输出与原图按它插值/外推，
+ * 暗角 EV、颗粒幅度、halation 幅度都乘它、再各自夹到本文件的上下限。缺省 1 = 逐字节等于
+ * v2.0.1 的输出（旧探针不受影响）。
+ *
  * v2.0.1 按用户红线重做：
  *
  *   · **halation 只允许「极高光纯 R 通道微扩散」**：阈值 0.88（只看 Luma），
@@ -18,6 +23,17 @@
  *
  * 所有函数都是纯函数、不读任何环境，Node 探针可以直接 import 逐值核对。
  */
+
+import { INTENSITY_SCALE_MAX, INTENSITY_SCALE_MIN } from './intensity';
+
+/**
+ * 预设强度倍率区间（v2.1.0 手术二）：0.35 = 35%（subtle）… 1.60 = 160%（max）。
+ *
+ * 数据源是 `constants/intensity.ts`（UI 那三个入口共用一张档位表）；这里 re-export，
+ * 是为了让**像素管线**的常量收口在同一个模块 —— Node 探针只 import 本文件就能核对上下限，
+ * 不会出现"UI 一处、渲染一处"两个数各改各的。
+ */
+export { INTENSITY_SCALE_MAX, INTENSITY_SCALE_MIN };
 
 /** 3D LUT 每轴的采样数（33³ = 35,937 项）。 */
 export const LUT_SIZE = 33;
@@ -200,6 +216,41 @@ export function vignetteStrengthFor(vignette: number): number {
   const ev = vignetteEvFor(vignette);
   return ev <= 0 ? 0 : 1 - Math.pow(2, -ev);
 }
+
+/* ========================================================================== *
+ * 预设强度倍率（v2.1.0 手术二）：所有观感量乘 intensity 后再夹取
+ * ========================================================================== */
+
+/** 中性强度（100%）：不乘任何东西，输出与 v2.0.1 逐字节相同。 */
+export const INTENSITY_NEUTRAL = 1;
+
+/**
+ * 强度缩放后的暗角 EV 下限 / 上限（magnitude，正数）。
+ *
+ * 用户要求（m03050）「暗角 EV 乘 intensity 后夹 [0.15, 0.85]」：
+ *   · 下限 0.15 —— 35% 档也不能把暗角抹到完全看不见（否则最低档就"没有胶片味"）；
+ *   · 上限 0.85 —— 160% 档也不许把四角压成纯黑（−0.85 EV ≈ 只剩 55% 亮度）。
+ * 预设本身 `vignette <= 0`（不做暗角）时**不套这个下限**：0 就是 0，见 `filmLookWithIntensity`。
+ */
+export const VIGNETTE_EV_MIN = 0.15;
+
+/** 强度缩放后的暗角 EV 上限（见 `VIGNETTE_EV_MIN`）。 */
+export const VIGNETTE_EV_MAX = 0.85;
+
+/**
+ * 强度缩放后的颗粒幅度上限（8bit 像素单位）。
+ *
+ * v2.0.1 的颗粒上限是 44（最大档 0.16）；160% 强度下允许到 70，再高就不是"胶片颗粒"
+ * 而是"电视雪花"了。取整在 `filmLookWithIntensity` 里做（保持全整型热路径）。
+ */
+export const GRAIN_PIXEL_EFFECTIVE_MAX = 70;
+
+/**
+ * 强度缩放后的 halation 强度上限（0~1）。
+ *
+ * 最深的 cs-800t 是 0.22，×1.60 = 0.352，离上限还远；这个盖子只防"将来有人把表调到 0.5"。
+ */
+export const HALATION_EFFECTIVE_MAX = 0.6;
 
 /* ========================================================================== *
  * LUT 输入长边（JS 像素循环的硬预算）

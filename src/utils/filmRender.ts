@@ -18,25 +18,38 @@
  *   5. halation —— **只在循环里记录「Luma ≥ 0.88」的像素**，循环结束后只对这些像素的
  *      5×5 邻域做**纯 R 通道**微扩散（G/B 一个字节都不碰）。没有全屏模糊、没有 screen 叠加，
  *      所以不可能再出白雾。
+ *   6. 预设强度（v2.1.0 手术二）—— 在 ② 与 ③ 之间：LUT 输出与原图按 `intensityScale`
+ *      （0.35~1.60）插值/外推，`out = orig + round((lut − orig) · intensity)`，全整型 Q16。
+ *      暗角 EV / 颗粒幅度 / halation 幅度也乘同一个 intensity，再各自夹到
+ *      `utils`→`constants/filmRender` 里的上下限。缺省 1 = 与 v2.0.1 逐字节相同。
  *
  * 阶段回调用 `'lut' → 'halation' → 'done'`：halation 是主循环之后的小收尾（只处理高光像素），
  * 报点跟着真实工作边界走，不编造中间态。
+ *
+ * ⚠️ v2.1.0 起**不再有"失败兜底成声明式图层"这条路**（用户 m03050 手术三）：像素管线
+ * 抛错就一路抛到 `processFilmPhoto`，由它抛给调用方 —— 绝不静默返回原图。
  */
 import type { SceneStats } from '../types';
 import {
+  GRAIN_PIXEL_EFFECTIVE_MAX,
   GRAIN_RGB_WEIGHTS,
   GRAIN_WEIGHT_FLOOR,
   GRAIN_WEIGHT_GAIN,
+  HALATION_EFFECTIVE_MAX,
   HALATION_KERNEL,
   HALATION_RADIUS,
   HALATION_THRESHOLD,
+  INTENSITY_NEUTRAL,
   SCENE_GAMMA_NEUTRAL,
   VIGNETTE_CENTER_PLATEAU,
+  VIGNETTE_EV_MAX,
+  VIGNETTE_EV_MIN,
   VIGNETTE_RADIUS_SCALE,
   grainPixelFor,
   halationFor,
   vignetteEvFor,
 } from '../constants/filmRender';
+import { clampIntensityScale } from '../constants/intensity';
 import { buildLutSampler } from './lut3d';
 import type { Lut3D, LutSampler } from './lut3d';
 import { sceneGamma } from './adaptiveGrade';
@@ -56,6 +69,14 @@ export interface FilmLookParams {
   gamma: number;
   /** 黑白卷：颗粒三通道同步。 */
   mono: boolean;
+  /**
+   * 预设强度乘数（v2.1.0，0.35~1.60；缺省 1）。
+   *
+   * `filmLookParamsFor` 只给中性 1（预设数据里没有强度）；真正生效的值由
+   * `filmLookWithIntensity` 算出、写回这里，所以 `RenderedFilmFile.params` 带的是
+   * **实际生效**的那一份（日志/探针直接读，不用再乘一次）。
+   */
+  intensity: number;
 }
 
 /** `renderFilmFrame` 的入参。 */
@@ -72,6 +93,14 @@ export interface FilmRenderOptions {
   seed: number;
   /** 输入 gamma（缺省 1 = 恒等）。 */
   gamma?: number;
+  /**
+   * 预设强度乘数（v2.1.0，0.35~1.60；缺省 1 = 100%，逐字节等于 v2.0.1）。
+   *
+   * 生效方式（全整型）：LUT 输出与原图按 Q16 定点插值/外推；
+   * 暗角 EV、颗粒幅度、halation 幅度乘同一个数后再夹 `VIGNETTE_EV_MIN/MAX`、
+   * `GRAIN_PIXEL_EFFECTIVE_MAX`、`HALATION_EFFECTIVE_MAX`。
+   */
+  intensity?: number;
   /** 黑白卷：颗粒三通道用同一个 delta。 */
   mono?: boolean;
   /** 阶段回调（'lut' 开始 → 'halation' 收尾 → 'done'）。 */
@@ -92,6 +121,68 @@ export function filmLookParamsFor(preset: {
     grain: grainPixelFor(preset.grain),
     gamma: sceneGamma(preset.scene ?? null),
     mono: preset.mono === true,
+    intensity: INTENSITY_NEUTRAL,
+  };
+}
+
+/** 强度缩放后的三个观感量（`filmLookWithIntensity` 与 `renderFilmFrame` 共用的唯一实现）。 */
+interface ScaledFilmLook {
+  halation: number;
+  vignette: number;
+  grain: number;
+  intensity: number;
+}
+
+/**
+ * 把「基础观感量」乘上预设强度（v2.1.0 手术二）。
+ *
+ *   intensity 缺省 / 非法 → 1（`clampIntensityScale` 的口径：≤0 或非有限数回中性）；
+ *   halation = clamp(base · intensity, 0, HALATION_EFFECTIVE_MAX)
+ *   vignette = base <= 0 ? 0 : clamp(base · intensity, VIGNETTE_EV_MIN, VIGNETTE_EV_MAX)
+ *   grain    = round(clamp(base · intensity, 0, GRAIN_PIXEL_EFFECTIVE_MAX))
+ *
+ * ⚠️ 暗角的 0.15 下限只对"本来就有暗角"的卷生效：预设 `vignette = 0` 的恒等用例
+ * （v2.0.1 探针 S1.8/S1.31）不能被强度"无中生有"出一个暗角。
+ */
+function scaleFilmLook(
+  halation: number,
+  vignette: number,
+  grain: number,
+  intensity?: number,
+): ScaledFilmLook {
+  const scale = clampIntensityScale(intensity ?? INTENSITY_NEUTRAL);
+  const baseHalation = Number.isFinite(halation) ? Math.min(1, Math.max(0, halation)) : 0;
+  const baseVignette = Number.isFinite(vignette) ? Math.max(0, vignette) : 0;
+  const baseGrain = Number.isFinite(grain) ? Math.min(255, Math.max(0, grain)) : 0;
+  return {
+    halation: Math.min(HALATION_EFFECTIVE_MAX, Math.max(0, baseHalation * scale)),
+    vignette:
+      baseVignette <= 0
+        ? 0
+        : Math.min(VIGNETTE_EV_MAX, Math.max(VIGNETTE_EV_MIN, baseVignette * scale)),
+    grain: Math.round(Math.min(GRAIN_PIXEL_EFFECTIVE_MAX, Math.max(0, baseGrain * scale))),
+    intensity: scale,
+  };
+}
+
+/**
+ * 预设基础参数 + 强度 → **实际生效**的 `FilmLookParams`。
+ *
+ * `RenderedFilmFile.params` 用它回报（日志里看到的就是像素里真正用的数）；
+ * `renderFilmFrame` 内部也走同一个 `scaleFilmLook`，两处不会各算一套公式。
+ */
+export function filmLookWithIntensity(
+  params: FilmLookParams,
+  intensity?: number,
+): FilmLookParams {
+  const scaled = scaleFilmLook(params.halation, params.vignette, params.grain, intensity);
+  return {
+    halation: scaled.halation,
+    vignette: scaled.vignette,
+    grain: scaled.grain,
+    gamma: params.gamma,
+    mono: params.mono,
+    intensity: scaled.intensity,
   };
 }
 
@@ -197,9 +288,9 @@ export function hashNoise(cx: number, cy: number, seed: number): number {
 /**
  * 渲染一帧：原地改写 `rgba`（长度 = width × height × 4，RGBA8888）。
  *
- * 这是成片的**唯一**像素处理入口：LUT、暗角、颗粒在同一趟里完成，halation 只在
- * 主循环结束后对「已记录的高光像素」做一次 5×5 纯 R 扩散。任何阶段失败都直接抛错，
- * 由 `renderFilmToFile` / `processFilmPhoto` 兜底成声明式调色层 —— 不在这里吞异常。
+ * 这是成片的**唯一**像素处理入口：LUT、强度、暗角、颗粒在同一趟里完成，halation 只在
+ * 主循环结束后对「已记录的高光像素」做一次 5×5 纯 R 扩散。任何阶段失败都直接抛错
+ * （v2.1.0 起不再往声明式调色层兜底），由 `processFilmPhoto` 转成用户可见的失败提示。
  */
 export function renderFilmFrame(
   rgba: Uint8Array,
@@ -214,8 +305,10 @@ export function renderFilmFrame(
     throw new Error(`filmRender: 缓冲长度 ${rgba.length} 与 ${width}×${height}×4 不符`);
   }
 
-  const halation = Number.isFinite(options.halation) ? Math.min(1, Math.max(0, options.halation)) : 0;
-  const grain = Number.isFinite(options.grain) ? Math.min(255, Math.max(0, options.grain)) : 0;
+  // 强度（v2.1.0）：把 halation / 暗角 EV / 颗粒幅度一次算成「实际生效」的整型口径
+  const look = scaleFilmLook(options.halation, options.vignette, options.grain, options.intensity);
+  const halation = look.halation;
+  const grain = look.grain;
   const seed = Number.isFinite(options.seed) ? options.seed >>> 0 : 0;
   const progress = options.onProgress;
 
@@ -223,8 +316,13 @@ export function renderFilmFrame(
 
   const sampler: LutSampler | null = options.lut === null ? null : buildLutSampler(options.lut);
   const warp = buildGammaWarp(options.gamma ?? 1);
-  const vignette = buildVignetteTable(options.vignette);
+  const vignette = buildVignetteTable(look.vignette);
   const grainWeight = grain > 0 ? buildGrainWeightTable() : null;
+  /*
+   * 强度定点（Q16）：0 = 中性（100%），循环里整段跳过 —— 这是"缺省逐字节等于 v2.0.1"
+   * 的结构保证，不是靠浮点乘法碰巧算出同一个整数。
+   */
+  const intensityQ = look.intensity === INTENSITY_NEUTRAL ? 0 : Math.round(look.intensity * 65536);
   const radiusX = buildRadiusSquares(width);
   const radiusY = buildRadiusSquares(height);
 
@@ -374,6 +472,20 @@ export function renderFilmFrame(
         y0 = (x00 * ifg + x01 * fg + 128) >>> 8;
         y1 = (x10 * ifg + x11 * fg + 128) >>> 8;
         blue = (y0 * ifr + y1 * fr + 128) >>> 8;
+      }
+
+      // ②.5 预设强度（v2.1.0）：LUT 输出与「进 LUT 前的原图」插值/外推，全整型 Q16
+      /*
+       * `out = orig + round((lut − orig) · intensity)`，intensity 用 Q16 定点表示：
+       *   · 整型乘 + `+32768 >> 16` 恰好等价于 `Math.round`（含负数：算术右移 = floor，
+       *     floor(x + 0.5) 就是 JS 的 round 语义），单像素零分配；
+       *   · intensity = 1 时整段被 `intensityQ === 0` 跳过，输出与 v2.0.1 逐字节相同；
+       *   · intensity > 1 是外推（色相偏移/通道反差一起放大），< 1 是向原图回插。
+       */
+      if (intensityQ !== 0) {
+        red = clampByte(r0 + (((red - r0) * intensityQ + 32768) >> 16));
+        green = clampByte(g0 + (((green - g0) * intensityQ + 32768) >> 16));
+        blue = clampByte(b0 + (((blue - b0) * intensityQ + 32768) >> 16));
       }
 
       // ③ 暗角：16.16 定点乘数（平台恰为 1.0 时逐字节不变），257 项表，无 sqrt/pow

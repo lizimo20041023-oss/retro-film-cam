@@ -73,11 +73,13 @@ import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DEFAULT_FRAME_ID, FRAMES, NO_FRAME_ID, findFrameIndex, frameSkinSeedOf } from '../constants/frames';
 import { FRAME_VARIANTS, findFrameVariantIndex, wrapFrameVariant } from '../constants/frameVariants';
+import { PRESET_INTENSITY_OPTIONS } from '../constants/intensity';
 import { PRESETS } from '../constants/presets';
 import { UI_MONO, useTheme } from '../constants/theme';
 import type { Theme } from '../constants/theme';
 import { useSettings } from '../hooks/useSettings';
 import { useI18n } from '../i18n';
+import type { PresetIntensityTier } from '../types';
 import { computeFrameLayout, frameSourceOf } from '../utils/geometry';
 import { FilmCard, withAlpha } from './FilmCard';
 import { FrameSkin, paperCornerRadius } from './FrameSkin';
@@ -214,7 +216,9 @@ export const FilmDrawer = memo(function FilmDrawer({
     用户要的是"抽屉里切完，取景器里立刻看到同一个皮肤"（v1.7.0 的相框实时预览），
     所以两边必须读同一份数据。取景器那侧的接线在 `CameraScreen`，我这边只负责写。
   */
-  const { settings, setFrameVariant } = useSettings();
+  const { settings, setFrameVariant, setStockMode, setPresetIntensity } = useSettings();
+  /** v2.1.0：AUTO 底片是否在生效（整卷由场景引擎选卷与强度）。 */
+  const stockModeAuto = settings.stockMode === 'auto';
   const variantIndex = findFrameVariantIndex(settings.frameVariant);
   const variantLabel = t(FRAME_VARIANTS[variantIndex].labelKey);
   /*
@@ -363,11 +367,38 @@ export const FilmDrawer = memo(function FilmDrawer({
     [window.height],
   );
 
+  /**
+   * 选一卷 = 同时把底片模式切回 `manual`（v2.1.0）。
+   *
+   * 用户点了某一卷，就是明说"这一卷我自己定"；AUTO 的自动选卷必须立刻让位。
+   * 强度档不动 —— 自动底片与强度是两个独立旋钮，AUTO 模式下也可能只是底片自动。
+   * `CameraScreen` 的 `onSelect` 照旧负责落库、震动与关闭抽屉。
+   */
   const handleSelect = useCallback(
     (presetId: string) => {
+      setStockMode('manual');
       onSelect(presetId);
     },
-    [onSelect],
+    [onSelect, setStockMode],
+  );
+
+  /** 选 AUTO 智能底片：整卷交给场景引擎（选卷 + 强度都由它按画面决定），随后收起抽屉。 */
+  const handleSelectAutoStock = useCallback((): void => {
+    void Haptics.selectionAsync();
+    setStockMode('auto');
+    onClose();
+  }, [onClose, setStockMode]);
+
+  /** 强度换档：六档离散，轻点即落库（`settingsStore` 负责持久化与非法值回落）。 */
+  const handleSelectIntensity = useCallback(
+    (tier: PresetIntensityTier): void => {
+      if (tier === settings.presetIntensity) {
+        return;
+      }
+      void Haptics.selectionAsync();
+      setPresetIntensity(tier);
+    },
+    [settings.presetIntensity, setPresetIntensity],
   );
 
   /**
@@ -469,14 +500,14 @@ export const FilmDrawer = memo(function FilmDrawer({
           <FilmCard
             key={preset.id}
             preset={preset}
-            selected={index === presetIndex}
+            selected={index === presetIndex && !stockModeAuto}
             width={cardWidth}
             onSelect={handleSelect}
           />
         ))}
       </View>
     ),
-    [cardWidth, presetIndex, handleSelect],
+    [cardWidth, presetIndex, handleSelect, stockModeAuto],
   );
 
   if (!mounted) {
@@ -766,6 +797,87 @@ export const FilmDrawer = memo(function FilmDrawer({
             </Animated.View>
           </View>
 
+          {/*
+            v2.1.0 · 底片库顶部的两条新入口（用户 m03050）：
+            ① 「AUTO 智能底片」—— 整卷由场景引擎按拍摄画面自动选卷（+强度）；它不是
+               第十支卷，所以不做成网格卡片，而是一整行开关，选中时九卷网格不再点亮；
+            ② 「预设强度」六档分段条 —— subtle 35% / soft 65% / standard 100% /
+               rich 130%（默认）/ max 160% / AUTO。选卷不会重置强度档，AUTO 底片也
+               不吞强度档（两个旋钮独立：底片可以 AUTO、强度仍可手动）。
+            两块都**不另铺底色**，与相框行共用"只靠一道下边线分节"的规矩（见
+            `close` / `framePanel` 的注释：抽屉里第二块底色就是第二处接缝）。
+          */}
+          <View style={styles.stockPanel}>
+            <Pressable
+              style={[styles.autoCard, stockModeAuto ? styles.autoCardActive : null]}
+              onPress={handleSelectAutoStock}
+              accessibilityRole="button"
+              accessibilityState={{ selected: stockModeAuto }}
+              accessibilityLabel={t('film.stockMode.a11y', {
+                state: stockModeAuto ? t('film.card.selected') : '',
+              })}
+            >
+              <View style={styles.autoCardTexts}>
+                <Text style={styles.autoCardTitle} allowFontScaling={false}>
+                  {t('film.stockMode.auto')}
+                </Text>
+                <Text style={styles.autoCardHint} allowFontScaling={false} numberOfLines={1}>
+                  {stockModeAuto ? t('film.stockMode.auto.hint') : t('film.stockMode.manual.hint')}
+                </Text>
+              </View>
+              <View style={[styles.autoCardChip, stockModeAuto ? styles.autoCardChipActive : null]}>
+                <Text
+                  style={[styles.autoCardChipText, stockModeAuto ? styles.autoCardChipTextActive : null]}
+                  allowFontScaling={false}
+                >
+                  {stockModeAuto ? 'ON' : 'OFF'}
+                </Text>
+              </View>
+            </Pressable>
+
+            <Text
+              style={styles.intensityTitle}
+              allowFontScaling={false}
+              accessibilityRole="header"
+              accessibilityLabel={t('film.intensity.a11y', {
+                label:
+                  PRESET_INTENSITY_OPTIONS.find((option) => option.id === settings.presetIntensity)?.label ?? '',
+              })}
+            >
+              {t('film.intensity.title')}
+            </Text>
+            <Text style={styles.intensityHint} allowFontScaling={false}>
+              {settings.presetIntensity === 'auto'
+                ? t('film.intensity.auto.hint')
+                : t('film.intensity.hint')}
+            </Text>
+            <View style={styles.intensityRow}>
+              {PRESET_INTENSITY_OPTIONS.map((option) => {
+                const active = option.id === settings.presetIntensity;
+                return (
+                  <Pressable
+                    key={option.id}
+                    style={[styles.intensityCell, active ? styles.intensityCellActive : null]}
+                    onPress={() => handleSelectIntensity(option.id)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={`${option.label} ${option.percent}`}
+                  >
+                    <Text
+                      style={[
+                        styles.intensityPercent,
+                        active ? styles.intensityPercentActive : null,
+                      ]}
+                      allowFontScaling={false}
+                    >
+                      {option.percent}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+
           {grid}
         </ScrollView>
       </Animated.View>
@@ -1021,6 +1133,111 @@ function createStyles(theme: Theme) {
     },
     framePillTextActive: {
       color: ink.amberSoft,
+    },
+    /*
+      v2.1.0 · AUTO 底片入口 + 预设强度六档。与 `framePanel` 同一条规矩：不铺第二块
+      底色，只用一道下边线与胶卷网格分开；选中态一律**只改边框与文字颜色**（不染色板、
+      不铺满色块），避免在抽屉里再造一处"上下两块色"的分界。
+    */
+    stockPanel: {
+      paddingBottom: 12,
+      marginBottom: 12,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: ink.hairline,
+    },
+    autoCard: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 10,
+      paddingVertical: 9,
+      borderRadius: 8,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: ink.hairline,
+    },
+    autoCardActive: {
+      borderColor: withAlpha(ink.amber, 0.85),
+      backgroundColor: withAlpha(ink.amber, 0.1),
+    },
+    autoCardTexts: {
+      flex: 1,
+      minWidth: 0,
+      paddingRight: 8,
+    },
+    autoCardTitle: {
+      color: ink.amberSoft,
+      fontSize: 12,
+      letterSpacing: 1.2,
+      fontFamily: UI_MONO,
+    },
+    autoCardHint: {
+      marginTop: 2,
+      color: ink.paperDim,
+      fontSize: 9,
+      letterSpacing: 0.3,
+      lineHeight: 11,
+    },
+    autoCardChip: {
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      borderRadius: 4,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: ink.hairline,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    autoCardChipActive: {
+      borderColor: withAlpha(ink.amber, 0.85),
+      backgroundColor: withAlpha(ink.amber, 0.16),
+    },
+    autoCardChipText: {
+      fontFamily: UI_MONO,
+      fontSize: 9,
+      letterSpacing: 0.6,
+      color: ink.paperDim,
+    },
+    autoCardChipTextActive: {
+      color: ink.amber,
+    },
+    intensityTitle: {
+      marginTop: 14,
+      color: ink.amberSoft,
+      fontSize: 10,
+      letterSpacing: 1.6,
+      fontFamily: UI_MONO,
+    },
+    intensityHint: {
+      marginTop: 3,
+      color: ink.paperDim,
+      fontSize: 9,
+      letterSpacing: 0.3,
+      lineHeight: 11,
+    },
+    intensityRow: {
+      flexDirection: 'row',
+      gap: 6,
+      marginTop: 8,
+    },
+    intensityCell: {
+      flex: 1,
+      height: 40,
+      borderRadius: 8,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: ink.hairline,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    intensityCellActive: {
+      borderColor: withAlpha(ink.amber, 0.85),
+      backgroundColor: withAlpha(ink.amber, 0.14),
+    },
+    intensityPercent: {
+      fontFamily: UI_MONO,
+      fontSize: 11,
+      letterSpacing: 0.2,
+      color: ink.paperDim,
+    },
+    intensityPercentActive: {
+      color: ink.amber,
     },
     grid: {
       flexDirection: 'row',

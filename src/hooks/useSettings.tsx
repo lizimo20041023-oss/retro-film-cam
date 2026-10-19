@@ -21,6 +21,8 @@ import type {
   LocationMode,
   NoFrameAspect,
   PlaceDetail,
+  PresetIntensityTier,
+  StockMode,
   WatermarkAlign,
   WatermarkLayout,
   WatermarkZone,
@@ -45,6 +47,16 @@ export interface SettingsContextValue {
   setPlaceDetail: (next: PlaceDetail) => void;
   /** 颗粒档位。原来在取景器底部那条横向滑块上，现在归设置页管。 */
   setGrainLevel: (next: GrainLevelId) => void;
+  /**
+   * 底片模式（v2.1.0 手术三）：`'manual'` 用户挑卷 / `'auto'` 场景引擎按画面接管。
+   * 底片库里点某一卷 = 切回 `'manual'`；点顶部的 AUTO 入口 = 切到 `'auto'`。
+   */
+  setStockMode: (next: StockMode) => void;
+  /**
+   * 预设强度档位（v2.1.0 手术二）：六档，默认 `'rich'`（130%）。
+   * 取景器参数栏、底片库顶部、设置页三处共用这一个设置。
+   */
+  setPresetIntensity: (next: PresetIntensityTier) => void;
   /**
    * 地名用哪种语言印（`'auto'` = 跟界面语言走）。
    * 和 `setLocalePreference` 是两件事：这个是照片上那行字，不是界面。
@@ -139,6 +151,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     [update],
   );
 
+  const setStockMode = useCallback(
+    (next: StockMode) => update({ stockMode: next }),
+    [update],
+  );
+
+  const setPresetIntensity = useCallback(
+    (next: PresetIntensityTier) => update({ presetIntensity: next }),
+    [update],
+  );
+
   const setGeoLocale = useCallback(
     (next: GeoLocale | 'auto') => update({ geoLocale: next }),
     [update],
@@ -176,6 +198,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setAdaptiveGrade,
       setPlaceDetail,
       setGrainLevel,
+      setStockMode,
+      setPresetIntensity,
       setGeoLocale,
       setCaptureQuality,
       setFrameVariant,
@@ -193,6 +217,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setAdaptiveGrade,
       setPlaceDetail,
       setGrainLevel,
+      setStockMode,
+      setPresetIntensity,
       setGeoLocale,
       setCaptureQuality,
       setFrameVariant,
