@@ -75,6 +75,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [51. v2.0.0：真胶片 LUT 成片管线](#51-v200真胶片-lut-成片管线)
 - [52. v2.0.1：四组红线修正（LUT 重标定 + 单遍整型渲染 + 单次截图）](#52-v201四组红线修正lut-重标定--单遍整型渲染--单次截图)
 - [53. v2.1.0：三条手术（九卷 LUT 重烘焙 + 预设强度 6 档 + 场景智能匹配）](#53-v210三条手术九卷-lut-重烘焙--预设强度-6-档--场景智能匹配)
+- [54. v2.1.1：PNG 16-bit 解码器 + JPEG/PNG 双格式路由（紧急修复）](#54-v211png-16-bit-解码器--jpegpng-双格式路由紧急修复)
 
 ---
 
@@ -8038,6 +8039,128 @@ LUT 烘焙/优化脚本（`_v210_*`，以实际工作区为准）、`_v210_readm
 
 *怎么改*：偏差记录只增不删；修掉一条就改成"已修复"+版本号，不要直接删行——发布说明与
 `_verify_ipa_v210.py` 的核验口径都依赖这些如实声明。
+
+## 54. v2.1.1：PNG 16-bit 解码器 + JPEG/PNG 双格式路由（紧急修复）
+
+### 54.1 问题与根因
+
+v2.1.0 的成片像素管线只吃「8-bit、colorType 0/2/4/6」的 PNG：`decodePng()` 对
+`bitDepth !== 8` 直接抛 `png: 不支持的位深 N`，对 colorType 3（调色板）抛
+`不支持的 colorType 3`，且 JPEG 字节会被当成 PNG 签名错误直接失败。用户导入
+16-bit PNG（截图工具、专业照片导出、部分相册导入链路）或 JPEG 直入时，
+整条 LUT 像素管线抛错 → 「冲印失败」。v2.1.1 只修输入侧，不动 v2.1.0 的九卷 LUT、
+6 档强度、场景选卷与单遍整型渲染。
+
+### 54.2 解码器能力矩阵（`src/utils/pngCodec.ts`）
+
+| 能力 | v2.1.0 | v2.1.1 |
+| --- | --- | --- |
+| bitDepth | 8 | 1 / 2 / 4 / 8 / 16 |
+| colorType | 0 / 2 / 4 / 6 | 0 / 2 / 3 / 4 / 6（3 = PLTE + tRNS） |
+| 16bit | 抛错 | 大端两字节，`bpp = channels*2`、`stride = ceil(width*channels*2)` |
+| 低 bitDepth | 抛错 | MSB-first 解包后拉伸（1→0/255、2→×85、4→×17） |
+| tRNS | 未处理 | 调色板 alpha + 灰度/RGB 色键透明 |
+| 未知辅助块 | 跳过 | 跳过（iCCP/sRGB/gAMA/cHRM/eXIf/pHYs/tEXt/iTXt/zTXt/sBIT/tIME） |
+| 未知 critical 块 | 静默跳过 | 报错（`不支持的关键块`），块名先校验 4 个 ASCII 字母 |
+| 隔行 | 报错 | 报错（`不支持隔行扫描（interlace=1）`），与 v2.1.0 一致 |
+
+16→8 量化按契约定点式 `val8 = (val16 * 255 + 32768) >>> 16`。它不是严格四舍五入：
+65,536 个码里 127 个（0.19%）比 `round(v*255/65535)` 低 1，分界点 `33025 → 128`
+（严格四舍五入是 129）。这是 v2.1.1 契约指定的近似（与常用移位量化同量级误差），
+**不是 bug**；`quantize16` 的注释已如实写明，需要逐码精确时应改用
+`round(v*255/65535)`。
+
+### 54.3 不可信输入硬化（评审 P0，全部实装）
+
+v2.1.1 把解码器当「不可信输入服务」补齐了预算与校验（新增探针的 15 个错误用例覆盖）：
+
+1. **截断 deflate 流不再死循环**：`BitReader.ensure` 读不到 n 位时抛
+   `deflate 数据被截断（还差 N 位）`；旧实现静默补 0 → `table[0]` 恒命中字面量 →
+   内层 `for(;;)` 死循环 + 缓冲无限翻倍（Hermes 上直接卡死）。
+2. **解压输出硬上限**：`inflateZlib(..., maxSize)` 超过 IHDR 推出的 expected 立即抛错，
+   并限制 deflate 块数（`MAX_DEFLATE_BLOCKS = 1<<18`），解压炸弹无法顶到 GB 内存。
+3. **尺寸双重预算**：`MAX_PIXELS = 24,000,000` + `MAX_EXPECTED_BYTES = 128MB`
+   （旧实现只挡 2^31，20000×20000 的几十字节 IHDR 能预分配 1.6GB）。
+4. **IDAT 预拒绝**：`idatSize > expected + expected/8 + 1MB` 在 concat 之前报
+   `IDAT 尺寸异常`。
+5. **zlib 头校验**：压缩方法 8、CINFO ≤ 7、FCHECK 取模 31 校验、FDICT 拒绝。
+6. **CRC 与 adler32**：IHDR/PLTE/tRNS/IDAT/IEND 逐块 CRC 校验；解压后 adler32 比对。
+   元数据块 CRC 坏了按规范宽容跳过（不因缩略图元数据损坏丢照片）。
+7. **BTYPE=3 保留块** 明确报错，不再当 dynamic 块解析。
+
+### 54.4 成片管线：JPEG/PNG 双格式路由 + 原生 8-bit 兜底
+
+`src/utils/applyFilmRender.ts` 先按魔数分流（不认扩展名）：
+
+- PNG（`89 50 4E 47`）→ **纯 JS `decodePng`**（16-bit / 调色板 / 低位深全部走同一条路，
+  绝不先降到 8-bit）；
+- JPEG（`FF D8`）或其它容器 → **原生 8-bit 兜底**：`expo-image-manipulator` 读该文件、
+  `saveAsync({ format: SaveFormat.PNG, compress: 1 })` 无损重存为 8-bit PNG 后再
+  `decodePng`（不加 resize/crop，几何不变；临时文件读完即删）。
+
+`renderFilmToFile` 改为 async，`processFilmPhoto.ts:730` 唯一调用点已 await。
+真实的失败（LUT 缺失、解码失败、原生转码失败、写盘失败）仍原样 throw，
+`processFilmPhoto` 继续抛「真胶片像素管线失败，成片未保存：…」——v2.1.0 的
+「严禁静默回退声明式」原则不变。
+
+### 54.5 门禁与断言
+
+- `tsc build211`（18 个 BUILD_SOURCES，build211 供探针导入）EXIT 0；
+- **全仓 `tsc --noEmit -p tsconfig.json` EXIT 0**（v2.1.0 的构建门只编译子集，
+  漏掉 `processFilmPhoto.ts` 的 async 调用点；v2.1.1 把它单列为门 2）；
+- **主门 33 / 失败 0；总门 35 / 失败 0（含 grain/vignette 资产单验）；断言总数
+  51,995（31/33 门可解析）**；
+- 新增 `_probe_v211_png16.cjs` **330 条断言 0 失败**：11 张真实 PNG（RGBA16/RGB16
+  Paeth/Sub/Average + 辅助块、RGBA8 全 filter、调色板 8/4-bit + tRNS、灰度 1/2/4/8/16-bit、
+  灰度+alpha 16-bit）逐字节像素、15 个错误用例、九卷 × 两张 191×189 全 35,937 点 sRGB
+  立方体 18 次 `renderFilmFrame` + `encodePngRgba ↔ decodePng` 往返、彩卷两两平均
+  ΔE00 ≥ 24（实测 min 24.75）、hp/tx 门 ≥ 8（14.18）、九卷输出 FNV 互异。
+
+### 54.6 独立复核（非 JS 探针口径）
+
+- **Python 独立复算 ΔE00**（`_v211_de_verify.py`，57 项检查 56 PASS / 1 FAIL）：
+  745 样本标定口径精确复现 min **24.76** / mean **41.61**（与 v2.1.0 一致，图集未变）；
+  29 色块压力集 min **21.71**（<24，最弱 gd-200/cp-200）——低色度/极端明暗人口下
+  ≥24 不成立，是**人口差异**不是回归：九卷 PNG/SHA/33³ LUT 与 v2.1.0 逐字节一致，
+  16→8 量化对 29 色块只差 +0.032 ΔE。`acceptance_pass=true`、`swatch_gate_pass=false`。
+- **独立像素交叉核对**（`_v211_png16_visual/`，不进仓库）：17 张真实 PNG fixture
+  （IHDR 合法矩阵 15/15 全满）用独立 Python pnglib 解码，与仓库 `decodePng()` **17/17
+  逐字节一致**；`(v*255+32768)>>>16` 与「取高字节」在 16,383/65,536 个码上不同
+  （25%，单图 19.7%~28.1% 像素），证明 16-bit 不能按高字节截断。
+- 解码性能（V8 / Node 24，未含真机）：1800×1350 RGBA16（4.48MB PNG）约 0.2–0.3 s；
+  1800×1350 RGBA8 编码 26–33 ms、解码 14–19 ms（含 CRC/adler 前的 v2.1.0 基线）。
+
+### 54.7 偏差与已知限制（如实记录）
+
+- **原生兜底分支在当前调用图里是防御性代码**：`prepareLutSource` 无条件先存 PNG，
+  所以正常运行中 `sniffFilmSourceFormat` 基本恒为 `'png'`；JPEG 直入只在
+  「normalize 关 + 源图非 PNG + contain + 不 resize」路径才可能走到。保留它是
+  用户明确要求的「JPEG + PNG 双格式路由」，不可达不等于可删（接线错误时是最后兜底）。
+- **无真机/模拟器**：16-bit 解码与 async 调用链只有 Node 构建产物的探针证据，
+  真机性能与 ImageIO 行为未实测；这是本项目历版一贯的交付边界。
+- **pt-400 图集数据问题不在本版修**：独立可视化复核发现 pt-400 白场线性亮度 0.8745
+  （<0.90 声明）与中性轴 11 处 ≥2 级回勾（最大 6 级）——v2.1.0 重烘焙遗留的 LUT
+  标定问题，与 v2.1.1 解码器无关，本版不动图集，只在此记录。
+- `quantize16` 近似（见 54.2）与 IDAT CRC 校验会让「带坏 CRC 的 PNG」失败——
+  后者是 v2.1.1 有意的硬化（v2.1.0 会照单全收并解出错色）。
+
+### 54.8 发布指纹（v2.1.1）
+
+| 项 | 值 |
+| --- | --- |
+| commit | `ccf9a18e8217b2b90452ab2ef892eeb663b2c127`（4 files changed, 562 insertions(+), 87 deletions(-)） |
+| 远端 master | `e9f29d07f7d4646840b39daf249f494a46ff845c`（tree `3f494ea7338547e8baddf62429ace77af11f1e69`） |
+| CI run / job | `39250866343` / `118054032154` |
+| artifact | `12186191819`（10,977,670 B） |
+| 门禁断言 | 51,995（33 主门 / 35 总门，0 失败） |
+| bundle | 1,961,931 B，sha256 `d107cbcb72aa90ea4ae0ca3d1cc11d13b4d0156cab8db1e97a6cf0e6399c6fa2` |
+| IPA | 11,092,445 B，sha256 `b4b70ada95db8ad15a8cce5a18f2c2b3807d24a0df12306374a50932f8520aa9` |
+| Release | `417270148` / asset `656224598` |
+| 下载 | https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v2.1.1/FretroCam-v2.1.1-unsigned.ipa |
+
+版本链：v2.1.1 在 v2.1.0（`d116bab`，Release 417219723，IPA sha256
+`8dbede2e…`）之上只加输入侧解码与路由；九卷 LUT 图集（`bp-mt-2.1.0`，
+388,966 B / 518,628 base64 字符）、6 档强度、场景选卷、单遍整型像素管线全部保持。
 
 ---
 
