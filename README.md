@@ -7797,7 +7797,7 @@ photo(原图)
 
 | 用户要求（m03050） | 落地实现 | 位置 |
 | --- | --- | --- |
-| ① 九卷"一眼可辨"，彩卷两两平均 ΔE00 ≥22 | 九卷 LUT 逐卷色度重烘焙（tag `bp-mt-2.1.0`）；`chromaLock` 降到 0.10~0.22、染色 opacity 提到 0.18~0.34、静态 temperature/tint 写进九卷参数；彩卷两两平均 ΔE00 实测 min **@@V210_LUT_DELTAE_MIN@@** / mean **@@V210_LUT_DELTAE_MEAN@@** | `_v210_luts/` → `src/constants/lutAtlas.ts`、`src/constants/presets.ts` |
+| ① 九卷"一眼可辨"，彩卷两两平均 ΔE00 ≥22 | 九卷 LUT 逐卷色度重烘焙（tag `bp-mt-2.1.0`）；`chromaLock` 降到 0.10~0.22、染色 opacity 提到 0.18~0.34、静态 temperature/tint 写进九卷参数；彩卷两两平均 ΔE00 实测 min **24.76** / mean **41.61** | `_v210_luts/` → `src/constants/lutAtlas.ts`、`src/constants/presets.ts` |
 | ② 用户可控强度（6 档，含 AUTO） | `intensityScale` 全局乘数 0.35~1.60：≤1 向原图线性插值、>1 超频外推；UI 先落两处入口（底片库 / 取景器参数栏） | `src/constants/intensity.ts`、`src/utils/filmRender.ts`、UI |
 | ③ 场景智能选卷 / 自动强度 | `recommendStockAndIntensity(scene, {stockMode, manualStockId, intensityTier})`；6 大场景 + neutral；AUTO 强度 70%~145% 夹 | `src/utils/sceneMatch.ts`、`src/utils/processFilmPhoto.ts` |
 | ④ 严禁静默回退 | 成片 100% 走 LUT 像素管线：失败 **throw**（不再回退原图/声明式）；`renderMode` 恒 `'lut'`；声明式图层只活于取景器预览 | `src/utils/processFilmPhoto.ts`、`src/utils/applyFilmRender.ts` |
@@ -7828,9 +7828,9 @@ photo(原图)
   [0.10, 0.22]；染色 opacity [0.18, 0.34]；`vignette` [0.10, 0.28]；`temperature` 非零 6 卷、
   `tint` 非零 FJ-400 / CS-800T。
 - **LUT 二次烘焙**：九卷 LUT 逐卷色度重烘焙（tag `bp-mt-2.1.0`），亮度轴沿用 v2.0.1 标定
-  （`bp-mt-2.0.1`）不动；彩卷两两平均 ΔE00 目标 ≥22，实测 min **@@V210_LUT_DELTAE_MIN@@** /
-  mean **@@V210_LUT_DELTAE_MEAN@@**。图集：九卷 PNG 合计 **@@V210_LUT_ATLAS_BYTES@@ B**、
-  base64 **@@V210_LUT_ATLAS_B64_CHARS@@ 字符**（v2.0.1 为 406,830 B / 542,456 字符；格式不变：
+  （`bp-mt-2.0.1`）不动；彩卷两两平均 ΔE00 目标 ≥22，实测 min **24.76** /
+  mean **41.61**。图集：九卷 PNG 合计 **388,966 B**、
+  base64 **518,628 字符**（v2.0.1 为 406,830 B / 542,456 字符；格式不变：
   256×141 RGBA、`i=y*256+x` ↔ LUT 第 i 项、索引 `((r*33+g)*33+b)`、尾部 159 像素透明）。
 - `applyPresetIntensity(preset, scale)` 的 preset 侧夹取：temperature/tint ×scale 夹 ±0.30；
   sCurve ≤0.62；exposureLift ≤0.28；chromaLock ≤0.22；shadowCrush ≤0.12；染色 opacity ×scale
@@ -7948,7 +7948,7 @@ photo(原图)
   19 处（均由九卷参数重写导致）；`_probe_capture_quality.mjs` 按 throw 语义改期望；
   `_probe_v190_meter.cjs` 需 stub `./intensity` 导入。
 - 断言：v2.0.1 基线 **49,411**（同口径 49,193；另有 EXTRA 颗粒/暗角 2 项）；v2.1.0
-  目标 ≥49,411 + 新探针，实测 **@@V210_GATES_ASSERTIONS@@** 条，条件只增不减。
+  目标 ≥49,411 + 新探针，实测 **51,665** 条，条件只增不减。
 - 版本锚点：`app.json:5`（2.1.0）、`_probe_v188_sharp.cjs`、`_probe_v189_flash.cjs`、
   `_probe_v190_stocks.cjs`、`_probe_v190_wiring.cjs`、`_probe_v210_*.mjs`、
   `_verify_ipa_v210.py`（`EXPECTED_VERSION="2.1.0"` / `PREVIOUS_VERSION="2.0.1"`）。
@@ -7964,17 +7964,17 @@ photo(原图)
 
 | 项 | 值 |
 | --- | --- |
-| 本地提交 | `@@V210_COMMIT@@`（v2.1.0 特性，@@V210_COMMIT_STAT@@）+ 本文档回填提交（docs-only，`paths-ignore` 跳过 CI） |
-| 远端 master | `@@V210_REMOTE_HEAD@@`（Git Data API 推送，TREE MATCH，tree `@@V210_TREE@@`） |
-| CI run / job | run `@@V210_RUN_ID@@` / job `@@V210_JOB_ID@@`（macOS runner，build-ipa 全 success） |
-| artifact id / 体积 | `@@V210_ARTIFACT_ID@@` / **@@V210_ARTIFACT_BYTES@@ B**（`FretroCam-unsigned-ipa`） |
-| 九卷 LUT 二次烘焙 | 彩卷两两平均 ΔE00 min **@@V210_LUT_DELTAE_MIN@@** / mean **@@V210_LUT_DELTAE_MEAN@@**；图集 **@@V210_LUT_ATLAS_BYTES@@ B** / base64 **@@V210_LUT_ATLAS_B64_CHARS@@ 字符**；tag `bp-mt-2.1.0` |
-| 门禁 | **31 道 / 0 失败 / @@V210_GATES_ASSERTIONS@@ 条断言**（v2.0.1 基线 49,411，目标 ≥49,411 + 新探针，只增不减） |
-| expo export bundle | **@@V210_BUNDLE_BYTES@@ B**，sha256 `@@V210_BUNDLE_SHA256@@`（九卷图集见上；仍接受超预算，以 export 实测为准） |
-| IPA 文件 / 体积 / sha256 | `FretroCam-v2.1.0-unsigned.ipa` / **@@V210_IPA_BYTES@@ B** / `@@V210_IPA_SHA256@@` |
-| Release id / asset id | release `@@V210_RELEASE_ID@@`（tag `v2.1.0`）/ asset `@@V210_RELEASE_ASSET_ID@@` |
+| 本地提交 | `d116babd21727a1a8db34f74aeefe5280cb5517a`（v2.1.0 特性，26 files changed, 6548 insertions(+), 4826 deletions(-)）+ 本文档回填提交（docs-only，`paths-ignore` 跳过 CI） |
+| 远端 master | `3529dd4b06cee56b9c071a5667f1d9afdf5c6fbc`（Git Data API 推送，TREE MATCH，tree `22f5f521ca03acfb11838d0815615bbee4cd1127`） |
+| CI run / job | run `39245056552` / job `118034865018`（macOS runner，build-ipa 全 success） |
+| artifact id / 体积 | `12182429505` / **10,972,447 B**（`FretroCam-unsigned-ipa`） |
+| 九卷 LUT 二次烘焙 | 彩卷两两平均 ΔE00 min **24.76** / mean **41.61**；图集 **388,966 B** / base64 **518,628 字符**；tag `bp-mt-2.1.0` |
+| 门禁 | **31 道 / 0 失败 / 51,665 条断言**（v2.0.1 基线 49,411，目标 ≥49,411 + 新探针，只增不减） |
+| expo export bundle | **1,955,225 B**，sha256 `bb06f0fa9efeb58ab5d3c2995e508973995bd84bc9856fe16bc83dd3f8e844a4`（九卷图集见上；仍接受超预算，以 export 实测为准） |
+| IPA 文件 / 体积 / sha256 | `FretroCam-v2.1.0-unsigned.ipa` / **11,087,287 B** / `8dbede2ef3d5e9dcf0a50ba8bc0163cfc478590150507fad443bf6178de3520e` |
+| Release id / asset id | release `417219723`（tag `v2.1.0`）/ asset `656100757` |
 | IPA 回读核验 | `RESULT: OK` —— Info.plist `2.1.0` FOUND、九卷 LUT base64 唯一窗口逐卷命中、`LUT_ATLAS_CALIBRATION='bp-mt-2.1.0'` 命中、PRESENT 零 missing、ABSENT 全 0 |
-| 下载地址 | @@V210_IPA_URL@@ |
+| 下载地址 | https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v2.1.0/FretroCam-v2.1.0-unsigned.ipa |
 
 *怎么改*：发布后把实测值写进工作区根 `_v210_fill.json`（键为占位符去掉 `@@V210_` 前缀与后缀
 `@@`，如 `"IPA_URL": "https://github.com/…/releases/download/v2.1.0/FretroCam-v2.1.0-unsigned.ipa"`），
