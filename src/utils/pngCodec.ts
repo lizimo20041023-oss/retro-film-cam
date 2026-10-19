@@ -1,14 +1,17 @@
 /**
- * 纯 JS PNG 编解码（v2.0.0 · 真 LUT 成片管线用）。
+ * 纯 JS PNG 编解码（v2.0.0 引入，v2.1.1 解码器补齐规范全集）。
  *
  * 为什么需要它：成片走真 3D LUT 查表 —— 必须先把 view-shot 截出来的图**解成像素**，
  * 逐像素查表后再**编码回图片**交给第二遍合成。而本项目立了「不加依赖」的死规矩：
  * 没有 Skia / GL，`expo-image-manipulator` 只能缩放不能改像素。于是解码/编码都用
  * 纯 JS 写（Node / Hermes 同一份代码，可离线单测）。
  *
- * 支持范围（只覆盖本 App 自己会遇到的输入，不做通用 PNG 库）：
- *   - 8bit、非隔行、colorType 2(RGB) / 6(RGBA) / 0(灰度) / 4(灰度+透明)
- *   - 完整 zlib/deflate 解码：stored / fixed Huffman / dynamic Huffman 三种块
+ * 支持范围（v2.1.1 起解码器覆盖 PNG 规范全集；编码仍是本 App 专用的 RGBA 写出）：
+ *   - bitDepth 1/2/4/8/16 × colorType 0(灰度) / 2(RGB) / 3(调色板) / 4(灰度+透明) / 6(RGBA)
+ *   - PLTE 调色板 + tRNS（调色板 alpha；灰度/RGB 的 tRNS 色键透明）
+ *   - 16bit 样本按大端读，低 bitDepth 按 MSB-first 解包；统一量化成 RGBA8888
+ *   - 未知/辅助块（iCCP/sRGB/gAMA/cHRM/eXIf/pHYs/tEXt/iTXt/zTXt/sBIT/tIME…）安全跳过
+ *   - 隔行扫描（Adam7）明确报错；完整 zlib/deflate：stored / fixed / dynamic Huffman
  *   - 编码只输出 colorType 6 + stored（不压缩）deflate 块：
  *     文件会大（≈ 宽×高×4 + 每行 1 字节 filter），但省下 Hermes 上跑压缩字典的 CPU，
  *     而且 view-shot 拿到的本来就是 12MB 级临时文件，磁盘不是瓶颈。
@@ -75,6 +78,12 @@ class BitReader {
     while (this.bitCount < n && this.pos < this.buf.length) {
       this.bitBuf |= this.buf[this.pos++] << this.bitCount;
       this.bitCount += 8;
+    }
+    // v2.1.1 硬约束：读到流尾仍凑不齐 n 位 = deflate 数据被截断。
+    // 旧实现会静默返回 0 → peekBits 恒 0 → table[0] 命中字面量 → 内层 for(;;)
+    // 死循环 + ensureCapacity 无限翻倍（Hermes 上直接卡死到 jetsam）。
+    if (this.bitCount < n) {
+      throw new Error(`png: deflate 数据被截断（还差 ${n - this.bitCount} 位）`);
     }
   }
 
@@ -185,15 +194,31 @@ function getFixedTables(): { lit: Uint32Array; dist: Uint32Array } {
   return { lit: fixedLitTable, dist: fixedDistTable };
 }
 
-/** 解一段 zlib 流（跳过 2 字节头，忽略尾部 adler32）。 */
-function inflateZlib(src: Uint8Array, start: number, expectedSize: number): Uint8Array {
+/**
+ * 解一段 zlib 流（调用方已校验 2 字节头，尾部 adler32 由调用方比对）。
+ *
+ * `maxSize` 是**硬输出上限**：解码器面对不可信输入，输出字节数必须由 IHDR 推出来
+ * 的 expected 封顶，否则几 KB 的「解压炸弹」能在 Hermes 上顶到 GB 级内存。
+ * `MAX_DEFLATE_BLOCKS` 封住「海量空块」造成的 Huffman 表反复分配。
+ */
+const MAX_DEFLATE_BLOCKS = 1 << 18;
+
+function inflateZlib(
+  src: Uint8Array,
+  start: number,
+  expectedSize: number,
+  maxSize: number,
+): Uint8Array {
   const br = new BitReader(src, start);
-  let out = new Uint8Array(Math.max(1024, expectedSize));
+  let out = new Uint8Array(Math.min(Math.max(1024, expectedSize), maxSize));
   let outPos = 0;
 
   const ensureCapacity = (extra: number): void => {
+    if (outPos + extra > maxSize) {
+      throw new Error(`png: 解压输出超出预期（上限 ${maxSize} 字节）`);
+    }
     if (outPos + extra <= out.length) return;
-    const grown = new Uint8Array(Math.max(out.length * 2, outPos + extra + 1024));
+    const grown = new Uint8Array(Math.min(Math.max(out.length * 2, outPos + extra + 1024), maxSize));
     grown.set(out.subarray(0, outPos));
     out = grown;
   };
@@ -232,9 +257,15 @@ function inflateZlib(src: Uint8Array, start: number, expectedSize: number): Uint
   };
 
   let final = 0;
+  let blockCount = 0;
   while (final === 0) {
+    blockCount += 1;
+    if (blockCount > MAX_DEFLATE_BLOCKS) {
+      throw new Error(`png: deflate 块数超过上限 ${MAX_DEFLATE_BLOCKS}（数据异常）`);
+    }
     final = br.readBits(1);
     const type = br.readBits(2);
+    if (type === 3) throw new Error('png: deflate 保留块类型 BTYPE=3（数据非法）');
     if (type === 0) {
       br.alignToByte();
       const p = br.bytePos;
@@ -291,8 +322,226 @@ function paeth(a: number, b: number, c: number): number {
 }
 
 /**
- * 解码 PNG → RGBA。抛异常表示这份数据不是我们支持/能读的 PNG；
- * 调用方（成片管线）必须把它当成「LUT 这条路走不通」来兜底，而不是让用户丢照片。
+ * 16bit 样本（大端两字节）→ 8bit 的定点量化：
+ *   val8 = (val16 * 255 + 32768) >>> 16
+ * 这是 v2.1.1 契约指定的定点写法（v ≤ 65535 → 全程落在 32 位无符号整数内，
+ * Hermes / V8 都不会退化成浮点慢路径）。
+ *
+ * 诚实说明：它不是严格四舍五入——65536 个输入码里有 127 个（0.19%）比
+ * round(v*255/65535) 低 1，分界点 v=0x8101（33025）产出 128 而非 129。
+ * 这是有意的近似（与 libpng PNG_TRANSFORM 常用的移位量化同量级误差），
+ * 不是 bug；需要逐码精确时请用 round(v*255/65535)。
+ */
+function quantize16(hi: number, lo: number): number {
+  const v = (hi << 8) | lo;
+  return (v * 255 + 32768) >>> 16;
+}
+
+/**
+ * 低 bitDepth（1/2/4）样本解包：PNG 规定每个字节 **高位在前**（MSB-first），
+ * 行尾不足一字节的填充位直接忽略（调用方只按像素数取样本）。
+ */
+function packedSample(row: Uint8Array, index: number, bitDepth: number, mask: number): number {
+  const bit = index * bitDepth;
+  return (row[bit >>> 3] >>> (8 - bitDepth - (bit & 7))) & mask;
+}
+
+/**
+ * 去掉一行的 PNG filter。dst / prev 都按「行」传入：
+ *   - 普通格式：两块 stride 大小的复用缓冲（首行 prev 是全零缓冲，filter 2/3/4 的
+ *     up / upLeft 天然为 0，不需要 y === 0 的逐字节分支）；
+ *   - bpp = max(1, ceil(channels*bitDepth/8))：16bit RGBA=8、16bit RGB=6、
+ *     低 bitDepth 一律 1 —— 这是 PNG 规范对滤波「左邻字节距离」的定义。
+ */
+function unfilterRow(
+  raw: Uint8Array,
+  rawAt: number,
+  dst: Uint8Array,
+  dstAt: number,
+  prev: Uint8Array,
+  prevAt: number,
+  stride: number,
+  bpp: number,
+  filter: number,
+): void {
+  if (filter === 0) {
+    dst.set(raw.subarray(rawAt, rawAt + stride), dstAt);
+    return;
+  }
+  if (filter === 1) {
+    for (let x = 0; x < stride; x += 1) {
+      const left = x >= bpp ? dst[dstAt + x - bpp] : 0;
+      dst[dstAt + x] = (raw[rawAt + x] + left) & 0xff;
+    }
+    return;
+  }
+  if (filter === 2) {
+    for (let x = 0; x < stride; x += 1) {
+      dst[dstAt + x] = (raw[rawAt + x] + prev[prevAt + x]) & 0xff;
+    }
+    return;
+  }
+  if (filter !== 3 && filter !== 4) throw new Error(`png: 非法 filter ${filter}`);
+  for (let x = 0; x < stride; x += 1) {
+    const left = x >= bpp ? dst[dstAt + x - bpp] : 0;
+    const up = prev[prevAt + x];
+    const upLeft = x >= bpp ? prev[prevAt + x - bpp] : 0;
+    const predictor = filter === 3 ? (left + up) >> 1 : paeth(left, up, upLeft);
+    dst[dstAt + x] = (raw[rawAt + x] + predictor) & 0xff;
+  }
+}
+
+/**
+ * 一行原始样本 → RGBA8888。所有色彩类型/位深的展开规则集中在这里，
+ * 避免 decodePng 主循环被 5×5 的 switch 撑爆：
+ *   - 0 灰度：低位深先解包再 ×255/85/17；tRNS 色键比对**解包后的原始样本**；
+ *   - 2 RGB：tRNS 色键命中时 alpha=0；
+ *   - 3 调色板：索引越界立刻报错（数据损坏不能静默成黑块）；
+ *   - 4 灰度+A / 6 RGBA：16bit 逐样本量化。
+ */
+function writeRgbaRow(
+  row: Uint8Array,
+  rgba: Uint8Array,
+  width: number,
+  y: number,
+  colorType: number,
+  bitDepth: number,
+  palette: Uint8Array | null,
+  paletteAlpha: Uint8Array | null,
+  grayKey: number,
+  keyR: number,
+  keyG: number,
+  keyB: number,
+): void {
+  const out = y * width * 4;
+  const mask = (1 << bitDepth) - 1;
+  // 1→0/255、2→0/85/170/255、4→0..255 步长 17；8bit 以上走各自的直读分支。
+  const lowScale = bitDepth < 8 ? 255 / mask : 1;
+
+  if (colorType === 6) {
+    if (bitDepth === 16) {
+      for (let x = 0, p = 0, q = out; x < width; x += 1, p += 8, q += 4) {
+        rgba[q] = quantize16(row[p], row[p + 1]);
+        rgba[q + 1] = quantize16(row[p + 2], row[p + 3]);
+        rgba[q + 2] = quantize16(row[p + 4], row[p + 5]);
+        rgba[q + 3] = quantize16(row[p + 6], row[p + 7]);
+      }
+      return;
+    }
+    for (let x = 0, p = 0, q = out; x < width; x += 1, p += 4, q += 4) {
+      rgba[q] = row[p];
+      rgba[q + 1] = row[p + 1];
+      rgba[q + 2] = row[p + 2];
+      rgba[q + 3] = row[p + 3];
+    }
+    return;
+  }
+
+  if (colorType === 4) {
+    if (bitDepth === 16) {
+      for (let x = 0, p = 0, q = out; x < width; x += 1, p += 4, q += 4) {
+        const g = quantize16(row[p], row[p + 1]);
+        rgba[q] = g;
+        rgba[q + 1] = g;
+        rgba[q + 2] = g;
+        rgba[q + 3] = quantize16(row[p + 2], row[p + 3]);
+      }
+      return;
+    }
+    for (let x = 0, p = 0, q = out; x < width; x += 1, p += 2, q += 4) {
+      const g = row[p];
+      rgba[q] = g;
+      rgba[q + 1] = g;
+      rgba[q + 2] = g;
+      rgba[q + 3] = row[p + 1];
+    }
+    return;
+  }
+
+  if (colorType === 3) {
+    if (palette === null) throw new Error('png: colorType 3 缺少 PLTE 调色板');
+    const entries = palette.length / 3;
+    for (let x = 0, q = out; x < width; x += 1, q += 4) {
+      const idx = bitDepth === 8 ? row[x] : packedSample(row, x, bitDepth, mask);
+      if (idx >= entries) {
+        throw new Error(`png: 第 ${y} 行调色板索引 ${idx} 越界（PLTE 只有 ${entries} 项）`);
+      }
+      const p = idx * 3;
+      rgba[q] = palette[p];
+      rgba[q + 1] = palette[p + 1];
+      rgba[q + 2] = palette[p + 2];
+      rgba[q + 3] = paletteAlpha !== null && idx < paletteAlpha.length ? paletteAlpha[idx] : 255;
+    }
+    return;
+  }
+
+  if (colorType === 2) {
+    const hasKey = keyR >= 0 && keyG >= 0 && keyB >= 0;
+    if (bitDepth === 16) {
+      for (let x = 0, p = 0, q = out; x < width; x += 1, p += 6, q += 4) {
+        const r = (row[p] << 8) | row[p + 1];
+        const g = (row[p + 2] << 8) | row[p + 3];
+        const b = (row[p + 4] << 8) | row[p + 5];
+        rgba[q] = (r * 255 + 32768) >>> 16;
+        rgba[q + 1] = (g * 255 + 32768) >>> 16;
+        rgba[q + 2] = (b * 255 + 32768) >>> 16;
+        rgba[q + 3] = hasKey && r === keyR && g === keyG && b === keyB ? 0 : 255;
+      }
+      return;
+    }
+    for (let x = 0, p = 0, q = out; x < width; x += 1, p += 3, q += 4) {
+      const r = row[p];
+      const g = row[p + 1];
+      const b = row[p + 2];
+      rgba[q] = r;
+      rgba[q + 1] = g;
+      rgba[q + 2] = b;
+      rgba[q + 3] = hasKey && r === keyR && g === keyG && b === keyB ? 0 : 255;
+    }
+    return;
+  }
+
+  if (colorType === 0) {
+    const hasKey = grayKey >= 0;
+    if (bitDepth === 16) {
+      for (let x = 0, p = 0, q = out; x < width; x += 1, p += 2, q += 4) {
+        const v = (row[p] << 8) | row[p + 1];
+        const g = (v * 255 + 32768) >>> 16;
+        rgba[q] = g;
+        rgba[q + 1] = g;
+        rgba[q + 2] = g;
+        rgba[q + 3] = hasKey && v === grayKey ? 0 : 255;
+      }
+      return;
+    }
+    if (bitDepth === 8) {
+      for (let x = 0, q = out; x < width; x += 1, q += 4) {
+        const v = row[x];
+        rgba[q] = v;
+        rgba[q + 1] = v;
+        rgba[q + 2] = v;
+        rgba[q + 3] = hasKey && v === grayKey ? 0 : 255;
+      }
+      return;
+    }
+    for (let x = 0, q = out; x < width; x += 1, q += 4) {
+      const sample = packedSample(row, x, bitDepth, mask);
+      const v = sample * lowScale;
+      rgba[q] = v;
+      rgba[q + 1] = v;
+      rgba[q + 2] = v;
+      rgba[q + 3] = hasKey && sample === grayKey ? 0 : 255;
+    }
+    return;
+  }
+
+  throw new Error(`png: 不支持的 colorType ${colorType}`);
+}
+
+/**
+ * 解码 PNG → RGBA8888（透明通道缺失时填 255）。
+ * 抛异常表示这份数据不是我们支持/能读的 PNG；调用方（成片管线）必须把它当成
+ * 「LUT 这条路走不通」来兜底，而不是让用户丢照片。
  */
 export function decodePng(bytes: Uint8Array): PngImage {
   if (bytes.length < 8) throw new Error('png: 文件太短');
@@ -306,36 +555,161 @@ export function decodePng(bytes: Uint8Array): PngImage {
   let bitDepth = 0;
   let colorType = -1;
   let interlace = 0;
+  let sawIHDR = false;
+  let sawIEND = false;
+  let palette: Uint8Array | null = null;
+  let trns: Uint8Array | null = null;
   const idatParts: Uint8Array[] = [];
   let idatSize = 0;
 
-  while (off + 8 <= bytes.length) {
+  while (off < bytes.length) {
+    if (off + 8 > bytes.length) throw new Error('png: 块头被截断（文件不完整）');
+    for (let k = 0; k < 4; k += 1) {
+      const ch = bytes[off + 4 + k];
+      const isAlpha = (ch >= 0x41 && ch <= 0x5a) || (ch >= 0x61 && ch <= 0x7a);
+      if (!isAlpha) throw new Error(`png: 块类型非法（第 ${k + 1} 个字符不是 ASCII 字母）`);
+    }
     const length = readU32(bytes, off);
     const type = chunkType(bytes, off + 4);
     const dataAt = off + 8;
-    if (dataAt + length + 4 > bytes.length) throw new Error(`png: ${type} 块越界`);
+    if (length > bytes.length - dataAt - 4) {
+      throw new Error(
+        `png: ${type} 块越界（声明 ${length} 字节，文件只剩 ${Math.max(0, bytes.length - dataAt - 4)} 字节）`,
+      );
+    }
+    // —— v2.1.1 不可信输入硬化 ——
+    // 关键块（IHDR/PLTE/IDAT/IEND）与参与像素的 tRNS 必须 CRC 一致；纯元数据块
+    // CRC 坏了只影响元数据，按规范宽容跳过（不能因为一张缩略图元数据坏就丢照片）。
+    const critical = (bytes[off + 4] & 0x20) === 0;
+    if (critical || type === 'tRNS') {
+      const storedCrc = readU32(bytes, dataAt + length);
+      if (crc32(bytes, off + 4, dataAt + length) !== storedCrc) {
+        throw new Error(`png: ${type} 块 CRC 校验失败（文件损坏）`);
+      }
+    }
+    if (critical && type !== 'IHDR' && type !== 'PLTE' && type !== 'IDAT' && type !== 'IEND') {
+      throw new Error(`png: 不支持的关键块 ${type}（未知 critical chunk 不能安全跳过）`);
+    }
     if (type === 'IHDR') {
+      if (sawIHDR) throw new Error('png: 重复的 IHDR 块');
+      if (length !== 13) throw new Error(`png: IHDR 长度非法（${length}，应为 13）`);
       width = readU32(bytes, dataAt);
       height = readU32(bytes, dataAt + 4);
       bitDepth = bytes[dataAt + 8];
       colorType = bytes[dataAt + 9];
+      const compression = bytes[dataAt + 10];
+      const filterMethod = bytes[dataAt + 11];
       interlace = bytes[dataAt + 12];
+      if (compression !== 0) throw new Error(`png: 不支持的压缩方法 ${compression}`);
+      if (filterMethod !== 0) throw new Error(`png: 不支持的滤波方法 ${filterMethod}`);
+      if (interlace === 1) throw new Error('png: 不支持隔行扫描（interlace=1）');
+      if (interlace !== 0) throw new Error(`png: IHDR 的 interlace 非法 ${interlace}`);
+      sawIHDR = true;
+    } else if (type === 'PLTE') {
+      if (length === 0 || length % 3 !== 0 || length > 768) {
+        throw new Error(`png: PLTE 长度非法（${length}，应为 3..768 且是 3 的倍数）`);
+      }
+      palette = bytes.subarray(dataAt, dataAt + length);
+    } else if (type === 'tRNS') {
+      trns = bytes.subarray(dataAt, dataAt + length);
     } else if (type === 'IDAT') {
       idatParts.push(bytes.subarray(dataAt, dataAt + length));
       idatSize += length;
     } else if (type === 'IEND') {
+      sawIEND = true;
       break;
     }
+    // 其余辅助/未知块（iCCP/sRGB/gAMA/cHRM/eXIf/pHYs/tEXt/iTXt/zTXt/sBIT/tIME…）
+    // 一律安全跳过：解码只需要像素数据，不能因为不认识某个块就让整张照片失败。
     off = dataAt + length + 4;
   }
 
-  if (width <= 0 || height <= 0) throw new Error('png: IHDR 非法');
-  if (bitDepth !== 8) throw new Error(`png: 不支持的位深 ${bitDepth}`);
-  if (interlace !== 0) throw new Error('png: 不支持隔行扫描');
-  const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : colorType === 4 ? 2 : colorType === 0 ? 1 : -1;
-  if (channels < 0) throw new Error(`png: 不支持的 colorType ${colorType}`);
-  if (idatParts.length === 0) throw new Error('png: 缺少 IDAT');
+  if (!sawIHDR) throw new Error('png: 缺少 IHDR 块');
+  if (!sawIEND) throw new Error('png: 缺少 IEND 块（文件被截断）');
+  if (width <= 0 || height <= 0) throw new Error(`png: IHDR 宽高非法 ${width}×${height}`);
+  if (width > 0x7fffffff || height > 0x7fffffff) {
+    throw new Error(`png: IHDR 尺寸超出 PNG 规范上限 ${width}×${height}`);
+  }
 
+  let channels: number;
+  switch (colorType) {
+    case 0:
+      channels = 1;
+      break;
+    case 2:
+      channels = 3;
+      break;
+    case 3:
+      channels = 1;
+      break;
+    case 4:
+      channels = 2;
+      break;
+    case 6:
+      channels = 4;
+      break;
+    default:
+      throw new Error(`png: 不支持的 colorType ${colorType}`);
+  }
+
+  const depthOk =
+    bitDepth === 1 || bitDepth === 2 || bitDepth === 4 || bitDepth === 8 || bitDepth === 16;
+  if (!depthOk) throw new Error(`png: 不支持的位深 ${bitDepth}`);
+  if (colorType === 3) {
+    if (bitDepth === 16) throw new Error('png: 调色板 PNG 不支持 bitDepth 16（只允许 1/2/4/8）');
+    if (palette === null) throw new Error('png: colorType 3 缺少 PLTE 调色板');
+  } else if (colorType !== 0 && bitDepth !== 8 && bitDepth !== 16) {
+    throw new Error(`png: colorType ${colorType} 不支持 bitDepth ${bitDepth}（只允许 8/16）`);
+  }
+
+  // tRNS：调色板是 alpha 表；灰度/RGB 是色键。辅助块语义不合规时按「无透明」处理，
+  // 不让一个可选的透明块把整张图判死。
+  let grayKey = -1;
+  let keyR = -1;
+  let keyG = -1;
+  let keyB = -1;
+  let paletteAlpha: Uint8Array | null = null;
+  if (trns !== null) {
+    if (colorType === 3) {
+      paletteAlpha = trns;
+    } else if (colorType === 0 && trns.length >= 2) {
+      grayKey = (trns[0] << 8) | trns[1];
+    } else if (colorType === 2 && trns.length >= 6) {
+      keyR = (trns[0] << 8) | trns[1];
+      keyG = (trns[2] << 8) | trns[3];
+      keyB = (trns[4] << 8) | trns[5];
+    }
+  }
+
+  // v2.1.1 不可信输入硬化：尺寸上限按「像素数 + 解压字节」双重封顶。
+  // 旧实现只挡 2^31，20000×20000 的几十字节 IHDR 能穿过检查并预分配 1.6GB；
+  // Hermes 上这不是可 catch 的异常，是直接 jetsam。24MP 覆盖 iPhone 全系原图，
+  // 128MB 覆盖 4032×3024 的 16bit RGBA 中间图（97.5MB）。
+  const MAX_PIXELS = 24_000_000;
+  const MAX_EXPECTED_BYTES = 128 * 1024 * 1024;
+  if (width * height > MAX_PIXELS) {
+    throw new Error(`png: 像素数超过上限（${width}×${height}，上限 ${MAX_PIXELS} 像素）`);
+  }
+
+  const bitsPerPixel = channels * bitDepth;
+  const stride = Math.ceil((width * bitsPerPixel) / 8);
+  const bpp = Math.max(1, Math.ceil(bitsPerPixel / 8));
+  const expected = (stride + 1) * height;
+  const rgbaBytes = width * height * 4;
+  if (!Number.isSafeInteger(expected) || expected > MAX_EXPECTED_BYTES) {
+    throw new Error(`png: 解压后数据过大（${expected} 字节，上限 ${MAX_EXPECTED_BYTES}）`);
+  }
+  if (width * height > Math.floor(0x7fffffff / 4)) {
+    throw new Error(`png: 输出 RGBA 过大（${width}×${height}）`);
+  }
+
+  if (idatParts.length === 0) throw new Error('png: 缺少 IDAT');
+  // 合法 zlib 的压缩体积不会明显大于原始数据；在 concat 之前先排掉炸弹，
+  // 免得为一份恶意 IDAT 先分配巨量缓冲。
+  const idatLimit = expected + (expected >> 3) + (1 << 20);
+  if (idatSize > idatLimit) {
+    throw new Error(`png: IDAT 尺寸异常（${idatSize} 字节，解压后只需 ${expected} 字节）`);
+  }
   const idat = new Uint8Array(idatSize);
   let idatPos = 0;
   for (const part of idatParts) {
@@ -343,73 +717,55 @@ export function decodePng(bytes: Uint8Array): PngImage {
     idatPos += part.length;
   }
 
-  const stride = width * channels;
-  const expected = (stride + 1) * height;
-  // IDAT 开头是 zlib 头：CMF/FLG 两个字节（FDICT 置位时再跟 4 字节字典 id）。
+  // IDAT 开头是 zlib 头（CMF/FLG）：压缩方法 8、窗口 CINFO ≤ 7、FCHECK 必须过、
+  // FDICT 置位表示流依赖预设字典（我们无法提供）→ 直接报错，不静默吃错头。
   if (idat.length < 2) throw new Error('png: zlib 头缺失');
+  const cmf = idat[0];
   const flags = idat[1];
-  const dataStart = 2 + ((flags & 0x20) !== 0 ? 4 : 0);
-  const raw = inflateZlib(idat, dataStart, expected);
-  if (raw.length < expected) throw new Error('png: 解压后数据不足');
+  if ((cmf & 0x0f) !== 8) throw new Error(`png: zlib 压缩方法非法（${cmf & 0x0f}）`);
+  if (cmf >> 4 > 7) throw new Error(`png: zlib 窗口大小非法（CINFO=${cmf >> 4}）`);
+  if ((cmf * 256 + flags) % 31 !== 0) throw new Error('png: zlib 头 FCHECK 校验失败');
+  if ((flags & 0x20) !== 0) throw new Error('png: 不支持带预设字典（FDICT）的 zlib 流');
+  const raw = inflateZlib(idat, 2, expected, expected);
+  if (raw.length !== expected) {
+    throw new Error(`png: 解压后数据不足（需要 ${expected} 字节，实得 ${raw.length}）`);
+  }
+  // adler32 是压缩流的最终校验：损坏/篡改的 IDAT 不能悄悄解出一张错色照片。
+  if (adler32(raw, 0, raw.length) !== readU32(idat, idat.length - 4)) {
+    throw new Error('png: zlib adler32 校验失败（文件损坏）');
+  }
 
-  // 反滤波：filter 字节在每行开头，bpp = 每像素字节数。
-  const bpp = channels;
-  const pixels = new Uint8Array(stride * height);
+  // 逐行反滤波 + 展开：只保留两块 stride 的行缓冲，峰值内存 ≈ 解压后的 raw
+  // ((stride+1)*height) + 输出 RGBA (width*height*4)，不额外开 stride*height 大数组。
+  const rgba = new Uint8Array(rgbaBytes);
+  let prevRow = new Uint8Array(stride);
+  let curRow = new Uint8Array(stride);
   let rawPos = 0;
   for (let y = 0; y < height; y += 1) {
-    const filter = raw[rawPos++];
-    const rowStart = y * stride;
-    const prevRowStart = rowStart - stride;
-    for (let x = 0; x < stride; x += 1) {
-      const cur = raw[rawPos++];
-      const left = x >= bpp ? pixels[rowStart + x - bpp] : 0;
-      const up = y > 0 ? pixels[prevRowStart + x] : 0;
-      const upLeft = y > 0 && x >= bpp ? pixels[prevRowStart + x - bpp] : 0;
-      let value: number;
-      switch (filter) {
-        case 0:
-          value = cur;
-          break;
-        case 1:
-          value = cur + left;
-          break;
-        case 2:
-          value = cur + up;
-          break;
-        case 3:
-          value = cur + ((left + up) >> 1);
-          break;
-        case 4:
-          value = cur + paeth(left, up, upLeft);
-          break;
-        default:
-          throw new Error(`png: 非法 filter ${filter}`);
-      }
-      pixels[rowStart + x] = value & 0xff;
-    }
+    const filter = raw[rawPos];
+    rawPos += 1;
+    if (filter > 4) throw new Error(`png: 第 ${y} 行非法 filter ${filter}`);
+    unfilterRow(raw, rawPos, curRow, 0, prevRow, 0, stride, bpp, filter);
+    writeRgbaRow(
+      curRow,
+      rgba,
+      width,
+      y,
+      colorType,
+      bitDepth,
+      palette,
+      paletteAlpha,
+      grayKey,
+      keyR,
+      keyG,
+      keyB,
+    );
+    rawPos += stride;
+    const swap = prevRow;
+    prevRow = curRow;
+    curRow = swap;
   }
 
-  if (channels === 4) return { width, height, rgba: pixels };
-
-  const rgba = new Uint8Array(width * height * 4);
-  for (let i = 0, p = 0, q = 0; i < width * height; i += 1, p += channels, q += 4) {
-    if (channels === 3) {
-      rgba[q] = pixels[p];
-      rgba[q + 1] = pixels[p + 1];
-      rgba[q + 2] = pixels[p + 2];
-      rgba[q + 3] = 255;
-    } else if (channels === 2) {
-      rgba[q] = pixels[p];
-      rgba[q + 1] = pixels[p];
-      rgba[q + 2] = pixels[p];
-      rgba[q + 3] = pixels[p + 1];
-    } else {
-      rgba[q] = pixels[p];
-      rgba[q + 1] = pixels[p];
-      rgba[q + 2] = pixels[p];
-      rgba[q + 3] = 255;
-    }
-  }
   return { width, height, rgba };
 }
 

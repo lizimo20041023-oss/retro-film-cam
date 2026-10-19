@@ -722,7 +722,12 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
      * `>>> 0` 后再 & 掉符号位，保证跨平台落在 31 位非负整数。
      */
     const seed = ((capturedAt.getTime() ^ Date.now()) >>> 0) & 0x7fffffff;
-    const rendered = renderFilmToFile({
+    /*
+     * v2.1.1：`renderFilmToFile` 改为 async —— 输入若不是 PNG（JPEG / 其它容器），
+     * 它要先走一次原生「重存 8-bit PNG」的兜底转码，所以这里必须 await。
+     * 失败语义不变：它内部不 catch，异常会直接落到下面这个 catch 里抛给调用方。
+     */
+    const rendered = await renderFilmToFile({
       sourceUri: lutSourceUri,
       stockId: capturePreset.id,
       preset: {
