@@ -567,11 +567,12 @@ function FilmCompositorImpl({
   const overlayUri = nonEmptyUri(stage.overlayUri);
   const overlayOpacity = overlayOpacityOf(stage.overlayOpacity);
   /*
-   * v2.0.0 真胶片管线 · pass2（`stageMode: 'final'` + `lutUri`）：
-   * `lutUri` 是已经在 JS 里查过 33³ LUT、并加了 halation / 颗粒 / 暗角的"已洗好照片"。
+   * v2.0.1 真胶片管线 · 单次截图（`lutUri`）：
+   * `lutUri` 是已经在 JS 里查过 33³ LUT、并加了 halation / 颗粒 / 暗角 / 场景 gamma 的
+   * "已洗好照片"（由 `ImageManipulator` 产出 PNG 再跑像素管线，长边 1440~1800）。
    * 有它时本组件要退化成**只画相框和水印**：
-   *   ① 照片层用 `lutUri` 代替 `rawUri`（像素尺寸与窗口 1:1，不会二次插值）；
-   *   ② 不再叠 `overlayUri` —— 重曝在 pass1 已经合成并一起过了 LUT，再叠一次是双份；
+   *   ① 照片层用 `lutUri` 代替 `rawUri`（以 `cover` 铺满窗口，成片画布仍是 2048/3024/4032）；
+   *   ② 不再叠 `overlayUri` —— 重曝在像素渲染前已经合成并一起过了 LUT，再叠一次是双份；
    *   ③ 不再渲染 `<FilmLookLayers>` —— 调色 / 纹理 / 暗角全部烘进像素，再叠一遍会加倍。
    * `lutUri` 为空时整条路径与 v1.9.x 逐像素相同（声明式调色层的兜底路径）。
    */

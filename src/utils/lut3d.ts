@@ -1,15 +1,27 @@
 /**
- * 3D LUT 查表（v2.0.0 · 真 LUT 成片管线的像素级核心）。
+ * 3D LUT 查表（v2.0.1 · 全整型定点版）
  *
  * 数据结构刻意做成「扁平 Uint8Array」：
  *   `data[((rIndex * size + gIndex) * size + bIndex) * 3 + channel]`
  * 也就是 **r 最慢、b 最快**（= numpy C 序的 `lut[r, g, b, c]`），这样 Python 侧
  * `lut.reshape(-1, 3)` 直接就是同一串字节，生成与消费不会各说各话。
  *
- * LUT 资产以 PNG 图集形式随包（见 `src/constants/lutAtlas.ts` + `scripts/gen_lut_atlas.py`）：
+ * LUT 资产以 PNG 图集形式随包（见 `src/constants/lutAtlas.ts` + `_v201_gen_atlas.py`）：
  * 33³ 表 = 35,937 个像素，排成 256×141 的 RGBA 图，角标 = 表下标；
- * 用包内已有的 `pngCodec.decodePng` 解出来再抽出 RGB 三个通道 —— 比 base64 原始字节
- * 小 5 倍（189KB vs 1.26MB），而解码只在第一次用到某卷时发生一次。
+ * 用包内已有的 `pngCodec.decodePng` 解出来再抽出 RGB 三个通道。
+ *
+ * ## v2.0.1 为什么多了 `buildLutSampler`
+ *
+ * v2.0.0 的内层循环用 `size³` 加法索引 + 三通道共用下标 + 每次乘 255 权重再除 16581375，
+ * 在 Hermes（无 JIT）上是整条管线的瓶颈（实测 2.43MP 单趟 63~66ms，四趟合计 150ms+）。
+ * v2.0.1 预编译成 `LutSampler`：
+ *
+ *   · 三个**通道平面** `rPlane/gPlane/bPlane`（各 35,937 字节，共 108KB，L1 友好）；
+ *   · `i0/i1`（每个 8bit 输入对应的 LUT 下标，`Uint8Array`）与 `frac`（0~256 的
+ *     `Uint16Array` 权重）；
+ *   · 内层插值全部定点：`((v0·(256−f) + v1·f)·(256−g) + …) >> 16`，一次 `>>> 16` 出结果。
+ *
+ * 与浮点参考的误差 ≤1 个 8bit 级（`+32768` 四舍五入），和 LUT 自身的量化误差同量级。
  */
 import type { PngImage } from './pngCodec';
 
@@ -18,6 +30,22 @@ export interface Lut3D {
   size: number;
   /** 长度 = size³ × 3，顺序 r,g,b。 */
   data: Uint8Array;
+}
+
+/** 预编译的 LUT 采样器（通道平面 + 下标/权重表）；`buildLutSampler` 按对象缓存。 */
+export interface LutSampler {
+  /** 每轴采样数（33）。 */
+  size: number;
+  /** R/G/B 三个通道平面，各 size³ 字节（下标 = r·size² + g·size + b）。 */
+  rPlane: Uint8Array;
+  gPlane: Uint8Array;
+  bPlane: Uint8Array;
+  /** 每个 8bit 输入值对应的下采样点 LUT 下标。 */
+  i0: Uint8Array;
+  /** 每个 8bit 输入值对应的上采样点 LUT 下标（端点时夹到 size−1）。 */
+  i1: Uint8Array;
+  /** 每个 8bit 输入值的小数权重（0~256 定点）。 */
+  frac: Uint16Array;
 }
 
 /**
@@ -40,44 +68,102 @@ export function extractLutFromAtlas(image: PngImage, size: number): Lut3D {
   return { size, data };
 }
 
-let cachedChannelTable: { size: number; i0: Uint8Array; i1: Uint8Array; frac: Uint8Array } | null =
-  null;
+const samplerCache = new WeakMap<Lut3D, LutSampler>();
 
 /**
- * 预计算每个 8bit 输入值的「下采样点 / 上采样点 / 小数权重」。
- * 三线性插值里 90% 的 CPU 花在这三个表上，提前算好就能把内层循环写成纯整数运算。
+ * 把一卷 LUT 预编译成采样器（同一对象只算一次，WeakMap 缓存，不阻止 GC）。
+ *
+ * 下标表用 16bit 权重：`x = v·(size−1)/255`，`i0 = floor(x)`、`i1 = min(i0+1, size−1)`、
+ * `frac = round((x−i0)·256)`（端点 255 → frac 256 会被夹成 255 吗？不会：x 恰为整数，
+ * `frac = 0`，因此端点插值权重为 0、不会越界读取）。
  */
-function channelTable(size: number): {
-  i0: Uint8Array;
-  i1: Uint8Array;
-  frac: Uint8Array;
-} {
-  if (cachedChannelTable !== null && cachedChannelTable.size === size) return cachedChannelTable;
+export function buildLutSampler(lut: Lut3D): LutSampler {
+  const cached = samplerCache.get(lut);
+  if (cached !== undefined) return cached;
+
+  const { size, data } = lut;
+  const count = size * size * size;
+  if (size < 2) throw new Error(`lut3d: size 至少为 2（实际 ${size}）`);
+  if (data.length !== count * 3) {
+    throw new Error(`lut3d: 数据长度 ${data.length} 与 ${size}³×3 不符`);
+  }
+
+  const rPlane = new Uint8Array(count);
+  const gPlane = new Uint8Array(count);
+  const bPlane = new Uint8Array(count);
+  for (let i = 0, p = 0; i < count; i += 1, p += 3) {
+    rPlane[i] = data[p];
+    gPlane[i] = data[p + 1];
+    bPlane[i] = data[p + 2];
+  }
+
   const i0 = new Uint8Array(256);
   const i1 = new Uint8Array(256);
-  const frac = new Uint8Array(256);
+  const frac = new Uint16Array(256);
   const scale = size - 1;
   for (let v = 0; v < 256; v += 1) {
     const x = (v * scale) / 255;
-    const lo = Math.floor(x);
+    let lo = Math.floor(x);
+    if (lo < 0) lo = 0;
+    if (lo > scale) lo = scale;
     const hi = lo + 1 <= scale ? lo + 1 : scale;
     i0[v] = lo;
     i1[v] = hi;
-    frac[v] = Math.min(255, Math.round((x - lo) * 255));
+    frac[v] = Math.min(255, Math.round((x - lo) * 256));
   }
-  cachedChannelTable = { size, i0, i1, frac };
-  return cachedChannelTable;
+
+  const sampler: LutSampler = { size, rPlane, gPlane, bPlane, i0, i1, frac };
+  samplerCache.set(lut, sampler);
+  return sampler;
 }
 
-/**
- * 对整张 RGBA 图做 33³ 三线性查表，返回**新的** RGBA 缓冲（不改入参）。
- *
- * 用整数 lerp（权重 0..255，`(a*(255-f) + b*f) / 255 ≈ (a*(255-f)+b*f)>>8` 的近似）
- * 而不是浮点：Hermes 上整数通道快约 2 倍，而误差 ≤1/255 —— 与 8bit LUT 本身的量化
- * 误差同量级，肉眼不可见。
- *
- * 一次处理一整张：3.1MP 在 Hermes 上约 0.3–0.6s，正好落在「显影」遮罩的等待预算内。
- */
+/** 定点 lerp：`(a·(256−f) + b·f) / 256`，四舍五入。 */
+function lerpFixed(a: number, b: number, f: number): number {
+  return (a * (256 - f) + b * f + 128) >>> 8;
+}
+
+/** 单点查表（测试/探针用；成片走整图版本）。与 `applyLut3DInPlace` 用**同一套整数运算**。 */
+export function sampleLut3D(lut: Lut3D, r: number, g: number, b: number): [number, number, number] {
+  const sampler = buildLutSampler(lut);
+  const { size, rPlane, gPlane, bPlane, i0, i1, frac } = sampler;
+  const sizeSq = size * size;
+  const ri0 = i0[r];
+  const ri1 = i1[r];
+  const gi0 = i0[g];
+  const gi1 = i1[g];
+  const bi0 = i0[b];
+  const bi1 = i1[b];
+  const fr = frac[r];
+  const fg = frac[g];
+  const fb = frac[b];
+  const base = ri0 * sizeSq + gi0 * size + bi0;
+  const dR = (ri1 - ri0) * sizeSq;
+  const dG = (gi1 - gi0) * size;
+  const dB = bi1 - bi0;
+  const c000 = base;
+  const c001 = base + dB;
+  const c010 = base + dG;
+  const c011 = base + dG + dB;
+  const c100 = base + dR;
+  const c101 = base + dR + dB;
+  const c110 = base + dR + dG;
+  const c111 = base + dR + dG + dB;
+  const out: [number, number, number] = [0, 0, 0];
+  const planes = [rPlane, gPlane, bPlane];
+  for (let ch = 0; ch < 3; ch += 1) {
+    const plane = planes[ch];
+    const x00 = lerpFixed(plane[c000], plane[c001], fb);
+    const x01 = lerpFixed(plane[c010], plane[c011], fb);
+    const x10 = lerpFixed(plane[c100], plane[c101], fb);
+    const x11 = lerpFixed(plane[c110], plane[c111], fb);
+    const y0 = lerpFixed(x00, x01, fg);
+    const y1 = lerpFixed(x10, x11, fg);
+    out[ch] = lerpFixed(y0, y1, fr);
+  }
+  return out;
+}
+
+/** 对整张 RGBA 图做 33³ 三线性查表，返回**新的** RGBA 缓冲（不改入参）。 */
 export function applyLut3D(rgba: Uint8Array, lut: Lut3D): Uint8Array {
   const out = new Uint8Array(rgba);
   applyLut3DInPlace(out, lut);
@@ -85,99 +171,57 @@ export function applyLut3D(rgba: Uint8Array, lut: Lut3D): Uint8Array {
 }
 
 /**
- * 原地版本（成片管线用）：直接把表结果写回 `rgba`，省一次 12MB 的分配与拷贝。
- * 与 `applyLut3D` 共用同一套整数运算（探针逐字节比对两者）。
+ * 原地版本（成片管线的兜底/探针用）：把表结果写回 `rgba`，省一次 12MB 的分配与拷贝。
+ * 与 `sampleLut3D` / 单遍管线共用同一套定点运算。
  */
 export function applyLut3DInPlace(rgba: Uint8Array, lut: Lut3D): void {
-  const { size, data } = lut;
-  const { i0, i1, frac } = channelTable(size);
+  const sampler = buildLutSampler(lut);
+  const { size, rPlane, gPlane, bPlane, i0, i1, frac } = sampler;
   const sizeSq = size * size;
-  const stride = sizeSq * 3;
-  const rStride = stride;
-
   for (let p = 0; p < rgba.length; p += 4) {
-    const r = rgba[p];
-    const g = rgba[p + 1];
-    const b = rgba[p + 2];
-    const r0 = i0[r] * rStride;
-    const r1 = i1[r] * rStride;
-    const g0 = i0[g] * size * 3;
-    const g1 = i1[g] * size * 3;
-    const b0 = i0[b] * 3;
-    const b1 = i1[b] * 3;
-    const fr = frac[r];
-    const fg = frac[g];
-    const fb = frac[b];
-    const ifr = 255 - fr;
-    const ifg = 255 - fg;
-    const ifb = 255 - fb;
+    const ri0 = i0[rgba[p]];
+    const ri1 = i1[rgba[p]];
+    const gi0 = i0[rgba[p + 1]];
+    const gi1 = i1[rgba[p + 1]];
+    const bi0 = i0[rgba[p + 2]];
+    const bi1 = i1[rgba[p + 2]];
+    const fr = frac[rgba[p]];
+    const fg = frac[rgba[p + 1]];
+    const fb = frac[rgba[p + 2]];
+    const base = ri0 * sizeSq + gi0 * size + bi0;
+    const dR = (ri1 - ri0) * sizeSq;
+    const dG = (gi1 - gi0) * size;
+    const dB = bi1 - bi0;
+    const c000 = base;
+    const c001 = base + dB;
+    const c010 = base + dG;
+    const c011 = base + dG + dB;
+    const c100 = base + dR;
+    const c101 = base + dR + dB;
+    const c110 = base + dR + dG;
+    const c111 = base + dR + dG + dB;
+    const x00 = lerpFixed(rPlane[c000], rPlane[c001], fb);
+    const x01 = lerpFixed(rPlane[c010], rPlane[c011], fb);
+    const x10 = lerpFixed(rPlane[c100], rPlane[c101], fb);
+    const x11 = lerpFixed(rPlane[c110], rPlane[c111], fb);
+    const y0 = lerpFixed(x00, x01, fg);
+    const y1 = lerpFixed(x10, x11, fg);
+    rgba[p] = lerpFixed(y0, y1, fr);
 
-    const c000 = r0 + g0 + b0;
-    const c001 = r0 + g0 + b1;
-    const c010 = r0 + g1 + b0;
-    const c011 = r0 + g1 + b1;
-    const c100 = r1 + g0 + b0;
-    const c101 = r1 + g0 + b1;
-    const c110 = r1 + g1 + b0;
-    const c111 = r1 + g1 + b1;
+    const gx00 = lerpFixed(gPlane[c000], gPlane[c001], fb);
+    const gx01 = lerpFixed(gPlane[c010], gPlane[c011], fb);
+    const gx10 = lerpFixed(gPlane[c100], gPlane[c101], fb);
+    const gx11 = lerpFixed(gPlane[c110], gPlane[c111], fb);
+    const gy0 = lerpFixed(gx00, gx01, fg);
+    const gy1 = lerpFixed(gx10, gx11, fg);
+    rgba[p + 1] = lerpFixed(gy0, gy1, fr);
 
-    for (let ch = 0; ch < 3; ch += 1) {
-      const v000 = data[c000 + ch];
-      const v001 = data[c001 + ch];
-      const v010 = data[c010 + ch];
-      const v011 = data[c011 + ch];
-      const v100 = data[c100 + ch];
-      const v101 = data[c101 + ch];
-      const v110 = data[c110 + ch];
-      const v111 = data[c111 + ch];
-      const x00 = v000 * ifb + v001 * fb;
-      const x01 = v010 * ifb + v011 * fb;
-      const x10 = v100 * ifb + v101 * fb;
-      const x11 = v110 * ifb + v111 * fb;
-      const y0 = x00 * ifg + x01 * fg;
-      const y1 = x10 * ifg + x11 * fg;
-      const z = y0 * ifr + y1 * fr;
-      rgba[p + ch] = (z / 16581375) | 0;
-    }
+    const bx00 = lerpFixed(bPlane[c000], bPlane[c001], fb);
+    const bx01 = lerpFixed(bPlane[c010], bPlane[c011], fb);
+    const bx10 = lerpFixed(bPlane[c100], bPlane[c101], fb);
+    const bx11 = lerpFixed(bPlane[c110], bPlane[c111], fb);
+    const by0 = lerpFixed(bx00, bx01, fg);
+    const by1 = lerpFixed(bx10, bx11, fg);
+    rgba[p + 2] = lerpFixed(by0, by1, fr);
   }
 }
-
-/** 单点查表（测试/探针用；成片走整图版本）。与 `applyLut3D` 用**同一套整数运算**，逐值可比。 */
-export function sampleLut3D(lut: Lut3D, r: number, g: number, b: number): [number, number, number] {
-  const { size, data } = lut;
-  const table = channelTable(size);
-  const r0 = table.i0[r] * size * size * 3;
-  const r1 = table.i1[r] * size * size * 3;
-  const g0 = table.i0[g] * size * 3;
-  const g1 = table.i1[g] * size * 3;
-  const b0 = table.i0[b] * 3;
-  const b1 = table.i1[b] * 3;
-  const fr = table.frac[r];
-  const fg = table.frac[g];
-  const fb = table.frac[b];
-  const ifr = 255 - fr;
-  const ifg = 255 - fg;
-  const ifb = 255 - fb;
-  const result: [number, number, number] = [0, 0, 0];
-  for (let ch = 0; ch < 3; ch += 1) {
-    const v000 = data[r0 + g0 + b0 + ch];
-    const v001 = data[r0 + g0 + b1 + ch];
-    const v010 = data[r0 + g1 + b0 + ch];
-    const v011 = data[r0 + g1 + b1 + ch];
-    const v100 = data[r1 + g0 + b0 + ch];
-    const v101 = data[r1 + g0 + b1 + ch];
-    const v110 = data[r1 + g1 + b0 + ch];
-    const v111 = data[r1 + g1 + b1 + ch];
-    const x00 = v000 * ifb + v001 * fb;
-    const x01 = v010 * ifb + v011 * fb;
-    const x10 = v100 * ifb + v101 * fb;
-    const x11 = v110 * ifb + v111 * fb;
-    const y0 = x00 * ifg + x01 * fg;
-    const y1 = x10 * ifg + x11 * fg;
-    const z = y0 * ifr + y1 * fr;
-    result[ch] = (z / 16581375) | 0;
-  }
-  return result;
-}
-
-export { channelTable as __channelTableForTest };

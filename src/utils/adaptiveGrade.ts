@@ -53,6 +53,7 @@
  * buildGradeLayers 的层表与静态预设逐字节一致。
  */
 import type { ResolvedColorGrade, ResolvedFilmPreset, SceneStats } from '../types';
+import { SCENE_GAMMA_MAX, SCENE_GAMMA_MIN, SCENE_GAMMA_NEUTRAL } from '../constants/filmRender';
 
 /**
  * 四场景分类。`neutral` 是兜底类别，所有增量 0、密度/分离度 1。
@@ -304,4 +305,36 @@ export function applyAdaptiveColor(
     temperature: round4(clamp(color.temperature + plan.whiteBalanceShift, -1, 1)),
     tint: round4(clamp(color.tint + plan.tintShift, -1, 1)),
   };
+}
+
+/**
+ * 场景自适应 **输入 gamma**（v2.0.1 新增，只服务真胶片 LUT 管线）。
+ *
+ * 用户红线（m02361）一③：LUT 标定只负责「静态中间调托起 +12%~+18%」，
+ * **逆光 / 暗光** 还要再自动提亮一次 LUT 的输入暗部与中间调 —— 且只动输入曲线，
+ * 不动白场（端点固定 0→0、1→1），所以「黑位沉底但暗部有细节」不会被破坏。
+ *
+ * 物理含义：gamma < 1 = 把输入暗部整体抬到更高的 LUT 采样点（提亮），
+ * gamma > 1 = 把中间调往低采样点压（略收，防高调场景过曝）。输出范围夹 [0.88, 1.06]：
+ * 比 0.88 更猛会把夜景噪点抬成灰雾，比 1.06 更陡会吃掉高光层次。
+ *
+ * 退化契约与 `planAdaptiveGrade` 一致：scene 为 null / samples < MIN_SAMPLES → 中性 1。
+ * 返回值 round3，探针可以直接按数字核对。
+ */
+export function sceneGamma(scene: SceneStats | null | undefined): number {
+  if (scene === null || scene === undefined) return SCENE_GAMMA_NEUTRAL;
+  if (!Number.isFinite(scene.samples) || scene.samples < MIN_SAMPLES) return SCENE_GAMMA_NEUTRAL;
+
+  // ① 主判据：平均亮度偏离中灰 0.5 越多，托起/收紧越明显。
+  let gamma = 1 + (scene.meanLuma - 0.5) * 0.55;
+  // ② 暗部占主导（夜景、室内）再多托一点，保证「黑位沉底但暗部有细节」。
+  if (scene.shadowShare > 0.55) gamma -= 0.03;
+  // ③ 逆光：高光与暗部同时多（大光比），中间调容易被两头挤掉，托起来。
+  if (scene.highlightShare > 0.3 && scene.shadowShare > 0.3) gamma -= 0.04;
+  // ④ 高调场景（雪地、逆光天空）优先保高光，略收中间调。
+  if (scene.highlightShare > 0.45) gamma += 0.02;
+  // ⑤ 硬反差场景同样托暗部，避免 S 曲线之后暗部糊成一团。
+  if (scene.contrast > 0.3) gamma -= 0.02;
+
+  return Math.round(clamp(gamma, SCENE_GAMMA_MIN, SCENE_GAMMA_MAX) * 1000) / 1000;
 }

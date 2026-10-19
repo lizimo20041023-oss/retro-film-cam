@@ -101,22 +101,18 @@ LUT 图集（PNG base64），运行时零网络请求、零新增依赖。
   `_v200_gen_atlas.py` 打包为 256×141 RGBA 图集并生成 `src/constants/lutAtlas.ts`），
   转译与格式口径见 README §51.2/§51.3
 - 不打包源码/上游数据：App 内无 Python 源码、无底片 datasheet、无 numpy/colour-science
-- 归因：九卷 LUT 是该模型输出的**衍生数据**（九卷 PNG 合计 407,760 B、base64 543,692 字符），
-  继续以 MIT 许可提供
-- 映射：九卷组合与 SFL 底片/相纸常量的对应见下表；黑白两卷共用 Polymax Grade 2 相纸，
-  EK-100 为反转片（无印片）
+- 归因：九卷 LUT 是该模型输出的**衍生数据**（v2.0.0 九卷 PNG 合计 407,760 B、base64 543,692 字符；
+  v2.0.1 重标定后见下节），继续以 MIT 许可提供
+- 映射：九卷固定为 UM-400 / GD-200 / PT-400 / CP-200 / FJ-400 / EK-100 / CS-800T / HP-400 / TX-400；
+  卷代号与上游负片/相纸常量的逐卷对应只记录在 `_v201_lut_provenance.json` 与本仓库 README 的
+  LUT 溯源表，本通知不重复上游厂商名或商品名；黑白两卷共用同一黑白相纸模型，EK-100 为反转片（无印片）
 
-| 卷 | 负片 / 反转片（SFL 常量） | 印片 / 相纸（SFL 常量） |
-|---|---|---|
-| UM-400 | Kodak Ultramax 400 | Fuji Crystal Archive Maxima |
-| GD-200 | Kodak Gold 200 | Kodak Supra Endura Paper |
-| PT-400 | Kodak Portra 400 | Kodak Endura Premier Paper |
-| CP-200 | Fuji C200 | Fuji Crystal Archive Pro PDII |
-| FJ-400 | Fuji Superia X-Tra 400 | Fuji Crystal Archive Maxima |
-| EK-100 | Kodak Ektachrome 100D alt.（反转片） | — |
-| CS-800T | Kodak Vision3 500T 5219 | Kodak Vision Premier 2393 |
-| HP-400 | Kodak 5222 Dev 9（黑白） | Kodak Polymax Fine-Art Paper Grade 2 |
-| TX-400 | Kodak Tri-X 400 Dev 9（黑白） | Kodak Polymax Fine-Art Paper Grade 2 |
+### v2.0.1 重标定（2026-10）
+
+v2.0.1 对九卷 LUT 做了一次亮度轴重标定：只改中性灰轴的亮度映射（黑位/中间调/白场锚点），
+不改色相与饱和度结构；九卷 PNG 合计 406,830 B、base64 542,456 字符，图集格式不变。
+许可与归属不变（MIT，`Copyright (c) 2017 Jan Lohse`，衍生数据继续以 MIT 提供）；
+不新增依赖、不联网，App 内仍只内置生成好的 LUT 图集，不含上游源码或数据文件。
 
 该数据的 MIT 全文与上文「MIT 许可证全文」相同，版权人为 `Copyright (c) 2017 Jan Lohse`。
 

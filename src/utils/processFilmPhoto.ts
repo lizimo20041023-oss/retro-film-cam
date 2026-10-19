@@ -49,6 +49,7 @@
  * 要覆盖它们，得在带原生模块的环境里跑，或者把这两步换成可注入的假实现。
  */
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
+import { lutSourceLongEdgeFor } from '../constants/filmRender';
 import { DEFAULT_NO_FRAME_ASPECT, resolveFrame } from '../constants/frames';
 import { resolvePreset } from '../constants/presets';
 import type {
@@ -405,6 +406,38 @@ function centerCropOrigin(
 }
 
 /**
+ * 把裁切后的底片准备成「LUT 输入图」（v2.0.1 单次截图的关键一步）。
+ *
+ * 用户红线（m02361 第四条）：pass1 的截图必须消失，又不许有两遍 view-shot，
+ * 于是照片像素层的来源从「view-shot 截一张 PNG」换成「ImageManipulator 直接输出 PNG」。
+ * `expo-image-manipulator` 从 v2.0.0 起就在依赖里（SDK 57 的 `~57.0.21`），
+ * 是本次改造**唯一**动到的原生模块 —— 零新依赖。
+ *
+ * 输出规范：
+ * - 长边 = `lutSourceLongEdgeFor(captureLongEdge)` 再夹到源图长边（不凭空插值放大）；
+ * - 格式 **PNG**：`decodePng` 只吃 PNG（JPEG 要走另一套整图解码器，v2.0.1 不做）；
+ * - 宽高取整到 ≥1，比例保持裁切图不变（裁切图已经是窗口比例）。
+ *
+ * 失败直接抛给调用方的 try/catch（→ 声明式兜底），这里不吞异常。
+ */
+async function prepareLutSource(photo: CapturedPhoto, targetLongEdge: number): Promise<string> {
+  const width = Math.max(1, Math.round(photo.width));
+  const height = Math.max(1, Math.round(photo.height));
+  const sourceLongEdge = Math.max(width, height);
+  const target = Math.max(1, Math.min(Math.round(targetLongEdge), sourceLongEdge));
+  const context = ImageManipulator.manipulate(photo.uri);
+  if (target !== sourceLongEdge) {
+    const scale = target / sourceLongEdge;
+    const resizedWidth = width >= height ? target : Math.max(1, Math.round(width * scale));
+    const resizedHeight = width >= height ? Math.max(1, Math.round(height * scale)) : target;
+    context.resize({ width: resizedWidth, height: resizedHeight });
+  }
+  const image = await context.renderAsync();
+  const saved = await image.saveAsync({ format: SaveFormat.PNG });
+  return saved.uri;
+}
+
+/**
  * 显影：调色 → 颗粒/暗角 → 烧日期 → 套相框 → 截图，返回成片信息。
  * 不写相册（写相册是 `saveToLibrary` 的事，方便单独重试一次保存）。
  */
@@ -584,26 +617,29 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     overlayOpacity: input.overlayOpacity,
   };
   /*
-   * 6) 真胶片像素管线（v2.0.0）· pass1：**只截照片**，再在 JS 里查 33³ LUT。
+   * 6) 真胶片像素管线（v2.0.1）· **单次截图**
    *
-   * 为什么必须两遍截图：LUT 是逐像素的三维查表，没法用 `mixBlendMode` 表达
-   * （声明式混合只能做"可分离"的颜色运算，做不出染料串色 / 片基灰 / 肩部压缩，
-   * 根因见 `_v200_contract.md` §0）。所以先把照片区单独截成 PNG（无损），
-   * 在 JS 里洗成"已上卷"的 PNG，再挂第二遍合成把相框 / 日期 / 水印压上去截成片。
+   * 用户红线（m02361 第四条）①：严禁两遍 view-shot。v2.0.0 先截照片 → JS 洗 →
+   * 再截合成图，要挂两次合成视图、等两次 onLoad：慢、会闪、还多一次 PNG 编解码。
+   * v2.0.1 把照片像素层的来源换成 `ImageManipulator`（**已有依赖，零新增**）：
+   * 从裁切后的底片直接输出一张长边 1440~1800 的 PNG → 单趟像素管线 → 只挂一次
+   * 合成视图、只截一次图。
+   *
+   * 照片像素层因此与成片画布**解耦**：成片仍是 2048/3024/4032 的相框画布
+   * （`FilmCompositor` 按 `capturePreset.captureLongEdge` 算），洗好的照片图由合成层
+   * 以 `cover` 铺满窗口 —— 这正是"照片像素层"该有的角色（用户红线只约定 LUT 输入尺寸）。
    *
    * 失败一律兜底：LUT 资产缺失、PNG 解码失败、写盘失败、内存不足 —— 任何一步抛错，
-   * 都退回 v1.9.x 的声明式调色层（`stageInput.lutUri` 保持 null）。产品红线是
+   * 都退回 v1.9.x 的声明式调色层（`lutUri` 保持 null）。产品红线是
    * **用户永远拿得到照片**，不能因为一次像素渲染失败变成"快门没反应"。
    */
-  input.onStage?.('capturing');
+  const lutSourceLongEdge = lutSourceLongEdgeFor(capturePreset.captureLongEdge);
   let lutUri: string | null = null;
   let renderMode: 'lut' | 'declarative' = 'declarative';
   let renderLayers: string[] | null = null;
   try {
-    host.mount({ ...stageInput, stageMode: 'photo', lutUri: null });
-    await host.whenReady();
-    const photoPngUri = await host.capture();
     input.onStage?.('grading');
+    const lutSourceUri = await prepareLutSource(cropped, lutSourceLongEdge);
     /*
      * 种子取"快门时间戳 ^ 当前毫秒"：同一张照片重试两次会得到不同颗粒（用户不会察觉），
      * 但同一次显影内部固定 —— 这是 `renderFilmToFile` 的确定性契约。
@@ -611,9 +647,15 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
      */
     const seed = ((capturedAt.getTime() ^ Date.now()) >>> 0) & 0x7fffffff;
     const rendered = renderFilmToFile({
-      sourceUri: photoPngUri,
+      sourceUri: lutSourceUri,
       stockId: capturePreset.id,
-      preset: { id: capturePreset.id, grain: capturePreset.grain, vignette: capturePreset.vignette },
+      preset: {
+        id: capturePreset.id,
+        grain: capturePreset.grain,
+        vignette: capturePreset.vignette,
+        mono: capturePreset.mono,
+        scene,
+      },
       seed,
     });
     lutUri = rendered.uri;
@@ -623,26 +665,26 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
       `halation ${rendered.params.halation.toFixed(2)}`,
       `vignette ${rendered.params.vignette.toFixed(2)}`,
       `grain ${rendered.params.grain.toFixed(3)}`,
+      `gamma ${rendered.params.gamma.toFixed(3)}`,
     ];
   } catch (error) {
     warnings.push(`真胶片像素管线失败，已回退声明式调色层：${describeError(error)}`);
-  } finally {
-    // 失败也必须收掉显影层，否则界面会卡在"显影中"
-    host.unmount();
   }
 
   /*
-   * 6.5) pass2：把"洗好的照片"（`lutUri`）连同相框 / 日期 / 水印一起截成成片。
-   * 有 `lutUri` 时合成层会跳过声明式调色层与重曝叠图（它们已经烘进像素）。
+   * 7) 唯一一次挂载 + 截图：把"洗好的照片"（`lutUri`，失败时为 null）连同相框 / 日期 /
+   *    水印一起截成成片。有 `lutUri` 时合成层会跳过声明式调色层与重曝叠图
+   *    （它们已经烘进像素）。
    */
   input.onStage?.('capturing');
-  const finalStageInput: FilmStageInput = { ...stageInput, stageMode: 'final', lutUri };
+  const finalStageInput: FilmStageInput = { ...stageInput, lutUri };
   let uri = '';
   try {
     host.mount(finalStageInput);
     await host.whenReady();
     uri = await host.capture();
   } finally {
+    // 失败也必须收掉显影层，否则界面会卡在"显影中"
     host.unmount();
   }
 

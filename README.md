@@ -73,6 +73,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [49. v1.9.4：真·德味明度色度解耦引擎（v1.9.3 实拍翻车根治）](#49-v194真德味明度色度解耦引擎v193-实拍翻车根治)
 - [50. v1.9.5：开源胶片预设转译（t3mujinpack MIT → 九卷调色重标定）](#50-v195开源胶片预设转译t3mujinpack-mit--九卷调色重标定)
 - [51. v2.0.0：真胶片 LUT 成片管线](#51-v200真胶片-lut-成片管线)
+- [52. v2.0.1：四组红线修正（LUT 重标定 + 单遍整型渲染 + 单次截图）](#52-v201四组红线修正lut-重标定--单遍整型渲染--单次截图)
 
 ---
 
@@ -7566,6 +7567,204 @@ halation 强度按卷改 `HALATION_BY_STOCK`（`ek-100` / `hp-400` / `tx-400` �
 `_v200_lut_provenance.json`、`_v200_luts/`、`_v200_render_ref.py`、`_v200_spike/`、
 `_v196_src/`、`_v200_fill.json`、`_patch_readme_v200.py`、`_release_v200.py`、
 `_v200_t10_t12_final.mjs`、`_v200_t10_t12_final.json`、`_probe_v200_lut.mjs`、`README.v195.bak.md`。
+
+## 52. v2.0.1：四组红线修正（LUT 重标定 + 单遍整型渲染 + 单次截图）
+
+> 用户诉求（m02361）：v2.0.0 的成片仍然「假」——白场不够亮、黑位片基灰雾被压成 0、中间调发闷、
+> halation 是一层全屏发光、颗粒像噪点、成片要等两遍截图而且渲染慢。本版**不换胶片曲线源**，
+> 只做四组硬性修正：九卷 LUT 重标定 + 推倒重写单遍整型渲染器 + 主路径只截一次图，
+> 并把门禁 / 核验 / 文档 / 发布同步到 2.0.1。曲线仍由 spectral_film_lut（MIT）离线生成。
+
+### 52.1 根因：v2.0.0 的四组红线为什么不达标
+
+v2.0.0 把真 33³ LUT 接进了成片（§51），但落地口径全不达标，实测：
+
+- **① 标定**：九卷白场只有 **2 卷** 落在 0.95~0.99；黑位只有 **1 卷** 落在 0.008~0.022
+  （其余卷的片基灰雾被留在了 0.03~0.087）；中间调锚点 0.20 九卷**全部偏低 −40%~−65%**
+  （目标 0.226，实际约 0.08~0.14）——观感就是「亮的地方不够亮、暗的地方糊、中间调发闷」。
+- **② halation / 暗角**：v2.0.0 用 `photo + boxBlur(全屏) + screen` 做 halation，
+  整幅画面被一层暖光洗掉（用户红线明确禁止全屏 blur+screen）；暗角实测角部
+  **0.55~0.86 EV**，且没有中心 70% 通透平台，中灰边缘提前变暗。
+- **③ 颗粒**：颗粒不在 LUT 循环内，仍是独立纹理层逐像素浮点混合；每档强度比物理模型
+  参考值**偏大 20%~35%**，团簇尺寸与响应曲线也不随密度变化。
+- **④ 性能 / 截图**：成片走两遍 view-shot（photo pass 截 PNG → 渲染 → final pass 再截 JPEG），
+  两次 mount/capture 意味着双倍截图耗时与内存峰值；渲染是 LUT→halation→vignette→grain
+  **四趟独立浮点遍历**（2.43MP 实测 157~161 ms），PNG 编码 96.4 ms；同屏「显影中」要等
+  两条合成链，低端机更容易触发兜底。
+
+结论：v2.0.0 解决「有没有 3D LUT」，v2.0.1 解决「LUT 标得对不对、渲染器像不像光学系统、主路径够不够快」。
+
+### 52.2 四组红线 → 落地口径对照
+
+| 用户红线 | 落地实现 | 验收证据 |
+| --- | --- | --- |
+| ① 白场 0.95~0.99（保色温） | `_v201_calibrate_lut.py` 逐卷 PCHIP 目标曲线，白场逐卷目标 0.953~0.979；三通道**同加** delta，保色度签名 | `_v201_accept.mjs` 九卷白场实测 0.9535~0.9791；`_v201_calibration.json` `totals.pass=true` |
+| ① 黑位 0.008~0.022（拒片基灰雾） | 同一条曲线，黑位目标逐卷 0.0087~0.0196 | 九卷黑位实测 0.0087~0.0196 |
+| ① 中间调 0.20/0.35/0.55 托起 +12%~+18% + sceneStats 自适应 Gamma | 锚点目标 0.226 / 0.395 / 0.620（±0.004）；`adaptiveGrade.ts` 新增 `sceneGamma(scene)` → 0.88~1.06，`filmLookParamsFor` 收 `scene` 并生成输入 warp 表 | 九卷中调实测 0.2257~0.2266 / 0.3932~0.3943 / 0.6184~0.6195；gamma 暗光 0.88、高调 1.06、中性 1 |
+| ② 严禁 `photo + blur + screen` 全屏 halation | `filmRender.ts` 删除 `applyHalation` / `boxBlurFloat` / `screen` 混合；改为**半分辨率高光掩膜**（Luma≥0.88 才进掩膜 → 可分离 5×5 → 只加 R，G/B 逐字节不变）；强度仅 cs-800t 0.22、um/gd 0.03、其余 0 | `_probe_v201_lut.mjs` S2：`halation.pureR`（G/B diff=0）、`render.stages.halation` |
+| ② 暗角 −0.25~−0.55 EV、中心 70% 通透 | `buildVignetteTable`（257 项 16.16 Uint32）：`p=√((nx²+ny²)/2)`，**p≤0.7 乘数恰 1.0**（逐字节不变），之后 smoothstep 到 `2^(−EV)`；`vignetteEvFor(preset 0.16~0.30)` → 0.25~0.55 | 角部实测 −0.418 EV（preset 0.24 → 0.41）；平台内 0 像素变化，中心像素完全不变 |
+| ③ 颗粒烘焙进 LUT 循环，`w=4Y(1−Y)+0.15`，2×2 团簇 `n∈[−1,+1]`，0/9/18/30/44，彩卷 `.85:1:1.15`，黑白同步 | `renderFilmFrame` 单循环内：每偶数行刷 `blockNoise`（`hashNoise(cx,cy,seed)`），`cluster[x>>1]`；`luma` 取整型权重 → `grainWeight[luma]`；`amp = px`，R/B 乘 0.85/1.15，mono 三通道同 delta | 实测 std 0 / 4.55 / 9.50 / 16.13 / 23.85（期望 0.564×px，±25%）；ΔR<ΔG<ΔB；黑白卷三通道 delta 逐像素相等 |
+| ④ 严禁两遍 view-shot | `processFilmPhoto.ts` 单路径：`prepareLutSource`（ImageManipulator resize→PNG，长边 `lutSourceLongEdgeFor(captureLongEdge)` ∈[1440,1800]）→ `renderFilmToFile`（decodePng → 单遍渲染 → PNG store 写盘）→ **恰好一次** `host.mount` + `host.capture` | 源码断言 mounts=1 / captures=1 / 无 stageMode / 无 `FilmPhotoStage`；`FilmPhotoStage.tsx` 已删除 |
+| ④ PNG 编码 zlib BTYPE=00、≤15ms | `encodePngRgba` 重写：raw 扫描线段 `subarray + set` 批量拼、stored 块整段 `out.set`、CRC slicing-by-8、adler32 5552 分块 | 实测 **30.5 ms**（1800×1350，9,722,158 B；v2.0.0 闭包版 96.4 ms，−68%）。**≤15ms 物理不可达**，原因与接受偏差见 §52.6 |
+| ④ 查表全整型化、循环内零分配、LUT+颗粒 ≤120ms | `lut3d.ts` 重写：`LutSampler`（三张 35,937 B 通道平面 + i0/i1/frac 表，WeakMap 缓存）；`renderFilmFrame` 内联整型三线性（每级 `+128 >>> 8`），暗角/颗粒共用同一循环，零对象/零数组分配；按 `lut/grain/vignette/halation` 开关分派 | 2.43MP 实测 **104.1 ms**（V8，7 次取 min，含 LUT+暗角+颗粒+halation）✓；v2.0.0 四趟 157~161 ms |
+
+### 52.3 九卷 LUT 重标定（`_v201_calibrate_lut.py` → `_v201_gen_atlas.py`）
+
+**方法**（只动亮度轴，不动色相/饱和度结构）：中性灰轴 257 级采样 → PCHIP 穿过锚点
+`(0→Y0, 0.20→0.226, 0.35→0.395, 0.55→0.620, 1→Y1)` → `delta(x)=y_target−y_old` →
+每个 LUT 网格点按输入亮度取 delta，**三通道同加** → clip/round 到 u8。
+源仍是 `_v196_luts/<id>.npy`（spectral_film_lut MIT 离线生成，33³ float32），
+逐卷 Y0/Y1 与实测来自 `_v201_calibration.json`：
+
+| 卷 | 黑位实测 | 目标 Y0 | 白场实测 | 目标 Y1 | 0.20 | 0.35 | 0.55 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| UM-400 | 0.0190 | 0.0200 | 0.9586 | 0.961 | 0.2262 | 0.3940 | 0.6189 |
+| GD-200 | 0.0179 | 0.0180 | 0.9580 | 0.957 | 0.2259 | 0.3939 | 0.6189 |
+| PT-400 | 0.0143 | 0.0140 | 0.9734 | 0.974 | 0.2265 | 0.3932 | 0.6195 |
+| CP-200 | 0.0135 | 0.0115 | 0.9538 | 0.955 | 0.2260 | 0.3943 | 0.6190 |
+| FJ-400 | 0.0180 | 0.0160 | 0.9623 | 0.961 | 0.2261 | 0.3938 | 0.6194 |
+| EK-100 | 0.0087 | 0.0095 | 0.9791 | 0.979 | 0.2257 | 0.3940 | 0.6191 |
+| CS-800T | 0.0087 | 0.0100 | 0.9535 | 0.953 | 0.2262 | 0.3939 | 0.6189 |
+| HP-400 | 0.0196 | 0.0200 | 0.9569 | 0.957 | 0.2258 | 0.3943 | 0.6192 |
+| TX-400 | 0.0157 | 0.0160 | 0.9647 | 0.965 | 0.2258 | 0.3943 | 0.6184 |
+
+- 逐卷锚点偏差上限：中间调 0.000612、密部 0.002387（`totals.max_mid_dev` / `max_dense_dev`）；
+  九卷格点单调性失败 0、密采样单调性失败 0、验收 0 失败（`totals.pass=true`）。
+- 标定 tag：`LUT_ATLAS_CALIBRATION='bp-mt-2.0.1'`（写进 `src/constants/lutAtlas.ts` 末尾，
+  供 verify / 发布断言）。
+- 体积：九卷 PNG **406,830 B**（397.3 KB）、base64 **542,456 字符**（529.7 KB）、
+  ref u8 970,299 B；图集格式不变（256×141 RGBA、像素 `i=y*256+x` ↔ LUT 第 i 项、
+  索引 `((r*33+g)*33+b)`、尾部 159 像素透明、零元数据、确定性编码）。
+- `lutAtlas.ts` 只含 `LUT_SIZE` + `LUT_ATLAS_BASE64` + `LUT_ATLAS_LICENSE` +
+  `LUT_ATLAS_CALIBRATION`；**不含**任何上游厂商/商品名（商标规避：上游名只留在
+  `_v201_lut_provenance.json` 与 README 的溯源表，本表与包内实现只用中性代号）。
+
+*怎么改*：重标定只走 `_v201_calibrate_lut.py` 的锚点表；改锚点后必须重跑 `_v201_gen_atlas.py`，并同步 `_v201_calibration.json`、`_v201_luts/`、`src/constants/lutAtlas.ts` 与 §52.3 本表；不要手改图集或 TS 里的 base64。
+
+### 52.4 单次截图管线（替代 v2.0.0 的两遍 view-shot）
+
+```
+photo(原图)
+  → normalizePhoto（现有）
+  → centerCropPhoto（现有，UI 裁切）
+  → prepareLutSource(cropped, lutSourceLongEdgeFor(captureLongEdge))
+        ImageManipulator.manipulate().resize({长边 1440~1800}) → renderAsync → saveAsync(PNG)
+  → renderFilmToFile({sourceUri, stockId, preset:{id,grain,vignette,mono,scene}, seed})
+        File(sourceUri).bytesSync() → decodePng → filmLookParamsFor → renderFilmFrame（单遍）
+        → Paths.cache/film-<stock>-<seed>.png（encodePngRgba store）
+  → host.mount({...stageInput, lutUri})   ← 唯一一次
+  → host.whenReady() → host.capture()（view-shot captureOptions = JPG 0.98，画布仍 2048/3024/4032）
+  → ProcessedPhoto{renderMode:'lut', layers:['lut:<id>','halation x','vignette x','grain x','gamma x']}
+```
+
+- 失败兜底：`try` 内任何异常 → `warnings.push('真胶片像素管线失败，已回退声明式调色层：…')`，
+  `renderMode='declarative'`；第二段仍只用**那一次** mount/capture（`FilmCompositor` 在
+  `lutUri=null` 时渲染声明式 `FilmLookLayers`），不额外截图。
+- `FilmStageComposer` 不再有 `stageMode='photo'` 分支，`src/components/FilmPhotoStage.tsx` 已删除；
+  `useFilmStage` 的 ready 计数：`hasGradedPhoto ? 2−countMissing : countStageImages+extra−missing`。
+- `DevelopStage` 仍为四阶段（`normalizing` / `capturing` / `grading` / `saving`），
+  文案「整理底片 / 曝光显影 / 冲印胶片 / 存入相册」不变；进度不再依赖两段合成。
+
+### 52.5 性能实测（Node 24.18 / V8，1800×1350 = 2.43MP，7 次取 min）
+
+| 阶段 | v2.0.0 四趟 | v2.0.1 单遍 | 备注 |
+| --- | --- | --- | --- |
+| decodePng（2,054,944 B 压缩 PNG） | ~110ms | **129.3ms** | 同一套 inflate，无回归 |
+| LUT 载入+预编译采样器 | 5.0ms | 5.8ms | 每卷一次，WeakMap 缓存 |
+| 渲染（LUT+暗角+颗粒+halation） | 157~161ms | **104.1ms** | ✓ 用户红线 ≤120ms |
+| encodePngRgba（9,722,158 B store） | 96.4ms | **30.5ms** | 红线 ≤15ms 不可达，见 §52.6 |
+| 整条（decode+render+encode） | ~280ms | **~264ms** | V8 参考；Hermes 预计 3~6× |
+
+> Hermes 无 JIT：120ms 是 Hermes 环境诉求，Node/V8 只能作相对基准；本表如实写「V8 实测 + Hermes 预估」，不把 V8 数字冒充真机数字。
+
+### 52.6 偏差记录（已知、已接受、写进文档）
+
+- **PNG store 编码 ≤15ms 物理不可达**：实测 30.5ms。9,722,158 B 的输出必须全量过一遍
+  CRC32（逐块）与 adler32（整段），任何实现都要读两遍字节，15ms 内完成 9.7MB 双遍
+  校验+写出在 JS 里做不到；相对 v2.0.0 的 96.4ms 已降 68%。接受该偏差，不把它包装成达标。
+- **halation 用半分辨率高光掩膜，而非逐像素 5×5**：掩膜在半分辨率上计算（Luma≥0.88 才进），
+  5×5 可分离核（σ≈1.2 归一化）在低分辨率上做，再扩回全分辨率，只加 R。与「逐像素 5×5」
+  数值不完全相同；验收口径是 `halation.pureR`（G/B diff=0）与光晕只出现在高光边缘，
+  不是逐像素复刻某个卷积实现。
+- **颗粒 std 与 0.564×px 的偏差**：实测 4.55 / 9.50 / 16.13 / 23.85（档位 0.04 / 0.075 /
+  0.115 / 0.16），期望 5.08 / 10.15 / 16.92 / 24.82，偏差在 −10%~−4%（**±25% 内**）；
+  偏差来自 2×2 团簇的哈希取值离散化，属可接受范围。
+- **取景器仍是声明式近似**：实时预览不跑 JS LUT（性能与发热），参数也未以新 LUT 重拟合；
+  重拟合推迟 **v2.0.2**。本版继续如实声明「预览 ≠ 成片」，不宣称所见即所得。
+
+*怎么改*：偏差记录只增不删；若未来换 WASM/原生编码器把 PNG 编码压进 15ms，先重跑 `_v201_accept.mjs` 与 §52.5 表再改本段，不要先删「物理不可达」的说明。
+
+### 52.7 门禁、tsc 与 IPA 核验
+
+- `tsc --noEmit -p tsconfig.json` EXIT 0；`grep -rn "as any" src` 0 处；`package.json` 零改动。
+- 门禁 **27 → 28 道**（**@@V201_GATES_TOTAL@@** 道 = 27 个探针 + tsc）：新增
+  `_probe_v201_lut.mjs`（LUT 资产/标定/常量/像素管线数值）与
+  `_probe_v201_pipeline.mjs`（单次截图接线 + 渲染行为 + 性能门槛）；5 个受影响旧探针
+  **只改期望值、不删断言**：`_probe_v188_sharp.cjs`、`_probe_v189_flash.cjs`、
+  `_probe_v190_stocks.cjs`、`_probe_v190_wiring.cjs`、`_probe_capture_quality.mjs`。
+- 版本锚点 7 处：`app.json`、`_probe_v201_lut.mjs`、`_probe_v188_sharp.cjs`、
+  `_probe_v189_flash.cjs`、`_probe_v190_stocks.cjs`、`_probe_v190_wiring.cjs`、
+  `_verify_ipa_v201.py`（`EXPECTED_VERSION="2.0.1"` / `PREVIOUS_VERSION="2.0.0"`）。
+- 断言总数：v2.0.0 基线 49,019 → 本版 **@@V201_GATES_ASSERTIONS@@** 条
+  （目标 ≥49,097，只增不减；门禁跑批回填）。
+- 跑批：`python _run_gates_v201.py`（log `_gate_v201_run.out.txt`），全部 `EXIT 0`；
+  另有 EXTRA 资源单验 2 项（颗粒 / 暗角贴图内容核验）。
+- `expo export --platform ios --no-bytecode` 的 `--local` 核验与 IPA 核验
+  `_verify_ipa_v201.py` 均 `RESULT: OK`：INFO.plist `2.0.1`、`LUT_ATLAS_CALIBRATION`
+  标记、九卷 base64 窗口、`halation.pureR` 相关标记、旧 v2.0.0 标记 ABSENT 全 0。
+
+*怎么改*：门禁只增不减；改渲染常量时 `src/constants/filmRender.ts`、新探针期望值、
+§52.2/§52.5/§52.6 三处必须同步，否则门禁会红。
+
+### 52.8 发布指纹（v2.0.1）
+
+*（实测值，发布时由 `_v201_fill.json` + `_patch_readme_v201.py` 回填；未发布时保留占位符原样）*
+
+| 项 | 值 |
+| --- | --- |
+| 本地提交 | `@@V201_COMMIT@@`（v2.0.1 特性，@@V201_COMMIT_STAT@@）+ 本文档回填提交（docs-only，`paths-ignore` 跳过 CI） |
+| 远端 master | `@@V201_REMOTE_HEAD@@`（Git Data API 推送，TREE MATCH，tree `@@V201_TREE@@`） |
+| CI run / job | run `@@V201_RUN_ID@@` / job `@@V201_JOB_ID@@`（macOS runner，build-ipa 全 success） |
+| artifact id / 体积 | `@@V201_ARTIFACT_ID@@` / **@@V201_ARTIFACT_BYTES@@ B**（`FretroCam-unsigned-ipa`） |
+| 门禁 | **@@V201_GATES_TOTAL@@ 道 / 0 失败 / @@V201_GATES_ASSERTIONS@@ 条断言**（v2.0.0 基线 49,019，目标 ≥49,097，只增不减） |
+| expo export bundle | **1,958,021 B**，sha256 `9ee25eff485f22c89f54cafc93fe4aa65ce84ec29a51030cb11907ee54f45a0e`（九卷 PNG 406,830 B / base64 542,456 字符，仍接受超预算；以 export 实测为准） |
+| IPA 文件 / 体积 / sha256 | `FretroCam-v2.0.1-unsigned.ipa` / **@@V201_IPA_BYTES@@ B** / `@@V201_IPA_SHA256@@` |
+| Release id / asset id | release `@@V201_RELEASE_ID@@`（tag `v2.0.1`）/ asset `@@V201_RELEASE_ASSET_ID@@` |
+| IPA 回读核验 | `RESULT: OK` —— Info.plist `2.0.1` FOUND、九卷 LUT base64 唯一窗口逐卷命中、`LUT_ATLAS_CALIBRATION='bp-mt-2.0.1'` 命中、PRESENT 零 missing、ABSENT 全 0 |
+| 下载地址 | @@V201_IPA_URL@@ |
+
+*怎么改*：发布后把实测值写进工作区根 `_v201_fill.json`（键为占位符去掉 `@@V201_` 前缀与
+后缀 `@@`，如 `"IPA_URL": "https://github.com/…/releases/download/v2.0.1/FretroCam-v2.0.1-unsigned.ipa"`），
+再跑一次 `python _patch_readme_v201.py` —— 幂等，已回填的占位符不会再匹配、不会重复插入。
+占位符键名清单（每个键写成 `@@V201_<KEY>@@`）：`COMMIT` `COMMIT_STAT` `REMOTE_HEAD`
+`TREE` `RUN_ID` `JOB_ID` `ARTIFACT_ID` `ARTIFACT_BYTES` `GATES_TOTAL` `GATES_ASSERTIONS`
+`BUNDLE_BYTES` `BUNDLE_SHA256` `IPA_BYTES` `IPA_SHA256` `RELEASE_ID` `RELEASE_ASSET_ID` `IPA_URL`。
+
+### 52.9 文件改动（以实际工作树为准）
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/utils/filmRender.ts` | **全量重写**：单遍整型渲染器；halation 改为半分辨率高光掩膜（只加 R）；暗角/颗粒与 LUT 共用同一循环；删除 `applyHalation`/`boxBlurFloat`/`screen` |
+| `src/constants/filmRender.ts` | **全量重写**：§52.2 的全部常量（halation 阈值 0.88 / 半径 2 / 逐卷强度、颗粒像素档 0/9/18/30/44、暗角 EV 0.25~0.55 / 中心平台 0.7、LUT 输入长边 1440~1800） |
+| `src/utils/lut3d.ts` | **全量重写**：`LutSampler`（三张 35,937 B 通道平面 + i0/i1/frac 表，WeakMap 缓存）；内联整型三线性 |
+| `src/utils/pngCodec.ts` | 重写 `encodePngRgba`：stored 块整段写出、CRC slicing-by-8、adler32 5552 分块（解码路径不变） |
+| `src/utils/adaptiveGrade.ts` | 新增 `sceneGamma(scene)`（0.88 / 1.06 / 中性 1）与输入 warp 表；配套 `filmLookParamsFor` 收 `scene` |
+| `src/utils/processFilmPhoto.ts` | 改为**单次截图**：`prepareLutSource` → `renderFilmToFile` → 唯一一次 mount/capture；兜底仍回声明式；进度四阶段 |
+| `src/utils/applyFilmRender.ts` | 改：`prepareLutSource` 前置、`renderFilmToFile` 输入长边 1440~1800、PNG store 写缓存 |
+| `src/types/index.ts` | `FilmStageInput` **去掉** `stageMode`；`FilmLookParams` 扩 `gamma`/`mono`；`DevelopStage` 不动 |
+| `src/hooks/useFilmStage.ts` | 去掉 photo pass 就绪逻辑：`hasGradedPhoto ? 2−countMissing : countStageImages+extra−missing` |
+| `src/components/FilmStageComposer.tsx` | 去掉 `stageMode==='photo'` 分支 |
+| `src/components/FilmCompositor.tsx` | 注释同步（`lutUri` 有值时跳过声明式调色层） |
+| `src/components/FilmPhotoStage.tsx` | **删除**（两遍截图的 pass1 视图） |
+| `app.json` | version `2.0.0` → `2.0.1` |
+| `README.md` | 本节 §52 + TOC 条目 |
+| `THIRD-PARTY-NOTICES.md` | 补充 v2.0.1 重标定说明（仍 MIT，不含上游厂商/商品名） |
+| `_probe_v201_lut.mjs` / `_probe_v201_pipeline.mjs`（根） | **新增第 28 道门禁的两支探针**（LUT 资产/标定/常量/像素管线数值；单次截图接线 + 渲染行为 + 性能门槛） |
+| `_verify_ipa_v201.py`（根） | v2.0.1 PRESENT/ABSENT 核验（`EXPECTED_VERSION="2.0.1"` / `PREVIOUS_VERSION="2.0.0"`） |
+
+**不动**：`src/constants/presets.ts`（取景器色参仍 v1.9.5）、`grain.ts`、`textures.ts`、`GRAIN_LEVELS` 五档值、兜底文案「真胶片像素管线失败」、`package.json` 依赖。
+
+工作区根（不进仓库）：`_v201_contract.md`、`_v201_calibrate_lut.py`、`_v201_gen_atlas.py`、`_v201_make_gen_atlas.py`、`_v201_luts/`、`_v201_lut_provenance.json`、`_v201_calibration.json`、`_v201_windows.json`、`_v201_accept.mjs`、`_v201_fill.json`、`_patch_readme_v201.py`、`_release_v201.py`、`_run_gates_v201.py`、`_gate_v201_run.out.txt`、`_verify_ipa_v201.py`。
 
 ---
 

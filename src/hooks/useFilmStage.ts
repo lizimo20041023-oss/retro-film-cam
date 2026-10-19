@@ -105,18 +105,12 @@ function countMissingStageImages(input: FilmStageInput): number {
 }
 
 /**
- * v2.0.0 真胶片管线 · pass1（`stageMode: 'photo'`）的就绪计数。
+ * `countStageImages` / `countExtraStageImages` / `countMissingStageImages` 三个计数器的
+ * 共同契约：只数**会触发 `<Image onLoad>` 的节点**，且与渲染层逐字对齐。
  *
- * 这条路径只渲染 `<FilmPhotoStage>`：主照片 1 张 +（有重曝时）第二张 1 张。
- * **不能**沿用 `countStageImages` 的「底板 + 相框 + 调色层」口径 —— pass1 压根没有
- * 相框 PNG / 调色层 / 相纸皮肤；`countMissingStageImages` 也不用减（那张相框本来就不画）。
- *
- * 判据必须和 `FilmPhotoStage` 的渲染逐字一致（空串不算、读 `overlayUri` 同一个字段），
- * 否则 `whenReady()` 要么白等 1500ms、要么截到只解码一半的重曝图。
+ * v2.0.1 删掉了 v2.0.0 的 pass1（`<FilmPhotoStage>`）数法：现在一次快门只挂一次合成视图，
+ * 照片像素层由 `ImageManipulator` 直接产出，不再经过 view-shot。
  */
-function countPhotoPassImages(input: FilmStageInput): number {
-  return 1 + countExtraStageImages(input);
-}
 
 export interface FilmStageController {
   /** 交给 `processFilmPhoto` 的宿主。 */
@@ -239,19 +233,16 @@ export function useFilmStage(): FilmStageController {
         layoutDoneRef.current = false;
         loadedCountRef.current = 0;
         const hasGradedPhoto = typeof input.lutUri === 'string' && input.lutUri.length > 0;
-        expectedCountRef.current =
-          input.stageMode === 'photo'
-            ? countPhotoPassImages(input)
-            : hasGradedPhoto
-              ? /*
-                 * v2.0.0 · pass2（照片已洗好 `lutUri`）：`FilmCompositor` 只画
-                 * 「照片 1 张 + 相框 1 张」，**不渲染** `<FilmLookLayers>` ——
-                 * 调色层 / 纹理层的 `onLoad` 一个都不会来，所以不能按
-                 * `countStageImages(preset)` 数，否则每张都白等 1500ms 兜底。
-                 * 无相框（`fullBleed`）照旧减 1。
-                 */
-                2 - countMissingStageImages(input)
-              : countStageImages(input.preset) + countExtraStageImages(input) - countMissingStageImages(input);
+        expectedCountRef.current = hasGradedPhoto
+          ? /*
+             * v2.0.1 · 单次截图（照片已洗好 `lutUri`）：`FilmCompositor` 只画
+             * 「照片 1 张 + 相框 1 张」，**不渲染** `<FilmLookLayers>` ——
+             * 调色层 / 纹理层的 `onLoad` 一个都不会来，所以不能按
+             * `countStageImages(preset)` 数，否则每张都白等 1500ms 兜底。
+             * 无相框（`fullBleed`）照旧减 1。
+             */
+            2 - countMissingStageImages(input)
+          : countStageImages(input.preset) + countExtraStageImages(input) - countMissingStageImages(input);
         settledRef.current = false;
         mountedRef.current = true;
         readyPromiseRef.current = new Promise<void>((resolve) => {

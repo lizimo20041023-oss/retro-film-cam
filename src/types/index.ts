@@ -793,19 +793,11 @@ export interface FilmStageInput {
   /** 重曝上面那张的不透明度（0~1），不填 = 0.5。只有 `overlayUri` 有值时才有意义。 */
   overlayOpacity?: number;
   /**
-   * 这一轮要画**哪一遍**（v2.0.0 真胶片管线）。
-   *
-   * - `'photo'`：pass1，只画照片（主图 + 重曝），截 PNG 交给像素渲染；
-   * - `'final'`：pass2，照片已洗好（`lutUri`），照旧画相框 / 日期 / 水印，截 JPEG 成片。
-   *
-   * 不填 = `'final'`（v1.9.x 的单遍行为，老调用点与裸探针不用改）。
-   */
-  stageMode?: 'photo' | 'final';
-  /**
-   * pass2 用的"已上卷"照片 uri（v2.0.0）。有它时合成层：
+   * "已上卷"的照片 uri（v2.0.1 单次截图的产物）。有它时合成层：
    *   ① 照片层用它代替 `rawUri`；
    *   ② **不再渲染** `<FilmLookLayers>`（调色/颗粒/暗角/漏光已经烘进像素）；
-   *   ③ 不再叠 `overlayUri`（重曝在 pass1 已合成并一起过 LUT）。
+   *   ③ 不再叠 `overlayUri`（重曝在像素渲染前已经合成并一起过 LUT）。
+   * 不填/null = 走 v1.9.x 的声明式调色层（像素管线失败时的兜底）。
    */
   lutUri?: string | null;
 }
