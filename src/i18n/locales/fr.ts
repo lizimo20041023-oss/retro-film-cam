@@ -49,7 +49,7 @@ export const fr: Messages = {
   'film.intensity.title': 'PRESET INTENSITY · Intensité',
   'film.intensity.hint': 'Une intensité pour toute la pellicule · AUTO laisse le moteur de scène décider',
   'film.intensity.a11y': 'Intensité du préréglage, actuelle : {label}',
-  'film.intensity.auto.hint': 'S’adapte à la scène (70 %–145 %)',
+  'film.intensity.auto.hint': 'S’adapte à la scène (70 %–95 %)',
   'film.stockMode.auto': 'AUTO Pellicule intelligente',
   'film.stockMode.auto.hint': 'Choisit la pellicule et l’intensité selon la scène',
   'film.stockMode.manual.hint': 'Choisir une pellicule manuellement',
