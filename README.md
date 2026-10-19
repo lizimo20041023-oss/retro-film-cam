@@ -7697,7 +7697,7 @@ photo(原图)
 ### 52.7 门禁、tsc 与 IPA 核验
 
 - `tsc --noEmit -p tsconfig.json` EXIT 0；`grep -rn "as any" src` 0 处；`package.json` 零改动。
-- 门禁 **27 → 28 道**（**@@V201_GATES_TOTAL@@** 道 = 27 个探针 + tsc）：新增
+- 门禁 **27 → 28 道**（**28** 道 = 27 个探针 + tsc）：新增
   `_probe_v201_lut.mjs`（LUT 资产/标定/常量/像素管线数值）与
   `_probe_v201_pipeline.mjs`（单次截图接线 + 渲染行为 + 性能门槛）；5 个受影响旧探针
   **只改期望值、不删断言**：`_probe_v188_sharp.cjs`、`_probe_v189_flash.cjs`、
@@ -7705,7 +7705,7 @@ photo(原图)
 - 版本锚点 7 处：`app.json`、`_probe_v201_lut.mjs`、`_probe_v188_sharp.cjs`、
   `_probe_v189_flash.cjs`、`_probe_v190_stocks.cjs`、`_probe_v190_wiring.cjs`、
   `_verify_ipa_v201.py`（`EXPECTED_VERSION="2.0.1"` / `PREVIOUS_VERSION="2.0.0"`）。
-- 断言总数：v2.0.0 基线 49,019 → 本版 **@@V201_GATES_ASSERTIONS@@** 条
+- 断言总数：v2.0.0 基线 49,019 → 本版 **49,193** 条
   （目标 ≥49,097，只增不减；门禁跑批回填）。
 - 跑批：`python _run_gates_v201.py`（log `_gate_v201_run.out.txt`），全部 `EXIT 0`；
   另有 EXTRA 资源单验 2 项（颗粒 / 暗角贴图内容核验）。
@@ -7722,16 +7722,16 @@ photo(原图)
 
 | 项 | 值 |
 | --- | --- |
-| 本地提交 | `@@V201_COMMIT@@`（v2.0.1 特性，@@V201_COMMIT_STAT@@）+ 本文档回填提交（docs-only，`paths-ignore` 跳过 CI） |
-| 远端 master | `@@V201_REMOTE_HEAD@@`（Git Data API 推送，TREE MATCH，tree `@@V201_TREE@@`） |
-| CI run / job | run `@@V201_RUN_ID@@` / job `@@V201_JOB_ID@@`（macOS runner，build-ipa 全 success） |
-| artifact id / 体积 | `@@V201_ARTIFACT_ID@@` / **@@V201_ARTIFACT_BYTES@@ B**（`FretroCam-unsigned-ipa`） |
-| 门禁 | **@@V201_GATES_TOTAL@@ 道 / 0 失败 / @@V201_GATES_ASSERTIONS@@ 条断言**（v2.0.0 基线 49,019，目标 ≥49,097，只增不减） |
+| 本地提交 | `635691ece5848d3a80bd32848f294299534afb5f`（v2.0.1 特性，16 files changed, +5,885/−5,519）+ 本文档回填提交（docs-only，`paths-ignore` 跳过 CI） |
+| 远端 master | `54106db383030d27402a34a22e1755a70529bebe`（Git Data API 推送，TREE MATCH，tree `63a5032dfa593e151509c537538d9af6b30bfd15`） |
+| CI run / job | run `39236133258` / job `118005523730`（macOS runner，build-ipa 全 success） |
+| artifact id / 体积 | `12178724304` / **10,980,581 B**（`FretroCam-unsigned-ipa`） |
+| 门禁 | **28 道 / 0 失败 / 49,193 条断言**（v2.0.0 基线 49,019，目标 ≥49,097，只增不减） |
 | expo export bundle | **1,958,021 B**，sha256 `9ee25eff485f22c89f54cafc93fe4aa65ce84ec29a51030cb11907ee54f45a0e`（九卷 PNG 406,830 B / base64 542,456 字符，仍接受超预算；以 export 实测为准） |
-| IPA 文件 / 体积 / sha256 | `FretroCam-v2.0.1-unsigned.ipa` / **@@V201_IPA_BYTES@@ B** / `@@V201_IPA_SHA256@@` |
-| Release id / asset id | release `@@V201_RELEASE_ID@@`（tag `v2.0.1`）/ asset `@@V201_RELEASE_ASSET_ID@@` |
+| IPA 文件 / 体积 / sha256 | `FretroCam-v2.0.1-unsigned.ipa` / **11,094,986 B** / `49f09f6c849199ceae57db6fc5106dac7770ec9523d84cc51397070116814746` |
+| Release id / asset id | release `417160825`（tag `v2.0.1`）/ asset `655946574` |
 | IPA 回读核验 | `RESULT: OK` —— Info.plist `2.0.1` FOUND、九卷 LUT base64 唯一窗口逐卷命中、`LUT_ATLAS_CALIBRATION='bp-mt-2.0.1'` 命中、PRESENT 零 missing、ABSENT 全 0 |
-| 下载地址 | @@V201_IPA_URL@@ |
+| 下载地址 | https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v2.0.1/FretroCam-v2.0.1-unsigned.ipa |
 
 *怎么改*：发布后把实测值写进工作区根 `_v201_fill.json`（键为占位符去掉 `@@V201_` 前缀与
 后缀 `@@`，如 `"IPA_URL": "https://github.com/…/releases/download/v2.0.1/FretroCam-v2.0.1-unsigned.ipa"`），
