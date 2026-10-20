@@ -81,6 +81,7 @@ import { renderFilmToFile } from './applyFilmRender';
 import { planPhotoCrop } from './cameraGeometry';
 import { planCapture } from './captureOptions';
 import { describeError } from './describeError';
+import { deleteLocalFilesBestEffort } from './fileCleanup';
 import { computeFrameLayout, resolveFrameOrientation } from './geometry';
 import { normalizePhoto } from './normalizePhoto';
 import { probeScene } from './sceneProbe';
@@ -532,6 +533,10 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     cropAspect === null
       ? { ...normalized, cropped: false }
       : await centerCropPhoto(normalized, cropAspect, input.digitalFactor ?? 1);
+  if (normalized.uri !== photo.uri && normalized.uri !== cropped.uri) {
+    // 裁切已经生成了下一张中间图；上一张归一化缓存不会再被舞台或像素管线读取。
+    deleteLocalFilesBestEffort([normalized.uri], '归一化中间图');
+  }
   if (cropped.note) {
     warnings.push(cropped.note);
   }
@@ -698,7 +703,7 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
    * 用户红线（m02361 第四条）①：严禁两遍 view-shot。v2.0.0 先截照片 → JS 洗 →
    * 再截合成图，要挂两次合成视图、等两次 onLoad：慢、会闪、还多一次 PNG 编解码。
    * v2.0.1 把照片像素层的来源换成 `ImageManipulator`（**已有依赖，零新增**）：
-   * 从裁切后的底片直接输出一张长边 1440~1800 的 PNG → 单趟像素管线 → 只挂一次
+   * 从裁切后的底片直接输出一张长边 1280~1600 的 PNG → 单趟像素管线 → 只挂一次
    * 合成视图、只截一次图。
    *
    * 照片像素层因此与成片画布**解耦**：成片仍是 2048/3024/4032 的相框画布
@@ -710,12 +715,14 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
    * 由 UI 明确告诉用户"这次没洗出来" —— 绝不静默返回一张没上卷的原图。
    * 所以 `renderMode` 恒为 `'lut'`，`layers` 恒是像素管线的真实参数。
    */
+  const renderTemporaryUris: string[] = [];
   const lutSourceLongEdge = lutSourceLongEdgeFor(capturePreset.captureLongEdge);
   let lutUri: string;
   let renderLayers: string[];
   try {
     input.onStage?.('grading');
     const lutSourceUri = await prepareLutSource(cropped, lutSourceLongEdge);
+    renderTemporaryUris.push(lutSourceUri);
     /*
      * 种子取"快门时间戳 ^ 当前毫秒"：同一张照片重试两次会得到不同颗粒（用户不会察觉），
      * 但同一次显影内部固定 —— 这是 `renderFilmToFile` 的确定性契约。
@@ -742,6 +749,7 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
       intensity: intensityScale,
     });
     lutUri = rendered.uri;
+    renderTemporaryUris.push(rendered.uri);
     renderLayers = [
       `lut:${capturePreset.id}`,
       /* 回报的是**生效值**（`rendered.params` 已经乘过强度并夹取） */
@@ -752,6 +760,7 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
       `gamma ${rendered.params.gamma.toFixed(3)}`,
     ];
   } catch (error) {
+    deleteLocalFilesBestEffort(renderTemporaryUris, '显影中间图');
     /*
      * 用户红线（m03050 手术三）：**严禁静默回退声明式图层**。以前这里只 push 一条
      * warning 就继续返回原图，用户拿到的是一张"没上卷"的照片却以为成功了；
@@ -771,10 +780,16 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     host.mount(finalStageInput);
     await host.whenReady();
     uri = await host.capture();
+  } catch (error) {
+    deleteLocalFilesBestEffort(renderTemporaryUris, '显影中间图');
+    throw error;
   } finally {
     // 失败也必须收掉显影层，否则界面会卡在"显影中"
     host.unmount();
   }
+
+  // 这两张 PNG 只服务本次 LUT 与最终截图；ViewShot 返回后已没有消费者，立即回收。
+  deleteLocalFilesBestEffort(renderTemporaryUris, '显影中间图');
 
   // 尺寸已经在 5.5) 算过（`capture`），这里只负责回报 —— 它和合成层用的是同一个纯函数、
   // 同一份 `layout`、同一个（可能被夹过的）`captureLongEdge`，所以数字和文件必然一致。

@@ -11,14 +11,14 @@
  * v2.0.1 按用户红线重做：
  *
  *   · **halation 只允许「极高光纯 R 通道微扩散」**：阈值 0.88（只看 Luma），
- *     只有 CS-800T（0.22）与极弱的 UM-400 / GD-200（0.03）有值，其余六卷恒 0。
+ *     只有 CS-800T（0.12）与极弱的 UM-400 / GD-200（0.015）有值，其余六卷恒 0。
  *     没有任何全屏 `blur + screen` 图层，G/B 通道严格 0 增量 —— 不可能再出乳白雾。
  *   · **颗粒烘焙进同一个像素循环**（不是外部透明图层）：2×2 团簇哈希噪声、
  *     Y 归一化亮度权重 `w = (4·Y·(1−Y) + 0.15) / 1.15`、**单色亮度颗粒**（R/G/B 同一个
  *     delta，没有任何彩卷三通道权重）。强度用**像素幅度** 0 / 2.5 / 5 / 8.5 / 13。
- *   · **暗角限制在 −0.25 ~ −0.55 EV**，中心 70% 完全通透（smoothstep 平台），
+ *   · **暗角限制在 −0.25 ~ −0.55 EV**，中心 55% 完全通透（smoothstep 平台），
  *     不再是中心就开始压的幂函数。
- *   · **LUT 输入长边锁在 1440~1800px**：这是 JS 像素循环的硬预算。
+ *   · **LUT 输入长边锁在 1280~1600px**：这是 JS 像素循环的硬预算。
  *   · **场景自适应 gamma**：逆光/暗光把 LUT 输入暗部与中间调整体托起（0.88~1.06）。
  *
  * 所有函数都是纯函数、不读任何环境，Node 探针可以直接 import 逐值核对。
@@ -86,17 +86,17 @@ export const HALATION_KERNEL: readonly number[] = [
 /**
  * 逐卷 halation 强度（0~1，相对「极高光像素的 R 值」）。
  *
- * 只有 CS-800T 明显（0.22）；UM-400 / GD-200 极弱（0.03）；其余六卷恒 0。
+ * 只有 CS-800T 明显（0.12）；UM-400 / GD-200 极弱（0.015）；其余六卷恒 0。
  * 这是用户红线的「白名单」——任何新卷想开 halation 必须显式加进这张表。
  */
 export const HALATION_BY_STOCK: Record<LutStockId, number> = {
-  'um-400': 0.03,
-  'gd-200': 0.03,
+  'um-400': 0.015,
+  'gd-200': 0.015,
   'pt-400': 0,
   'cp-200': 0,
   'fj-400': 0,
   'ek-100': 0,
-  'cs-800t': 0.22,
+  'cs-800t': 0.12,
   'hp-400': 0,
   'tx-400': 0,
 };
@@ -183,7 +183,7 @@ export const GRAIN_WEIGHT_PEAK = GRAIN_WEIGHT_GAIN * 0.25 + GRAIN_WEIGHT_FLOOR;
 export const GRAIN_CLUSTER_SIZE = 2;
 
 /* ========================================================================== *
- * 暗角：EV 曲线 + 中心 70% 平台
+ * 暗角：EV 曲线 + 中心 55% 平台
  * ========================================================================== */
 
 /** 最轻一档暗角的角部 EV（magnitude，正数）：−0.25 EV。 */
@@ -198,8 +198,8 @@ export const VIGNETTE_EV_REFERENCE = 0.16;
 /** 预设 `vignette` 超过参考值后的 EV 斜率（每 1.0 增加 2.0 EV）。 */
 export const VIGNETTE_EV_SLOPE = 2;
 
-/** 中心平台半径：径向距离 ≤ 70% 角半径的区域完全通透（乘数恰 1）。 */
-export const VIGNETTE_CENTER_PLATEAU = 0.7;
+/** 中心平台半径：径向距离 ≤ 55% 角半径的区域完全通透（乘数恰 1）。 */
+export const VIGNETTE_CENTER_PLATEAU = 0.55;
 
 /** 径向距离平方的定点刻度（`dx² · 128`，相加后正好落进 257 项查找表）。 */
 export const VIGNETTE_RADIUS_SCALE = 128;
@@ -266,22 +266,22 @@ export const HALATION_EFFECTIVE_MAX = 0.6;
  * ========================================================================== */
 
 /** LUT 输入图长边下限（像素）。 */
-export const LUT_SOURCE_LONG_EDGE_MIN = 1440;
+export const LUT_SOURCE_LONG_EDGE_MIN = 1280;
 
 /** LUT 输入图长边上限（像素）。 */
-export const LUT_SOURCE_LONG_EDGE_MAX = 1800;
+export const LUT_SOURCE_LONG_EDGE_MAX = 1600;
 
-/** `captureLongEdge` 参考点：2048（standard）→ 1440，3024（high）→ 1620，4032（max）→ 1800。 */
+/** `captureLongEdge` 参考点：2048（standard）→ 1280，3024（high）→ 1440，4032（max）→ 1600。 */
 const LUT_SOURCE_LONG_EDGE_BY_CAPTURE: readonly { readonly capture: number; readonly source: number }[] = [
-  { capture: 2048, source: 1440 },
-  { capture: 3024, source: 1620 },
-  { capture: 4032, source: 1800 },
+  { capture: 2048, source: 1280 },
+  { capture: 3024, source: 1440 },
+  { capture: 4032, source: 1600 },
 ];
 
 /**
- * 成片画布长边（`captureLongEdge`）→ 进 JS LUT 的图长边（1440~1800）。
+ * 成片画布长边（`captureLongEdge`）→ 进 JS LUT 的图长边（1280~1600）。
  *
- * 用两个参考点做分段线性：≤2048 恒 1440，≥4032 恒 1800，中间按比例；没有第三个变量的
+ * 用两个参考点做分段线性：≤2048 恒 1280，≥4032 恒 1600，中间按比例；没有第三个变量的
  * 隐藏状态 —— `FilmCompositor` 与 `processFilmPhoto` 各算一次也一定得到同一个数。
  */
 export function lutSourceLongEdgeFor(captureLongEdge: number): number {

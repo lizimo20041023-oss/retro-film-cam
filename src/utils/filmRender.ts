@@ -12,7 +12,7 @@
  *   1. 输入先过 `gamma` 查找表（场景自适应托起暗部/中间调；中性场景是恒等）；
  *   2. 33³ LUT 三线性插值 —— **全整型定点**（`Uint8Array` 一维下标 + `>> 16` 插值），
  *      循环内零对象、零数组分配；
- *   3. 暗角 —— 257 项 16.16 定点乘数表 + 中心 70% smoothstep 平台（−0.25~−0.55 EV）；
+ *   3. 暗角 —— 257 项 16.16 定点乘数表 + 中心 55% smoothstep 平台（−0.25~−0.55 EV）；
  *   4. 颗粒 —— 2×2 团簇哈希噪声，`w = (4Y(1−Y)+0.15) / 1.15`，**单色亮度颗粒**：
  *      R/G/B 加同一个 delta，幅度是 0 / 2.5 / 5 / 8.5 / 13 的像素单位（0~255 尺度）；
  *   5. halation —— **只在循环里记录「Luma ≥ 0.88」的像素**，循环结束后只对这些像素的
@@ -53,13 +53,14 @@ import { clampIntensityScale } from '../constants/intensity';
 import { buildLutSampler } from './lut3d';
 import type { Lut3D, LutSampler } from './lut3d';
 import { sceneGamma } from './adaptiveGrade';
+import { filmGrainScaleFor } from './filmProfiles';
 
 /** 像素管线阶段（进度遮罩只关心「还在显影」；不报百分比）。 */
 export type FilmRenderStage = 'lut' | 'halation' | 'done';
 
 /** 一卷预设解析出来的像素参数（`renderFilmToFile` / 探针共用的唯一口径）。 */
 export interface FilmLookParams {
-  /** halation 强度 0~1（只有 cs-800t 0.22、um-400/gd-200 0.03，其余 0）。 */
+  /** halation 强度 0~1（只有 cs-800t 0.12、um-400/gd-200 0.015，其余 0）。 */
   halation: number;
   /** 角部 EV magnitude（0 / 0.25~0.55），见 `vignetteEvFor`。 */
   vignette: number;
@@ -87,6 +88,8 @@ export interface FilmLookParams {
 
 /** `renderFilmFrame` 的入参。 */
 export interface FilmRenderOptions {
+  /** 胶卷 id：决定一次性烘进 LUT 的人格，以及该乳剂的颗粒量。 */
+  stockId?: string;
   /** 33³ LUT；`null` = 恒等（兜底路径/探针）。 */
   lut: Lut3D | null;
   /** halation 强度 0~1（缺省 0）。 */
@@ -144,6 +147,13 @@ function roundTenth(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+/** 预设强度与乳剂倍率合成后的唯一颗粒口径（渲染和回报共用）。 */
+function effectiveGrain(grain: number, stockId?: string): number {
+  return roundTenth(
+    Math.min(GRAIN_PIXEL_EFFECTIVE_MAX, Math.max(0, grain * filmGrainScaleFor(stockId))),
+  );
+}
+
 /**
  * 把「基础观感量」乘上预设强度（v2.1.0 手术二 → v2.1.2 无外推）。
  *
@@ -184,12 +194,13 @@ function scaleFilmLook(
 export function filmLookWithIntensity(
   params: FilmLookParams,
   intensity?: number,
+  stockId?: string,
 ): FilmLookParams {
   const scaled = scaleFilmLook(params.halation, params.vignette, params.grain, intensity);
   return {
     halation: scaled.halation,
     vignette: scaled.vignette,
-    grain: scaled.grain,
+    grain: effectiveGrain(scaled.grain, stockId),
     gamma: params.gamma,
     mono: params.mono,
     intensity: scaled.intensity,
@@ -323,7 +334,7 @@ export function renderFilmFrame(
   // 强度（v2.1.0）：把 halation / 暗角 EV / 颗粒幅度一次算成「实际生效」的整型口径
   const look = scaleFilmLook(options.halation, options.vignette, options.grain, options.intensity);
   const halation = look.halation;
-  const grain = look.grain;
+  const grain = effectiveGrain(look.grain, options.stockId);
   const seed = Number.isFinite(options.seed) ? options.seed >>> 0 : 0;
   const progress = options.onProgress;
 
@@ -354,6 +365,7 @@ export function renderFilmFrame(
   const blockShift = 1; // 2×2 团簇（GRAIN_CLUSTER_SIZE = 2）
   const blocksPerRow = (width + (1 << blockShift) - 1) >>> blockShift;
   const blockNoise = grain > 0 ? new Float32Array(Math.max(1, blocksPerRow)) : null;
+  const blockDither = grain > 0 ? new Float32Array(Math.max(1, blocksPerRow)) : null;
   /*
    * 颗粒幅度只有**一个**（v2.1.2 用户 m00001：纯单色亮度颗粒）：
    * R/G/B 加的是同一个 delta，彩卷也好黑白卷也好都不再分通道 —— 颗粒里不可能出
@@ -384,9 +396,12 @@ export function renderFilmFrame(
   const total = width * height;
   let o = 0;
   for (let y = 0; y < height; y += 1) {
-    if (blockNoise !== null && (y & 1) === 0) {
+    if (blockNoise !== null && blockDither !== null && (y & 1) === 0) {
       const cy = y >>> blockShift;
-      for (let b = 0; b < blocksPerRow; b += 1) blockNoise[b] = hashNoise(b, cy, seed);
+      for (let b = 0; b < blocksPerRow; b += 1) {
+        blockNoise[b] = hashNoise(b, cy, seed);
+        blockDither[b] = (hashNoise(b, cy, seed ^ 0x9e3779b9) + 1) * 0.5;
+      }
     }
     const dy = radiusY[y];
     const rowStart = y * width;
@@ -505,6 +520,14 @@ export function renderFilmFrame(
         blue = clampByte(b0 + (((blue - b0) * intensityQ + 32768) >> 16));
       }
 
+      // 黑白乳剂无论强度档位是多少都必须真正去色；不能在 35% 时混回 65% 彩色原图。
+      if (options.mono === true) {
+        const mono = (red * LUMA_R + green * LUMA_G + blue * LUMA_B) >>> LUMA_SHIFT;
+        red = mono;
+        green = mono;
+        blue = mono;
+      }
+
       // ③ 暗角：16.16 定点乘数（平台恰为 1.0 时逐字节不变），257 项表，无 sqrt/pow
       if (vignette !== null) {
         const mul = vignette[radiusX[x] + dy];
@@ -513,24 +536,29 @@ export function renderFilmFrame(
         blue = (blue * mul + 32768) >>> 16;
       }
 
-      // ④ 颗粒：2×2 团簇 + 亮度权重 + **单色**亮度 delta（R/G/B 同一个值，不可能出伪色）
-      if (grainWeight !== null) {
-        const luma = (red * LUMA_R + green * LUMA_G + blue * LUMA_B) >>> LUMA_SHIFT;
-        const cluster = (blockNoise as Float32Array)[x >>> blockShift];
-        const weight = (grainWeight as Float32Array)[luma];
-        const delta = Math.round(cluster * weight * grain);
-        red = clampByte(red + delta);
-        green = clampByte(green + delta);
-        blue = clampByte(blue + delta);
-      }
-
-      // ⑤ halation：只把高光比例累进半分辨率掩膜（真正的扩散在循环之后）
+      // ④之前记录高光：颗粒不能偶发触发红点，掩膜必须取无颗粒的成片亮度。
       if (mask !== null) {
         const luma = (red * LUMA_R + green * LUMA_G + blue * LUMA_B) >>> LUMA_SHIFT;
         if (luma >= HALATION_LUMA_CUTOFF) {
           const level = (luma - HALATION_LUMA_CUTOFF) / (255 - HALATION_LUMA_CUTOFF);
           mask[((y >>> maskShift) * maskWidth) + (x >>> maskShift)] += level;
         }
+      }
+
+      // ④ 颗粒：2×2 团簇 + 亮度权重 + **单色**亮度 delta（R/G/B 同一个值，不可能出伪色）
+      if (grainWeight !== null && blockDither !== null) {
+        const luma = (red * LUMA_R + green * LUMA_G + blue * LUMA_B) >>> LUMA_SHIFT;
+        const cluster = (blockNoise as Float32Array)[x >>> blockShift];
+        const weight = (grainWeight as Float32Array)[luma];
+        const signedAmount = cluster * weight * grain;
+        const magnitude = Math.abs(signedAmount);
+        const whole = Math.floor(magnitude);
+        const fraction = magnitude - whole;
+        const quantized = whole + (blockDither[x >>> blockShift] < fraction ? 1 : 0);
+        const delta = signedAmount < 0 ? -quantized : quantized;
+        red = clampByte(red + delta);
+        green = clampByte(green + delta);
+        blue = clampByte(blue + delta);
       }
 
       rgba[o] = red;
@@ -546,7 +574,16 @@ export function renderFilmFrame(
     const radius = HALATION_RADIUS;
     const span = radius * 2 + 1;
     const kernel = HALATION_KERNEL;
-    // 水平可分离（权重取核的中央行）
+    /*
+     * HALATION_KERNEL 是归一化的二维核；直接拿中央行/列做两遍时，两次 DC 增益只有
+     * 约 0.118，光晕会被无意削弱 8 倍。先把中央行归一化成真正的一维高斯核。
+     */
+    const kernel1d = new Float32Array(span);
+    let kernelSum = 0;
+    for (let k = 0; k < span; k += 1) kernelSum += kernel[radius * span + k];
+    const kernelScale = kernelSum > 0 ? 1 / kernelSum : 1;
+    for (let k = 0; k < span; k += 1) kernel1d[k] = kernel[radius * span + k] * kernelScale;
+    // 水平可分离
     for (let y = 0; y < maskHeight; y += 1) {
       const row = y * maskWidth;
       for (let x = 0; x < maskWidth; x += 1) {
@@ -554,7 +591,7 @@ export function renderFilmFrame(
         for (let k = 0; k < span; k += 1) {
           const sx = x + k - radius;
           if (sx < 0 || sx >= maskWidth) continue;
-          sum += mask[row + sx] * kernel[radius * span + k];
+          sum += mask[row + sx] * kernel1d[k];
         }
         maskTmp[row + x] = sum;
       }
@@ -566,12 +603,15 @@ export function renderFilmFrame(
         for (let k = 0; k < span; k += 1) {
           const sy = y + k - radius;
           if (sy < 0 || sy >= maskHeight) continue;
-          sum += maskTmp[sy * maskWidth + x] * kernel[k * span + radius];
+          sum += maskTmp[sy * maskWidth + x] * kernel1d[k];
         }
-        mask[y * maskWidth + x] = sum * 0.25;
+        const index = y * maskWidth + x;
+        const coreMean = mask[index] * 0.25;
+        const blurMean = sum * 0.25;
+        mask[index] = Math.max(0, blurMean - coreMean);
       }
     }
-    // 纯 R 叠加：按半分辨率最近邻取值（视觉上就是一圈软辉，不产生白雾）
+    // 纯 R 外缘叠加：已减掉高光核心，只在亮部周围形成软辉，不把白区本身染红。
     const strength = halation * 255;
     for (let y = 0; y < height; y += 1) {
       const maskRow = (y >>> maskShift) * maskWidth;

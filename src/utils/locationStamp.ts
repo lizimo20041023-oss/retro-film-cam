@@ -499,34 +499,22 @@ export type ResolvePlaceOutcome =
       native: ReverseGeocodeOutcome;
       /** 网络那一段为什么也没成（`null` = 没走到那一步）。 */
       network: string | null;
-      /** 两段合计发了几次请求（原生 1~2 次 + 网络 0~1 次）。 */
+      /** 系统原生反查一共尝试了几次（1~2 次）。 */
       attempts: number;
     };
 
 /**
- * 坐标 → 结构化地名：**原生反查失败时自动走第二条通道**。
+ * 坐标 → 结构化地名：只使用系统原生反查，绝不把坐标发给第三方接口。
  *
  * 这是"相机页现场拍"和"相册导入"**唯一**的地名入口，两条路必须从这里拿
- * （耐心值 / 重试 / 兜底顺序 / 日志措辞都只在本文件里定义一次，见文件头）。
+ * （耐心值 / 重试 / 失败语义 / 日志措辞都只在本文件里定义一次，见文件头）。
  *
- * ## 最坏等待时间（用户最在意的一条，改动时**必须**同步更新这里和 `GEOCODE_NETWORK_TIMEOUT_MS`）
+ * ## 最坏等待时间
  *
  * ```
- *   原生：2 次 × 最多 5000ms  = 10000ms   ← GEOCODE_TOTAL_BUDGET_MS 是硬闸门
- *   网络：1 次 × 最多 4000ms  =  4000ms   ← GEOCODE_NETWORK_TIMEOUT_MS，不重试
- *   ─────────────────────────────────────
- *   最坏                      ≈ 14000ms（14 秒）
+ *   系统原生：2 次 × 最多 5000ms = 10000ms ← GEOCODE_TOTAL_BUDGET_MS 是硬闸门
  * ```
- * 这 14s 只发生在"原生两次都没成**且**公开接口也卡住"的照片上。正常照片几百毫秒，
- * 原生一次就成的照片**一秒都不会多等**（网络那段根本不会发）。历史基线是 5s 单次、
- * 后来是 10s 两次；本轮加兜底后是 14s —— 用户拍板的取舍是"宁可多等 4 秒换来地名"，
- * 但**不许**再往上加（要加压在 `GEOCODE_NETWORK_TIMEOUT_MS`，那一个数就是总闸门）。
- *
- * ## 什么时候**不**发网络请求
- *
- * 原生"答了但没名字"（空数组 / 字段全空）也走网络通道 —— 这正是要做兜底的那类点
- * （海上、极地、刚开盘的新楼盘、机场 / 车站这类 POI）。两种通道的组合结果是：
- * 原生成功 → 一次网络都不发；原生失败 → 恰好一次。
+ * 正常照片通常几百毫秒；只有系统服务连续超时才会接近 10 秒。
  *
  * ## 绝不抛
  *
@@ -536,11 +524,9 @@ export type ResolvePlaceOutcome =
  */
 export async function resolvePlaceFromCoords(
   coords: { latitude: number; longitude: number },
-  geoLocale: LocalePreference = 'zh-Hans',
-  uiLocale: LocaleId = 'zh-Hans',
+  _geoLocale: LocalePreference = 'zh-Hans',
+  _uiLocale: LocaleId = 'zh-Hans',
 ): Promise<ResolvePlaceOutcome> {
-  const placeLocale = resolveGeoLocale(geoLocale, uiLocale);
-
   const native = await reverseGeocodeWithRetry(coords);
   if (native.status === 'ok' && native.address !== undefined) {
     const place = resolvePlaceFromGeocode(native.address, coords.latitude, coords.longitude);
@@ -553,43 +539,24 @@ export async function resolvePlaceFromCoords(
    * 走到这里有两种原因，日志里必须分得清：
    *   · 原生根本没答成（超时 / 抛异常）→ 用 `describeGeocodeFailure` 的原话；
    *   · 原生答了，但地址对象里一个可用字段都没有（空数组或 `{}`）→ 另说一句。
-   * 措辞沿用 `resolvePlaceFromExifGps` 里那几句的用词（"退回坐标"），
-   * 免得同一种失败在两条路上被描述成两件事。
+   * 同一种失败在相机与导入两条路上必须得到相同结果。
    */
   const nativeReason =
     native.status === 'ok'
       ? '原生反查返回空数组 / 结果里没有任何可用地名'
       : describeGeocodeFailure(native);
 
-  const network = await reverseGeocodeViaNetwork(coords, placeLocale);
-  if (network.status === 'ok') {
-    const place = resolvePlaceFromGeocode(network.address, coords.latitude, coords.longitude);
-    if (hasPlaceName(place)) {
-      return { status: 'ok', address: network.address, place, channel: 'network' };
-    }
-    console.warn(
-      '[retro-film-cam] 公开反查接口的结果里也没有可用地名，这张退回坐标：' +
-        `${formatCoords(coords.latitude, coords.longitude)}`,
-    );
-    return {
-      status: 'failed',
-      native,
-      network: '结果里没有可用地名',
-      attempts: native.attempts + 1,
-    };
-  }
-
-  // 两条都没成：**一条日志说清全过程**（原生为什么失败 + 网络为什么失败 + 坐标），
-  // 这是"这张照片为什么只印坐标"唯一的事后线索。
-  console.warn(
-    `[retro-film-cam] 两条反查通道都没拿到地名（原生：${nativeReason}；公开接口：${network.reason}），` +
-      `这张退回坐标：${formatCoords(coords.latitude, coords.longitude)}`,
-  );
+  /*
+   * 隐私边界：不再把拍摄坐标或导入照片的 EXIF 坐标发给第三方服务。
+   * 原生系统反查失败就不提供地名，由调用方按 locationMode 决定是否另行显示坐标；
+   * 同时少掉最坏 4 秒的第三方网络等待，批量导入更快。
+   */
+  console.warn(`[retro-film-cam] 系统地名反查失败，本次不提供地名：${nativeReason}`);
   return {
     status: 'failed',
     native,
-    network: network.reason,
-    attempts: native.attempts + 1,
+    network: null,
+    attempts: native.attempts,
   };
 }
 
@@ -696,7 +663,7 @@ export async function fetchLocationStamp(
 
     if (mode === 'coords') {
       // 这个形状的**唯一构造点**是 `placeNames.coordsOnlyPlace`，别处不许再手写一份：
-      // 相册导入那条路（`importPhoto.ts` 的反查失败兜底）用的是同一个函数，
+      // 相册导入那条路（`importPhoto.ts` 的显式坐标模式）用的是同一个函数，
       // 两边的"只有坐标"必须逐字段一致，否则同一张照片从相机出来和从相册导入出来
       // 会印出不一样的字。
       const place: ResolvedPlace = coordsOnlyPlace(coords.latitude, coords.longitude);
@@ -705,9 +672,9 @@ export async function fetchLocationStamp(
     }
 
     /*
-     * 反查地名：原生两次没成就自动走公开接口兜底（耐心值 / 顺序 / 日志措辞全部
-     * 收在 `resolvePlaceFromCoords` 里，相册导入走的是**同一个函数** ——
-     * 两条路的等待时间与兜底行为必须一模一样）。
+     * 反查地名：只走系统原生服务，耐心值 / 重试 / 日志措辞全部收在
+     * `resolvePlaceFromCoords` 里；相册导入走的是**同一个函数**，两条路的等待时间
+     * 与失败行为必须一模一样，也都不会把坐标发给第三方。
      *
      * ⚠️ 这一段与上面 `mode === 'coords'` 那一段有一条硬边界：
      * **地名档绝不允许输出坐标**。用户选了「地名」却看到一串 `LAT 23°02'N …`
@@ -718,11 +685,10 @@ export async function fetchLocationStamp(
     const resolved = await resolvePlaceFromCoords(coords, locale, uiLocale ?? 'zh-Hans');
     if (resolved.status !== 'ok') {
       // 留痕：以前这里静默退坐标，"这张照片为什么没有地名"事后完全查不出来。
-      // 坐标与两条通道的失败原因都已经在 `resolvePlaceFromCoords` 里 warn 过了，
-      // 这里只补一句"相机页这一次没有地名"，避免日志里出现两份坐标。
+      // 系统反查的失败原因已经在 `resolvePlaceFromCoords` 里 warn 过了，
+      // 这里只补一句"相机页这一次没有地名"。
       console.warn(
-        `[retro-film-cam] 相机页这一张没有地名（原生发了 ${resolved.native.attempts} 次，` +
-          `公开接口${resolved.network === null ? '未走' : `：${resolved.network}`}）`,
+        `[retro-film-cam] 相机页这一张没有地名（系统反查尝试 ${resolved.native.attempts} 次）`,
       );
       return { ok: false, reason: 'failed' };
     }

@@ -89,7 +89,6 @@ export const zhHans = {
   'gallery.emptyHint': '拍一张就会出现在这里，不用再去系统相册找。',
   'gallery.photo': '第 {index} 张，{date}',
   'gallery.delete': '删除这张',
-  'gallery.cancel': '取消',
   'gallery.lightbox.a11y': '第 {index} 张，点击关闭',
   'gallery.share': '分享',
   'gallery.shareFailed': '分享失败：{message}',
@@ -233,13 +232,21 @@ export const zhHans = {
   'gallery.mode.a11y': '相册浏览方式：{label}',
   'gallery.strip.count': '共 {count} 张',
 
-  /* ---------------- 切片导出（§9.4） ---------------- */
-  'gallery.export.entry': '导出切片',
-  'gallery.export.a11y': '把选中的 {count} 张拼成一张长条海报',
-  'gallery.export.hint': '再选 {count} 张',
-  'gallery.export.busy': '正在拼合…',
-  'gallery.export.saved': '切片已存入相簿',
-  'gallery.export.failed': '导出失败：{message}',
+  /* ---------------- 多选删除 ---------------- */
+  'gallery.selection.enter': '选择',
+  'gallery.selection.photo': '第 {index} 张，共 {total} 张',
+  'gallery.selection.count': '已选 {count} 张',
+  'gallery.selection.selectAll': '全选',
+  'gallery.selection.clear': '取消全选',
+  'gallery.selection.delete': '删除',
+  'gallery.selection.delete.a11y': '删除已选的 {count} 张照片',
+  'gallery.selection.delete.title': '删除已选照片（{count} 张）？',
+  'gallery.selection.delete.message': '这些 App 内副本将永久删除；系统“照片”中的副本不受影响。',
+  'gallery.selection.delete.confirm': '删除 {count} 张',
+  'gallery.selection.deleting': '删除中…',
+  'gallery.selection.cancel': '取消',
+  'gallery.selection.deleted': '已删除 {count} 张',
+  'gallery.selection.delete.failed': '仅删除了 {deleted}/{count} 张，请重试',
 
   /* ---------------- 删除成片（§10.2） ---------------- */
   'gallery.delete.a11y': '删除这张成片',
@@ -248,6 +255,7 @@ export const zhHans = {
   'gallery.delete.cancel': '取消',
   'gallery.delete.confirm': '删除',
   'gallery.deleted': '已删除',
+  'gallery.delete.failed': '删除失败，请重试',
 
   // ---- v1.4.0：取景器极简重构新增 ----
   'settings.geoLocale.title': '地名语言',

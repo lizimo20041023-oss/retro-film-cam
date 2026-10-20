@@ -216,6 +216,9 @@ export function Lightbox({
   }, [aspectRatio, availableHeight, width]);
 
   const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const offsetRef = useRef(offset);
+  offsetRef.current = offset;
+  const panStartOffsetRef = useRef({ x: 0, y: 0 });
 
   /** 平移边界：只有"图片比容器大"的那一轴才允许拖，否则最多只能在溢出量内移动。 */
   const clampOffset = useCallback(
@@ -298,6 +301,7 @@ export function Lightbox({
             distance: touches.length === 2 ? distanceBetween(touches[0], touches[1]) : 0,
             scale: scaleRef.current,
           };
+          panStartOffsetRef.current = offsetRef.current;
         },
         onPanResponderMove: (event, gestureState) => {
           const touches = event.nativeEvent.touches;
@@ -329,7 +333,8 @@ export function Lightbox({
           // 单指：放大态 → 平移画面；原始大小 → 下拖准备关闭。
           movedRef.current = Math.max(movedRef.current, Math.hypot(gestureState.dx, gestureState.dy));
           if (scaleRef.current > 1) {
-            setOffset((current) => clampOffset({ x: current.x + gestureState.dx, y: current.y + gestureState.dy }));
+            const start = panStartOffsetRef.current;
+            setOffset(clampOffset({ x: start.x + gestureState.dx, y: start.y + gestureState.dy }));
             return;
           }
           // 只跟手"往下"，往上拖不动：这张图没有上滑手势，跟手会显得滑腻。

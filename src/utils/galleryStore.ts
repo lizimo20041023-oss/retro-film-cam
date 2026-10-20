@@ -47,7 +47,7 @@ const MAIN_LONG_EDGE = 2048;
 /** 缩略图长边目标（像素）。够网格清晰，又不至于把内存吃满。 */
 const THUMB_LONG_EDGE = 400;
 
-/** 成片质量。0.92 是"看不出二次压缩"和"文件别太大"之间的常见折中。 */
+/** 只有确实需要缩尺寸或调用方没声明格式时才使用；已达标的 JPEG 会原样复制。 */
 const MAIN_QUALITY = 0.92;
 
 /** 缩略图质量。反正只是网格预览，压狠一点。 */
@@ -88,6 +88,11 @@ export interface AddShotInput {
   createdAt?: number;
   frameId?: string;
   presetId?: string;
+  /**
+   * 调用方确认的源文件编码。`'jpeg'` 且尺寸已在上限内时直接复制，避免整张成片再解码、
+   * 再有损编码一次；不传则保持保守路径，仍交给 ImageManipulator 统一转 JPEG。
+   */
+  sourceFormat?: 'jpeg';
   /**
    * App 内相册这份副本的长边上限（像素）。不传用 `MAIN_LONG_EDGE`（2048，标准档）。
    *
@@ -405,8 +410,9 @@ export async function listShots(): Promise<GalleryShot[]> {
  * 这是刻意的：约定要求写盘失败绝不抛异常，而"失败"又必须让调用方看得见，
  * 那就只能把失败编码进返回值。`useGallery().add` 原样把它透出去。
  *
- * 写成 jpg 而不是原样拷贝：`captureRef` 出来的是 png（体积是 jpg 的好几倍），
- * 而且尺寸由屏幕决定，不一定等于 2048。这里统一转一次，落盘的东西才是可预期的。
+ * `captureRef` 当前输出 JPEG。调用方明确声明 `sourceFormat: 'jpeg'` 且真实像素尺寸已经
+ * 不超过上限时，成片只复制一次；需要缩图或来源未知时才走 ImageManipulator。缩略图
+ * 始终单独生成，避免网格直接解码全尺寸成片。
  */
 export async function addShot(input: AddShotInput): Promise<GalleryShot | null> {
   try {
@@ -433,19 +439,31 @@ export async function addShot(input: AddShotInput): Promise<GalleryShot | null> 
         const thumbTarget = new File(dir, `${id}_thumb.jpg`);
 
         /*
-         * ① 成片：转 jpg + 长边压到「用户画质档」以内（不传就是标准档 2048）。
-         * 这里只缩不放 —— 源图比目标小就原样转格式，见 `planResize`。
+         * ① 成片：长边压到「用户画质档」以内（不传就是标准档 2048）。
+         * ViewShot 已经给出质量 0.98 的 JPEG；尺寸达标时直接复制，既省一次全图解码/编码，
+         * 也避免再压成 0.92。只有要缩尺寸或来源格式未知时才转码。
          */
         const mainLongEdge = isPositiveNumber(input.maxLongEdge) ? input.maxLongEdge : MAIN_LONG_EDGE;
-        const main = await renderToCache(
-          sourceUri,
-          input.width,
-          input.height,
-          mainLongEdge,
-          MAIN_QUALITY,
-        );
-        cacheFiles.push(main.uri);
-        await new File(main.uri).copy(mainTarget, { overwrite: true });
+        const sourceDimensionsKnown = isPositiveNumber(input.width) && isPositiveNumber(input.height);
+        const canCopyOriginal =
+          input.sourceFormat === 'jpeg' &&
+          sourceDimensionsKnown &&
+          planResize(input.width, input.height, mainLongEdge) === null;
+        let main: RenderedImage;
+        if (canCopyOriginal) {
+          await new File(sourceUri).copy(mainTarget, { overwrite: true });
+          main = { uri: mainTarget.uri, width: input.width, height: input.height };
+        } else {
+          main = await renderToCache(
+            sourceUri,
+            input.width,
+            input.height,
+            mainLongEdge,
+            MAIN_QUALITY,
+          );
+          cacheFiles.push(main.uri);
+          await new File(main.uri).copy(mainTarget, { overwrite: true });
+        }
         copied.push(mainTarget.uri);
 
         // ② 缩略图：从 ① 的产物再缩，而不是再解一次原图 —— 更快也更省内存
@@ -509,29 +527,35 @@ export async function addShot(input: AddShotInput): Promise<GalleryShot | null> 
 }
 
 /**
- * 删掉一条记录和它的两个文件。永远不抛。
+ * 删掉一条记录和它的两个文件。成功（含本来就不存在）返回 true，失败返回 false；永远不抛。
  *
  * 顺序是**先落索引、再删文件**：反过来的话，"文件已删但索引没更新"会留下一条
  * 指向不存在文件的幽灵记录（网格里一块裂图）；而现在最坏情况只是一个孤儿文件，
  * 界面上完全看不出来，`clearGallery` 会顺手扫掉。
  */
-export async function deleteShot(id: string): Promise<void> {
+export async function deleteShot(id: string): Promise<boolean> {
   try {
-    await enqueue(async () => {
+    return await enqueue(async () => {
       const snapshot = await readIndexUnsafe();
       const target = snapshot.shots.find((shot) => shot.id === id);
       if (target === undefined) {
         // 索引里本来就没有这条（可能已经删过）：只把顺手发现的脏数据回写掉
         if (snapshot.dirty) {
-          await writeIndexUnsafe(snapshot.shots);
+          return await writeIndexUnsafe(snapshot.shots);
         }
-        return;
+        return true;
       }
-      await writeIndexUnsafe(snapshot.shots.filter((shot) => shot.id !== id));
+      const persisted = await writeIndexUnsafe(snapshot.shots.filter((shot) => shot.id !== id));
+      if (!persisted) {
+        // 索引没写成时绝不能删文件，否则下次启动会留下一条指向空文件的幽灵记录。
+        return false;
+      }
       await removeFiles([target.uri, target.thumbUri]);
+      return true;
     });
   } catch (error) {
     console.warn('[retro-film-cam] 删除相册照片失败：', error);
+    return false;
   }
 }
 

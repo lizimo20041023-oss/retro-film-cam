@@ -48,6 +48,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
+import { resolveCaptureLongEdge } from '../constants/captureQuality';
 import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex } from '../constants/frames';
 import { applyGrainLevel, findGrainLevelIndex, grainLevelAt } from '../constants/grain';
 import { DEFAULT_PRESET_ID, PRESETS, findPresetIndex, resolvePreset } from '../constants/presets';
@@ -173,6 +174,14 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
    */
   const [openedId, setOpenedId] = useState<string | null>(null);
 
+  /**
+   * 多选删除由相册页统一持有，而不是分别塞进长卷/网格。
+   * 这样两种视图使用同一套规则，也不会因为组件切换而留下两份互相矛盾的选择。
+   */
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [deletingSelection, setDeletingSelection] = useState(false);
+
   /** 当前那条提示（保存/分享的结果）。`null` = 不显示。 */
   const [toast, setToast] = useState<LightboxToast | null>(null);
 
@@ -229,6 +238,9 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
   useEffect(() => {
     if (!visible) {
       wasVisible.current = false;
+      setSelectionMode(false);
+      setSelectedIds([]);
+      setDeletingSelection(false);
       return;
     }
     if (wasVisible.current) {
@@ -236,15 +248,27 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
     }
     wasVisible.current = true;
     setOpenedId(null);
+    setSelectionMode(false);
+    setSelectedIds([]);
+    setDeletingSelection(false);
     setToast(null);
     void refreshSilently();
   }, [visible, refreshSilently]);
+
+  /** 对账或单张删除后，选择集里不能残留已经不存在的 id。 */
+  useEffect(() => {
+    const liveIds = new Set(shots.map((shot) => shot.id));
+    setSelectedIds((current) => current.filter((id) => liveIds.has(id)));
+  }, [shots]);
 
   /** 当前大图对应的记录；记录被删掉后自动变回 `null`，lightbox 随之关闭。 */
   const opened = useMemo(
     () => (openedId === null ? null : (shots.find((shot) => shot.id === openedId) ?? null)),
     [shots, openedId],
   );
+
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const allSelected = shots.length > 0 && shots.every((shot) => selectedSet.has(shot.id));
 
   /*
    * 这里原本还有一段"打开大图时顺手预热相邻两张成片"。
@@ -291,8 +315,11 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
      * 这一句和 `CameraScreen` 的 `effectivePreset` 是同一个算法，刻意重复 ——
      * 两边共用就得把 `settings` 也塞进 `constants/presets.ts`，那个文件不该知道设置的存在。
      */
-    return applyGrainLevel(base, grainLevelAt(findGrainLevelIndex(settings.grainLevel)).opacity);
-  }, [settings.grainLevel, shots]);
+    return {
+      ...applyGrainLevel(base, grainLevelAt(findGrainLevelIndex(settings.grainLevel)).opacity),
+      captureLongEdge: resolveCaptureLongEdge(settings.captureQuality),
+    };
+  }, [settings.captureQuality, settings.grainLevel, shots]);
 
   /**
    * 导入冲印用的舞台盒子。
@@ -397,8 +424,11 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
     importing,
     localeId,
     refresh,
+    settings.captureQuality,
     settings.grainLevel,
     settings.adaptiveGrade,
+    settings.locationMode,
+    settings.noFrameAspect,
     settings.placeDetail,
     settings.watermarkAlign,
     settings.watermarkLayout,
@@ -433,9 +463,8 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
 
   /**
    * 删掉这一张。**调用方必须先问过用户** ——
-   *   ① 灯箱：`Lightbox.handleDelete` 的 `Alert` 已经问过；
-   *   ② 网格：`renderItem` 里的长按（`onLongPress`）问过。
-   * 这里只管"退回网格 + 落库"，不再弹第二个框。
+   * 灯箱的 `Lightbox.handleDelete` 已经问过；这里只管"退回网格 + 落库"，
+   * 不再弹第二个框。网格/长卷长按现在进入多选，不再直接删除单张。
    *
    * 为什么退回网格放在这里而不是调用方：删完留在详情页只会看到一张已经不存在的图，
    * 而两个调用方都需要这个收尾动作，写两遍迟早会漏一处。
@@ -444,29 +473,88 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
   const deleteShotNow = useCallback(
     (shot: GalleryShot): void => {
       setOpenedId(null);
-      void remove(shot.id);
-      // 删的是整屏盖住的详情页/一格缩略图，不留回音的话用户会怀疑没生效。
-      showToast({ key: `deleted-${Date.now()}`, message: t('gallery.deleted') });
+      void remove(shot.id).then((removed) => {
+        showToast({
+          key: `deleted-${Date.now()}`,
+          message: t(removed ? 'gallery.deleted' : 'gallery.delete.failed'),
+        });
+      });
     },
     [remove, showToast, t],
   );
 
-  /** 网格那一格被长按：二次确认后才落库。确认框和灯箱用**同一套** `gallery.delete.*`。 */
-  const confirmDelete = useCallback(
-    (shot: GalleryShot): void => {
-      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      Alert.alert(t('gallery.delete.title'), t('gallery.delete.message'), [
+  const exitSelection = useCallback((): void => {
+    setSelectionMode(false);
+    setSelectedIds([]);
+    setDeletingSelection(false);
+  }, []);
+
+  /** 顶部【选择】或长按任一照片都进入同一个选择模式；长按时先选中触发项。 */
+  const beginSelection = useCallback((shot?: GalleryShot): void => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setOpenedId(null);
+    setSelectionMode(true);
+    setSelectedIds(shot === undefined ? [] : [shot.id]);
+  }, []);
+
+  const toggleSelection = useCallback((shot: GalleryShot): void => {
+    void Haptics.selectionAsync();
+    setSelectedIds((current) =>
+      current.includes(shot.id)
+        ? current.filter((id) => id !== shot.id)
+        : [...current, shot.id],
+    );
+  }, []);
+
+  const toggleSelectAll = useCallback((): void => {
+    void Haptics.selectionAsync();
+    setSelectedIds(allSelected ? [] : shots.map((shot) => shot.id));
+  }, [allSelected, shots]);
+
+  /**
+   * 复用 `useGallery().remove`；它负责乐观更新、调用串行 store 删除并静默对账。
+   * 这里并发发起只是为了不在 UI 层人为串行等待，真正的磁盘写入仍由 store 的队列排序。
+   */
+  const deleteSelection = useCallback(
+    async (ids: readonly string[]): Promise<void> => {
+      if (ids.length === 0) {
+        return;
+      }
+      setDeletingSelection(true);
+      setOpenedId(null);
+      const outcomes = await Promise.all(ids.map((id) => remove(id)));
+      const deleted = outcomes.filter(Boolean).length;
+      exitSelection();
+      showToast({
+        key: `deleted-selection-${Date.now()}`,
+        message:
+          deleted === ids.length
+            ? t('gallery.selection.deleted', { count: ids.length })
+            : t('gallery.selection.delete.failed', { deleted, count: ids.length }),
+      });
+    },
+    [exitSelection, remove, showToast, t],
+  );
+
+  const confirmDeleteSelection = useCallback((): void => {
+    if (selectedIds.length === 0 || deletingSelection) {
+      return;
+    }
+    const snapshot = [...selectedIds];
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    Alert.alert(
+      t('gallery.selection.delete.title', { count: snapshot.length }),
+      t('gallery.selection.delete.message'),
+      [
         { text: t('gallery.delete.cancel'), style: 'cancel' },
         {
-          // `destructive` 让 iOS 把这一项标红并排在常规位置，用户一眼能看出哪个不可逆
-          text: t('gallery.delete.confirm'),
+          text: t('gallery.selection.delete.confirm', { count: snapshot.length }),
           style: 'destructive',
-          onPress: () => deleteShotNow(shot),
+          onPress: () => void deleteSelection(snapshot),
         },
-      ]);
-    },
-    [deleteShotNow, t],
-  );
+      ],
+    );
+  }, [deleteSelection, deletingSelection, selectedIds, t]);
 
   /** 点开某一格。触感放这里而不是 `Pressable` 的 `onPress` 里，是为了只写一次。 */
   const handleOpen = useCallback((id: string): void => {
@@ -480,19 +568,12 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
 
   const handleCloseScreen = useCallback((): void => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    exitSelection();
     onClose();
-  }, [onClose]);
-
-  /** 把一句现成的话吐成提示条（长卷的切片导出回音用它，那里拿不到 `LightboxToast` 的 key）。 */
-  const showToastMessage = useCallback(
-    (message: string): void => {
-      showToast({ key: `msg-${Date.now()}`, message });
-    },
-    [showToast],
-  );
+  }, [exitSelection, onClose]);
 
   /**
-   * 齿孔轨道 / 切片海报上印的胶卷代号，取最近一张成片的预设**名字**。
+   * 齿孔轨道上印的胶卷代号，取最近一张成片的预设**名字**。
    *
    * 为什么用 `name` 而不是 `id`：预设的 `name` 本来就是代号形态
    * （`RT-400`、`PR-400`，见 `constants/presets.ts:93/111`），
@@ -542,29 +623,38 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
           `disabled={importing}` 而不是"判断后不响应"：iOS 的 VoiceOver 会把
           `disabled` 读成"变暗"，用户能听出"正在忙"，比静默无响应好。
         */}
-        <Pressable
-          onPress={() => void handleImport()}
-          disabled={importing}
-          accessibilityRole="button"
-          accessibilityLabel={t('gallery.import.a11y')}
-          hitSlop={6}
-          style={({ pressed }) => [
-            styles.import,
-            pressed && styles.importPressed,
-            importing && styles.importBusy,
-          ]}
-        >
-          <Text style={styles.importText} numberOfLines={1}>
-            {importing ? t('gallery.import.busy') : t('gallery.import')}
-          </Text>
-        </Pressable>
+        {!selectionMode ? (
+          <Pressable
+            onPress={() => void handleImport()}
+            disabled={importing}
+            accessibilityRole="button"
+            accessibilityLabel={t('gallery.import.a11y')}
+            accessibilityState={{ disabled: importing }}
+            hitSlop={6}
+            style={({ pressed }) => [
+              styles.import,
+              pressed && styles.importPressed,
+              importing && styles.importBusy,
+            ]}
+          >
+            <Text style={styles.importText} numberOfLines={1}>
+              {importing ? t('gallery.import.busy') : t('gallery.import')}
+            </Text>
+          </Pressable>
+        ) : null}
         {/* 关闭键写"完成"而不是 ×：和设置界面同一个理由 —— 这个 App 的语汇里没有叉号。 */}
         <Pressable
           onPress={handleCloseScreen}
+          disabled={deletingSelection}
           accessibilityRole="button"
           accessibilityLabel={t('gallery.close')}
+          accessibilityState={{ disabled: deletingSelection }}
           hitSlop={8}
-          style={({ pressed }) => [styles.close, pressed && styles.closePressed]}
+          style={({ pressed }) => [
+            styles.close,
+            pressed && styles.closePressed,
+            deletingSelection && styles.closeDisabled,
+          ]}
         >
           <Text style={styles.closeText} numberOfLines={1}>
             {t('gallery.close')}
@@ -578,34 +668,109 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
         在 iPhone SE（320pt）上四个元素会互相压到 —— 这正是灯箱底栏上一轮返工的原因。
       */}
       <View style={styles.toolbar}>
-        {(['strip', 'grid'] as const).map((mode) => {
-          const active = viewMode === mode;
-          const label = t(mode === 'strip' ? 'gallery.mode.strip' : 'gallery.mode.grid');
-          return (
+        {selectionMode ? (
+          <>
+            <Text
+              style={styles.selectionCount}
+              numberOfLines={1}
+              accessibilityLiveRegion="polite"
+            >
+              {t('gallery.selection.count', { count: selectedIds.length })}
+            </Text>
             <Pressable
-              key={mode}
-              onPress={() => {
-                if (active) {
-                  return;
-                }
-                void Haptics.selectionAsync();
-                setViewMode(mode);
-              }}
-              accessibilityRole="radio"
-              accessibilityState={{ selected: active }}
-              accessibilityLabel={t('gallery.mode.a11y', { label })}
+              onPress={toggleSelectAll}
+              disabled={deletingSelection}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: deletingSelection }}
+              accessibilityLabel={t(
+                allSelected ? 'gallery.selection.clear' : 'gallery.selection.selectAll',
+              )}
+              style={({ pressed }) => [styles.selectionAction, pressed && styles.modeButtonPressed]}
+            >
+              <Text style={styles.selectionActionText} numberOfLines={1}>
+                {t(allSelected ? 'gallery.selection.clear' : 'gallery.selection.selectAll')}
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={confirmDeleteSelection}
+              disabled={selectedIds.length === 0 || deletingSelection}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: selectedIds.length === 0 || deletingSelection }}
+              accessibilityLabel={t('gallery.selection.delete.a11y', {
+                count: selectedIds.length,
+              })}
               style={({ pressed }) => [
-                styles.modeButton,
-                active && styles.modeButtonOn,
+                styles.selectionDelete,
+                (selectedIds.length === 0 || deletingSelection) && styles.selectionDeleteDisabled,
                 pressed && styles.modeButtonPressed,
               ]}
             >
-              <Text style={[styles.modeText, active && styles.modeTextOn]} numberOfLines={1}>
-                {label}
+              <Text style={styles.selectionDeleteText} numberOfLines={1}>
+                {deletingSelection
+                  ? t('gallery.selection.deleting')
+                  : t('gallery.selection.delete')}
               </Text>
             </Pressable>
-          );
-        })}
+            <Pressable
+              onPress={exitSelection}
+              disabled={deletingSelection}
+              accessibilityRole="button"
+              accessibilityLabel={t('gallery.selection.cancel')}
+              accessibilityState={{ disabled: deletingSelection }}
+              style={({ pressed }) => [
+                styles.selectionAction,
+                deletingSelection && styles.selectionActionDisabled,
+                pressed && styles.modeButtonPressed,
+              ]}
+            >
+              <Text style={styles.selectionActionText} numberOfLines={1}>
+                {t('gallery.selection.cancel')}
+              </Text>
+            </Pressable>
+          </>
+        ) : (
+          <>
+            {(['strip', 'grid'] as const).map((mode) => {
+              const active = viewMode === mode;
+              const label = t(mode === 'strip' ? 'gallery.mode.strip' : 'gallery.mode.grid');
+              return (
+                <Pressable
+                  key={mode}
+                  onPress={() => {
+                    if (active) {
+                      return;
+                    }
+                    void Haptics.selectionAsync();
+                    setViewMode(mode);
+                  }}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={t('gallery.mode.a11y', { label })}
+                  style={({ pressed }) => [
+                    styles.modeButton,
+                    active && styles.modeButtonOn,
+                    pressed && styles.modeButtonPressed,
+                  ]}
+                >
+                  <Text style={[styles.modeText, active && styles.modeTextOn]} numberOfLines={1}>
+                    {label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+            <View style={styles.toolbarSpacer} />
+            <Pressable
+              onPress={() => beginSelection()}
+              accessibilityRole="button"
+              accessibilityLabel={t('gallery.selection.enter')}
+              style={({ pressed }) => [styles.selectionEntry, pressed && styles.modeButtonPressed]}
+            >
+              <Text style={styles.selectionEntryText} numberOfLines={1}>
+                {t('gallery.selection.enter')}
+              </Text>
+            </Pressable>
+          </>
+        )}
       </View>
 
       {/* 失败提示：hook 的 `error` 是诊断原文（"保存到内置相册失败"这类），
@@ -635,7 +800,7 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
 
       {/*
         长卷底片（§九，默认模式）。整块交给 `StripView.tsx` —— 齿孔轨道、帧号暗码、
-        6% 打滑、切片导出都在那里，本文件只负责给它尺寸和回调。
+        过片滚动与选择态都在那里，本文件只负责给它尺寸和统一选择回调。
         `filmCode` 用**最近一张成片**的胶卷代号（和 `importPreset` 同一个来源）；
         一条成片都没有时就没有长卷可看（上面那个空态已经接住了）。
       */}
@@ -646,9 +811,10 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
           width={width}
           height={stripHeight}
           onOpen={(shot) => handleOpen(shot.id)}
-          onLongPress={confirmDelete}
-          onSaved={showToastMessage}
-          onFailed={showToastMessage}
+          selectionMode={selectionMode}
+          selectedIds={selectedIds}
+          onToggleSelection={toggleSelection}
+          onBeginSelection={beginSelection}
         />
       ) : null}
 
@@ -662,43 +828,51 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
           columnWrapperStyle={styles.row}
           contentContainerStyle={[styles.grid, { paddingBottom: Math.max(insets.bottom, 16) }]}
           showsVerticalScrollIndicator={false}
-          renderItem={({ item, index }) => (
-            <Pressable
-              onPress={() => handleOpen(item.id)}
-              /*
-                长按删一格。为什么网格也要有删除入口：删掉的那张如果正好是
-                用户不想再看的大图，他得先点开、再点垃圾桶、再确认 —— 三步。
-                长按是 iOS 相册里"删一张"的既有手势，用户不用学。
-                `delayLongPress` 比默认的 500ms 略短：格子里是图片不是文字，
-                长按的意图很明确，而 500ms 在真机上会让人以为没反应。
-              */
-              onLongPress={() => confirmDelete(item)}
-              delayLongPress={420}
-              accessibilityRole="image"
-              accessibilityLabel={t('gallery.photo', {
-                // 序号从 1 开始：这是说给人听的序号，不是数组下标
-                index: index + 1,
-                date: new Date(item.createdAt).toLocaleString(),
-              })}
-              style={({ pressed }) => [
-                styles.tile,
-                { width: tileWidth, height: tileWidth },
-                pressed && styles.tilePressed,
-              ]}
-            >
-              <Image
-                // 只铺缩略图：成片几十张一起解码会 OOM（见文件头注释 ①）
-                source={{ uri: item.thumbUri }}
-                style={styles.tileImage}
-                // cover 而不是 contain：格子是正方形，成片大多是 4:3，
-                // 用 cover 只是视觉裁掉一小条边，但换来的是缩略图按"填满"路径解码，比 contain 更省。
-                resizeMode="cover"
-                // 关掉自己的无障碍节点：不然 TalkBack / VoiceOver 会在格子的标签之后
-                // 把这张图当第二个元素再念一遍（"图像"），同一个格子被读两次。
-                accessible={false}
-              />
-            </Pressable>
-          )}
+          renderItem={({ item, index }) => {
+            const selected = selectedSet.has(item.id);
+            return (
+              <Pressable
+                onPress={() => (selectionMode ? toggleSelection(item) : handleOpen(item.id))}
+                onLongPress={selectionMode ? undefined : () => beginSelection(item)}
+                delayLongPress={420}
+                accessibilityRole={selectionMode ? 'checkbox' : 'image'}
+                accessibilityState={selectionMode ? { checked: selected } : undefined}
+                accessibilityLabel={t('gallery.photo', {
+                  // 序号从 1 开始：这是说给人听的序号，不是数组下标
+                  index: index + 1,
+                  date: new Date(item.createdAt).toLocaleString(),
+                })}
+                style={({ pressed }) => [
+                  styles.tile,
+                  { width: tileWidth, height: tileWidth },
+                  pressed && styles.tilePressed,
+                ]}
+              >
+                <Image
+                  // 只铺缩略图：成片几十张一起解码会 OOM（见文件头注释 ①）
+                  source={{ uri: item.thumbUri }}
+                  style={[
+                    styles.tileImage,
+                    selectionMode && !selected ? styles.tileImageMuted : null,
+                  ]}
+                  // cover 而不是 contain：格子是正方形，成片大多是 4:3，
+                  // 用 cover 只是视觉裁掉一小条边，但换来的是缩略图按"填满"路径解码，比 contain 更省。
+                  resizeMode="cover"
+                  // 关掉自己的无障碍节点：不然 TalkBack / VoiceOver 会在格子的标签之后
+                  // 把这张图当第二个元素再念一遍（"图像"），同一个格子被读两次。
+                  accessible={false}
+                />
+                {selectionMode ? (
+                  <View
+                    style={[styles.selectionMark, selected && styles.selectionMarkSelected]}
+                    pointerEvents="none"
+                  >
+                    {selected ? <Text style={styles.selectionMarkText}>✓</Text> : null}
+                  </View>
+                ) : null}
+              </Pressable>
+            );
+          }}
         />
       ) : null}
 
@@ -861,6 +1035,9 @@ function createStyles(theme: Theme) {
   closePressed: {
     backgroundColor: glass,
   },
+  closeDisabled: {
+    opacity: 0.42,
+  },
   closeText: {
     color: ink.amberSoft,
     fontFamily: UI_MONO,
@@ -903,10 +1080,13 @@ function createStyles(theme: Theme) {
   toolbar: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
     height: TOOLBAR_HEIGHT,
     paddingHorizontal: 20,
     paddingBottom: 8,
+  },
+  toolbarSpacer: {
+    flex: 1,
   },
   modeButton: {
     height: 30,
@@ -932,6 +1112,62 @@ function createStyles(theme: Theme) {
   },
   modeTextOn: {
     color: ink.amber,
+  },
+  selectionEntry: {
+    height: 30,
+    paddingHorizontal: 14,
+    borderRadius: 15,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: ink.hairline,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectionEntryText: {
+    color: ink.amberSoft,
+    fontFamily: UI_MONO,
+    fontSize: 12,
+    letterSpacing: 1,
+  },
+  selectionCount: {
+    flex: 1,
+    color: ink.paper,
+    fontFamily: UI_MONO,
+    fontSize: 11,
+    letterSpacing: 0.6,
+  },
+  selectionAction: {
+    height: 30,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectionActionText: {
+    color: ink.paperDim,
+    fontFamily: UI_MONO,
+    fontSize: 11,
+    letterSpacing: 0.4,
+  },
+  selectionActionDisabled: {
+    opacity: 0.42,
+  },
+  selectionDelete: {
+    height: 30,
+    paddingHorizontal: 10,
+    borderRadius: 15,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: ink.amber,
+    backgroundColor: glass,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectionDeleteDisabled: {
+    opacity: 0.42,
+  },
+  selectionDeleteText: {
+    color: ink.amber,
+    fontFamily: UI_MONO,
+    fontSize: 11,
+    letterSpacing: 0.4,
   },
   /**
    * 导入冲印的幕布 + 合成舞台。
@@ -1006,6 +1242,32 @@ function createStyles(theme: Theme) {
   tileImage: {
     width: '100%',
     height: '100%',
+  },
+  tileImageMuted: {
+    opacity: 0.42,
+  },
+  selectionMark: {
+    position: 'absolute',
+    right: 7,
+    top: 7,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: ink.paper,
+    backgroundColor: 'rgba(10, 10, 12, 0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectionMarkSelected: {
+    borderColor: ink.amber,
+    backgroundColor: ink.amber,
+  },
+  selectionMarkText: {
+    color: scrim,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '700',
   },
   toast: {
     position: 'absolute',

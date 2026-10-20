@@ -83,7 +83,6 @@ export const fr: Messages = {
   'gallery.emptyHint': 'Vos prises apparaissent ici — inutile d’ouvrir Photos.',
   'gallery.photo': 'Photo {index}, {date}',
   'gallery.delete': 'Supprimer cette photo',
-  'gallery.cancel': 'Annuler',
   'gallery.lightbox.a11y': 'Photo {index}, toucher pour fermer',
   'gallery.share': 'Partager',
   'gallery.shareFailed': 'Échec du partage : {message}',
@@ -236,13 +235,21 @@ export const fr: Messages = {
   'gallery.mode.a11y': "Affichage de l'album : {label}",
   'gallery.strip.count': '{count} vues',
 
-  /* ---------------- export de la bande ---------------- */
-  'gallery.export.entry': 'Exporter la bande',
-  'gallery.export.a11y': 'Assembler les {count} vues sélectionnées en une seule affiche',
-  'gallery.export.hint': 'encore {count}',
-  'gallery.export.busy': 'Assemblage…',
-  'gallery.export.saved': "Bande enregistrée dans l'album",
-  'gallery.export.failed': "Échec de l'export : {message}",
+  /* ---------------- suppression multiple ---------------- */
+  'gallery.selection.enter': 'Sélectionner',
+  'gallery.selection.photo': 'Photo {index} sur {total}',
+  'gallery.selection.count': 'Sélection : {count}',
+  'gallery.selection.selectAll': 'Tout sélectionner',
+  'gallery.selection.clear': 'Tout désélectionner',
+  'gallery.selection.delete': 'Supprimer',
+  'gallery.selection.delete.a11y': 'Supprimer la sélection ({count})',
+  'gallery.selection.delete.title': 'Supprimer la sélection ({count}) ?',
+  'gallery.selection.delete.message': 'Les copies dans l’app seront supprimées définitivement. Les copies dans Photos resteront intactes.',
+  'gallery.selection.delete.confirm': 'Supprimer ({count})',
+  'gallery.selection.deleting': 'Suppression…',
+  'gallery.selection.cancel': 'Annuler',
+  'gallery.selection.deleted': 'Photos supprimées : {count}',
+  'gallery.selection.delete.failed': 'Seulement {deleted}/{count} photos supprimées. Réessayez.',
 
   /* ---------------- supprimer une vue ---------------- */
   'gallery.delete.a11y': 'Supprimer cette vue',
@@ -251,6 +258,7 @@ export const fr: Messages = {
   'gallery.delete.cancel': 'Annuler',
   'gallery.delete.confirm': 'Supprimer',
   'gallery.deleted': 'Supprimé',
+  'gallery.delete.failed': 'Échec de la suppression. Réessayez.',
 
   // ---- v1.4.0：取景器极简重构新增 ----
   'settings.geoLocale.title': 'Langue des lieux',

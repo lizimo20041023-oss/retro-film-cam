@@ -82,7 +82,6 @@ export const en: Messages = {
   'gallery.emptyHint': 'Anything you shoot shows up here — no need to open Photos.',
   'gallery.photo': 'Photo {index}, {date}',
   'gallery.delete': 'Delete this photo',
-  'gallery.cancel': 'Cancel',
   'gallery.lightbox.a11y': 'Photo {index}, tap to close',
   'gallery.share': 'Share',
   'gallery.shareFailed': 'Share failed: {message}',
@@ -233,13 +232,21 @@ export const en: Messages = {
   'gallery.mode.a11y': 'Album view: {label}',
   'gallery.strip.count': '{count} frames',
 
-  /* ---------------- strip export ---------------- */
-  'gallery.export.entry': 'Export strip',
-  'gallery.export.a11y': 'Join the {count} selected frames into one long poster',
-  'gallery.export.hint': '{count} more to go',
-  'gallery.export.busy': 'Joining…',
-  'gallery.export.saved': 'Strip saved to album',
-  'gallery.export.failed': 'Export failed: {message}',
+  /* ---------------- multi-select delete ---------------- */
+  'gallery.selection.enter': 'Select',
+  'gallery.selection.photo': 'Photo {index} of {total}',
+  'gallery.selection.count': 'Selected: {count}',
+  'gallery.selection.selectAll': 'Select all',
+  'gallery.selection.clear': 'Deselect all',
+  'gallery.selection.delete': 'Delete',
+  'gallery.selection.delete.a11y': 'Delete selected photos ({count})',
+  'gallery.selection.delete.title': 'Delete selected photos ({count})?',
+  'gallery.selection.delete.message': 'These in-app copies will be permanently deleted. Copies in Photos are unaffected.',
+  'gallery.selection.delete.confirm': 'Delete ({count})',
+  'gallery.selection.deleting': 'Deleting…',
+  'gallery.selection.cancel': 'Cancel',
+  'gallery.selection.deleted': 'Deleted: {count}',
+  'gallery.selection.delete.failed': 'Deleted only {deleted}/{count}. Please try again.',
 
   /* ---------------- deleting a frame ---------------- */
   'gallery.delete.a11y': 'Delete this frame',
@@ -248,6 +255,7 @@ export const en: Messages = {
   'gallery.delete.cancel': 'Cancel',
   'gallery.delete.confirm': 'Delete',
   'gallery.deleted': 'Deleted',
+  'gallery.delete.failed': 'Delete failed. Please try again.',
 
   // ---- v1.4.0：取景器极简重构新增 ----
   'settings.geoLocale.title': 'Place name language',

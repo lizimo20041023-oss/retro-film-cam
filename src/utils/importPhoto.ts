@@ -18,8 +18,8 @@
  *    把坐标变成城市 / 国家，这样老照片也能印出地名而不是一串坐标（`resolvePlaceFromExifGps`）。
  *    ⚠️ 红线没有动，只是换了个更严格的写法：**反查的入参只可能是原图 EXIF 里那对坐标**。
  *    **本轮修订**：反查住在 `locationStamp.ts` 的 `resolvePlaceFromCoords` 里
- *    （两条路共用同一份重试 + 网络兜底逻辑，见下面那段补充）：那个函数**只接一对坐标**，
- *    内部**只**调 `reverseGeocodeAsync`（失败时再打一次免 Key 的公开 HTTPS 接口）。
+ *    （两条路共用同一份系统反查 + 重试逻辑，见下面那段补充）：那个函数**只接一对坐标**，
+ *    内部只调用系统 `reverseGeocodeAsync`，不会把 EXIF 坐标发给第三方接口。
  *    本文件从头到尾没有任何一行能读到设备当前位置
  *    （`getCurrentPositionAsync` / `getLastKnownPositionAsync` / `watchPositionAsync`
  *    在这个文件里一次都不出现），所以"退化成当前设备位置"在代码结构上不可能发生
@@ -38,13 +38,11 @@
  * 每张都干等就是"进度条卡在第 3 张"的经典体验。
  *
  * 所以这条路**不自己发明一套**：直接调 `locationStamp.ts` 的 `resolvePlaceFromCoords`
- * ——相机页那条路用的是同一个函数、同一组常量。原生通道一次尝试 5s，超时 / 抛异常就再试一次，
- * 总预算 10s 封顶；**原生两次都没成**才会再发一次公开接口（一次 4s）。
- * 也就是**单张最坏 14s**（10s + 4s），这个数写在 `locationStamp.ts` 的
- * `GEOCODE_NETWORK_TIMEOUT_MS` 注释里（**毫秒数只写在那一个文件**，这里一个数都不写，
- * 免得两边的耐心值又漂开）。空数组不重试（系统明确答"这个点我查不到"）。
+ * ——相机页那条路用的是同一个函数、同一组常量。系统通道超时 / 抛异常会在统一总预算内
+ * 重试；失败后不再请求第三方服务。具体毫秒数只写在 `locationStamp.ts`，避免两边漂开。
+ * 空数组不重试（系统明确答"这个点我查不到"）。
  * 超时、抛异常、返回空数组、返回的对象里一个字段都没有，**四种都只是"这次没地名"**，
- * 每一种都会 `console.warn` 记一笔（原因 + 坐标在老照片那条路上由共享 helper 统一记），
+ * 每一种都会 `console.warn` 记一笔原因（日志不再输出精确坐标），
  * **绝不向上抛** —— 抛出去会被
  * `importAndDevelop` 的 per-photo catch 记成 `failed += 1`，把一张本来能出片的照片
  * 算成失败，那是比没有地名严重得多的错。
@@ -67,7 +65,7 @@
  * 都走"先拍平键、再嵌套键"两级尝试，两种形状都能吃。
  *
  * 需要网络：**只有反查地名那一步**（`resolvePlaceFromCoords` → 原生
- * `Location.reverseGeocodeAsync`，失败后 `fetch` 公开接口，见上面那段补充）。
+ * `Location.reverseGeocodeAsync`；不使用第三方公开接口，见上面那段补充）。
  * 没网不是错误 —— 那张照片要么不印地名、要么（用户显式选了坐标档时）退回"只有坐标"，
  * 照常出片（`resolvePlaceFromExifGps`）。
  *
@@ -100,11 +98,12 @@ import type {
   WatermarkLayout,
   WatermarkZone,
 } from '../types';
+import { deleteLocalFilesBestEffort } from './fileCleanup';
 import { addShot } from './galleryStore';
-// 反查（含超时 / 重试 / 网络兜底 / 失败措辞）从 `locationStamp.ts` 引：相机页和相册导入
+// 反查（含超时 / 重试 / 失败措辞）从 `locationStamp.ts` 引：相机页和相册导入
 // 必须是同一份逻辑、同一组毫秒数，这个文件里**不许**再出现任何"反查超时"的常量或实现。
-// 本项目 v1.5.1 之后只认 `resolvePlaceFromCoords` 这一个入口（它内部会先走原生
-// `reverseGeocodeWithRetry`，失败再走免 Key 的公开接口），所以这里连
+// 本项目 v1.5.1 之后只认 `resolvePlaceFromCoords` 这一个入口（它内部只走系统原生
+// `reverseGeocodeWithRetry`，失败不再上传坐标到第三方接口），所以这里连
 // `reverseGeocodeWithRetry` / `describeGeocodeFailure` 都不再直接引。
 import { resolvePlaceFromCoords } from './locationStamp';
 // `formatCoords` 不再从这里引：本文件从本轮起不再自己拼坐标串（坐标只在
@@ -173,14 +172,14 @@ export interface ImportAndDevelopOptions {
    * 设置页的定位档位（`AppSettings.locationMode`）。
    *
    * ⚠️ **只有 `'place'` 会联网反查地名**，不传 = `'place'`（保持老调用方的行为）：
-   *   · `'place'` —— 用户要的就是地名。每张最多等 14s 去反查（原生 10s + 公开接口 4s），
+   *   · `'place'` —— 用户要的就是地名。每张最多等系统原生反查的 10s 总预算，
    *     **反查失败就是"这张不印地名那一行"**，不会退回坐标；
    *   · `'coords'` —— 用户明确选了"只印坐标"。相机页那条路（`locationStamp.ts` 的
    *     `mode === 'coords'` 分支）**根本不发反查**，导入这条路也必须一样，
    *     否则同一张坐标在两条路上会得到两种结果。**这是唯一会印坐标的档位**；
    *   · `'off'` —— 地名那一行压根不会印（`planWatermark` 挡住），
    *     为一个注定被丢掉的结果把 EXIF 坐标发给系统地理编码服务，
-   *     既白等 14s 也是隐私问题。
+   *     既白等时间也是隐私问题。
    *
    * 换句话说：**这个字段存在是为了让导入这条路和相机页对"什么时候该联网"给出同一个答案。**
    *
@@ -420,11 +419,11 @@ function toResolvedPlace(coords: { latitude: number; longitude: number }): Resol
 }
 
 /**
- * EXIF 坐标 → 结构化地名（**可能联网，两条通道**）。这是规矩② 在代码里的落点，改动前先读文件头。
+ * EXIF 坐标 → 结构化地名（只走系统原生反查）。这是规矩② 在代码里的落点，改动前先读文件头。
  *
  * 三种结局，**只有第一种会带地名**：
- *   1. 两条通道里任意一条成功、且解析出至少一个名字字段 → `resolvePlaceFromCoords` 的结果；
- *   2. 两条都失败（原生超时 / 抛异常 / 空数组 + 公开接口超时 / HTTP 错 / 畸形 JSON）→ `null`；
+ *   1. 系统反查成功、且解析出至少一个名字字段 → `resolvePlaceFromCoords` 的结果；
+ *   2. 系统反查失败（超时 / 抛异常 / 空数组）→ `null`；
  *   3. 有一边"成功"但一个可用字段都没有（海上、极地、iOS 回了个空对象 `{}`）→ `null`。
  * 后两种都退成 `null` 而不是"只有坐标"的结构：调用方 `importAndDevelop` 拿到 `null`
  * 时会按用户选的档位决定"不印地名"还是"只印坐标"（见那个函数里 `place` 那一段）。
@@ -437,13 +436,13 @@ function toResolvedPlace(coords: { latitude: number; longitude: number }): Resol
  * 渲染器在一个字段都没有时会**退回坐标串**，于是"什么都没解析出来"也会非空 ——
  * 那个判据永远为真，等于没判。详见 `placeNames.hasPlaceName`。
  *
- * 耐心值 / 重试 / 网络兜底：全部委托给 `locationStamp.resolvePlaceFromCoords`
+ * 耐心值 / 重试：全部委托给 `locationStamp.resolvePlaceFromCoords`
  * （两条路共用同一个函数），本文件**不写任何毫秒数** —— 历史上这里自己抄过一份
  * `withTimeout` 加 5000，于是"同一张照片从相机出来和从相册导入出来耐心不一样"
  * 在结构上成为可能，别再走回头路（文件头的补充里写了理由）。
  *
- * 留痕：失败时 `resolvePlaceFromCoords` 已经 warn 过一次（含两条通道各自的原因 + 坐标），
- * 这里补一句**分得清是四种里的哪一种**的话（措辞沿用以前的四句），但**不再重复坐标**。
+ * 留痕：失败时 `resolvePlaceFromCoords` 已经 warn 过一次原因；这里补一句导入语境的说明，
+ * 但不记录精确坐标。
  *
  * ⚠️ **绝不抛**。这是整条路上最重要的契约：它是"锦上添花"的一步，
  * 抛出去会被 `importAndDevelop` 的 per-photo catch 记成 `failed += 1`，
@@ -461,23 +460,19 @@ async function resolvePlaceFromExifGps(gps: {
 
   if (resolved.status !== 'ok') {
     const nativeAttempts = resolved.native.attempts;
-    const network = resolved.network;
     if (resolved.native.status !== 'ok') {
       console.warn(
-        `[retro-film-cam] 导入照片没拿到地名（原生反查发了 ${nativeAttempts} 次仍未成功，` +
-          `公开接口${network === null ? '未走' : `也没成：${network}`}）`,
+        `[retro-film-cam] 导入照片没拿到地名（系统反查尝试 ${nativeAttempts} 次仍未成功）`,
       );
     } else if (resolved.native.address === undefined) {
       // 系统答了"这个点我查不到"（空数组：海上、极地、刚开盘的新楼盘）。
       // 这不算失败，也不重试，只是没有名字 —— 但日志里要和上面那种分开说。
       console.warn(
-        '[retro-film-cam] 导入照片的反查返回空数组（系统查不到这个点），' +
-          `公开接口${network === null ? '未走' : `也没成：${network}`}`,
+        '[retro-film-cam] 导入照片的系统反查返回空数组（系统查不到这个点）',
       );
     } else {
       console.warn(
-        `[retro-film-cam] 导入照片的反查结果里没有任何可用地名` +
-          `（原生 1 次 + 公开接口 1 次都没给出名字，累计 ${nativeAttempts + 1} 次）`,
+        `[retro-film-cam] 导入照片的系统反查结果里没有任何可用地名（尝试 ${nativeAttempts} 次）`,
       );
     }
     return null;
@@ -592,7 +587,7 @@ export async function importAndDevelop(
        *
        * **三档的分工（本轮改的就是这里）**：
        *   · `'off'`            → 不印地名那一行（`null`）。连反查都不发，省一次联网与隐私面。
-       *   · `'place'`（默认）  → 反查（原生 → 公开接口兜底）；**失败就是 `null`**，
+       *   · `'place'`（默认）  → 只用系统原生反查；**失败就是 `null`**，
        *                         不会退回坐标。这条是用户点名的红线：地名档里出现
        *                         `LAT 23°02'N …` 等于把"我没查到"伪装成"我查到了"。
        *   · `'coords'`         → 不反查，直接 `coordsOnlyPlace` 印坐标。这是**唯一**
@@ -602,12 +597,10 @@ export async function importAndDevelop(
        *   · 只有"地名"档才真的联网（`wantsPlace`，理由见 `ImportAndDevelopOptions.locationMode`
        *     的注释：`'coords'` / `'off'` 两条路要的结果都不需要反查，发出去纯属白等加隐私风险）；
        *   · 它自带超时**和一次重试**（`resolvePlaceFromExifGps` → `locationStamp` 的
-       *     `resolvePlaceFromCoords`：原生单次最多 5s、最多两次、总预算 10s；原生两次
-       *     都没成再打一次免 Key 的公开接口，一次最多 4s）；
-       *   · 所以**单张照片最坏多等 14s**（10s + 4s），而且只有"原生两次都没成"的照片
-       *     才会走到那多出来的 4s。失败原因会进 `console.warn`（带坐标），不再静默；
+       *     `resolvePlaceFromCoords`：原生单次最多 5s、最多两次、总预算 10s）；
+       *   · 失败原因会进 `console.warn`，但不记录精确坐标；
        *   · 它**不抛**（同上）—— 一张照片能不能出片，绝不由"有没有网"决定。
-       * 串行导入时这就是"每张最多多等 14s、但一定能等到下一张"的那道闸门
+       * 串行导入时这就是"每张最多多等 10s、但一定能等到下一张"的那道闸门
        * （只有这一步真的失败时才会等满，正常几百毫秒就回来了）。
        */
       const gps = readExifGps(exif);
@@ -651,8 +644,6 @@ export async function importAndDevelop(
         exposureIndex: exposureBase + index,
       });
 
-      uris.push(photo.uri);
-
       /*
        * 存进 App 内相册。`addShot` 按约定**不抛**（失败返回 `null`），所以这里
        * 单独判一次 null 只记日志 —— 成片已经截出来、也在 `uris` 里了，
@@ -660,13 +651,26 @@ export async function importAndDevelop(
        */
       const shot = await addShot({
         sourceUri: photo.uri,
-        width: photo.width,
-        height: photo.height,
+        width: photo.pixelWidth,
+        height: photo.pixelHeight,
         frameId: frame.id,
         presetId: effectivePreset.id,
+        // 最终 ViewShot 已经是 JPEG；原样复制可避免每张导入照片再做一次全尺寸有损编码。
+        sourceFormat: 'jpeg',
+        maxLongEdge: Math.max(photo.pixelWidth, photo.pixelHeight),
       });
       if (shot === null) {
+        // 持久副本没写成，只能把尚可用的 tmpfile 交还调用方，不能在这里删。
+        uris.push(photo.uri);
         console.warn('[retro-film-cam] 导入的成片没能写进 App 相册（索引未更新）。');
+      } else {
+        // 返回持久 URI，既能让图库按 uri 自动打开，也允许安全回收 ViewShot 的 tmpfile。
+        uris.push(shot.uri);
+        deleteLocalFilesBestEffort([photo.uri], '导入成片缓存');
+      }
+      if (photo.rawUri !== asset.uri) {
+        // 只删 App 自己归一化/裁切出的缓存；系统选择器交来的原始资产绝不能删除。
+        deleteLocalFilesBestEffort([photo.rawUri], '导入裁切缓存');
       }
     } catch (error) {
       // 一张坏图不该拖垮整批：记下原因，继续下一张

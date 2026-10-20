@@ -569,7 +569,7 @@ function FilmCompositorImpl({
   /*
    * v2.0.1 真胶片管线 · 单次截图（`lutUri`）：
    * `lutUri` 是已经在 JS 里查过 33³ LUT、并加了 halation / 颗粒 / 暗角 / 场景 gamma 的
-   * "已洗好照片"（由 `ImageManipulator` 产出 PNG 再跑像素管线，长边 1440~1800）。
+   * "已洗好照片"（由 `ImageManipulator` 产出 PNG 再跑像素管线，长边 1280~1600）。
    * 有它时本组件要退化成**只画相框和水印**：
    *   ① 照片层用 `lutUri` 代替 `rawUri`（以 `cover` 铺满窗口，成片画布仍是 2048/3024/4032）；
    *   ② 不再叠 `overlayUri` —— 重曝在像素渲染前已经合成并一起过了 LUT，再叠一次是双份；

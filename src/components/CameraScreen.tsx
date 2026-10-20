@@ -84,6 +84,7 @@ import {
 import { DARK_THEME, ThemeScope, UI_MONO } from '../constants/theme';
 import { DEFAULT_ZOOM, ZOOM_MAX, toCameraZoom } from '../constants/zoom';
 import { describeError } from '../utils/describeError';
+import { deleteLocalFilesBestEffort } from '../utils/fileCleanup';
 import { addShot } from '../utils/galleryStore';
 import { focusPointInCamera, planCameraLayer } from '../utils/cameraGeometry';
 import { computeFrameLayout } from '../utils/geometry';
@@ -223,6 +224,12 @@ const DEVELOP_DONE_VISIBLE_MS = 3000;
 const DEVELOP_ERROR_VISIBLE_MS = 5000;
 
 /**
+ * 含正在冲印的工单在内最多保留三项。再深的队列只会让全尺寸相机原图在 cache 里排队、
+ * 延长设备持续高负载时间；用户稍后再按一次，比后台积压十几张后一起发热更可控。
+ */
+const MAX_DEVELOP_QUEUE_DEPTH = 3;
+
+/**
  * iOS 把"被完全遮住的视图"截成空图时抛回来的原生文案（`react-native-view-shot`
  * 的 `RNViewShot.mm:162/167`）：
  *   "The view cannot be captured. drawViewHierarchyInRect was not successful."
@@ -274,6 +281,8 @@ interface DevelopJobBase {
   placeDetail: PlaceDetail;
   grainLevel: GrainLevelId;
   locationMode: LocationMode;
+  /** 快门/导入入队时冻结的成片长边，不能在工单完成时再读当前设置。 */
+  captureLongEdge: number;
 }
 
 /** 按快门产生的工单：双曝的第二次按下会把两张一起送进来。 */
@@ -1061,6 +1070,9 @@ export function CameraScreen() {
         if (first.photo.uri !== '') {
           return first;
         }
+        if (first.photo.rawUri !== job.photo.uri) {
+          deleteLocalFilesBestEffort([first.photo.rawUri], '空截图裁切缓存');
+        }
       } catch (error) {
         if (!isEmptyCaptureError(error)) {
           throw error;
@@ -1075,6 +1087,7 @@ export function CameraScreen() {
         await afterTwoFrames();
         const retry = await developShot(job);
         if (retry.photo.uri === '') {
+          deleteLocalFilesBestEffort([retry.photo.rawUri], '空截图裁切缓存');
           throw new Error(t('develop.error.title'));
         }
         return retry;
@@ -1147,14 +1160,26 @@ export function CameraScreen() {
             setAlbumKey((current) => current + 1);
             void addShot({
               sourceUri: result.photo.uri,
-              width: result.photo.width,
-              height: result.photo.height,
+              width: result.photo.pixelWidth,
+              height: result.photo.pixelHeight,
               frameId: job.frame.id,
               presetId: job.preset.id,
-              maxLongEdge: resolveCaptureLongEdge(settings.captureQuality),
-            }).catch((error) => {
-              console.warn('[gallery] addShot failed', error);
-            });
+              maxLongEdge: job.captureLongEdge,
+              sourceFormat: 'jpeg',
+            })
+              .then((galleryShot) => {
+                // 系统相册和 App 内相册都有持久副本后，ViewShot 的 tmpfile 已完成使命。
+                if (galleryShot !== null || result.save.ok) {
+                  deleteLocalFilesBestEffort([result.photo.uri], '成片缓存');
+                }
+              })
+              .catch((error) => {
+                console.warn('[gallery] addShot failed', error);
+              });
+            if (result.photo.rawUri !== job.photo.uri) {
+              // 合成舞台已经截图完毕，裁切 JPEG 不参与系统/内置相册写入。
+              deleteLocalFilesBestEffort([result.photo.rawUri], '裁切缓存');
+            }
             if (!result.save.ok) {
               setSaveIssue(result.save.message);
             }
@@ -1179,6 +1204,10 @@ export function CameraScreen() {
           console.warn('[develop] pixel pipeline failed', error);
           setStatus({ kind: 'error', message: t('error.filmRender') });
         } finally {
+          if (job.kind === 'shot') {
+            // takePictureAsync 的结果只供本工单使用；成功或失败都没有重试入口，不能长期积压。
+            deleteLocalFilesBestEffort([job.photo.uri, job.overlayUri], '相机原图缓存');
+          }
           queue.shift();
           setQueueDepth(queue.length);
         }
@@ -1188,7 +1217,7 @@ export function CameraScreen() {
       // 正常路径在 finally 里已经刷过；这里兜住"异常路径 queueDepth 没归零"
       setQueueDepth(0);
     }
-  }, [filmStage.host, stageBox, settings.captureQuality, t]);
+  }, [filmStage.host, stageBox, t]);
 
   /**
    * 唤醒冲印泵（v1.9.0）：入队后调用。泵已在跑就直接返回 —— 它自己的 `while`
@@ -1850,10 +1879,16 @@ export function CameraScreen() {
 
   const handleToggleDouble = useCallback(() => {
     void Haptics.selectionAsync();
+    const pendingAlreadyQueued = jobQueueRef.current.some(
+      (job) => job.kind === 'shot' && job.overlayUri === pendingExposureUri,
+    );
+    if (!pendingAlreadyQueued) {
+      deleteLocalFilesBestEffort([pendingExposureUri], '未完成重曝缓存');
+    }
     setDoubleExposure((current) => !current);
     // 任何一次切换都把没冲的半成品丢掉：留着它，下次开重曝会莫名其妙叠上一张旧照片
     setPendingExposureUri(null);
-  }, []);
+  }, [pendingExposureUri]);
 
   /**
    * 相框实时预览开关（v1.7.0 · 模块三）。
@@ -1954,6 +1989,10 @@ export function CameraScreen() {
     if (shotLockRef.current) {
       return;
     }
+    if (jobQueueRef.current.length >= MAX_DEVELOP_QUEUE_DEPTH) {
+      setNotice(t('camera.shutter.busy'));
+      return;
+    }
     if (!camera || !cameraReady) {
       return;
     }
@@ -1977,6 +2016,7 @@ export function CameraScreen() {
       placeDetail: settings.placeDetail,
       grainLevel: settings.grainLevel,
       locationMode: settings.locationMode,
+      captureLongEdge: gradedPreset.captureLongEdge,
       stockMode: settings.stockMode,
       intensityTier: settings.presetIntensity,
     };
@@ -2004,6 +2044,13 @@ export function CameraScreen() {
         throw new Error(t('error.noPhoto'));
       }
       const captured: CapturedPhoto = { uri: shot.uri, width: shot.width, height: shot.height };
+
+      // `takePictureAsync` 期间导入按钮仍可入队；再次检查，保证异步间隙也不会突破上限。
+      if (jobQueueRef.current.length >= MAX_DEVELOP_QUEUE_DEPTH) {
+        deleteLocalFilesBestEffort([captured.uri], '队列溢出原图缓存');
+        setNotice(t('camera.shutter.busy'));
+        return;
+      }
 
       if (doubleExposure && overlayUri === null) {
         // 重曝第一张：先留着不冲，等第二张叠上去一起冲
@@ -2138,6 +2185,10 @@ export function CameraScreen() {
    * iOS 的 `renderInContext` 抓不到没上屏的内容。
    */
   const handleImport = useCallback(() => {
+    if (jobQueueRef.current.length >= MAX_DEVELOP_QUEUE_DEPTH) {
+      setNotice(t('gallery.import.busy'));
+      return;
+    }
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setNotice(null);
     const job: DevelopImportJob = {
@@ -2155,6 +2206,7 @@ export function CameraScreen() {
       placeDetail: settings.placeDetail,
       grainLevel: settings.grainLevel,
       locationMode: settings.locationMode,
+      captureLongEdge: gradedPreset.captureLongEdge,
     };
     jobQueueRef.current.push(job);
     setQueueDepth(jobQueueRef.current.length);
@@ -2172,6 +2224,7 @@ export function CameraScreen() {
     settings.watermarkAlign,
     settings.adaptiveGrade,
     settings.locationMode,
+    t,
   ]);
 
   const handleImportPress = useCallback(() => {

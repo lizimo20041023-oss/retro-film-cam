@@ -12,10 +12,10 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { CameraScreen } from './src/components/CameraScreen';
 import { SettingsProvider } from './src/hooks/useSettings';
-import { useTheme } from './src/constants/theme';
+import { themeFor } from './src/constants/theme';
 
 export default function App() {
-  const theme = useTheme();
+  const theme = themeFor('dark');
 
   return (
     <SafeAreaProvider>
@@ -23,15 +23,14 @@ export default function App() {
         {/*
           根容器只负责铺满 + 铺上"机身底色"。
           为什么不把这行色值留给各个屏幕自己写：安全区、圆角屏边缘、以及任何一次
-          页面切换的空隙露出来的都是这一层。它跟着系统深浅色走，露出来的边角
-          才和屏幕里的内容同色；写死深色的话浅色机身下会看到一圈黑边。
+          页面切换的空隙露出来的都是这一层。当前相机、图库和设置都只实现了暗色主题，
+          所以根层也固定暗色，避免系统浅色模式让安全区和状态栏变成另一套颜色。
         */}
         <View style={[styles.root, { backgroundColor: theme.body }]}>
           {/*
-            状态栏字色跟机身走：深机身配浅字（`light`），浅机身配深字（`dark`）。
-            以前写死 `light`，在浅色机身下会是"浅底白字"，等于看不见。
+            整个 App 固定暗色，状态栏也固定浅色字，和 CameraScreen 的主题口径一致。
           */}
-          <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />
+          <StatusBar style="light" />
           <CameraScreen />
         </View>
       </SettingsProvider>

@@ -166,24 +166,19 @@ export async function saveToLibraryDetailed(localUri: string): Promise<AlbumSave
 
     // ① 新 API（SDK 54+）：Asset.create
     if (typeof MediaLibrary.Asset?.create === 'function') {
-      // ①-a 相簿优先：拿不到/建不出相簿时 album 为 null，下面走相机胶卷
+      // 先确认照片资产真的已经创建。失败会落到最外层 catch，绝不能伪装成保存成功。
       const album = await resolveAlbum();
+      const asset = await MediaLibrary.Asset.create(localUri);
       if (album !== null) {
         try {
-          const asset = await MediaLibrary.Asset.create(localUri);
           await album.add(asset);
           return { ok: true, uri: localUri, destination: 'album', album: albumName() };
         } catch {
-          // 掉进这里说明"相簿那一段"整段失败了（建相簿 / 建资产 / 放进相簿）。
-          // 这里**只能**报"存了但没归到相簿"，不能返回失败：
-          // `Asset.create` 很可能已经把照片写进库里了（失败的是后面的 `add`），
-          // 而"到底写没写进去"从抛出的错误里判断不出来 —— 再调一次 `Asset.create`
-          // 就是在赌会不会多出一份重复照片。宁可少一个相簿归类，也不能多一张重复照片。
+          // 资产已经创建成功；这里只是归入专属相簿失败，所以相机胶卷里仍确实有照片。
           return { ok: true, uri: localUri, destination: 'camera-roll' };
         }
       }
-      // ①-b 没有相簿可用（老 SDK / 原生模块没有 Album 类）：落到相机胶卷
-      await MediaLibrary.Asset.create(localUri);
+      // 没有相簿可用时，刚创建的 asset 已经位于相机胶卷。
       return { ok: true, uri: localUri, destination: 'camera-roll' };
     }
 

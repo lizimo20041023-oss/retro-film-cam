@@ -78,7 +78,6 @@ export const zhHant: Messages = {
   'gallery.emptyHint': '拍一張就會出現在這裡，不用再去系統相簿找。',
   'gallery.photo': '第 {index} 張，{date}',
   'gallery.delete': '刪除這張',
-  'gallery.cancel': '取消',
   'gallery.lightbox.a11y': '第 {index} 張，點擊關閉',
   'gallery.share': '分享',
   'gallery.shareFailed': '分享失敗：{message}',
@@ -222,13 +221,21 @@ export const zhHant: Messages = {
   'gallery.mode.a11y': '相簿瀏覽方式：{label}',
   'gallery.strip.count': '共 {count} 張',
 
-  /* ---------------- 切片匯出（§9.4） ---------------- */
-  'gallery.export.entry': '匯出切片',
-  'gallery.export.a11y': '把選中的 {count} 張拼成一張長條海報',
-  'gallery.export.hint': '再選 {count} 張',
-  'gallery.export.busy': '正在拼合…',
-  'gallery.export.saved': '切片已存入相簿',
-  'gallery.export.failed': '匯出失敗：{message}',
+  /* ---------------- 多選刪除 ---------------- */
+  'gallery.selection.enter': '選取',
+  'gallery.selection.photo': '第 {index} 張，共 {total} 張',
+  'gallery.selection.count': '已選 {count} 張',
+  'gallery.selection.selectAll': '全選',
+  'gallery.selection.clear': '取消全選',
+  'gallery.selection.delete': '刪除',
+  'gallery.selection.delete.a11y': '刪除已選的 {count} 張照片',
+  'gallery.selection.delete.title': '刪除已選照片（{count} 張）？',
+  'gallery.selection.delete.message': '這些 App 內副本將永久刪除；系統「照片」中的副本不受影響。',
+  'gallery.selection.delete.confirm': '刪除 {count} 張',
+  'gallery.selection.deleting': '刪除中…',
+  'gallery.selection.cancel': '取消',
+  'gallery.selection.deleted': '已刪除 {count} 張',
+  'gallery.selection.delete.failed': '僅刪除了 {deleted}/{count} 張，請重試',
 
   /* ---------------- 刪除成片（§10.2） ---------------- */
   'gallery.delete.a11y': '刪除這張成片',
@@ -237,6 +244,7 @@ export const zhHant: Messages = {
   'gallery.delete.cancel': '取消',
   'gallery.delete.confirm': '刪除',
   'gallery.deleted': '已刪除',
+  'gallery.delete.failed': '刪除失敗，請重試',
 
   // ---- v1.4.0：取景器极简重构新增 ----
   'settings.geoLocale.title': '地名語言',

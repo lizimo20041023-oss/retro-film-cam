@@ -50,8 +50,8 @@ export interface GalleryController {
   refreshSilently: () => Promise<void>;
   /** 存一张成片。返回新记录；失败返回 `null`（**不抛异常**）。 */
   add: (input: AddShotInput) => Promise<GalleryShot | null>;
-  /** 删掉一张。永远不抛。 */
-  remove: (id: string) => Promise<void>;
+  /** 删掉一张。成功返回 true；失败返回 false，永远不抛。 */
+  remove: (id: string) => Promise<boolean>;
   /** 清空整个相册。永远不抛。 */
   clear: () => Promise<void>;
 }
@@ -137,19 +137,21 @@ export function useGallery(): GalleryController {
   );
 
   const remove = useCallback(
-    async (id: string): Promise<void> => {
+    async (id: string): Promise<boolean> => {
       try {
         // 先改内存：用户点了删除，那一格必须马上消失
         if (aliveRef.current) {
           setShots((prev) => prev.filter((shot) => shot.id !== id));
         }
-        await deleteShot(id);
+        const removed = await deleteShot(id);
         if (aliveRef.current) {
-          setError(null);
+          setError(removed ? null : DELETE_FAILED);
           void load(true);
         }
+        return removed;
       } catch (caught) {
         if (aliveRef.current) setError(describeError(caught));
+        return false;
       }
     },
     [load],

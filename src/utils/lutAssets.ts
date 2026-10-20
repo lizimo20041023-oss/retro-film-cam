@@ -28,6 +28,7 @@ import { decodeBase64 } from './base64';
 import { decodePng } from './pngCodec';
 import { extractLutFromAtlas } from './lut3d';
 import type { Lut3D } from './lut3d';
+import { applyFilmPersonalityToLut } from './filmProfiles';
 
 /** 卷 id → Lut3D。只缓存成功结果；失败的卷下次调用会再试（资产可能被热更新修好）。 */
 const lutCache = new Map<string, Lut3D>();
@@ -51,7 +52,7 @@ export function getLutForStock(stockId: string): Lut3D | null {
 
   try {
     const png = decodePng(decodeBase64(atlas));
-    const lut = extractLutFromAtlas(png, LUT_SIZE);
+    const lut = applyFilmPersonalityToLut(extractLutFromAtlas(png, LUT_SIZE), stockId);
     lutCache.set(stockId, lut);
     return lut;
   } catch (error) {

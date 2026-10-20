@@ -79,7 +79,6 @@ export const ja: Messages = {
   'gallery.emptyHint': '撮影するとここに並びます。写真アプリを開く必要はありません。',
   'gallery.photo': '{index} 枚目、{date}',
   'gallery.delete': 'この写真を削除',
-  'gallery.cancel': 'キャンセル',
   'gallery.lightbox.a11y': '{index} 枚目、タップで閉じる',
   'gallery.share': '共有',
   'gallery.shareFailed': '共有に失敗：{message}',
@@ -228,13 +227,21 @@ export const ja: Messages = {
   'gallery.mode.a11y': 'アルバムの表示方法：{label}',
   'gallery.strip.count': '全 {count} 枚',
 
-  /* ---------------- 切片の書き出し（§9.4） ---------------- */
-  'gallery.export.entry': '切片を書き出す',
-  'gallery.export.a11y': '選択した {count} 枚をつなげて一本のポスターにする',
-  'gallery.export.hint': 'あと {count} 枚',
-  'gallery.export.busy': 'つなぎ合わせています…',
-  'gallery.export.saved': '切片をアルバムに保存しました',
-  'gallery.export.failed': '書き出しに失敗しました：{message}',
+  /* ---------------- 複数選択して削除 ---------------- */
+  'gallery.selection.enter': '選択',
+  'gallery.selection.photo': '{total}枚中{index}枚目',
+  'gallery.selection.count': '{count}枚選択中',
+  'gallery.selection.selectAll': 'すべて選択',
+  'gallery.selection.clear': 'すべて解除',
+  'gallery.selection.delete': '削除',
+  'gallery.selection.delete.a11y': '選択した写真{count}枚を削除',
+  'gallery.selection.delete.title': '選択した写真（{count}枚）を削除しますか？',
+  'gallery.selection.delete.message': 'アプリ内のコピーを完全に削除します。「写真」にあるコピーには影響しません。',
+  'gallery.selection.delete.confirm': '{count}枚を削除',
+  'gallery.selection.deleting': '削除中…',
+  'gallery.selection.cancel': 'キャンセル',
+  'gallery.selection.deleted': '{count}枚削除しました',
+  'gallery.selection.delete.failed': '{deleted}/{count}枚のみ削除できました。もう一度お試しください',
 
   /* ---------------- 削除（§10.2） ---------------- */
   'gallery.delete.a11y': 'この一枚を削除',
@@ -243,6 +250,7 @@ export const ja: Messages = {
   'gallery.delete.cancel': 'キャンセル',
   'gallery.delete.confirm': '削除',
   'gallery.deleted': '削除しました',
+  'gallery.delete.failed': '削除できませんでした。もう一度お試しください',
 
   // ---- v1.4.0：取景器极简重构新增 ----
   'settings.geoLocale.title': '地名の言語',
