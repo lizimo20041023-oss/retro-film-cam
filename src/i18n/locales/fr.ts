@@ -165,7 +165,7 @@ export const fr: Messages = {
   'settings.language.system': 'Suivre le système',
   'settings.location.head': 'FILIGRANE DE POSITION',
   'settings.location.hint':
-    "Une fois activé, une ligne de position est gravée en bas à gauche de la photo (blanc papier, sur la même ligne de base que la date ambrée à droite). Les coordonnées sont calculées entièrement hors ligne ; les noms de lieu passent par le géocodage inverse du système (Apple sur iOS, Google sur Android) et seule cette étape utilise le réseau — la position n'est écrite que dans votre photo, l'app ne téléverse jamais rien.",
+    "Ajoute le lieu à la photo. Le mode coordonnées reste hors ligne. Pour les noms de lieu, le service système est essayé d’abord ; en cas d’échec, les coordonnées et la langue sont envoyées à Photon / OpenStreetMap. Les photos ne sont jamais téléversées. Données © contributeurs OpenStreetMap.",
   'settings.location.off': 'Désactivé',
   'settings.location.place': 'Nom du lieu',
   'settings.location.coords': 'Coordonnées',

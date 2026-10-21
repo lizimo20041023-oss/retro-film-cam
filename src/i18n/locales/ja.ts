@@ -158,7 +158,7 @@ export const ja: Messages = {
   'settings.language.system': 'システムに従う',
   'settings.location.head': '位置情報スタンプ LOCATION',
   'settings.location.hint':
-    'オンにすると、写真の左下にもう一行だけ位置情報の小さい文字が焼き込まれます（紙のような白、右下のオレンジの日付と同じベースライン）。座標は完全にオフラインで算出します。地名は OS の逆ジオコーディング（iOS は Apple、Android は Google）を使うため、その処理だけは通信します —— ただし位置はこの写真に書き込まれるだけで、アプリ自身が何かを送信することはありません。',
+    '写真に位置情報を焼き込みます。座標モードは完全にオフラインです。地名はまず OS で検索し、失敗した場合は座標と言語を Photon / OpenStreetMap に送信します。写真は送信されません。地名データ © OpenStreetMap contributors。',
   'settings.location.off': 'オフ',
   'settings.location.place': '地名',
   'settings.location.coords': '座標',

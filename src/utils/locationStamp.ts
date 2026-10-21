@@ -3,17 +3,15 @@
  *
  * 隐私前提（写在这里也是给以后改代码的人看）：
  * - **默认关**，且关的时候连权限都不申请（`expo-location` 一行都不调）；
- * - 地名模式会用系统反查（iOS 走苹果、Android 走谷歌），这一步是联网的，
- *   所以设置界面里必须原样告诉用户；
+ * - 地名模式先用系统反查（iOS 走苹果、Android 走谷歌）；系统没有返回地名时，
+ *   会把经纬度与地名语言发送给 Photon / OpenStreetMap 兜底，不会上传照片；
  * - 坐标模式是**纯本地格式化**，拿到经纬度就完事，不请求任何网络。
  *
  * 本文件只负责"拿到什么"，不负责"这一行长什么样"：
  * 字符串怎么拼在 `placeNames.ts`（纯函数、可单测），这里只做取数 + 降级。
  *
- * ⚠️ 反查（含超时重试）也在这里，而且是**两条路共用**的：相册导入
- * （`importPhoto.ts` 的 `resolvePlaceFromExifGps`）从这个文件 import
- * `reverseGeocodeWithRetry`，就为了让"相机页现场拍"和"导入一张老照片"对同一次反查
- * 有完全一样的耐心值、一样的重试次数 —— 别在那边再写一份（历史上就是各写一份的）。
+ * ⚠️ 反查、超时、缓存与限速也在这里，而且是相机拍摄与相册导入两条路共用的。
+ * 两边都调用 `resolvePlaceFromCoords`，不要在导入流程再写一份网络逻辑。
  */
 import * as Location from 'expo-location';
 import type { LocaleId, MessageKey } from '../i18n/types';
@@ -48,32 +46,21 @@ const FIX_TIMEOUT_MS = 6000;
  * `reverseGeocodeWithRetry`，所以"同一次反查在两条路上等的时间不一样"在结构上不可能发生。
  * 别再在 `importPhoto.ts` 里另写一份常量。
  *
- * 为什么还是 5000（逐字保留旧值）：它是**一次尝试**的窗口，不是总时长。
- * 今天能在 5s 内返回的反查，改动之后第一次尝试仍然在同样的窗口里成功 ——
- * 不存在"为了加重试反而把一次本来能成功的等待切短了"的风险。
- * 多出来的那份等待只花在"第一次已经失败"的照片上（本来就没有地名、只能退坐标）。
+ * 系统服务只给 2 秒：快速结果直接使用；慢或空结果由 Photon 兜底，避免单张照片
+ * 在系统反查上卡住 5～10 秒。
  */
-export const GEOCODE_ATTEMPT_TIMEOUT_MS = 5000;
+export const GEOCODE_ATTEMPT_TIMEOUT_MS = 2000;
 
 /**
  * 反查最多发几次。
  *
- * 为什么是 2：反查第一次调用常常撞上"系统刚把这个服务唤醒 / 正在握手 / 刚切网"，
- * 第二次往往几百毫秒就回来了；而"一次失败就放弃、直接退回坐标"正是这次要修的症状
- * （带 GPS 的机场照片只印了经纬度）。再加不划算：每多一次就多 5s 的最坏等待，
- * 而相册导入是**串行**的，这份等待按张累加（12 张就是 12 次）。
- *
- * 只有"超时 / 抛异常"才算一次失败；系统明确答"这个点我查不到"（空数组）**不重试**，
- * 理由见 `reverseGeocodeWithRetry`。
+ * 只尝试一次。国外地名的可靠性由 Photon 兜底解决，重复唤醒同一个系统服务只会增加
+ * 等待、网络活动和发热。
  */
-export const GEOCODE_MAX_ATTEMPTS = 2;
+export const GEOCODE_MAX_ATTEMPTS = 1;
 
 /**
- * 一遍反查（含重试）的总预算：10000ms = 2 × 5000ms。
- *
- * 单独写成一个常量，而不是让重试次数随便乘：将来有人把 `GEOCODE_MAX_ATTEMPTS`
- * 调成 5，这道闸门会先把总时长按在 10s 上 —— 否则"导入 12 张照片卡住 3 分钟"
- * 是迟早的事。预算按**已经过去的时间**算：发下一次之前先看还剩多少。
+ * 系统反查总预算。即使以后恢复重试，也必须受这一个总预算约束。
  */
 export const GEOCODE_TOTAL_BUDGET_MS = GEOCODE_ATTEMPT_TIMEOUT_MS * GEOCODE_MAX_ATTEMPTS;
 
@@ -82,6 +69,12 @@ export const GEOCODE_TOTAL_BUDGET_MS = GEOCODE_ATTEMPT_TIMEOUT_MS * GEOCODE_MAX_
  * 一次注定来不及的调用只会让用户多等，还会在日志里留一句没有信息量的"超时"。
  */
 const GEOCODE_MIN_ATTEMPT_MS = 1000;
+
+/** Photon 单次请求的硬超时。 */
+const PHOTON_TIMEOUT_MS = 4500;
+/** 公共 Photon 服务请求之间至少间隔一秒，避免批量导入形成突发流量。 */
+const PHOTON_MIN_INTERVAL_MS = 1000;
+const PHOTON_CACHE_LIMIT = 128;
 
 /**
  * 超时哨兵。
@@ -168,8 +161,8 @@ function reverseGeocodeOnce(
 /**
  * 一遍（含重试）反查的结局。
  *
- * `'ok'` 里的 `address` 可能是 `undefined`：系统连续两次都答了空数组（海上、极地、
- * 刚开盘的新楼盘）。空结果也会重试一次，因为海外坐标第一次经常只是服务尚未唤醒。
+ * `'ok'` 里的 `address` 可能是 `undefined`：系统答了空数组（海上、极地、
+ * 刚开盘的新楼盘）。
  */
 export type ReverseGeocodeOutcome =
   | { status: 'ok'; address: Location.LocationGeocodedAddress | undefined; attempts: number }
@@ -180,7 +173,7 @@ export type ReverseGeocodeOutcome =
 export type ReverseGeocodeFailure = Extract<ReverseGeocodeOutcome, { status: 'timeout' | 'error' }>;
 
 /**
- * 反查地名（**联网**）：超时 / 抛异常就再试一次，总共最多 `GEOCODE_MAX_ATTEMPTS` 次。
+ * 系统反查地名（**可能联网**），总共最多 `GEOCODE_MAX_ATTEMPTS` 次。
  *
  * 这是**两条路唯一的反查入口**：
  * · 相机页 —— `fetchLocationStamp` 的 `mode === 'place'` 分支；
@@ -193,8 +186,7 @@ export type ReverseGeocodeFailure = Extract<ReverseGeocodeOutcome, { status: 'ti
  * 导入那条路上抛出去会被 `importAndDevelop` 的 per-photo catch 记成 `failed += 1` ——
  * 一张本来能出片的照片会因为"没网"算成失败，比没有地名严重得多。
  *
- * 空数组 / 空地址会重试一次：移动系统的海外反查第一次可能只完成服务唤醒，第二次才
- * 返回字段。总预算仍由 `GEOCODE_TOTAL_BUDGET_MS` 锁在 10 秒内。
+ * 空数组 / 空地址直接交给 Photon 兜底，不再重复请求系统服务。
  */
 function geocodeAddressScore(address: Location.LocationGeocodedAddress): number {
   const present = (value: string | null | undefined): boolean =>
@@ -287,19 +279,165 @@ export function describeGeocodeFailure(outcome: ReverseGeocodeFailure): string {
   return `反查地名抛异常（发了 ${outcome.attempts} 次）：${reason}`;
 }
 
-/** 系统反查的结局。`ok` 里一定有一个可用地名。 */
+type PhotonFeature = {
+  properties?: {
+    name?: unknown;
+    street?: unknown;
+    locality?: unknown;
+    district?: unknown;
+    city?: unknown;
+    county?: unknown;
+    state?: unknown;
+    country?: unknown;
+    countrycode?: unknown;
+  };
+};
+
+type PhotonResponse = { features?: PhotonFeature[] };
+
+const photonCache = new Map<string, Promise<PlaceGeocodeAddress | undefined>>();
+let photonQueue: Promise<void> = Promise.resolve();
+let photonLastStartedAt = 0;
+
+function cleanPhotonValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function photonAddressOf(feature: PhotonFeature | undefined): PlaceGeocodeAddress | undefined {
+  const source = feature?.properties;
+  if (source === undefined) return undefined;
+
+  const city =
+    cleanPhotonValue(source.city) ??
+    cleanPhotonValue(source.locality) ??
+    cleanPhotonValue(source.district) ??
+    cleanPhotonValue(source.name);
+  const district = cleanPhotonValue(source.district);
+  const region = cleanPhotonValue(source.state);
+  const country = cleanPhotonValue(source.country);
+  const parts = [
+    city,
+    district !== city ? district : undefined,
+    region !== city && region !== district ? region : undefined,
+    country,
+  ].filter((part): part is string => part !== undefined);
+
+  return {
+    city,
+    name: cleanPhotonValue(source.name),
+    district,
+    subregion: cleanPhotonValue(source.county),
+    region,
+    country,
+    isoCountryCode: cleanPhotonValue(source.countrycode)?.toUpperCase(),
+    street: cleanPhotonValue(source.street),
+    formattedAddress: parts.length > 0 ? parts.join(', ') : undefined,
+  };
+}
+
+function photonLanguage(locale: LocalePreference, uiLocale: LocaleId): string {
+  const resolved = resolveGeoLocale(locale, uiLocale);
+  return resolved === 'zh-Hans' || resolved === 'zh-Hant' ? 'zh' : resolved;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function requestPhotonAddress(
+  coords: { latitude: number; longitude: number },
+  language: string,
+): Promise<PlaceGeocodeAddress | undefined> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PHOTON_TIMEOUT_MS);
+  try {
+    const query = new URLSearchParams({
+      lat: String(coords.latitude),
+      lon: String(coords.longitude),
+      limit: '1',
+      lang: language,
+    });
+    const response = await fetch(`https://photon.komoot.io/reverse?${query.toString()}`, {
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/geo+json, application/json',
+        'X-Requested-With': 'com.canyerylee.fretrocam',
+      },
+    });
+    if (!response.ok) return undefined;
+    const payload = (await response.json()) as PhotonResponse;
+    const address = photonAddressOf(payload.features?.[0]);
+    if (address === undefined) return undefined;
+    const place = resolvePlaceFromGeocode(address, coords.latitude, coords.longitude);
+    return hasPlaceName(place) ? address : undefined;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`[retro-film-cam] Photon 地名反查失败：${reason}`);
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function photonAddressFor(
+  coords: { latitude: number; longitude: number },
+  locale: LocalePreference,
+  uiLocale: LocaleId,
+): Promise<PlaceGeocodeAddress | undefined> {
+  const language = photonLanguage(locale, uiLocale);
+  // 四位小数约为 11 米：同一拍摄点直接复用，又不会把相邻街区错误合并。
+  const key = `${coords.latitude.toFixed(4)},${coords.longitude.toFixed(4)},${language}`;
+  const cached = photonCache.get(key);
+  if (cached !== undefined) return cached;
+
+  const queued = photonQueue.then(async () => {
+    const remaining = PHOTON_MIN_INTERVAL_MS - (Date.now() - photonLastStartedAt);
+    if (remaining > 0) await delay(remaining);
+    photonLastStartedAt = Date.now();
+    return requestPhotonAddress(coords, language);
+  });
+  photonQueue = queued.then(() => undefined, () => undefined);
+  photonCache.set(key, queued);
+  // 网络临时失败不能在整个 App 生命周期里永久缓存；成功结果才长期复用。
+  void queued.then((address) => {
+    if (address === undefined && photonCache.get(key) === queued) photonCache.delete(key);
+  });
+  if (photonCache.size > PHOTON_CACHE_LIMIT) {
+    const oldest = photonCache.keys().next().value as string | undefined;
+    if (oldest !== undefined) photonCache.delete(oldest);
+  }
+  return queued;
+}
+
+type NativePlaceResult = {
+  native: ReverseGeocodeOutcome;
+  address?: PlaceGeocodeAddress;
+  place?: ResolvedPlace;
+};
+
+async function resolveNativePlace(coords: {
+  latitude: number;
+  longitude: number;
+}): Promise<NativePlaceResult> {
+  const native = await reverseGeocodeWithRetry(coords);
+  if (native.status !== 'ok' || native.address === undefined) return { native };
+  const place = resolvePlaceFromGeocode(native.address, coords.latitude, coords.longitude);
+  return hasPlaceName(place) ? { native, address: native.address, place } : { native };
+}
+
+/** 系统与全球兜底反查的结局。`ok` 里一定有一个可用地名。 */
 export type ResolvePlaceOutcome =
-  | { status: 'ok'; address: PlaceGeocodeAddress; place: ResolvedPlace; channel: 'native' }
+  | { status: 'ok'; address: PlaceGeocodeAddress; place: ResolvedPlace; channel: 'native' | 'photon' }
   | {
       status: 'failed';
       /** 原生那一段的结局（超时 / 抛异常 / 空数组 / 字段全空）。 */
       native: ReverseGeocodeOutcome;
-      /** 系统原生反查一共尝试了几次（1~2 次）。 */
+      /** 系统原生反查一共尝试了几次。 */
       attempts: number;
     };
 
 /**
- * 坐标 → 结构化地名：只使用系统原生反查，绝不把坐标发给第三方接口。
+ * 坐标 → 结构化地名：系统反查优先，失败后使用 Photon / OpenStreetMap 全球兜底。
  *
  * 这是"相机页现场拍"和"相册导入"**唯一**的地名入口，两条路必须从这里拿
  * （耐心值 / 重试 / 失败语义 / 日志措辞都只在本文件里定义一次，见文件头）。
@@ -307,9 +445,9 @@ export type ResolvePlaceOutcome =
  * ## 最坏等待时间
  *
  * ```
- *   系统原生：2 次 × 最多 5000ms = 10000ms ← GEOCODE_TOTAL_BUDGET_MS 是硬闸门
+ *   系统原生：最多 2000ms；Photon：最多 4500ms
  * ```
- * 正常照片通常几百毫秒；只有系统服务连续超时才会接近 10 秒。
+ * Photon 只会在系统明确失败或超过 2 秒后启动，不会在系统成功时外发坐标。
  *
  * ## 绝不抛
  *
@@ -319,16 +457,39 @@ export type ResolvePlaceOutcome =
  */
 export async function resolvePlaceFromCoords(
   coords: { latitude: number; longitude: number },
-  _geoLocale: LocalePreference = 'zh-Hans',
-  _uiLocale: LocaleId = 'zh-Hans',
+  geoLocale: LocalePreference = 'zh-Hans',
+  uiLocale: LocaleId = 'zh-Hans',
+  nativeAllowed = true,
 ): Promise<ResolvePlaceOutcome> {
-  const native = await reverseGeocodeWithRetry(coords);
-  if (native.status === 'ok' && native.address !== undefined) {
-    const place = resolvePlaceFromGeocode(native.address, coords.latitude, coords.longitude);
+  // Android 导入旧照片时，系统反查需要前台定位权限；用户拒绝后仍可直接使用已经
+  // 授权的 Photon 兜底，且不会为了旧照片去读取设备当前位置。
+  const nativeResult: NativePlaceResult = nativeAllowed
+    ? await resolveNativePlace(coords)
+    : {
+        native: {
+          status: 'error',
+          attempts: 0,
+          error: new Error('系统反查不可用'),
+        },
+      };
+  if (nativeResult.address !== undefined && nativeResult.place !== undefined) {
+    return {
+      status: 'ok',
+      address: nativeResult.address,
+      place: nativeResult.place,
+      channel: 'native',
+    };
+  }
+
+  const photonAddress = await photonAddressFor(coords, geoLocale, uiLocale);
+  if (photonAddress !== undefined) {
+    const place = resolvePlaceFromGeocode(photonAddress, coords.latitude, coords.longitude);
     if (hasPlaceName(place)) {
-      return { status: 'ok', address: native.address, place, channel: 'native' };
+      return { status: 'ok', address: photonAddress, place, channel: 'photon' };
     }
   }
+
+  const native = nativeResult.native;
 
   /*
    * 走到这里有两种原因，日志里必须分得清：
@@ -342,11 +503,9 @@ export async function resolvePlaceFromCoords(
       : describeGeocodeFailure(native);
 
   /*
-   * 隐私边界：不再把拍摄坐标或导入照片的 EXIF 坐标发给第三方服务。
-   * 原生系统反查失败就不提供地名，由调用方按 locationMode 决定是否另行显示坐标；
-   * 同时少掉最坏 4 秒的第三方网络等待，批量导入更快。
+   * 用户选择「地名」时已授权 Photon 兜底；日志不记录精确坐标。
    */
-  console.warn(`[retro-film-cam] 系统地名反查失败，本次不提供地名：${nativeReason}`);
+  console.warn(`[retro-film-cam] 系统与 Photon 地名反查均失败，本次不提供地名：${nativeReason}`);
   return {
     status: 'failed',
     native,
@@ -466,9 +625,9 @@ export async function fetchLocationStamp(
     }
 
     /*
-     * 反查地名：只走系统原生服务，耐心值 / 重试 / 日志措辞全部收在
+     * 反查地名：系统服务优先，失败后用 Photon / OpenStreetMap 兜底；调度、缓存与日志全部收在
      * `resolvePlaceFromCoords` 里；相册导入走的是**同一个函数**，两条路的等待时间
-     * 与失败行为必须一模一样，也都不会把坐标发给第三方。
+     * 与失败行为必须一模一样。Photon 只收到经纬度与地名语言，不会收到照片。
      *
      * ⚠️ 这一段与上面 `mode === 'coords'` 那一段有一条硬边界：
      * **地名档绝不允许输出坐标**。用户选了「地名」却看到一串 `LAT 23°02'N …`

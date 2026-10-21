@@ -1,4 +1,4 @@
-// Focused regression check for overseas reverse-geocode parsing. No device or network is needed.
+// Focused regression check for overseas reverse-geocode parsing. No device or live network is needed.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -34,6 +34,30 @@ const native = {
       return state.responses.shift() ?? [];
     },
   },
+};
+
+let photonCalls = 0;
+global.fetch = async (url) => {
+  photonCalls += 1;
+  assert.match(String(url), /^https:\/\/photon\.komoot\.io\/reverse\?/);
+  return {
+    ok: true,
+    async json() {
+      return {
+        features: [
+          {
+            properties: {
+              name: 'Paris',
+              city: 'Paris',
+              state: 'Île-de-France',
+              country: 'France',
+              countrycode: 'FR',
+            },
+          },
+        ],
+      };
+    },
+  };
 };
 
 const modules = new Map();
@@ -91,13 +115,56 @@ async function main() {
   assert.equal(best.address.city, 'Paris');
   assert.equal(state.calls, 1);
 
-  // A transient empty overseas response gets one retry within the existing total budget.
-  state.responses = [[], [paris]];
+  // A native empty result falls back to Photon and returns a real place, not raw coordinates.
+  state.responses = [[]];
   state.calls = 0;
-  const retried = await locationStamp.reverseGeocodeWithRetry({ latitude: 48.8566, longitude: 2.3522 });
-  assert.equal(retried.status, 'ok');
-  assert.equal(retried.address.city, 'Paris');
-  assert.equal(state.calls, 2);
+  photonCalls = 0;
+  const fallback = await locationStamp.resolvePlaceFromCoords(
+    { latitude: 48.8566, longitude: 2.3522 },
+    'en',
+    'en',
+  );
+  assert.equal(fallback.status, 'ok');
+  assert.equal(fallback.channel, 'photon');
+  assert.equal(fallback.place.city, 'Paris');
+  assert.equal(fallback.place.countryCode, 'FR');
+  assert.equal(state.calls, 1);
+  assert.equal(photonCalls, 1);
+
+  // Nearby duplicate work reuses the rounded-coordinate cache and does not hit the service again.
+  state.responses = [[]];
+  const cached = await locationStamp.resolvePlaceFromCoords(
+    { latitude: 48.85661, longitude: 2.35221 },
+    'en',
+    'en',
+  );
+  assert.equal(cached.status, 'ok');
+  assert.equal(cached.channel, 'photon');
+  assert.equal(photonCalls, 1);
+
+  // A fast native result wins without starting an external request.
+  state.responses = [[paris]];
+  const nativeResult = await locationStamp.resolvePlaceFromCoords(
+    { latitude: 48.8577, longitude: 2.3533 },
+    'en',
+    'en',
+  );
+  assert.equal(nativeResult.status, 'ok');
+  assert.equal(nativeResult.channel, 'native');
+  assert.equal(photonCalls, 1);
+
+  // Imported EXIF coordinates can still use Photon when Android blocks its native geocoder.
+  const nativeCallsBeforePermissionFallback = state.calls;
+  const permissionFallback = await locationStamp.resolvePlaceFromCoords(
+    { latitude: 48.8588, longitude: 2.3544 },
+    'en',
+    'en',
+    false,
+  );
+  assert.equal(permissionFallback.status, 'ok');
+  assert.equal(permissionFallback.channel, 'photon');
+  assert.equal(state.calls, nativeCallsBeforePermissionFallback);
+  assert.equal(photonCalls, 2);
 
   console.log('overseas location checks passed');
 }

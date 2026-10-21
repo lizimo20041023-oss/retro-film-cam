@@ -165,7 +165,7 @@ export const zhHans = {
   'settings.language.system': '跟随系统',
   'settings.location.head': '定位水印 LOCATION',
   'settings.location.hint':
-    '开启后，成片左下角会多烧一行定位小字（纸白色，和右下角橙色日期同一条基线）。坐标是纯离线算出来的；地名要用系统的反查服务（iOS 走苹果、Android 走谷歌），那一步会联网 —— 但位置只写进你这张照片，App 自己不上传任何东西。',
+    '开启后，成片左下角会烧入定位小字。坐标模式完全离线；地名模式先用系统服务，失败后会把经纬度和语言发送给 Photon / OpenStreetMap 解析，照片不会上传。地名数据 © OpenStreetMap contributors。',
   'settings.location.off': '关闭',
   'settings.location.place': '地名',
   'settings.location.coords': '坐标',

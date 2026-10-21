@@ -13,8 +13,8 @@
       "infoPlist": {
         "NSCameraUsageDescription": "需要使用相机来取景拍摄胶片风格照片。",
         "NSPhotoLibraryAddUsageDescription": "需要把显影后的成片保存到你的相册。",
-        "NSPhotoLibraryUsageDescription": "需要读取你选中的照片，用它原有的拍摄时间和地点重新冲印。照片只在设备上处理。",
-        "NSLocationWhenInUseUsageDescription": "开启「定位水印」后，把拍摄地点烧进照片里。位置只写进这一张照片，App 不会上传。"
+        "NSPhotoLibraryUsageDescription": "需要读取你选中的照片，用它原有的拍摄时间和地点重新冲印。选择地名水印时，照片的经纬度可能发送给 Photon / OpenStreetMap 解析地名；照片不会上传。",
+        "NSLocationWhenInUseUsageDescription": "开启定位水印后，把拍摄地点烧进照片里。选择地名时，经纬度可能发送给 Photon / OpenStreetMap 解析；照片不会上传。"
       }
     },
     "android": {
@@ -32,7 +32,7 @@
       [
         "expo-media-library",
         {
-          "photosPermission": "允许 $(PRODUCT_NAME) 读取所选照片的拍摄时间和地点，并保存冲印后的成片。",
+          "photosPermission": "允许 $(PRODUCT_NAME) 读取所选照片的拍摄时间和地点；选择地名水印时，经纬度可能发送给 Photon / OpenStreetMap 解析。",
           "savePhotosPermission": "允许 $(PRODUCT_NAME) 把成片保存到相册。",
           "isAccessMediaLocationEnabled": true
         }
@@ -40,13 +40,13 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "允许 $(PRODUCT_NAME) 在拍摄时读取位置，用于把地名或坐标烧进成片。"
+          "locationWhenInUsePermission": "允许 $(PRODUCT_NAME) 在拍摄时读取位置；选择地名水印时，经纬度可能发送给 Photon / OpenStreetMap 解析。"
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "允许 $(PRODUCT_NAME) 读取你选中的照片，把它重新冲印成胶片风格。"
+          "photosPermission": "允许 $(PRODUCT_NAME) 读取所选照片并重新冲印；选择地名水印时，照片中的经纬度可能发送给 Photon / OpenStreetMap 解析。"
         }
       ]
     ]

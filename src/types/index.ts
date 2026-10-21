@@ -963,7 +963,7 @@ export type GeoLocale = 'zh-Hans' | 'zh-Hant' | 'ja' | 'en';
 /**
  * 定位水印模式：
  * - `off`    不写定位（**默认**，即使用户给了权限也要他主动开）；
- * - `place`  写地名（城市 · 国家），走系统反查，苹果/谷歌会联网解析；
+ * - `place`  写地名（城市 · 国家），系统反查失败后由 Photon / OpenStreetMap 兜底；
  * - `coords` 写经纬度，纯离线计算，不联网也不上传。
  */
 export type LocationMode = 'off' | 'place' | 'coords';

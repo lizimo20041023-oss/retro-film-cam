@@ -21,7 +21,7 @@ const IDLE_STATE: LocationStampState = { kind: 'off' };
  * 定位结果的复用窗口：3 分钟。
  *
  * 为什么以前"每张都重新取一次 fix"是发热源：`fetchLocationStamp` 在 `mode === 'place'`
- * 时会走 CoreLocation 取坐标 + MapKit 反查（最多 2 次重试、总预算 10s），
+ * 时会走 CoreLocation 取坐标和地名反查，
  * 连拍五张就是五轮 GPS 无线电唤醒 + 五次网络请求 —— 而 200ms 前刚拿到的坐标，
  * 和下一张照片需要的那个地方，通常就是同一个点（用户没长腿）。
  *

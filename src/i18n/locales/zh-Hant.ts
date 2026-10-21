@@ -154,7 +154,7 @@ export const zhHant: Messages = {
   'settings.language.system': '跟隨系統',
   'settings.location.head': '定位浮水印 LOCATION',
   'settings.location.hint':
-    '開啟後，成片左下角會多燒一行定位小字（紙白色，和右下角橘色日期同一條基線）。座標是純離線算出來的；地名要用系統的反查服務（iOS 走蘋果、Android 走谷歌），那一步會連網 —— 但位置只寫進你這張照片，App 自己不上傳任何東西。',
+    '開啟後，成片左下角會燒入定位小字。座標模式完全離線；地名模式先用系統服務，失敗後會把經緯度和語言傳送給 Photon / OpenStreetMap 解析，照片不會上傳。地名資料 © OpenStreetMap contributors。',
   'settings.location.off': '關閉',
   'settings.location.place': '地名',
   'settings.location.coords': '座標',

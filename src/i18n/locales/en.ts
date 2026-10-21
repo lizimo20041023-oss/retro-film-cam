@@ -162,7 +162,7 @@ export const en: Messages = {
   'settings.language.system': 'Follow system',
   'settings.location.head': 'LOCATION STAMP',
   'settings.location.hint':
-    'When on, one extra line of location text is burned into the bottom-left of the photo (paper white, on the same baseline as the amber date on the right). Coordinates are computed entirely offline; place names go through the system reverse geocoder (Apple on iOS, Google on Android) and only that step uses the network — the location is written into your photo only, and the app itself never uploads anything.',
+    'Adds location text to the photo. Coordinates stay offline. For place names, the system service is tried first; if it fails, coordinates and language are sent to Photon / OpenStreetMap. Photos are never uploaded. Place data © OpenStreetMap contributors.',
   'settings.location.off': 'Off',
   'settings.location.place': 'Place name',
   'settings.location.coords': 'Coordinates',

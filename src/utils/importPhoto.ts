@@ -5,8 +5,8 @@
  * 可在用户授予相册读取权限后查询 iOS Photos 或 Android MediaStore 资产的原拍摄位置。
  * 绝不把当前手机的位置印到旧照片上。
  *
- * 只有显式选择「地名」且水印版式包含地点时，才用系统原生反查服务将原图坐标
- * 转换成地名；这一步可能联网，失败不影响出片，也不擅自改印坐标。
+ * 只有显式选择「地名」且水印版式包含地点时，才把原图坐标转换成地名：先用系统
+ * 原生服务，失败后把经纬度与地名语言发送给 Photon / OpenStreetMap；不上传照片。
  * Android 的系统反查要求前台定位权限，导入时按需请求一次。
  * 用户选「坐标」时离线格式化原图坐标；关闭定位或只印日期时不读取位置。
  *
@@ -36,8 +36,8 @@ import { addShot } from './galleryStore';
 import { canReverseGeocodeImportedPhoto, createPhotoAssetGpsReader } from './importLocation';
 // 反查（含超时 / 重试 / 失败措辞）从 `locationStamp.ts` 引：相机页和相册导入
 // 必须是同一份逻辑、同一组毫秒数，这个文件里**不许**再出现任何"反查超时"的常量或实现。
-// 本项目 v1.5.1 之后只认 `resolvePlaceFromCoords` 这一个入口（它内部只走系统原生
-// `reverseGeocodeWithRetry`，失败不再上传坐标到第三方接口），所以这里连
+// 地名解析只认 `resolvePlaceFromCoords` 这一个入口（它内部统一管理系统反查、
+// Photon 兜底、限速与缓存），所以这里连
 // `reverseGeocodeWithRetry` / `describeGeocodeFailure` 都不再直接引。
 import { resolvePlaceFromCoords } from './locationStamp';
 // `formatCoords` 不再从这里引：本文件从本轮起不再自己拼坐标串（坐标只在
@@ -105,8 +105,8 @@ export interface ImportAndDevelopOptions {
   /**
    * 设置页的定位档位（`AppSettings.locationMode`）。
    *
-   * ⚠️ **只有显式传入 `'place'` 会走系统地名反查**，不传 = `'off'`：
-   *   · `'place'` —— 用户要的就是地名。每张最多等系统原生反查的 10s 总预算，
+   * ⚠️ **只有显式传入 `'place'` 会走地名反查**，不传 = `'off'`：
+   *   · `'place'` —— 用户要的就是地名。系统快速尝试后由 Photon / OpenStreetMap 兜底，
    *     **反查失败就是"这张不印地名那一行"**，不会退回坐标；
    *   · `'coords'` —— 用户明确选了"只印坐标"。相机页那条路（`locationStamp.ts` 的
    *     `mode === 'coords'` 分支）**根本不发反查**，导入这条路也必须一样，
@@ -295,11 +295,11 @@ function toResolvedPlace(coords: { latitude: number; longitude: number }): Resol
 }
 
 /**
- * 所选原照片的坐标 → 结构化地名（只走系统原生反查）。
+ * 所选原照片的坐标 → 结构化地名（系统优先，Photon / OpenStreetMap 兜底）。
  *
  * 三种结局，**只有第一种会带地名**：
- *   1. 系统反查成功、且解析出至少一个名字字段 → `resolvePlaceFromCoords` 的结果；
- *   2. 系统反查失败（超时 / 抛异常 / 空数组）→ `null`；
+ *   1. 系统或 Photon 反查成功、且解析出至少一个名字字段 → `resolvePlaceFromCoords` 的结果；
+ *   2. 两条反查都失败（超时 / 抛异常 / 空数组）→ `null`；
  *   3. 有一边"成功"但一个可用字段都没有（海上、极地、iOS 回了个空对象 `{}`）→ `null`。
  * 后两种都退成 `null` 而不是"只有坐标"的结构：调用方 `importAndDevelop` 拿到 `null`
  * 时会按用户选的档位决定"不印地名"还是"只印坐标"（见那个函数里 `place` 那一段）。
@@ -328,27 +328,29 @@ function toResolvedPlace(coords: { latitude: number; longitude: number }): Resol
  * 入参只来自原图 EXIF 或该照片的 iOS Photos / Android MediaStore 资产；
  * 这里没有读取设备当前位置的路径。
  */
-async function resolvePlaceFromSourceGps(gps: {
-  latitude: number;
-  longitude: number;
-}): Promise<ResolvedPlace | null> {
-  const resolved = await resolvePlaceFromCoords(gps);
+async function resolvePlaceFromSourceGps(
+  gps: { latitude: number; longitude: number },
+  nativeAllowed: boolean,
+  locale: LocaleId = 'zh-Hans',
+): Promise<ResolvedPlace | null> {
+  const lookupLocale = locale === 'fr' ? 'en' : locale;
+  const resolved = await resolvePlaceFromCoords(gps, lookupLocale, locale, nativeAllowed);
 
   if (resolved.status !== 'ok') {
     const nativeAttempts = resolved.native.attempts;
     if (resolved.native.status !== 'ok') {
       console.warn(
-        `[retro-film-cam] 导入照片没拿到地名（系统反查尝试 ${nativeAttempts} 次仍未成功）`,
+        `[retro-film-cam] 导入照片没拿到地名（系统反查尝试 ${nativeAttempts} 次，Photon 也未成功）`,
       );
     } else if (resolved.native.address === undefined) {
       // 系统答了"这个点我查不到"（空数组：海上、极地、刚开盘的新楼盘）。
       // 这不算失败，也不重试，只是没有名字 —— 但日志里要和上面那种分开说。
       console.warn(
-        '[retro-film-cam] 导入照片的系统反查返回空数组（系统查不到这个点）',
+        '[retro-film-cam] 导入照片的系统反查返回空数组，Photon 也没有查到地名',
       );
     } else {
       console.warn(
-        `[retro-film-cam] 导入照片的系统反查结果里没有任何可用地名（尝试 ${nativeAttempts} 次）`,
+        `[retro-film-cam] 导入照片的系统反查结果没有可用地名，Photon 也失败（系统尝试 ${nativeAttempts} 次）`,
       );
     }
     return null;
@@ -478,20 +480,20 @@ export async function importAndDevelop(
       const wantsPlace = mode === 'place' && wantsLocation;
       let geocoded: ResolvedPlace | null = null;
       if (gps !== null && wantsPlace) {
-        // 用户已在设置中选「地名」；resolvePlaceFromCoords 只调用系统原生反查。
+        // 用户已在设置中选「地名」；resolvePlaceFromCoords 先调系统服务，再按需用 Photon。
         // Android 的原生反查额外要求前台定位权限，同批照片只申请一次。
         geocodePermission ??= canReverseGeocodeImportedPhoto();
-        if (await geocodePermission) {
-          // 只复用坐标完全相同的结果，避免把边界附近两张不同位置的照片合并。
-          // 缓存仅活在本次导入中，且不记录坐标日志。
-          const key = `${gps.latitude},${gps.longitude}`;
-          let result = geocodeResults.get(key);
-          if (result === undefined) {
-            result = resolvePlaceFromSourceGps(gps);
-            geocodeResults.set(key, result);
-          }
-          geocoded = await result;
+        const nativeAllowed = await geocodePermission;
+        // 只复用坐标完全相同的结果，避免把边界附近两张不同位置的照片合并。
+        // 缓存仅活在本次导入中，且不记录坐标日志。Android 没有前台定位权限时
+        // 跳过系统反查，直接走已在设置文案中说明的 Photon 兜底。
+        const key = `${nativeAllowed}|${options.locale ?? 'zh-Hans'}|${gps.latitude},${gps.longitude}`;
+        let result = geocodeResults.get(key);
+        if (result === undefined) {
+          result = resolvePlaceFromSourceGps(gps, nativeAllowed, options.locale);
+          geocodeResults.set(key, result);
         }
+        geocoded = await result;
       }
       /*
        * `null` 在三种档位下分别是"不印地名"（off）/ "这次没查到，不印地名"（place）/
