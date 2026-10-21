@@ -8,7 +8,8 @@
  * 数据流（一次快门，v2.0.1 起**不再有两遍截图**）：
  *   `expo-image-manipulator` 从原图裁出相框窗口比例、缩放到长边 1280~1600，存 **PNG**
  *     （`prepareLutSource`，见 `processFilmPhoto.ts`）
- *     → `new File(uri).bytesSync()` 读字节，**按魔数路由**（v2.1.1 双格式输入）：
+ *     → `await new File(uri).bytes()` 读字节（v2.3.2 起走异步读，见 `renderFilmToFile`），
+ *       **按魔数路由**（v2.1.1 双格式输入）：
  *        · PNG（`89 50 4E 47`）      → `decodePng` 纯 JS 解码
  *        · JPEG（`FF D8`）/ 其它格式 → 原生兜底：`expo-image-manipulator` 读这张文件、
  *          重存成 8-bit PNG（`SaveFormat.PNG`）后再 `decodePng`
@@ -148,7 +149,12 @@ async function readAsEightBitPngBytes(uri: string): Promise<Uint8Array> {
   const saved = await image.saveAsync({ format: SaveFormat.PNG, compress: 1 });
   const file = new File(saved.uri);
   try {
-    return file.bytesSync();
+    /*
+     * v2.3.2（用户 m04906 读写照片慢）：`bytesSync()` → `await bytes()`。
+     * 这几 MB 的 PNG 读盘走同步桥会在 JS 线程上阻塞整帧（大图几十毫秒），
+     * 而这里本来就是 async 函数、调用方已经在等 —— 异步读只把等待挪到 IO 线程。
+     */
+    return await file.bytes();
   } finally {
     /*
      * 清理失败**不能**影响成片：字节已经读进内存，残留只是一个几 MB 的缓存文件。
@@ -187,8 +193,11 @@ export async function renderFilmToFile(
    * 字节只读**一次**：路由和 PNG 解码共用同一份 buffer。
    * 非 PNG 分支里这份 buffer 会活到函数结束（几 MB），相比随后 10MB+ 的 RGBA
    * 可以忽略；换来的是不必为了 sniff 先把文件读两遍。
+   *
+   * v2.3.2：`bytes()` 是 `bytesSync()` 的异步版（同一份数据，走 IO 线程读）——
+   * 3~5MB 的单反 JPEG / 十几 MB 的 PNG 同步读会在 JS 线程上卡出可感知的掉帧。
    */
-  const bytes = source.bytesSync();
+  const bytes = await source.bytes();
   const format = sniffFilmSourceFormat(bytes);
   let png: PngImage;
   if (format === 'png') {
@@ -203,7 +212,7 @@ export async function renderFilmToFile(
     if (!overlayFile.exists) {
       throw new Error(`双重曝光第一张底片不存在：${input.overlaySourceUri}`);
     }
-    const overlayBytes = overlayFile.bytesSync();
+    const overlayBytes = await overlayFile.bytes();
     const overlayPng = decodePng(
       sniffFilmSourceFormat(overlayBytes) === 'png'
         ? overlayBytes
@@ -239,6 +248,14 @@ export async function renderFilmToFile(
    * 同名覆盖避免连续拍摄时缓存无限膨胀。
    */
   const target = new File(Paths.cache, `film-${input.stockId}-${input.seed}.png`);
+  /*
+   * 这里**保持同步 `write()`**（v2.3.2）：expo-file-system SDK 57 的 `File` 只有同步
+   * `write()`，没有可 await 的异步版本（`bytes()` / `copy()` 才有）。所以它没法像上面
+   * 两处读盘那样挪到 IO 线程 —— 好在这一步是"内存里现成的 buffer 顺序写一次"，
+   * 相比纯 JS 的 PNG 编码（几十 ms）与读盘解码只是零头，而且它后面紧跟的截图本来就要
+   * 等这张文件落盘。刻意不为了"看起来全异步"去包一层 `Promise.resolve(...)`：
+   * 那只是把阻塞藏起来，不是去掉。
+   */
   target.write(encodePngRgba(png.width, png.height, png.rgba));
   /*
    * 回报**实际生效**的一版参数（强度已经乘进去、夹取也做完）：`processFilmPhoto`

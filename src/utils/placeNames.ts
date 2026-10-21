@@ -1266,19 +1266,26 @@ function formatLatinPlace(place: ResolvedPlace, detail: PlaceDetail): string {
  * 第 4 个参数 `uiLocale` 只在传 `'auto'`（或传了 ja/fr）时有意义：
  * 它就是 `'auto'` 要参照的那个界面语言。默认 `'zh-Hans'` 是为了让
  * "只传三个实参"的老调用方拿到和以前一样的结果。
+ *
+ * 第 5 个参数 `options.allowCoords`（v2.3.2，可选）：没有地名时是否退回坐标串，
+ * **默认 `true`**（旧行为一字不变）。地名档（`locationMode === 'place'`）必须传
+ * `false`：用户选了「地名」却看到一串 `31.230°N 121.474°E`，等于把"我没查到"
+ * 伪装成"我查到了" —— 这时返回空串，由调用方决定"这一张不烧定位"。
  */
 export function formatResolvedPlace(
   place: ResolvedPlace,
   locale: LocalePreference,
   detail: PlaceDetail,
   uiLocale: LocaleId = 'zh-Hans',
+  options: { allowCoords?: boolean } = {},
 ): string {
   // 收口：语言判断只在这一个函数入口做一次，下面两个分支拿到的都是确定的四选一。
   const resolved = resolveGeoLocale(locale, uiLocale);
   const line = isChineseLocale(resolved)
     ? formatChinesePlace(place, resolved, detail)
     : formatLatinPlace(place, detail);
-  return line.length > 0 ? line : place.coords;
+  if (line.length > 0) return line;
+  return options.allowCoords === false ? '' : place.coords;
 }
 
 /**

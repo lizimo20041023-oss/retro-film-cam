@@ -838,6 +838,16 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     });
     lutUri = rendered.uri;
     renderTemporaryUris.push(rendered.uri);
+    /*
+     * v2.3.2（用户 m04906 读写照片慢）：**立刻**回收 LUT 输入 PNG。
+     *
+     * `renderFilmToFile` 已经把它的字节读进内存、洗进了 `rendered.uri`；这一行之后
+     * 合成层只画 `lutUri`，返回的 `rawUri` 是裁切前的 `cropped.uri` —— 没有任何消费者
+     * 还会读 `lutSource.uri`。提前删掉，就不必让它陪跑后面的挂载/截图（一张 1120~
+     * 1440 的 PNG 约 2~5MB，双曝时还有第二张）。末尾的 `renderTemporaryUris` 清理
+     * 仍保留（里面还包括 `rendered.uri`，而且重复删一个已不存在的文件是无害的）。
+     */
+    deleteLocalFilesBestEffort([lutSource.uri], 'LUT 输入图缓存');
     renderLayers = [
       `lut:${capturePreset.id}`,
       /* 回报的是**生效值**（`rendered.params` 已经乘过强度并夹取） */

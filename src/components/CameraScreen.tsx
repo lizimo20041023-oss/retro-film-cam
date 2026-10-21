@@ -224,10 +224,20 @@ const DEVELOP_DONE_VISIBLE_MS = 3000;
 const DEVELOP_ERROR_VISIBLE_MS = 5000;
 
 /**
- * 含正在冲印的工单在内最多保留一项。LUT 显影时暂停相机采集；不再让全尺寸原图排队，
- * 也不让 ISP、相机预览和 JS 像素循环同时拉满。
+ * 含正在冲印的工单在内最多保留**两项**（v2.3.2 用户 m04906 提速/降发热）。
+ *
+ * 这个数不是"越大越流畅"：每多排一张，就多一份全尺寸相机原图（12MP JPEG 约 3~5MB）
+ * 压在 cache 里，靠后的那张要等前面全部洗完才轮得到，用户的"拍了却迟迟没出片"感
+ * 也会被放大。上限 2 = 「正在洗的一张」+「显影时可以再按的一张」：
+ *  - 显影期相机保活（见下面 `cameraActive`）之后，快门不再被 `developing` 锁死，
+ *    按下去能立刻拿到原图入队，不必等上一张洗剂冲完；
+ *  - 再深就变成"盲拍连发"：用户看不到每一张的显影结果，存储峰值也线性上涨。
+ *
+ * v2.3.0~v2.3.1 曾经是 `1` 并配"显影期停采集"，代价是每拍一张都 `stopRunning()` /
+ * `startRunning()` 一次 `AVCaptureSession` —— 取景器黑一下、对焦要重等，
+ * 这才是真机上"拍照慢 + 持续发热"的主因（会话重建比多跑两秒预览贵得多）。
  */
-const MAX_DEVELOP_QUEUE_DEPTH = 1;
+const MAX_DEVELOP_QUEUE_DEPTH = 2;
 
 /**
  * iOS 把"被完全遮住的视图"截成空图时抛回来的原生文案（`react-native-view-shot`
@@ -870,10 +880,17 @@ export function CameraScreen() {
   const developing = status.kind === 'developing';
   const cameraGranted = cameraPermission?.granted === true;
   /**
-   * LUT 显影期间暂停交互与相机采集。这样会短暂阻止连拍，但能释放 ISP/GPU 带宽给
-   * 图片处理，缩短单张完成时间，并避免拍摄和纯 JS 像素循环叠加造成持续发热。
+   * 显影期**不再**冻结取景器交互（v2.3.2 · 用户 m04906）。
+   *
+   * v2.3.0 曾把它写成 `cameraGranted && !developing`，想让纯 JS 像素循环独占 CPU；
+   * 代价是每张照片显影的 1~2 秒里，画幅切换 / 轻触对焦 / 刻度尺全部失灵，
+   * 连续拍两张必须先等第一张洗完 —— 用户感知就是"拍照很慢"。
+   *
+   * 恢复 v1.9.0 语义：交卷之后的显影是**后台串行队列**的事（`pumpQueue`），
+   * 取景器只负责取景；参数入口各自有自己的保护（`ToolRow` 的 `busy` 仍会挡
+   * "会改变拍摄参数"的入口，避免连拍把参数改到一半产生歧义）。
    */
-  const interactive = cameraGranted && !developing;
+  const interactive = cameraGranted;
   const lensesKnown = lenses.length > 0;
   const stop: ZoomStop = ZOOM_STOPS[stopIndex] ?? ZOOM_STOPS[DEFAULT_STOP_INDEX];
   // 焦段读数 = 假定原生焦距 × 布局裁切因子 × 原生变焦因子（v1.8.4）：
@@ -1148,7 +1165,14 @@ export function CameraScreen() {
           if (job.kind === 'import') {
             await developImport(job);
           } else {
+            /* v2.3.2：每张一行，够看"排队 + 显影"总耗时（`[filmPerf]` 风格，不刷屏）。 */
+            const developStartedAt = __DEV__ ? Date.now() : 0;
             const result = await developShotWithRetry(job);
+            if (__DEV__) {
+              console.info(
+                `[filmPerf] develop=${Date.now() - developStartedAt}ms render=${result.photo.durationMs}ms`,
+              );
+            }
             setStatus({ kind: 'done', uri: result.photo.uri, saved: result.save.ok });
             setExposureCount((current) => current + 1);
             // 重曝的一对在第二次快门入队时就已清掉暂存状态；这里不能再清，
@@ -1285,8 +1309,21 @@ export function CameraScreen() {
    *
    * 注意 `CameraView` **不卸载**（卸载会重建采集会话、回来黑一下）：只是 `active` 开关。
    */
-  // CPU 密集的 LUT 显影期间暂停 ISP/预览流，避免相机与 JS 像素循环同时拉满而持续发热。
-  const cameraActive = cameraGranted && !covered && appActive && !developing;
+  /*
+   * v2.3.2（用户 m04906）把 `!developing` 又从这条式子里拿掉了。
+   *
+   * 上面整段注释已经写过 v1.8.9 的那次教训；v2.3.0 为了给纯 JS 像素循环让出 ISP
+   * 带宽又把它加了回来，结果是每张照片显影 1~2 秒里都要 `stopRunning()` 一次、
+   * 洗好再 `startRunning()` 一次 —— 会话重建本身（黑帧、重新对焦/测光、AGC 重新收敛）
+   * 比多跑这两秒预览贵得多，真机上就是"拍一张卡一下 + 机身持续发热"。
+   *
+   * 现在冲印是后台串行队列（`pumpQueue`）：`setStatus({ kind: 'developing' })` 发生在
+   * `takePictureAsync` **成功之后**（本文件 `pumpQueue` 的 while 循环开头），置位那一刻
+   * 没有任何静态拍摄在飞，所以停采集不会打断拍摄 —— 换句话说，`!developing` 在这里既
+   * 没有正确性收益，也只有重建会话的代价。显影期间保持采集，是"拍完立刻能接着取景/连拍"
+   * 的另一半；真正的大头（面板盖住 / 退后台）继续停。
+   */
+  const cameraActive = cameraGranted && !covered && appActive;
 
   /**
    * 预览要画的水印片段（v1.7.0 · 模块三）。
@@ -2028,7 +2065,12 @@ export function CameraScreen() {
       // 定位与拍摄并行，但**不在这里 await 定位**（最多 2.5s，契约 §5）：Promise 冻进工单
       const place = locationStamp.resolveForShot();
       // 走 expo-camera 的**高画质静态拍摄**通道（v1.7.0 · 模块一第 2 条）：
-      //   · `quality: 1`   —— JPEG 压缩质量拉满，不再从实时预览流上截帧；
+      //   · `quality: 0.92` —— v2.3.2（用户 m04906）：原来拉满 1.0，一张 12MP 的 JPEG
+      //     接近源分辨率最重的编码档，原生编码 + 随后 `decodePng` 前的整图读取都要为
+      //     那点肉眼不可见的高频细节付时间与发热。0.92 是相机管线里的"高质量"档，
+      //     而这张原图**不是成片**：它还要经 LUT 源缩放（长边 1120/1440）与 1800 画布
+      //     重采样，0.92 与 1.0 的差异在被重采样两轮之后不可分辨，文件却小 ~40%，
+      //     解码与写盘同步变快。
       //   · `skipProcessing: false` —— **显式**声明"要完整后处理"。它本来就是 expo-camera
       //     的默认值（`Options.kt:15 val skipProcessing: Boolean = false`），这里写出来
       //     是为了让"我们特意走这条路"留在代码里可查：置 true 会跳过后处理，
@@ -2039,7 +2081,7 @@ export function CameraScreen() {
       //   · `exif: false` —— 我们不用相机 EXIF 的时间/地点（日期走 App 自己的时钟、
       //     地点走 `resolveForShot()`），少解一份 EXIF 省一次内存峰值。
       const shutterStartedAt = __DEV__ ? Date.now() : 0;
-      const shot = await camera.takePictureAsync({ quality: 1, skipProcessing: false, exif: false });
+      const shot = await camera.takePictureAsync({ quality: 0.92, skipProcessing: false, exif: false });
       if (__DEV__) {
         console.info(`[filmPerf] takePicture=${Date.now() - shutterStartedAt}ms`);
       }
@@ -2448,10 +2490,14 @@ export function CameraScreen() {
           <View style={styles.coreSide}>
             <AlbumThumb refreshKey={albumKey} size={CORE_THUMB_SIZE} onPress={handleOpenGalleryScreen} />
           </View>
-          {/* 显影时暂停下一次快门，避免相机采集与 LUT 像素循环同时满载。 */}
+          {/*
+            v2.3.2（用户 m04906）：显影期不再禁用快门 —— 队列上限 2 允许"洗一张、再按一张"。
+            仍只被"相机没就绪 / 没权限"挡，与 v1.9.0 一致；队列满时 `handleShutter`
+            自己会把提示换成 `camera.shutter.busy`（文案不变）。
+          */}
           <ShutterButton
             onPress={handleShutterPress}
-            disabled={!cameraReady || !cameraGranted || developing}
+            disabled={!cameraReady || !cameraGranted}
           />
           <View style={[styles.coreSide, styles.coreSideRight]}>
             <DialButton

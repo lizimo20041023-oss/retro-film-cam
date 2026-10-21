@@ -10,12 +10,30 @@
  * 「LCD 显示」和「成片水印」。字符串怎么拼、结构长什么样全在 `utils/placeNames.ts`。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useI18n } from '../i18n';
 import { useSettings } from './useSettings';
-import { fetchLocationStamp, trimLocationText } from '../utils/locationStamp';
+import {
+  fetchLocationStamp,
+  seedGeocodeCache,
+  snapshotGeocodeCache,
+  trimLocationText,
+} from '../utils/locationStamp';
+import { parseGeocodeCache, serializeGeocodeCache } from '../utils/geocodePlan';
 import type { LocationStampOutcome, LocationStampState, ResolvedPlace } from '../types';
 
 const IDLE_STATE: LocationStampState = { kind: 'off' };
+
+/**
+ * 持久化地名缓存的 AsyncStorage 键（v2.3.2）。
+ *
+ * 为什么需要持久化：内存缓存（本 hook 的 `fixCacheRef` + `locationStamp` 的
+ * `geocodeEntries`）一杀 App 就没了，海外用户冷启动第一张照片必重新联网 ——
+ * 这正是"拍照/读写照片慢、还会发热"的一大来源。现在成功与失败都会落盘：
+ * 成功的 10 分钟内直接复用，失败的 120 秒内不再为同一片区域重发请求。
+ * 版本号在 `geocodePlan.serializeGeocodeCache` 里，格式不对时整份丢弃。
+ */
+const GEOCODE_STORAGE_KEY = 'fretrocam.geocode.cache.v1';
 
 /**
  * 定位结果的复用窗口：3 分钟。
@@ -41,10 +59,12 @@ interface LocationFixCache {
 /**
  * 按快门时最多为定位等多久。
  *
- * 1.5 秒覆盖热启动与缓存命中；冷启动地名请求会继续在后台完成并进入缓存，
- * 但当前照片不再为了定位额外等待 2.5 秒。
+ * v2.3.2：1.5 秒 → **6 秒**。注意这个值**不阻塞快门**：`resolveForShot()` 只是被
+ * 调用（promise 冻进工单），真正的等待发生在 develop 阶段（`job.place` 的 `await`）。
+ * 海外冷启动的系统反查 + Photon 兜底本来就可能要 3~6 秒，1.5 秒一刀切等于
+ * "第一张永远没有地名"；放宽到 6 秒后，第一张能等到、后续照片直接命中缓存。
  */
-const SHOT_DEADLINE_MS = 1500;
+const SHOT_DEADLINE_MS = 6000;
 
 /**
  * 给 promise 加一道硬截止线，超时返回 `null`。
@@ -122,6 +142,43 @@ export function useLocationStamp(): LocationStampController {
   }, []);
 
   /**
+   * 把 `locationStamp` 当前的缓存快照整份写回 AsyncStorage（v2.3.2）。
+   * 写失败只 warn：持久化是"下次启动更快"，不是"这次能不能拍照"的前提。
+   */
+  const persistCache = useCallback(() => {
+    try {
+      const raw = serializeGeocodeCache(snapshotGeocodeCache());
+      void AsyncStorage.setItem(GEOCODE_STORAGE_KEY, raw).catch((error: unknown) => {
+        console.warn('[retro-film-cam] 地名缓存写入失败：', error);
+      });
+    } catch (error) {
+      console.warn('[retro-film-cam] 地名缓存序列化失败：', error);
+    }
+  }, []);
+
+  /**
+   * 启动时灌入持久化缓存（v2.3.2）。
+   *
+   * 缓存命中判断（TTL / 2km 邻近匹配）只有一份实现，在 `locationStamp` / `geocodePlan`；
+   * 这里只负责"读出来交给它"，不自己判新鲜 —— 两边各判一次迟早会判岔。
+   */
+  useEffect(() => {
+    let cancelled = false;
+    void AsyncStorage.getItem(GEOCODE_STORAGE_KEY)
+      .then((raw) => {
+        if (cancelled) return;
+        const entries = parseGeocodeCache(raw);
+        if (entries.length > 0) seedGeocodeCache(entries);
+      })
+      .catch((error: unknown) => {
+        console.warn('[retro-film-cam] 地名缓存读取失败：', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /**
    * 取一次定位结局，带 60s 缓存 + 在途复用（v1.8.6 · 契约 §5）。
    *
    * `force` 只在用户主动"重新探测"时用（设置页打开定位 / 手动刷新）：
@@ -147,6 +204,8 @@ export function useLocationStamp(): LocationStampController {
         if (outcome.ok) {
           fixCacheRef.current = { key, at: Date.now(), outcome };
         }
+        // 成功与失败（负缓存）都落盘：重启后同一片区域不必再联网（v2.3.2）。
+        persistCache();
         return outcome;
       });
       inflightRef.current = { key, promise };
@@ -158,7 +217,7 @@ export function useLocationStamp(): LocationStampController {
       void promise.then(clear, clear);
       return promise;
     },
-    [mode, geoLocale, detail, localeId],
+    [mode, geoLocale, detail, localeId, persistCache],
   );
 
   /**
@@ -198,6 +257,8 @@ export function useLocationStamp(): LocationStampController {
     }
     // 到这里才带截止线：LCD 上那次探测可以慢慢等，按快门这次不行。
     // v1.8.6：走 fetchFix 的 60s 缓存 —— 连拍第二张不再重新唤醒 GPS（契约 §5）。
+    // v2.3.2：命中 `locationStamp` 的持久化缓存时 fetchFix 直接同步 resolve（不联网），
+    // 所以 6 秒截止线只对真正的冷启动生效；命中时快门路径零等待。
     const outcome = await withinDeadline(fetchFix(false), SHOT_DEADLINE_MS);
     if (outcome === null) {
       return null;

@@ -73,6 +73,17 @@ export type GalleryShot = {
   frameId?: string;
   /** 拍这张时用的预设 id。 */
   presetId?: string;
+  /**
+   * 成片文件的字节数（v2.3.2 · 用户 m04906 "读写照片慢"）。
+   *
+   * 存进索引是为了让 `getGalleryUsage()` **不必再逐张 `stat`**：以前它每次被调用都要
+   * 对 N 张照片 + N 张缩略图做 2N 次同步文件系统查询，相册一多（几百张）就卡住设置页。
+   * 可选字段 = 向后兼容：v2.3.1 及更早写入的条目没有它，读到时按缺失处理（见
+   * `getGalleryUsage` 的"缺失才 stat 一次并回填"分支）。
+   */
+  bytes?: number;
+  /** 缩略图文件的字节数。缩略图降级成成片本身（`thumbUri === uri`）时它是 0。 */
+  thumbBytes?: number;
 };
 
 /** `addShot` 的入参。 */
@@ -277,7 +288,7 @@ async function renderToCache(
 function parseShot(value: unknown): GalleryShot | null {
   if (!isRecord(value)) return null;
 
-  const { id, uri, thumbUri, createdAt, width, height, frameId, presetId } = value;
+  const { id, uri, thumbUri, createdAt, width, height, frameId, presetId, bytes, thumbBytes } = value;
   if (typeof id !== 'string' || id.length === 0) return null;
   if (typeof uri !== 'string' || uri.length === 0) return null;
   if (typeof thumbUri !== 'string' || thumbUri.length === 0) return null;
@@ -288,6 +299,16 @@ function parseShot(value: unknown): GalleryShot | null {
   // 可选字段只在确实是字符串时带上，避免把 undefined / null 塞进 JSON
   if (typeof frameId === 'string') shot.frameId = frameId;
   if (typeof presetId === 'string') shot.presetId = presetId;
+  /*
+   * v2.3.2：索引里的字节数只是**缓存**，不是记录的必备字段 ——
+   *  - 缺失（老索引）不丢条目、不标 dirty，交给 `getGalleryUsage` 回填；
+   *  - 只认非负有限数：负数 / NaN / 字符串一律当没有，避免把坏值当真值求和；
+   *  - 允许 0（空文件 / 缩略图降级时的 thumbBytes），所以不用 `isPositiveNumber`。
+   */
+  if (typeof bytes === 'number' && Number.isFinite(bytes) && bytes >= 0) shot.bytes = bytes;
+  if (typeof thumbBytes === 'number' && Number.isFinite(thumbBytes) && thumbBytes >= 0) {
+    shot.thumbBytes = thumbBytes;
+  }
   return shot;
 }
 
@@ -499,6 +520,16 @@ export async function addShot(input: AddShotInput): Promise<GalleryShot | null> 
         };
         if (input.frameId) shot.frameId = input.frameId;
         if (input.presetId) shot.presetId = input.presetId;
+        /*
+         * v2.3.2（用户 m04906 读写照片慢）：存照片时顺手把字节数写进索引。
+         *
+         * 这两次 `stat` 的代价近乎为零（文件刚写完，元数据还在文件系统缓存里），
+         * 却能让 `getGalleryUsage()` 从"每开一次设置页就同步查 2N 次文件系统"
+         * 变成"读索引 + 加法"。缩略图降级成成片本身时 `thumbBytes` 记 0，
+         * 与旧口径（`thumbUri !== uri` 才加缩略图）逐字节一致。
+         */
+        shot.bytes = fileSize(mainTarget.uri);
+        shot.thumbBytes = thumbUri === mainTarget.uri ? 0 : fileSize(thumbTarget.uri);
 
         // ③ 索引：读最新的再插到最前面（队列保证这里没有并发写者）
         const snapshot = await readIndexUnsafe();
@@ -590,19 +621,40 @@ export async function clearGallery(): Promise<void> {
  * 相册占用情况：条数 + 字节数。
  * 只统计**索引里还在的**文件，所以它和 `listShots()` 报出来的内容总是对得上
  * （孤儿文件不计入，但它们确实占空间 —— 要清就 `clearGallery`）。
+ *
+ * v2.3.2（用户 m04906 "读写照片慢"）：**不再逐张同步 stat**。
+ * 以前每调用一次就要对 N 张成片 + N 张缩略图做 2N 次同步文件系统查询，相册几百张时
+ * 打开设置页会明显卡一下；现在优先用 `addShot` 记在索引里的字节数直接求和，
+ * 只有老索引（没有那两个字段）才现场 stat，并**顺手回填** —— 于是"慢一次"
+ * 对每个旧条目只发生一次，下一次就只剩加法。
  */
 export async function getGalleryUsage(): Promise<{ count: number; bytes: number }> {
   try {
     return await enqueue(async () => {
       const snapshot = await readIndexUnsafe();
       let bytes = 0;
-      for (const shot of snapshot.shots) {
-        bytes += fileSize(shot.uri);
-        if (shot.thumbUri !== shot.uri) {
-          bytes += fileSize(shot.thumbUri);
+      let repaired = false;
+      const shots = snapshot.shots.map((shot) => {
+        const { bytes: cachedBytes, thumbBytes: cachedThumbBytes } = shot;
+        if (typeof cachedBytes === 'number' && typeof cachedThumbBytes === 'number') {
+          bytes += cachedBytes + (shot.thumbUri === shot.uri ? 0 : cachedThumbBytes);
+          return shot;
         }
+        // 老索引条目：各 stat 一次（缩略图降级成成片时只算一份，口径与旧版一致）
+        const mainBytes = fileSize(shot.uri);
+        const thumbBytes = shot.thumbUri === shot.uri ? 0 : fileSize(shot.thumbUri);
+        bytes += mainBytes + thumbBytes;
+        repaired = true;
+        return { ...shot, bytes: mainBytes, thumbBytes };
+      });
+      /*
+       * 回填只在**队列内**做，且失败不影响返回值：统计本身已经算完，
+       * 写不进去顶多下一次再 stat 一遍（下一次仍然会尝试回填）。
+       */
+      if (repaired || snapshot.dirty) {
+        await writeIndexUnsafe(shots);
       }
-      return { count: snapshot.shots.length, bytes };
+      return { count: shots.length, bytes };
     });
   } catch (error) {
     console.warn('[retro-film-cam] 统计相册占用失败：', error);

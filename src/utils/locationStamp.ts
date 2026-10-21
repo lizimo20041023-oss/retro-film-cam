@@ -32,6 +32,17 @@ import {
   resolvePlaceFromGeocode,
   type PlaceGeocodeAddress,
 } from './placeNames';
+import {
+  findFreshGeocodeEntry,
+  geocodeCacheKey,
+  isEntryFresh,
+  makeGeocodeCacheEntry,
+  photonLanguagePlan,
+  photonUrlCandidates,
+  withGeocodeEntry,
+  type CachedGeocodeAddress,
+  type GeocodeCacheEntry,
+} from './geocodePlan';
 
 /**
  * 单次定位最长等多久。
@@ -46,23 +57,28 @@ const FIX_TIMEOUT_MS = 6000;
  * `reverseGeocodeWithRetry`，所以"同一次反查在两条路上等的时间不一样"在结构上不可能发生。
  * 别再在 `importPhoto.ts` 里另写一份常量。
  *
- * 系统服务只给 2 秒：快速结果直接使用；慢或空结果由 Photon 兜底，避免单张照片
- * 在系统反查上卡住 5～10 秒。
+ * v2.3.2：单次尝试从 2 秒放宽到 **3.5 秒**。真机上第一次唤醒系统反查服务时，
+ * 海外冷启动 2.3～3 秒是常态 —— 2 秒一刀切等于"海外永远第一次超时"，
+ * 而旧实现只试一次、失败即静默退坐标，于是中文 / 日文用户看到的就是"只剩坐标"。
+ * 3.5 秒覆盖冷启动，又不至于让单次尝试拖到用户明显感觉到卡。
  */
-export const GEOCODE_ATTEMPT_TIMEOUT_MS = 2000;
+export const GEOCODE_ATTEMPT_TIMEOUT_MS = 3500;
 
 /**
- * 反查最多发几次。
+ * 反查最多发几次（v2.3.2：1 → 2）。
  *
- * 只尝试一次。国外地名的可靠性由 Photon 兜底解决，重复唤醒同一个系统服务只会增加
- * 等待、网络活动和发热。
+ * 第一次常常把时间耗在系统服务冷启动上；只要总预算还剩 ≥1000ms，就再试一次 ——
+ * 第二次通常 1 秒内就回来。仍受下面的 6 秒总预算硬约束，不会无限延长。
  */
-export const GEOCODE_MAX_ATTEMPTS = 1;
+export const GEOCODE_MAX_ATTEMPTS = 2;
 
 /**
- * 系统反查总预算。即使以后恢复重试，也必须受这一个总预算约束。
+ * 系统反查总预算：**6000ms**（v2.3.2）。
+ *
+ * 两次尝试加起来也不许超过它；相机页 `useLocationStamp.resolveForShot` 给 develop
+ * 阶段的截止线也是同一个 6 秒（`SHOT_DEADLINE_MS`），两条路的耐心值不会打架。
  */
-export const GEOCODE_TOTAL_BUDGET_MS = GEOCODE_ATTEMPT_TIMEOUT_MS * GEOCODE_MAX_ATTEMPTS;
+export const GEOCODE_TOTAL_BUDGET_MS = 6000;
 
 /**
  * 剩余预算少于这个数就别再发下一次尝试了。
@@ -295,6 +311,65 @@ type PhotonFeature = {
 
 type PhotonResponse = { features?: PhotonFeature[] };
 
+/**
+ * 地名缓存（v2.3.2）：成功 10 分钟、失败 120 秒，坐标 2 位小数 + 2km 邻近匹配。
+ *
+ * 规则全部在 `geocodePlan.ts`（纯函数，门禁脚本可直接跑）；这里只持有数组。
+ * `useLocationStamp` 在启动时把 AsyncStorage 里的快照交给 `seedGeocodeCache`，
+ * 每次拿到新结果后 `snapshotGeocodeCache` 整份写回 —— 本文件**不 import AsyncStorage**。
+ */
+let geocodeEntries: GeocodeCacheEntry[] = [];
+
+/**
+ * 灌入持久化缓存（hook 启动时调用）。过期条目直接丢，同键以本进程已有的为准。
+ * 返回实际收下的条数（日志 / 门禁断言用）。
+ */
+export function seedGeocodeCache(entries: readonly GeocodeCacheEntry[]): number {
+  const now = Date.now();
+  let accepted = 0;
+  for (const entry of entries) {
+    if (!isEntryFresh(entry, now)) continue;
+    if (geocodeEntries.some((existing) => existing.key === entry.key)) continue;
+    geocodeEntries = withGeocodeEntry(geocodeEntries, entry, now);
+    accepted += 1;
+  }
+  return accepted;
+}
+
+/**
+ * 当前缓存快照（hook 落盘时整份写回 AsyncStorage）。
+ * 返回深拷贝：调用方改不到内部状态，落盘途中也不会有别的请求混进来。
+ */
+export function snapshotGeocodeCache(): GeocodeCacheEntry[] {
+  return geocodeEntries.map((entry) => ({
+    ...entry,
+    address: entry.address === null ? null : { ...entry.address },
+  }));
+}
+
+/** 记一条结果；成功与失败都记（失败 = 负缓存，120 秒内不再为同一片区域联网）。 */
+function rememberGeocodeEntry(
+  coords: { latitude: number; longitude: number },
+  language: string,
+  status: 'ok' | 'failed',
+  address: CachedGeocodeAddress | null,
+): void {
+  const now = Date.now();
+  geocodeEntries = withGeocodeEntry(
+    geocodeEntries,
+    makeGeocodeCacheEntry({
+      latitude: coords.latitude,
+      longitude: coords.longitude,
+      language,
+      status,
+      address,
+      savedAt: now,
+    }),
+    now,
+  );
+}
+
+/** 在途请求复用：同一坐标同一语言偏好同时只发一轮 Photon。 */
 const photonCache = new Map<string, Promise<PlaceGeocodeAddress | undefined>>();
 let photonQueue: Promise<void> = Promise.resolve();
 let photonLastStartedAt = 0;
@@ -335,48 +410,100 @@ function photonAddressOf(feature: PhotonFeature | undefined): PlaceGeocodeAddres
   };
 }
 
-function photonLanguage(locale: LocalePreference, uiLocale: LocaleId): string {
-  const resolved = resolveGeoLocale(locale, uiLocale);
-  return resolved === 'zh-Hans' || resolved === 'zh-Hant' ? 'zh' : resolved;
+/**
+ * 地名设置 → 交给 Photon 语言规划的那个 locale。
+ *
+ * 口径（v2.3.2）：先走既有的 `resolveGeoLocale`（唯一一处语言判定），再把结果交给
+ * `geocodePlan.photonLanguagePlan` —— 后者把 Photon 不支持的语言（zh / ja）退成 en。
+ * 以前这里直接返回 `'zh'` / `'ja'`，Photon 一律 HTTP 400，被静默吞掉 = 海外只剩坐标。
+ */
+function photonLocaleInput(locale: LocalePreference, uiLocale: LocaleId): string {
+  return resolveGeoLocale(locale, uiLocale);
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** 一次 Photon 请求的结局。四态必须可区分，否则日志里说不出"为什么换候选 / 为什么放弃"。 */
+type PhotonAttempt =
+  | { status: 'ok'; address: PlaceGeocodeAddress }
+  | { status: 'http'; statusCode: number }
+  | { status: 'empty' }
+  | { status: 'network'; reason: string };
+
+/**
+ * 发一次 Photon 请求。
+ *
+ * v2.3.2：HTTP 非 ok（尤其 lang 不支持的 400）**不再静默返回 `undefined`** ——
+ * 那正是"海外永远只有坐标"的根因。这里把结局原样交回候选链，由它决定
+ * "换成不带 lang 的请求再发一次"。
+ */
 async function requestPhotonAddress(
   coords: { latitude: number; longitude: number },
-  language: string,
-): Promise<PlaceGeocodeAddress | undefined> {
+  url: string,
+): Promise<PhotonAttempt> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PHOTON_TIMEOUT_MS);
   try {
-    const query = new URLSearchParams({
-      lat: String(coords.latitude),
-      lon: String(coords.longitude),
-      limit: '1',
-      lang: language,
-    });
-    const response = await fetch(`https://photon.komoot.io/reverse?${query.toString()}`, {
+    const response = await fetch(url, {
       signal: controller.signal,
       headers: {
         Accept: 'application/geo+json, application/json',
         'X-Requested-With': 'com.canyerylee.fretrocam',
       },
     });
-    if (!response.ok) return undefined;
+    if (!response.ok) {
+      return { status: 'http', statusCode: response.status };
+    }
     const payload = (await response.json()) as PhotonResponse;
     const address = photonAddressOf(payload.features?.[0]);
-    if (address === undefined) return undefined;
+    if (address === undefined) return { status: 'empty' };
     const place = resolvePlaceFromGeocode(address, coords.latitude, coords.longitude);
-    return hasPlaceName(place) ? address : undefined;
+    return hasPlaceName(place) ? { status: 'ok', address } : { status: 'empty' };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    console.warn(`[retro-film-cam] Photon 地名反查失败：${reason}`);
-    return undefined;
+    return { status: 'network', reason };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * 按候选链取 Photon 地名：先偏好语言，HTTP 非 ok 时换**不带 lang** 的再发一次。
+ *
+ * 为什么要重发而是直接放弃：Photon 只支持 default / de / en / fr，旧实现把
+ * `zh` / `ja` 当 lang 发出去换来 400；不带 lang 时它返回当地语言名字
+ * （东京写成「東京都」），对中文用户其实比英文更接近想要的写法。
+ * 网络异常 / 空结果不换语言：换语言救不了断网，只会多等一个超时。
+ */
+async function requestPhotonAddressWithFallback(
+  coords: { latitude: number; longitude: number },
+  localeInput: string,
+): Promise<{ address: PlaceGeocodeAddress; language: string } | undefined> {
+  const languages = photonLanguagePlan(localeInput);
+  const candidates = photonUrlCandidates(coords, localeInput);
+  for (let index = 0; index < candidates.length; index += 1) {
+    const url = candidates[index];
+    if (url === undefined) continue;
+    // 候选链最后一条是"不带 lang"（索引 >= languages.length）。
+    const language = index < languages.length ? languages[index] ?? '' : '';
+    const attempt = await requestPhotonAddress(coords, url);
+    if (attempt.status === 'ok') return { address: attempt.address, language };
+    if (attempt.status === 'http') {
+      console.warn(
+        `[retro-film-cam] Photon 地名反查 HTTP ${attempt.statusCode}（lang=${language.length > 0 ? language : 'default'}），换下一个候选`,
+      );
+      continue;
+    }
+    console.warn(
+      `[retro-film-cam] Photon 地名反查失败（lang=${language.length > 0 ? language : 'default'}）：${
+        attempt.status === 'network' ? attempt.reason : '响应里没有可用地名'
+      }`,
+    );
+    return undefined;
+  }
+  return undefined;
 }
 
 function photonAddressFor(
@@ -384,24 +511,34 @@ function photonAddressFor(
   locale: LocalePreference,
   uiLocale: LocaleId,
 ): Promise<PlaceGeocodeAddress | undefined> {
-  const language = photonLanguage(locale, uiLocale);
-  // 四位小数约为 11 米：同一拍摄点直接复用，又不会把相邻街区错误合并。
-  const key = `${coords.latitude.toFixed(4)},${coords.longitude.toFixed(4)},${language}`;
+  const localeInput = photonLocaleInput(locale, uiLocale);
+  // 内存键带语言候选：同坐标不同语言偏好会有不同写法；持久缓存由
+  // `resolvePlaceFromCoords` 在入口处统一判 TTL / 距离。
+  const key = `${geocodeCacheKey(coords.latitude, coords.longitude)}|${photonLanguagePlan(localeInput).join(',')}`;
   const cached = photonCache.get(key);
   if (cached !== undefined) return cached;
 
-  const queued = photonQueue.then(async () => {
+  const queued = photonQueue.then(async (): Promise<PlaceGeocodeAddress | undefined> => {
     const remaining = PHOTON_MIN_INTERVAL_MS - (Date.now() - photonLastStartedAt);
     if (remaining > 0) await delay(remaining);
     photonLastStartedAt = Date.now();
-    return requestPhotonAddress(coords, language);
+    const lookup = await requestPhotonAddressWithFallback(coords, localeInput);
+    if (lookup === undefined) {
+      // 负缓存：120 秒内同一片区域不再联网（见 `geocodePlan.GEOCODE_FAILURE_TTL_MS`）。
+      rememberGeocodeEntry(coords, photonLanguagePlan(localeInput)[0] ?? '', 'failed', null);
+      return undefined;
+    }
+    rememberGeocodeEntry(coords, lookup.language, 'ok', lookup.address);
+    return lookup.address;
   });
   photonQueue = queued.then(() => undefined, () => undefined);
   photonCache.set(key, queued);
-  // 网络临时失败不能在整个 App 生命周期里永久缓存；成功结果才长期复用。
-  void queued.then((address) => {
-    if (address === undefined && photonCache.get(key) === queued) photonCache.delete(key);
-  });
+  // 在途复用只服务"同时发起的重复请求"；结果复用交给 `geocodeEntries`（带 TTL），
+  // 否则这个 Map 会把 10 分钟前的结果一直喂给调用方。
+  const forget = (): void => {
+    if (photonCache.get(key) === queued) photonCache.delete(key);
+  };
+  void queued.then(forget, forget);
   if (photonCache.size > PHOTON_CACHE_LIMIT) {
     const oldest = photonCache.keys().next().value as string | undefined;
     if (oldest !== undefined) photonCache.delete(oldest);
@@ -437,17 +574,23 @@ export type ResolvePlaceOutcome =
     };
 
 /**
- * 坐标 → 结构化地名：系统反查优先，失败后使用 Photon / OpenStreetMap 全球兜底。
+ * 坐标 → 结构化地名：**先查持久 / 内存缓存**，未命中才走系统反查，再不行用 Photon 兜底。
  *
  * 这是"相机页现场拍"和"相册导入"**唯一**的地名入口，两条路必须从这里拿
  * （耐心值 / 重试 / 失败语义 / 日志措辞都只在本文件里定义一次，见文件头）。
  *
+ * ## 缓存优先（v2.3.2）
+ *
+ * 命中新鲜缓存时**完全不走网络**（连系统反查都不叫）：海外连拍 / 反复进预览最烧的
+ * 就是"每次都重新唤醒一次系统反查 + 一次 Photon"。缓存带两种 TTL：
+ * 成功 10 分钟、失败 120 秒（负缓存，见 `geocodePlan`）；距离按 2km 邻近匹配。
+ *
  * ## 最坏等待时间
  *
  * ```
- *   系统原生：最多 2000ms；Photon：最多 4500ms
+ *   系统原生：最多 6000ms（2 次 × 3500ms 受同一总预算约束）；Photon：最多 4500ms
  * ```
- * Photon 只会在系统明确失败或超过 2 秒后启动，不会在系统成功时外发坐标。
+ * Photon 只会在系统明确失败或超时后启动，不会在系统成功时外发坐标。
  *
  * ## 绝不抛
  *
@@ -461,7 +604,26 @@ export async function resolvePlaceFromCoords(
   uiLocale: LocaleId = 'zh-Hans',
   nativeAllowed = true,
 ): Promise<ResolvePlaceOutcome> {
-  // Android 导入旧照片时，系统反查需要前台定位权限；用户拒绝后仍可直接使用已经
+  // ① 缓存优先：命中就是零网络（相机页连拍 / 重启后第一次进屏最吃这一条）。
+  const cached = findFreshGeocodeEntry(geocodeEntries, coords, Date.now());
+  if (cached !== undefined) {
+    if (cached.status === 'ok' && cached.address !== null) {
+      const place = resolvePlaceFromGeocode(cached.address, coords.latitude, coords.longitude);
+      if (hasPlaceName(place)) {
+        return { status: 'ok', address: cached.address, place, channel: 'photon' };
+      }
+    } else {
+      // 负缓存：120 秒内同一片区域不再联网 / 不再唤醒系统反查。
+      console.warn('[retro-film-cam] 地名命中负缓存（120 秒内不再联网），本次不提供地名');
+      return {
+        status: 'failed',
+        native: { status: 'error', attempts: 0, error: new Error('地名反查刚刚失败，负缓存生效中') },
+        attempts: 0,
+      };
+    }
+  }
+
+  // ② Android 导入旧照片时，系统反查需要前台定位权限；用户拒绝后仍可直接使用已经
   // 授权的 Photon 兜底，且不会为了旧照片去读取设备当前位置。
   const nativeResult: NativePlaceResult = nativeAllowed
     ? await resolveNativePlace(coords)
@@ -481,6 +643,7 @@ export async function resolvePlaceFromCoords(
     };
   }
 
+  // ③ Photon 兜底（候选链与负缓存都在 `photonAddressFor` / `geocodePlan` 里）。
   const photonAddress = await photonAddressFor(coords, geoLocale, uiLocale);
   if (photonAddress !== undefined) {
     const place = resolvePlaceFromGeocode(photonAddress, coords.latitude, coords.longitude);
@@ -649,7 +812,13 @@ export async function fetchLocationStamp(
     // 语言用的是上面解析好的 `placeLocale`，不是原始的 `locale`：
     // 原始值可能是 'auto'，直接传下去会落到 `formatResolvedPlace` 的默认档（简中），
     // 于是"界面英文 + 地名 auto"就会印出中文 —— 这正是 §五.2 要避免的那种错。
-    const text = formatResolvedPlace(resolved.place, placeLocale, detail);
+    //
+    // `allowCoords: false`（v2.3.2）：地名档**绝不允许**退回坐标串。反查"成功"但
+    // 一个名字字段都没解析出来时，`formatResolvedPlace` 以前会退回 `place.coords`，
+    // 于是用户选了「地名」却看到一串坐标 —— 那是把"没查到"伪装成"查到了"（用户点名的红线）。
+    const text = formatResolvedPlace(resolved.place, placeLocale, detail, uiLocale ?? 'zh-Hans', {
+      allowCoords: false,
+    });
     // 反查"成功"但一个字都没印出来：这一行没有任何信息量，与其烧一串空字符串，
     // 不如老老实实报"这次没拿到"（`resolvePlaceFromCoords` 已经用 `hasPlaceName` 判过
     // 一次，这里是渲染层的第二道 —— 两档详细度在某些组合下仍可能只剩分隔符）。
