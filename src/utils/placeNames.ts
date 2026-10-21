@@ -10,10 +10,9 @@
  * 1. 分隔符恒为 `' · '`（`PLACE_SEPARATOR`），**从大到小**：国家 · 省/州/县 · 市/区。
  *    全角逗号 `，`、`CITY, REGION / CN` 这种"中英混血"排版一律不再出现
  *    （v1.8.5 用户需求 m02760 §四）；
- * 2. 中文 / 日文档**绝不输出拉丁国名**（`CHINA` / `JAPAN` / `USA` …）：
- *    国家段只认代码 → 多语言国名词典（`COUNTRY_NAMES`），表里查不到、反查给的国名
- *    又是拉丁的时候**宁可不印这一国名段**；英文档才用罗马字
- *    （见 `romanizeForEnglish`，**已知做不到完整**，注释里写清了）；
+ * 2. 中文 / 日文档优先使用国家代码 → 多语言国名词典（`COUNTRY_NAMES`）；表外国家
+ *    再走 `Intl.DisplayNames`，旧系统不支持时保留系统国名或 ISO 代码，不能把海外地址
+ *    整段丢掉。英文档使用罗马字（见 `romanizeForEnglish`）；
  * 3. 港澳台在**任何语言、两档详细度**下都必须带国家（中文档靠"国家在最前"，
  *    英文档靠 `HONG KONG · CHINA` 这种"国家殿后"，见 `formatChinesePlace` /
  *    `formatLatinPlace` 上方的红线注释）。
@@ -73,6 +72,11 @@ export interface PlaceGeocodeAddress {
    * 取舍与退回办法写在 `resolvePlaceFromGeocode` 里 `source.street` 那一项旁边。
    */
   street?: string | null;
+  /**
+   * Android 可能只填这一整行格式化地址，尤其是设备当前区域之外的海外坐标。
+   * 不能因为 city/region 为空就把系统已经返回的地址丢掉。
+   */
+  formattedAddress?: string | null;
 }
 
 /** 水印里地名和日期之间的分隔符（split 版式之外也用得上）。 */
@@ -156,8 +160,8 @@ const ALPHA3_TO_ALPHA2: Readonly<Record<string, string>> = (() => {
  * alpha-2（`normalizeCountryCode`），再按地名语言取词。
  *
  * 覆盖范围与 `ALPHA3` 一致（都是本 App 真正会遇到的国家 / 地区）。**加地区时两张表一起加**：
- * 只加 `ALPHA3` 会让中文档 / 日文档少一段国家（`countryWord` 的口径是"宁可不印，
- * 也不印拉丁国名"），tsc 不会替你发现 —— 这是这张表唯一的维护约束。
+ * 表外国家由 `Intl.DisplayNames` / 系统国名兜底；这里仍保留常见目的地的固定译名，避免
+ * 不同 OS 版本对同一国家给出不同写法。
  *
  * 港澳台（`TW` / `HK` / `MO`）不在这张表里：它们在任何语言下都走 `CHINA_PREFIX`
  * 的「中国 / 中國 / 中国 / CHINA」前缀 + `GREATER_CHINA_LABEL` 的地区名，见红线注释。
@@ -436,7 +440,7 @@ export function resolvePlaceFromGeocode(
   return {
     /*
       逐级降级（顺序 = 优先级，"离拍摄点最近的那一档"优先）：
-        city → name → district → subregion → region → fallbackCity → street
+        city → name → district → subregion → region → fallbackCity → street → formattedAddress
 
       为什么 `name`（POI 名）排在 `city` **之后**、却排在 `district` 之前：
       · 排 `city` 之后 —— 真行政市名更稳、更"像个地名"，而 POI 名可能是店名
@@ -471,6 +475,7 @@ export function resolvePlaceFromGeocode(
       source.region,
       fallbackCity,
       source.street,
+      source.formattedAddress,
     ),
     // `region` 单独留一份：`full` 档位在"没有城市"时要拿它顶上（见 `pickBaseName`）。
     region: firstNonEmpty(source.region, source.subregion),
@@ -678,8 +683,8 @@ function isGeoLocale(value: LocalePreference): value is GeoLocale {
  *    反查语言走，中文反查给「日本」时前两级都救不了它 —— 这一级是给**英文档**兜底的，
  *    中文档反正按界面地名语言自己出词，不依赖 `place.country`）。
  *
- * 代码形态但不在 `ALPHA3` 里的值（`'XX'` / `'XYZ'`）原样返回：英文档还可能把它当档案码印，
- * 中文档则因为 `COUNTRY_NAMES` 查不到而不印国家段。**没有代码且国名也反查不到**才返回空串。
+ * 代码形态但不在 `ALPHA3` 里的值（`'XX'` / `'XYZ'`）原样返回，供运行时地区名和最终
+ * ISO 代码兜底使用。**没有代码且国名也反查不到**才返回空串。
  *
  * 归一化的意义见 `COUNTRY_NAMES` 上方：国家段只认代码，不认反查语言。
  */
@@ -765,7 +770,7 @@ function codeFromCountryName(country: string): string {
  * 1. 代码归一后是 `COUNTRY_NAMES` / 港澳台认识的代码 → 直接用；
  * 2. 否则拿 `place.country` 反查（`CHINA` / `Japan` / `中国` / `香港` …）；
  * 3. 再否则拿 `countryCode` 槽本身当国名反查（真机见过把 `'CHINA'` 塞进代码槽的）；
- * 4. 都失败才退回 1 的原始归一值（不认识的代码在中文档继续"宁可不印"）。
+ * 4. 都失败才退回 1 的原始归一值，让运行时地区名或 ISO 代码兜底。
  *
  * 英文档不走这里（`formatLatinPlace` / `countryWord('en')` 继续用
  * `normalizeCountryCode`），所以「英文档逐字不变」是结构性保证。
@@ -795,8 +800,8 @@ function resolveCountryCode(place: ResolvedPlace): string {
  *
  * - 港澳台：一律 `CHINA_PREFIX[locale]`（简/繁/日 = 中国/中國/中国，en = CHINA）；
  * - 有国家代码：查 `COUNTRY_NAMES`，取**地名语言**那一列；
- * - 代码和名字都认不出来：中文/日文档返回空串（宁可不印国家段，也绝不印拉丁国名），
- *   英文档退回拉丁国名或 alpha-3 —— 英文档本来就只有罗马字，不存在"混血"。
+ * - 代码和固定词典都认不出来：尝试运行时地区名；旧系统再保留原始国名或 ISO 代码，
+ *   确保任何国家都不会因为词典覆盖不足而消失。
  *
  * `locale` 参数故意收 `GeoLocale` 而不是 `LocaleId`：法文界面永远走英文档
  * （`resolveGeoLocale` 已经判掉 fr），多给一种语言只会让表里多一列没人用的「国名」。
@@ -813,11 +818,43 @@ function countryWord(place: ResolvedPlace, locale: GeoLocale): string {
   if (names !== undefined) {
     return names[locale];
   }
+  /*
+   * 词典只收了常见旅行目的地，但系统反查支持全部 ISO 地区。以前表外国家在
+   * 中文/日文档会被直接丢掉；当系统又只回 country/countryCode 时，整行最终
+   * 退成坐标，看起来就像“国外定位识别不出来”。优先用运行时 Intl 的地区名，
+   * Hermes / iOS 不支持 DisplayNames 时再保留系统国名或 ISO 代码，保证信息不消失。
+   */
+  if (/^[A-Z]{2}$/.test(code)) {
+    try {
+      const displayNamesConstructor = (
+        Intl as typeof Intl & {
+          DisplayNames?: new (
+            locales: string | readonly string[],
+            options: { type: 'region' },
+          ) => { of(regionCode: string): string | undefined };
+        }
+      ).DisplayNames;
+      if (displayNamesConstructor !== undefined) {
+        const displayLocale: Record<GeoLocale, string> = {
+          'zh-Hans': 'zh-CN',
+          'zh-Hant': 'zh-TW',
+          ja: 'ja-JP',
+          en: 'en-US',
+        };
+        const displayed = new displayNamesConstructor(displayLocale[locale], { type: 'region' }).of(code);
+        if (displayed !== undefined && displayed.trim().length > 0 && displayed.toUpperCase() !== code) {
+          return locale === 'en' ? displayed.toUpperCase() : displayed;
+        }
+      }
+    } catch {
+      // 部分旧系统只有基础 Intl；下面仍会保留系统返回的国名或国家码。
+    }
+  }
   if (locale === 'en') {
     // 英文档兜底：拉丁国名大写（反查给 `Japan` 也算），再不然 alpha-3。
     return LATIN_ONLY.test(place.country) ? place.country.toUpperCase() : alpha3Of(code, place.country);
   }
-  return '';
+  return place.country.trim() || code;
 }
 
 /**
@@ -868,7 +905,9 @@ function ensureAdminSuffix(value: string, suffix: string): string {
   if (value.length === 0) {
     return '';
   }
-  return ADMIN_TAIL.test(value) ? value : `${value}${suffix}`;
+  // 海外反查常给 Paris / California，中文界面的“完整”档不能拼成 Paris市 / California省。
+  const containsHan = /\p{Script=Han}/u.test(value);
+  return ADMIN_TAIL.test(value) || !containsHan ? value : `${value}${suffix}`;
 }
 
 /**

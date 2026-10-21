@@ -9,6 +9,7 @@
     "ios": "expo start --ios",
     "android": "expo start --android",
     "typecheck": "tsc --noEmit",
+    "check:location": "node scripts/check-overseas-location.cjs",
     "postinstall": "patch-package",
     "deps": "expo install expo-camera expo-media-library expo-image-manipulator expo-haptics expo-font react-native-view-shot react-native-safe-area-context"
   },

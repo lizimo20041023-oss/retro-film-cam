@@ -168,9 +168,8 @@ function reverseGeocodeOnce(
 /**
  * 一遍（含重试）反查的结局。
  *
- * `'ok'` 里的 `address` 可能是 `undefined`：系统答了，但数组是空的（海上、极地、
- * 刚开盘的新楼盘）。那不是"调用失败"，所以不重试 —— 但调用方仍然要退回坐标，
- * 只是日志里得说清是哪一种（`resolvePlaceFromExifGps` 就是这么做的）。
+ * `'ok'` 里的 `address` 可能是 `undefined`：系统连续两次都答了空数组（海上、极地、
+ * 刚开盘的新楼盘）。空结果也会重试一次，因为海外坐标第一次经常只是服务尚未唤醒。
  */
 export type ReverseGeocodeOutcome =
   | { status: 'ok'; address: Location.LocationGeocodedAddress | undefined; attempts: number }
@@ -194,9 +193,41 @@ export type ReverseGeocodeFailure = Extract<ReverseGeocodeOutcome, { status: 'ti
  * 导入那条路上抛出去会被 `importAndDevelop` 的 per-photo catch 记成 `failed += 1` ——
  * 一张本来能出片的照片会因为"没网"算成失败，比没有地名严重得多。
  *
- * 空数组**不重试**：那是系统明确回答"这个点我查不到"，再问一次不会有新答案，
- * 只白烧一次网络请求（还要多占用户的时间）。
+ * 空数组 / 空地址会重试一次：移动系统的海外反查第一次可能只完成服务唤醒，第二次才
+ * 返回字段。总预算仍由 `GEOCODE_TOTAL_BUDGET_MS` 锁在 10 秒内。
  */
+function geocodeAddressScore(address: Location.LocationGeocodedAddress): number {
+  const present = (value: string | null | undefined): boolean =>
+    typeof value === 'string' && value.trim().length > 0;
+  return (
+    (present(address.city) ? 100 : 0) +
+    (present(address.district) ? 80 : 0) +
+    (present(address.name) ? 70 : 0) +
+    (present(address.subregion) ? 60 : 0) +
+    (present(address.region) ? 50 : 0) +
+    (present(address.street) ? 20 : 0) +
+    (present(address.formattedAddress) ? 15 : 0) +
+    (present(address.country) ? 10 : 0) +
+    (present(address.isoCountryCode) ? 10 : 0)
+  );
+}
+
+/** 多结果时不要盲取第一项：海外反查的第一项在部分 Android 设备上只有邮编。 */
+export function pickBestGeocodedAddress(
+  addresses: readonly Location.LocationGeocodedAddress[],
+): Location.LocationGeocodedAddress | undefined {
+  let best: Location.LocationGeocodedAddress | undefined;
+  let bestScore = 0;
+  for (const address of addresses) {
+    const score = geocodeAddressScore(address);
+    if (score > bestScore) {
+      best = address;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
 export async function reverseGeocodeWithRetry(coords: {
   latitude: number;
   longitude: number;
@@ -205,6 +236,8 @@ export async function reverseGeocodeWithRetry(coords: {
   let attempts = 0;
   let lastFailure: 'timeout' | 'error' = 'timeout';
   let lastError: unknown = null;
+  let successfulEmptyResponse = false;
+  let lastAttemptWasEmpty = false;
 
   while (attempts < GEOCODE_MAX_ATTEMPTS) {
     const remaining = GEOCODE_TOTAL_BUDGET_MS - (Date.now() - startedAt);
@@ -215,14 +248,25 @@ export async function reverseGeocodeWithRetry(coords: {
 
     const result = await reverseGeocodeOnce(coords, Math.min(GEOCODE_ATTEMPT_TIMEOUT_MS, remaining));
     if (result.status === 'ok') {
-      // 空数组 → `address` 是 `undefined`。`Array.isArray` 是防原生回一个怪东西（不是数组）。
-      const address = Array.isArray(result.addresses) ? result.addresses[0] : undefined;
-      return { status: 'ok', address, attempts };
+      // 海外反查可能返回多项且第一项为空；选字段最完整的一项。全空则在预算内再试一次。
+      const address = Array.isArray(result.addresses)
+        ? pickBestGeocodedAddress(result.addresses)
+        : undefined;
+      if (address !== undefined) {
+        return { status: 'ok', address, attempts };
+      }
+      successfulEmptyResponse = true;
+      lastAttemptWasEmpty = true;
+      continue;
     }
+    lastAttemptWasEmpty = false;
     lastFailure = result.status;
     lastError = result.status === 'error' ? result.error : null;
   }
 
+  if (successfulEmptyResponse && lastAttemptWasEmpty) {
+    return { status: 'ok', address: undefined, attempts };
+  }
   // 报**最后一次**尝试的原因："第一次超时、第二次抛错"记抛错，更接近真相。
   return lastFailure === 'error'
     ? { status: 'error', attempts, error: lastError }
