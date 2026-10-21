@@ -155,14 +155,14 @@ const LOOK_SEED = 1;
 const FRAME_PREVIEW_REFRESH_MS = 30_000;
 
 /**
- * 取景器水印里"地名"的最短刷新间隔（v1.8.8 · 用户 m05280 降发热）。
+ * 取景器水印里"地名"的最短刷新间隔（降发热）。
  *
  * 心跳是 30 秒一次（日期要跨零点翻页），但**地点几乎不会在十分钟内变一次**。
  * v1.8.7 及以前每次心跳都调 `locationStamp.resolveForShot()`，而 `useLocationStamp`
  * 的缓存 TTL 只有 60 秒 —— 于是举着手机不动，也变成"每 60 秒醒一次 GPS + 反向地理
  * 编码网络请求"。现在 30 秒心跳只更新日期，地名走这个窗口，首次仍立刻取一次。
  */
-const PREVIEW_LOCATION_REFRESH_MS = 10 * 60_000;
+const PREVIEW_LOCATION_REFRESH_MS = 15 * 60_000;
 
 /**
  * 闪光灯的三档循环顺序：关 → 开 → 自动 → 关。
@@ -224,10 +224,10 @@ const DEVELOP_DONE_VISIBLE_MS = 3000;
 const DEVELOP_ERROR_VISIBLE_MS = 5000;
 
 /**
- * 含正在冲印的工单在内最多保留三项。再深的队列只会让全尺寸相机原图在 cache 里排队、
- * 延长设备持续高负载时间；用户稍后再按一次，比后台积压十几张后一起发热更可控。
+ * 含正在冲印的工单在内最多保留一项。LUT 显影时暂停相机采集；不再让全尺寸原图排队，
+ * 也不让 ISP、相机预览和 JS 像素循环同时拉满。
  */
-const MAX_DEVELOP_QUEUE_DEPTH = 3;
+const MAX_DEVELOP_QUEUE_DEPTH = 1;
 
 /**
  * iOS 把"被完全遮住的视图"截成空图时抛回来的原生文案（`react-native-view-shot`
@@ -870,14 +870,10 @@ export function CameraScreen() {
   const developing = status.kind === 'developing';
   const cameraGranted = cameraPermission?.granted === true;
   /**
-   * v1.9.0 · 用户手术一：`interactive` 只跟相机权限走，**不再**跟冲印状态走。
-   *
-   * 冲印搬进后台串行队列后，取景器里的画幅切换、轻触对焦、刻度尺都可以继续操作 ——
-   * 这是"按完快门马上能接着拍"的一半（另一半是快门本身不再等冲印）。
-   * `developing` 现在只喂底部 `ToolRow` 的 `busy`（会改变拍摄参数的入口在洗片期间
-   * 暂时灰掉，避免连拍把参数改到一半的歧义），不再挡取景器。
+   * LUT 显影期间暂停交互与相机采集。这样会短暂阻止连拍，但能释放 ISP/GPU 带宽给
+   * 图片处理，缩短单张完成时间，并避免拍摄和纯 JS 像素循环叠加造成持续发热。
    */
-  const interactive = cameraGranted;
+  const interactive = cameraGranted && !developing;
   const lensesKnown = lenses.length > 0;
   const stop: ZoomStop = ZOOM_STOPS[stopIndex] ?? ZOOM_STOPS[DEFAULT_STOP_INDEX];
   // 焦段读数 = 假定原生焦距 × 布局裁切因子 × 原生变焦因子（v1.8.4）：
@@ -1289,7 +1285,8 @@ export function CameraScreen() {
    *
    * 注意 `CameraView` **不卸载**（卸载会重建采集会话、回来黑一下）：只是 `active` 开关。
    */
-  const cameraActive = cameraGranted && !covered && appActive;
+  // CPU 密集的 LUT 显影期间暂停 ISP/预览流，避免相机与 JS 像素循环同时拉满而持续发热。
+  const cameraActive = cameraGranted && !covered && appActive && !developing;
 
   /**
    * 预览要画的水印片段（v1.7.0 · 模块三）。
@@ -2451,8 +2448,11 @@ export function CameraScreen() {
           <View style={styles.coreSide}>
             <AlbumThumb refreshKey={albumKey} size={CORE_THUMB_SIZE} onPress={handleOpenGalleryScreen} />
           </View>
-          {/* v1.9.0：冲印在后台串行，快门不再等它 —— 只被"相机没就绪/没权限"挡 */}
-          <ShutterButton onPress={handleShutterPress} disabled={!cameraReady || !cameraGranted} />
+          {/* 显影时暂停下一次快门，避免相机采集与 LUT 像素循环同时满载。 */}
+          <ShutterButton
+            onPress={handleShutterPress}
+            disabled={!cameraReady || !cameraGranted || developing}
+          />
           <View style={[styles.coreSide, styles.coreSideRight]}>
             <DialButton
               glyph={(color) => <FilmGlyph size={FILM_GLYPH} color={color} />}

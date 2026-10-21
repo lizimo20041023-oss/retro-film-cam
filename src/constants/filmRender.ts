@@ -269,23 +269,23 @@ export const HALATION_EFFECTIVE_MAX = 0.6;
  * LUT 输入长边（JS 像素循环的硬预算）
  * ========================================================================== */
 
-/** LUT 输入图长边下限（像素）。 */
-export const LUT_SOURCE_LONG_EDGE_MIN = 1280;
+/** LUT 输入图长边下限（像素）。标准档由 1280 降到 1120，像素循环减少约 23%。 */
+export const LUT_SOURCE_LONG_EDGE_MIN = 1120;
 
 /** LUT 输入图长边上限（像素）。 */
-export const LUT_SOURCE_LONG_EDGE_MAX = 1600;
+export const LUT_SOURCE_LONG_EDGE_MAX = 1440;
 
-/** `captureLongEdge` 参考点：2048（standard）→ 1280，3024（high）→ 1440，4032（max）→ 1600。 */
+/** 三档输出画布 → LUT 输入预算。胶片 LUT 不变，只减少纯 JS 要处理的像素数。 */
 const LUT_SOURCE_LONG_EDGE_BY_CAPTURE: readonly { readonly capture: number; readonly source: number }[] = [
-  { capture: 2048, source: 1280 },
-  { capture: 3024, source: 1440 },
-  { capture: 4032, source: 1600 },
+  { capture: 1800, source: 1120 },
+  { capture: 2560, source: 1280 },
+  { capture: 3264, source: 1440 },
 ];
 
 /**
- * 成片画布长边（`captureLongEdge`）→ 进 JS LUT 的图长边（1280~1600）。
+ * 成片画布长边（`captureLongEdge`）→ 进 JS LUT 的图长边（1120~1440）。
  *
- * 用两个参考点做分段线性：≤2048 恒 1280，≥4032 恒 1600，中间按比例；没有第三个变量的
+ * 用三个画质参考点做分段线性：≤1800 恒 1120，≥3264 恒 1440，中间按比例；没有第三个变量的
  * 隐藏状态 —— `FilmCompositor` 与 `processFilmPhoto` 各算一次也一定得到同一个数。
  */
 export function lutSourceLongEdgeFor(captureLongEdge: number): number {

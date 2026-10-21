@@ -18,18 +18,18 @@ import type { LocationStampOutcome, LocationStampState, ResolvedPlace } from '..
 const IDLE_STATE: LocationStampState = { kind: 'off' };
 
 /**
- * 定位结果的复用窗口（v1.8.6 · 契约 §5）。60 秒。
+ * 定位结果的复用窗口：3 分钟。
  *
  * 为什么以前"每张都重新取一次 fix"是发热源：`fetchLocationStamp` 在 `mode === 'place'`
  * 时会走 CoreLocation 取坐标 + MapKit 反查（最多 2 次重试、总预算 10s），
  * 连拍五张就是五轮 GPS 无线电唤醒 + 五次网络请求 —— 而 200ms 前刚拿到的坐标，
  * 和下一张照片需要的那个地方，通常就是同一个点（用户没长腿）。
  *
- * 60 秒是权衡：短于这个数，连拍/重曝的第二张还要再起一次 GPS；长于这个数，
- * 用户走出一个街区后水印还印着老地方，比没地名更糟。这个窗口**只影响烧进照片的
+ * 3 分钟覆盖一次短途拍摄，避免每分钟重复唤醒 GPS 与地名网络；仍短于预览地名的
+ * 15 分钟刷新窗口。这个窗口**只影响烧进照片的
  * 地名**，不影响 LCD 上的显示（LCD 仍按设置变化即时刷新）。
  */
-const LOCATION_CACHE_TTL_MS = 60_000;
+const LOCATION_CACHE_TTL_MS = 3 * 60_000;
 
 /** 一次定位结局的缓存条目：键里带全部会改变取数结果的设置。 */
 interface LocationFixCache {
@@ -41,11 +41,10 @@ interface LocationFixCache {
 /**
  * 按快门时最多为定位等多久。
  *
- * 2.5 秒是权衡出来的：热启动 + 有已知位置时通常 100~400ms 就回来了，
- * 而"显影中"面板超过 3 秒用户就开始怀疑卡死。宁可这张照片没有地点，
- * 也不能让快门为了一个水印多转两秒。
+ * 1.5 秒覆盖热启动与缓存命中；冷启动地名请求会继续在后台完成并进入缓存，
+ * 但当前照片不再为了定位额外等待 2.5 秒。
  */
-const SHOT_DEADLINE_MS = 2500;
+const SHOT_DEADLINE_MS = 1500;
 
 /**
  * 给 promise 加一道硬截止线，超时返回 `null`。

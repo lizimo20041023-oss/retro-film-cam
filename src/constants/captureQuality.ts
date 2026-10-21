@@ -30,9 +30,9 @@
  * 不买焦距、不买取景范围。
  *
  *   档位       id          长边      截屏上下文（宽 × 高 × 4B）粗略峰值
- *   标准       standard    2048 px   约 12 MB
- *   高清       high        3024 px   约 27 MB
- *   极致       max         4032 px   约 48 MB
+ *   标准       standard    1800 px   约 9.7 MB
+ *   高清       high        2560 px   约 19 MB
+ *   极致       max         3264 px   约 32 MB
  *
  * 内存口径的完整推导在 `utils/captureOptions.ts` 头注释里（那里还解释了为什么
  * 截图只能走 `drawViewHierarchyInRect`，以及为什么"传更大的点尺寸"能真的多出像素）。
@@ -63,22 +63,22 @@ export interface CaptureQualitySpec {
 const STANDARD: CaptureQualitySpec = {
   id: 'standard',
   labelKey: 'settings.quality.standard',
-  longEdge: 2048,
-  note: '开机默认。2048px 长边（3:2 时约 3072×2048）：冲印 6 寸、朋友圈、相册网格都够，内存最省。',
+  longEdge: 1800,
+  note: '开机默认。1800px 长边：手机观看、社交分享和 6 寸冲印足够，同时显著降低截图内存与写盘时间。',
 };
 
 const HIGH: CaptureQualitySpec = {
   id: 'high',
   labelKey: 'settings.quality.high',
-  longEdge: 3024,
-  note: '3024px 长边：放大到 100% 仍能看，裁切后还有余量；上下文内存约翻倍。',
+  longEdge: 2560,
+  note: '2560px 长边：放大查看和二次裁切仍有余量，内存明显低于旧版 3024px。',
 };
 
 const MAX: CaptureQualitySpec = {
   id: 'max',
   labelKey: 'settings.quality.max',
-  longEdge: 4032,
-  note: '4032px 长边：画布最大，冲印 A4 也不糊。注意这只是"画布更大"，不是相机多拍了像素 —— 源图不够大时会被夹回源长边（见 captureOptions.ts 的 clampedToSource）。',
+  longEdge: 3264,
+  note: '3264px 长边：大尺寸输出档。注意这只是画布更大，不是相机多拍了像素；源图不足时仍会夹回源长边。',
 };
 
 /** 三档画质，顺序 = 设置页里从左到右的顺序（由低到高）。 */
