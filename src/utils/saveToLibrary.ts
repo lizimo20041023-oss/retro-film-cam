@@ -28,13 +28,12 @@
  *   · `album.add(assets)`                          ← 取代 addAssetsToAlbumAsync
  * （`build/types/Album.d.ts:133` / `:105` / `:72`）
  *
- * ── 降级策略：任何一步失败都退回相机胶卷 ──────────────────────────────────
- * 相簿只是**归类**，不是保存的前提。所以相簿那一整段包在自己的 try 里：
- * 拿不到相簿 / 建不出来 / 传进去不被接受，都改用 `Asset.create(uri)`（无相簿参数）
- * 落到相机胶卷，并在返回值里如实标 `destination: 'camera-roll'`
- * —— 让界面能说"存了，但没进 RETRO CAM"，而不是谎报成功或干脆报错。
+ * iOS 先创建资产，再加入专属相簿；后一步失败仍可如实回报相机胶卷保存成功。
+ * Android 直接写目标目录，首张照片用 `Album.create(name, [uri])` 建相簿；
+ * 若原生调用失败，不自动重试写相机胶卷，避免已写入但回传失败时产生重复照片。
  */
 import * as MediaLibrary from 'expo-media-library';
+import { AppState, Platform } from 'react-native';
 import { t } from '../i18n';
 import type { SaveOutcome } from '../types';
 import { describeError } from './describeError';
@@ -68,9 +67,31 @@ export type AlbumSaveOutcome =
   | { ok: true; uri: string; destination: 'camera-roll' }
   | { ok: false; reason: 'permission-denied' | 'unsupported-api' | 'failed'; message: string };
 
+/** 成功授权后本次进程内复用；写入失败时清空，下一次会重新向系统核对。 */
+let writePermissionGranted = false;
+/** 相簿名固定，复用原生 Album 实例，避免每张都查询系统相册。 */
+let cachedAlbum: MediaLibrary.Album | null = null;
+let albumLookup: Promise<MediaLibrary.Album | null> | null = null;
+let albumCacheGeneration = 0;
+
+function clearAlbumCache(): void {
+  albumCacheGeneration += 1;
+  cachedAlbum = null;
+  albumLookup = null;
+}
+
+// 用户从系统设置返回时权限或相簿可能已变化；下一张重新查询一次即可。
+AppState.addEventListener('change', (state) => {
+  if (state === 'active') {
+    writePermissionGranted = false;
+    clearAlbumCache();
+  }
+});
+
 /** 只申请"写入相册"权限（不给读取权限，符合最小权限原则）。 */
 export async function requestSavePermission(): Promise<WritePermissionState> {
   const response = await MediaLibrary.requestPermissionsAsync(true, ['photo']);
+  writePermissionGranted = response.granted;
   return {
     granted: response.granted,
     // 拿不到 canAskAgain 时按"还能问"处理，用户至少还能再试一次
@@ -81,6 +102,8 @@ export async function requestSavePermission(): Promise<WritePermissionState> {
 /** 只查询当前权限状态，不弹窗（App 回到前台时刷新用）。 */
 export async function getSavePermission(): Promise<WritePermissionState> {
   const response = await MediaLibrary.getPermissionsAsync(true, ['photo']);
+  writePermissionGranted = response.granted;
+  if (!response.granted) clearAlbumCache();
   return {
     granted: response.granted,
     canAskAgain: response.canAskAgain !== false,
@@ -109,28 +132,33 @@ interface LegacyMediaLibrary {
 /**
  * 取到（或建出）目标相簿。
  *
- * 为什么 `Album.create` 传**空数组**再 `album.add(asset)`，而不是
- * `Asset.create(uri, album)`：
- *   · `create(name, refs)` 的第二个参数语义在两端不一致 —— 文档明说 Android 上
- *     `moveAssets` 为 true 时"移动"、否则"复制"（`Album.d.ts:92`），
- *     同一个文件在 iOS/Android 上到底剩几份不好断言；
- *   · `album.add()` 是**唯一**一处"把资产放进相簿"的前进方向 API（`Album.d.ts:57`
- *     的弃用提示就是 `Use album.add()`），行为面最窄，出错也只能错在这一步。
+ * iOS 可建空相簿，之后创建照片资产、关联相簿；Android 的系统相簿是有照片的
+ * 目录，不能传空数组创建，所以首次保存由调用方用 `Album.create(name, [uri])`。
  *
- * 任何一步失败都返回 `null`，由调用方降级到相机胶卷 —— 这里**不抛错**：
- * 相簿归类失败不该把整次保存判死。
+ * 查询失败返回 null。iOS 会退回相机胶卷；Android 首张照片尝试直接创建相簿。
  */
 async function resolveAlbum(): Promise<MediaLibrary.Album | null> {
-  try {
-    const found = await MediaLibrary.Album.get(albumName());
-    if (found !== null) {
-      return found;
-    }
-    // 传空数组：这一句只负责"把相簿建出来"，资产随后由 add() 放进去。
-    return await MediaLibrary.Album.create(albumName(), []);
-  } catch {
-    return null;
+  if (cachedAlbum !== null) return cachedAlbum;
+  if (albumLookup === null) {
+    const generation = albumCacheGeneration;
+    albumLookup = (async () => {
+      try {
+        const found = await MediaLibrary.Album.get(albumName());
+        // Android 的系统相册以有照片的目录表示相簿，空数组创建会失败。
+        // 第一张照片由调用方用 Album.create(name, [uri]) 一次建相簿并写入。
+        const album = found ?? (Platform.OS === 'android'
+          ? null
+          : await MediaLibrary.Album.create(albumName(), []));
+        if (generation === albumCacheGeneration) cachedAlbum = album;
+        return album;
+      } catch {
+        return null;
+      } finally {
+        if (generation === albumCacheGeneration) albumLookup = null;
+      }
+    })();
   }
+  return albumLookup;
 }
 
 /**
@@ -155,7 +183,9 @@ export async function saveToLibrary(localUri: string): Promise<SaveOutcome> {
  */
 export async function saveToLibraryDetailed(localUri: string): Promise<AlbumSaveOutcome> {
   try {
-    const permission = await requestSavePermission();
+    const permission = writePermissionGranted
+      ? { granted: true, canAskAgain: true }
+      : await requestSavePermission();
     if (!permission.granted) {
       return {
         ok: false,
@@ -166,14 +196,27 @@ export async function saveToLibraryDetailed(localUri: string): Promise<AlbumSave
 
     // ① 新 API（SDK 54+）：Asset.create
     if (typeof MediaLibrary.Asset?.create === 'function') {
-      // 先确认照片资产真的已经创建。失败会落到最外层 catch，绝不能伪装成保存成功。
+      // 原生调用失败会落到最外层 catch，绝不能伪装成保存成功。
       const album = await resolveAlbum();
+      // Android 可直接写入目标目录；首张以带 URI 的 Album.create 建相簿，
+      // 后续以 Asset.create(uri, album) 写入，都不再先落相机胶卷再移动/复制。
+      if (Platform.OS === 'android') {
+        if (album === null) {
+          cachedAlbum = await MediaLibrary.Album.create(albumName(), [localUri]);
+        } else {
+          await MediaLibrary.Asset.create(localUri, album);
+        }
+        return { ok: true, uri: localUri, destination: 'album', album: albumName() };
+      }
+      // iOS 的 create(uri, album) 在原生侧先建资产再关联相簿；后一步失败
+      // 会抛错但资产已创建，JS 若重试便会重复保存，因此保留两步安全回退。
       const asset = await MediaLibrary.Asset.create(localUri);
       if (album !== null) {
         try {
           await album.add(asset);
           return { ok: true, uri: localUri, destination: 'album', album: albumName() };
         } catch {
+          clearAlbumCache();
           // 资产已经创建成功；这里只是归入专属相簿失败，所以相机胶卷里仍确实有照片。
           return { ok: true, uri: localUri, destination: 'camera-roll' };
         }
@@ -199,6 +242,9 @@ export async function saveToLibraryDetailed(localUri: string): Promise<AlbumSave
       message: t('save.unsupported'),
     };
   } catch (error) {
+    // 可能是系统权限被用户撤销，也可能是缓存的相簿失效；下次重新查询。
+    writePermissionGranted = false;
+    clearAlbumCache();
     return { ok: false, reason: 'failed', message: describeError(error) };
   }
 }

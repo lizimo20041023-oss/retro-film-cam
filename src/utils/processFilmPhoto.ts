@@ -1,52 +1,18 @@
 /**
  * 拍后处理管线 —— 本项目"出片"的唯一入口。
  *
- * ┌──────────────────────────────────────────────────────────────────────────┐
- * │ 管线（顺序 = 执行顺序，每一步都对应真实存在的 RN / Expo 能力）            │
- * ├──────────────────────────────────────────────────────────────────────────┤
- * │ 0. 归一化    expo-image-manipulator 新 API：把原图最长边压到 2048 px      │
- * │              （只是为了省内存；失败自动退回原图，不阻塞出片）             │
- * │ 0.5 居中裁切  **按相框窗口的宽高比**从归一化后的图里裁出最大内接矩形      │
- * │              （中心对齐）。裁完这张图的宽高比 == 窗口宽高比，于是合成层   │
- * │              的 `resizeMode="cover"` 退化成恒等变换 ——"取景框所见 =      │
- * │              成片内容"从"凑巧成立"变成结构上必然成立。顺序必须在归一化    │
- * │              **之后**（见 `centerCropPhoto`）；多开槽相框 / `contain`     │
- * │              相框 / 宽高比已经相同 → 整步跳过，图原样往下走。             │
- * │ 1. 调色      声明式图层 + mixBlendMode（Expo Go 新架构原生支持）：        │
- * │              · temperature / tint  → 纯色层 + 'soft-light'               │
- * │              · saturation          → 中灰或高饱和色层 + 'saturation'     │
- * │              · contrast > 1        → **同一张照片再叠一层 + 'overlay'**  │
- * │                contrast < 1        → 中灰层 + 'normal'                   │
- * │              · fade                → '#1C1C1C' 层 + 'lighten'（只抬黑场）│
- * │              · exposure            → 白层 'screen' / 黑层 'multiply'     │
- * │              （为什么不用 `filter`：iOS 上 RN 只支持 brightness/opacity）│
- * │ 2. 颗粒/暗角 预生成 PNG：grain 平铺 + 'overlay'、vignette 拉伸 +         │
- * │              'multiply'、light-leak 拉伸 + 'screen'                      │
- * │ 3. 日期烧录  <Text> 叠在画面右下角（或相框下留白）：橙色 #FF8A00、         │
- * │              等宽数码字体、可配 letterSpacing / 格式串                   │
- * │ 3.5 定位水印  地名或经纬度，按**当前水印版式**排在日期旁边。             │
- * │              四种版式（split / stacked / centered / dateOnly）只决定      │
- * │              「地名和日期怎么摆」，摆在哪块矩形里由相框的 watermark 决定。│
- * │              **取值在按快门那一刻完成**，见 input.place / locationText     │
- * │ 4. 套相框    相框 PNG `resizeMode="stretch"` 铺满合成舞台，压在照片之上   │
- * │ 5.5 尺寸规划  → 成片长边由画质档定（`captureQuality.ts`，默认 2048 px）。 │
- * │              源图更小时夹回源长边（不凭空插值），见 `captureOptions.ts`。 │
- * │ 5. 截图      react-native-view-shot 的 captureRef（Expo Go 内置）         │
- * │ 6. 存相册    expo-media-library 新 API：`Asset.create(uri)`               │
- * └──────────────────────────────────────────────────────────────────────────┘
+ * 成片顺序：可选归一化 → 一次原生裁切与 LUT 输入缩放 → 场景测光 → JS 像素
+ * 显影（双曝、LUT、暗角、颗粒、辉光）→ 合成相框及水印 → 一次截图。
+ * 默认预设不归一化；裁切与 LUT 缩放共享同一个 ImageManipulator context，
+ * 不额外写一张全尺寸裁切 JPEG。相册写入由 processAndSaveFilmPhoto 接续完成。
  *
  * 为什么截图要"挂到屏幕上"而不是离屏渲染？
  * iOS 的 `RCTView` 截图（`renderInContext`）对未上屏 / opacity 0 的视图会得到空图或黑图。
  * 所以这里的做法是：调色阶段在取景器上方铺一层**几乎不透明**的"显影"遮罩，
  * 挡住底下的实时相机预览，把合成视图正常渲染出来，截完图立刻卸载。
- * 整个过程约 0.4~1.2 秒，观感上就是"显影中"。见 `src/components/CameraScreen.tsx`。
+ * 实际耗时依赖设备和像素尺寸，开发环境用 `[filmPerf]` 分段日志测量。
  *
- * 可单测性：本文件只在"改像素"的两次（`normalizePhoto` / `centerCropPhoto`，都用
- * expo-image-manipulator）碰原生模块，且两处失败都只记 warning、不抛；
- * 截图则通过 `FilmStageHost` 注入 —— 单测时传一个假 host
- * （`capture()` 返回固定 uri）即可跑完整条管线。
- * ⚠️ 反过来说：**单测跑不了 0 / 0.5 这两步**（它们要真的有一张图在磁盘上）。
- * 要覆盖它们，得在带原生模块的环境里跑，或者把这两步换成可注入的假实现。
+ * 原生图片操作与截图需要在设备运行；纯 JS 的像素渲染可独立测。
  */
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { lutSourceLongEdgeFor } from '../constants/filmRender';
@@ -210,14 +176,18 @@ export interface ProcessFilmPhotoInput {
    */
   exposureIndex?: number;
   /**
-   * 重曝：**第二张**要叠在同一格画面里的底片（§五.3）。
+   * 重曝：暂存的**第一张**底片，等第二张按下快门后叠在同一格画面里（§五.3）。
    *
    * 不传 / `null` / 空串 = 单次曝光（和 v1.3.0 完全一样）。
    * 传了就是把两张底片叠在同一格上洗一次 —— 注意调节的时机：
-   * 叠加发生在**画面窗口内、调色之前**（见 `FilmCompositor`），
+   * 叠加发生在**画面窗口内、调色之前**（见 `renderFilmFrame`），
    * 所以调色 / 颗粒 / 暗角作用在"合成结果"上，而不是各洗一遍再叠。
    */
   overlayUri?: string | null;
+  /** 双曝首张的原始尺寸；与 overlayUri 一起在第一次快门时冻结。 */
+  overlayPhoto?: CapturedPhoto | null;
+  /** 双曝首张快门时的数码裁切，不能沿用第二张的焦段设置。 */
+  overlayDigitalFactor?: number;
   /**
    * 重曝那一张的不透明度；默认 **0.5**。
    *
@@ -444,13 +414,24 @@ function centerCropOrigin(
  *
  * 失败直接抛给调用方的 try/catch（→ 声明式兜底），这里不吞异常。
  */
-async function prepareLutSource(photo: CapturedPhoto, targetLongEdge: number): Promise<string> {
-  const width = Math.max(1, Math.round(photo.width));
-  const height = Math.max(1, Math.round(photo.height));
+async function prepareLutSource(
+  photo: CapturedPhoto,
+  targetLongEdge: number,
+  crop: { originX: number; originY: number; width: number; height: number } | null,
+  outputSize?: Size,
+): Promise<CapturedPhoto> {
+  const width = crop?.width ?? Math.max(1, Math.round(photo.width));
+  const height = crop?.height ?? Math.max(1, Math.round(photo.height));
   const sourceLongEdge = Math.max(width, height);
   const target = Math.max(1, Math.min(Math.round(targetLongEdge), sourceLongEdge));
   const context = ImageManipulator.manipulate(photo.uri);
-  if (target !== sourceLongEdge) {
+  // 原生 context 在后台线程依次裁切、缩放，只解码一次；中途不落全尺寸 JPEG。
+  if (crop !== null) {
+    context.crop(crop);
+  }
+  if (outputSize !== undefined) {
+    context.resize({ width: outputSize.width, height: outputSize.height });
+  } else if (target !== sourceLongEdge) {
     const scale = target / sourceLongEdge;
     const resizedWidth = width >= height ? target : Math.max(1, Math.round(width * scale));
     const resizedHeight = width >= height ? Math.max(1, Math.round(height * scale)) : target;
@@ -458,7 +439,7 @@ async function prepareLutSource(photo: CapturedPhoto, targetLongEdge: number): P
   }
   const image = await context.renderAsync();
   const saved = await image.saveAsync({ format: SaveFormat.PNG });
-  return saved.uri;
+  return { uri: saved.uri, width: saved.width, height: saved.height };
 }
 
 /**
@@ -506,6 +487,9 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
   const capturedAt = input.capturedAt ?? new Date();
   const maxLongEdge = input.maxLongEdge ?? preset.normalizeMaxLongEdge;
   const startedAt = Date.now();
+  const devTiming = __DEV__
+    ? { mark: startedAt, normalizeCrop: 0, lutInput: 0, sceneProbe: 0, pixelGrade: 0, stageCapture: 0 }
+    : null;
   const warnings: string[] = [];
 
   // 3) 归一化（失败自动降级，只记一条 warning）
@@ -518,27 +502,52 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
   // 4) 显式居中裁切：把"合成层自己会居中裁"变成"图本来就是窗口比例"（§六.2）
   /*
    * 这一步放在归一化**之后**、挂载**之前**，理由见 `centerCropPhoto` 的注释。
-   * 这里只说一件事：**为什么 `rawUri` 给的是裁完这张，而不是归一化那张**。
+   * 默认路径只记录裁切矩形，直接在 LUT 输入 PNG 中执行裁切；`rawUri` 因此仍是
+   * 原图 URI。最终合成层只绘制 `lutUri`，不会再读取 `rawUri` 的像素。
    *
-   * `rawUri` 是"这次成片用的那张底片"（`FilmCompositor` 拿它画照片、拿它喂调色图层，
+   * 旧的声明式路径里，`rawUri` 是"这次成片用的那张底片"（`FilmCompositor` 拿它画照片、拿它喂调色图层，
    * 还有"同一张图只算一个就绪信号"`countStageImages`）。为了让"重放"两个字成立 ——
    * 同一个 `stageInput` 重新挂一次必须得到同一张成片 —— 它必须指向**真正被合成的那张图**。
    * 指向归一化那张的话，重放等于让 `cover` 再做一次隐式裁切：
    * 结果是"看着差不多"，而不是"逐像素一样"（多一次取整、多一次重采样）。
-   * 所以：`rawUri` = 裁切后的图；`capture` 那张（成片）永远是它的超集渲染结果。
+   * 当前像素路径里，裁切几何由 `lutCrop` 承载，输出 PNG 才是真正参与截图的图。
    * 用户要的"原图"不在这里 —— 那是相册里的 `asset.uri`，本函数从头到尾没碰过它。
    */
   const cropAspect = resolveCropAspect(frame, layout);
-  const cropped =
-    cropAspect === null
-      ? { ...normalized, cropped: false }
-      : await centerCropPhoto(normalized, cropAspect, input.digitalFactor ?? 1);
+  let lutCrop: { originX: number; originY: number; width: number; height: number } | null = null;
+  let cropped: CroppedPhoto;
+  if (cropAspect === null) {
+    cropped = { ...normalized, cropped: false };
+  } else if (normalized.resized) {
+    // 显式归一化是少数路径，保留原来的裁切几何与缓存语义。
+    cropped = await centerCropPhoto(normalized, cropAspect, input.digitalFactor ?? 1);
+  } else {
+    // 默认不归一化：只规划裁切矩形，在生成 LUT 输入图时与缩放一次完成。
+    // 成片只绘制 lutUri，没必要先把原图整幅重编码成一张临时 JPEG。
+    const rect = planPhotoCrop(normalized, cropAspect, input.digitalFactor ?? 1);
+    if (rect.width < 1 || rect.height < 1) {
+      cropped = { ...normalized, cropped: false, note: '裁切跳过：算出来的裁切矩形宽或高为 0' };
+    } else if (rect.width >= normalized.width && rect.height >= normalized.height) {
+      cropped = { ...normalized, cropped: false };
+    } else {
+      const { originX, originY } = centerCropOrigin(
+        normalized.width, normalized.height, rect.width, rect.height,
+      );
+      lutCrop = { originX, originY, width: rect.width, height: rect.height };
+      cropped = { ...normalized, width: rect.width, height: rect.height, cropped: true };
+    }
+  }
   if (normalized.uri !== photo.uri && normalized.uri !== cropped.uri) {
     // 裁切已经生成了下一张中间图；上一张归一化缓存不会再被舞台或像素管线读取。
     deleteLocalFilesBestEffort([normalized.uri], '归一化中间图');
   }
   if (cropped.note) {
     warnings.push(cropped.note);
+  }
+  if (devTiming !== null) {
+    const now = Date.now();
+    devTiming.normalizeCrop = now - devTiming.mark;
+    devTiming.mark = now;
   }
 
   /*
@@ -561,7 +570,56 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
    *      取景器实时预览**不跑**这一步（v1.8.6 发热纪律：预览每帧开销已被卡死）。
    */
   const adaptiveEnabled = input.adaptiveGrade !== false;
-  const scene: SceneStats | null = adaptiveEnabled ? await probeScene(cropped.uri) : null;
+  const sourceLongEdge = Math.max(cropped.width, cropped.height);
+  const initialCapture = planCapture({
+    width: layout.width,
+    height: layout.height,
+    targetLongEdge: preset.captureLongEdge,
+    sourceLongEdge,
+  });
+  const lutLongEdge = lutSourceLongEdgeFor(initialCapture.targetLongEdge);
+  let lutSource: CapturedPhoto;
+  try {
+    // 先生成实际参与显影的那块画面；场景测光也从它取样，避免再解码
+    // 一张全尺寸裁切 JPEG。默认路径只做一次原生裁切 + 缩放 + PNG 写入。
+    lutSource = await prepareLutSource(
+      cropped,
+      lutLongEdge,
+      lutCrop,
+    );
+  } catch (error) {
+    if (lutCrop === null) {
+      if (cropped.uri !== photo.uri) {
+        deleteLocalFilesBestEffort([cropped.uri], '显影源图缓存');
+      }
+      throw new Error(`真胶片像素管线失败，成片未保存：${describeError(error)}`);
+    }
+    // 原来的 centerCropPhoto 在裁切失败时会退回原图。合并裁切与缩放后
+    // 保留这条容错路：只在失败时重试整图，合成层仍会按 cover 隐式居中裁切。
+    try {
+      lutSource = await prepareLutSource(normalized, lutLongEdge, null);
+      warnings.push(`裁切失败，已退回整图：${describeError(error)}`);
+    } catch (fallbackError) {
+      throw new Error(`真胶片像素管线失败，成片未保存：${describeError(fallbackError)}`);
+    }
+  }
+  if (devTiming !== null) {
+    const now = Date.now();
+    devTiming.lutInput = now - devTiming.mark;
+    devTiming.mark = now;
+  }
+  let scene: SceneStats | null;
+  try {
+    scene = adaptiveEnabled ? await probeScene(lutSource.uri) : null;
+  } catch (error) {
+    deleteLocalFilesBestEffort([lutSource.uri, cropped.uri !== photo.uri ? cropped.uri : null], '测光失败缓存');
+    throw error;
+  }
+  if (devTiming !== null) {
+    const now = Date.now();
+    devTiming.sceneProbe = now - devTiming.mark;
+    devTiming.mark = now;
+  }
   /*
    * 4.6) AUTO 底片 / 自动强度（v2.1.0 手术三，用户 m03050）：
    *
@@ -576,20 +634,26 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
    *      用户级的设置（颗粒刻度、成片长边、归一化长边）原样保留 —— AUTO 选的是卷，
    *      不是把用户在设置页里拧的东西一起换掉。
    */
-  const match = recommendStockAndIntensity(scene, {
-    stockMode: input.stockMode,
-    manualStockId: preset.id,
-    intensityTier: input.intensityTier,
-  });
+  let match: ReturnType<typeof recommendStockAndIntensity>;
   let effectivePreset: ResolvedFilmPreset = preset;
-  if (match.stockId !== preset.id) {
-    const switched = resolvePreset(PRESETS[findPresetIndex(match.stockId)]);
-    effectivePreset = {
-      ...switched,
-      grain: preset.grain,
-      captureLongEdge: preset.captureLongEdge,
-      normalizeMaxLongEdge: preset.normalizeMaxLongEdge,
-    };
+  try {
+    match = recommendStockAndIntensity(scene, {
+      stockMode: input.stockMode,
+      manualStockId: preset.id,
+      intensityTier: input.intensityTier,
+    });
+    if (match.stockId !== preset.id) {
+      const switched = resolvePreset(PRESETS[findPresetIndex(match.stockId)]);
+      effectivePreset = {
+        ...switched,
+        grain: preset.grain,
+        captureLongEdge: preset.captureLongEdge,
+        normalizeMaxLongEdge: preset.normalizeMaxLongEdge,
+      };
+    }
+  } catch (error) {
+    deleteLocalFilesBestEffort([lutSource.uri, cropped.uri !== photo.uri ? cropped.uri : null], '选卷失败缓存');
+    throw error;
   }
   const intensityScale = clampIntensityScale(input.intensityScale ?? match.intensityScale);
   const scenePreset: ResolvedFilmPreset =
@@ -622,13 +686,9 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
    *      **长边**传给 `planCapture` 当上限；真被夹了就把夹过的目标回写进 `preset`，
    *      让合成层实际截出的画布 = 我们报告的像素数（两边一致，不撒谎）。
    */
-  const sourceLongEdge = Math.max(cropped.width, cropped.height);
-  const capture = planCapture({
-    width: layout.width,
-    height: layout.height,
-    targetLongEdge: scenePreset.captureLongEdge,
-    sourceLongEdge,
-  });
+  // AUTO 换卷只替换胶片参数，captureLongEdge 在上面的 effectivePreset 中保留
+  // 自用户选择的档位，所以场景分析前算好的尺寸与最终尺寸相同。
+  const capture = initialCapture;
   const capturePreset: ResolvedFilmPreset =
     capture.clampedToSource && capture.targetLongEdge !== scenePreset.captureLongEdge
       ? { ...scenePreset, captureLongEdge: capture.targetLongEdge }
@@ -715,14 +775,40 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
    * 由 UI 明确告诉用户"这次没洗出来" —— 绝不静默返回一张没上卷的原图。
    * 所以 `renderMode` 恒为 `'lut'`，`layers` 恒是像素管线的真实参数。
    */
-  const renderTemporaryUris: string[] = [];
-  const lutSourceLongEdge = lutSourceLongEdgeFor(capturePreset.captureLongEdge);
+  const renderTemporaryUris: string[] = [lutSource.uri];
   let lutUri: string;
   let renderLayers: string[];
   try {
     input.onStage?.('grading');
-    const lutSourceUri = await prepareLutSource(cropped, lutSourceLongEdge);
-    renderTemporaryUris.push(lutSourceUri);
+    let overlaySourceUri: string | undefined;
+    if (input.overlayUri) {
+      const overlay = input.overlayPhoto;
+      if (!overlay || overlay.uri !== input.overlayUri) {
+        throw new Error('双重曝光的第一张底片尺寸缺失');
+      }
+      const rect = cropAspect === null
+        ? null
+        : planPhotoCrop(overlay, cropAspect, input.overlayDigitalFactor ?? 1);
+      const overlayCrop = rect !== null && rect.width > 0 && rect.height > 0 &&
+        (rect.width < overlay.width || rect.height < overlay.height)
+        ? {
+            ...centerCropOrigin(overlay.width, overlay.height, rect.width, rect.height),
+            width: rect.width,
+            height: rect.height,
+          }
+        : null;
+      // 现有内置相框全部是 cover：两张先各自裁到同一窗口比例，再缩到相同像素尺寸，
+      // 因此这里不会拉伸构图。若未来加入 contain 相框且两次快门画幅比不同，
+      // 下面的 outputSize 会拉伸首张；该组合尚未保证，需改为等比居中并处理透明留白。
+      const preparedOverlay = await prepareLutSource(
+        overlay,
+        Math.max(lutSource.width, lutSource.height),
+        overlayCrop,
+        { width: lutSource.width, height: lutSource.height },
+      );
+      overlaySourceUri = preparedOverlay.uri;
+      renderTemporaryUris.push(overlaySourceUri);
+    }
     /*
      * 种子取"快门时间戳 ^ 当前毫秒"：同一张照片重试两次会得到不同颗粒（用户不会察觉），
      * 但同一次显影内部固定 —— 这是 `renderFilmToFile` 的确定性契约。
@@ -735,7 +821,9 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
      * 失败语义不变：它内部不 catch，异常会直接落到下面这个 catch 里抛给调用方。
      */
     const rendered = await renderFilmToFile({
-      sourceUri: lutSourceUri,
+      sourceUri: lutSource.uri,
+      overlaySourceUri,
+      overlayOpacity: input.overlayOpacity,
       stockId: capturePreset.id,
       preset: {
         id: capturePreset.id,
@@ -761,12 +849,18 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     ];
   } catch (error) {
     deleteLocalFilesBestEffort(renderTemporaryUris, '显影中间图');
+    if (cropped.uri !== photo.uri) deleteLocalFilesBestEffort([cropped.uri], '显影源图缓存');
     /*
      * 用户红线（m03050 手术三）：**严禁静默回退声明式图层**。以前这里只 push 一条
      * warning 就继续返回原图，用户拿到的是一张"没上卷"的照片却以为成功了；
      * 现在一律抛错，由调用方（`CameraScreen` / `GalleryScreen`）提示失败。
      */
     throw new Error(`真胶片像素管线失败，成片未保存：${describeError(error)}`);
+  }
+  if (devTiming !== null) {
+    const now = Date.now();
+    devTiming.pixelGrade = now - devTiming.mark;
+    devTiming.mark = now;
   }
 
   /*
@@ -782,6 +876,7 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     uri = await host.capture();
   } catch (error) {
     deleteLocalFilesBestEffort(renderTemporaryUris, '显影中间图');
+    if (cropped.uri !== photo.uri) deleteLocalFilesBestEffort([cropped.uri], '显影源图缓存');
     throw error;
   } finally {
     // 失败也必须收掉显影层，否则界面会卡在"显影中"
@@ -790,6 +885,14 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
 
   // 这两张 PNG 只服务本次 LUT 与最终截图；ViewShot 返回后已没有消费者，立即回收。
   deleteLocalFilesBestEffort(renderTemporaryUris, '显影中间图');
+  if (devTiming !== null) {
+    devTiming.stageCapture = Date.now() - devTiming.mark;
+    console.info(
+      `[filmPerf] normalize+crop=${devTiming.normalizeCrop}ms ` +
+      `lutInput=${devTiming.lutInput}ms scene=${devTiming.sceneProbe}ms ` +
+      `pixelGrade=${devTiming.pixelGrade}ms stage+capture=${devTiming.stageCapture}ms`,
+    );
+  }
 
   // 尺寸已经在 5.5) 算过（`capture`），这里只负责回报 —— 它和合成层用的是同一个纯函数、
   // 同一份 `layout`、同一个（可能被夹过的）`captureLongEdge`，所以数字和文件必然一致。
@@ -827,6 +930,10 @@ export async function processAndSaveFilmPhoto(
 ): Promise<ProcessAndSaveResult> {
   const photo = await processFilmPhoto(input);
   input.onStage?.('saving');
+  const saveStartedAt = __DEV__ ? Date.now() : 0;
   const save = await saveToLibrary(photo.uri);
+  if (__DEV__) {
+    console.info(`[filmPerf] librarySave=${Date.now() - saveStartedAt}ms ok=${save.ok}`);
+  }
   return { photo, save };
 }

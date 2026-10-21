@@ -214,6 +214,8 @@ export const zhHant: Messages = {
   'gallery.import.denied': '沒有相簿存取權限，請到 系統設定 → 隱私權與安全性 → 照片 裡打開。',
   'gallery.import.failed': '匯入失敗：{message}',
   'gallery.import.noExif': '原圖沒有拍攝時間，按今天沖印。',
+  'gallery.import.noGps': '未讀到原圖位置；請檢查照片定位和相簿權限。',
+  'gallery.import.placeUnavailable': '原圖有座標，但地名解析失敗；可切換座標浮水印重試。',
 
   /* ---------------- 底片長卷（§9） ---------------- */
   'gallery.mode.strip': '長卷底片',

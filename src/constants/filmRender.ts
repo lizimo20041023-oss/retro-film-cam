@@ -38,14 +38,16 @@ export { INTENSITY_SCALE_MAX, INTENSITY_SCALE_MIN };
 /** 3D LUT 每轴的采样数（33³ = 35,937 项）。 */
 export const LUT_SIZE = 33;
 
-/** 内置 LUT 的九卷 id（顺序与图集生成脚本一致，探针按此核对集合）。 */
+/** 内置 LUT 的十一卷 id（九卷光谱基底 + 两卷独立派生人格）。 */
 export const LUT_STOCK_IDS = [
   'um-400',
   'gd-200',
   'pt-400',
   'cp-200',
   'fj-400',
+  'fg-400',
   'ek-100',
+  'rb-100',
   'cs-800t',
   'hp-400',
   'tx-400',
@@ -95,7 +97,9 @@ export const HALATION_BY_STOCK: Record<LutStockId, number> = {
   'pt-400': 0,
   'cp-200': 0,
   'fj-400': 0,
+  'fg-400': 0,
   'ek-100': 0,
+  'rb-100': 0,
   'cs-800t': 0.12,
   'hp-400': 0,
   'tx-400': 0,

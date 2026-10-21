@@ -36,7 +36,7 @@ import {
 
 /** 场景匹配结果。 */
 export interface StockRecommendation {
-  /** 实际生效的胶卷 id（九卷之一，永远不是 `'auto'`）。 */
+  /** 实际生效的胶卷 id（十一卷之一，永远不是 `'auto'`）。 */
   stockId: LutStockId;
   /** 渲染侧全局风格乘数：AUTO 模式 0.70~0.95，手动档位 0.35~1.00。 */
   intensityScale: number;
@@ -100,14 +100,16 @@ const SCENE_ORDER: readonly SceneMatchSceneKind[] = [
   'flat-indoor',
 ];
 
-/** 九卷里的彩色卷（AUTO 选卷只在这七卷里选）。 */
+/** 十一卷里的彩色卷（AUTO 可识别全部九卷彩色底片）。 */
 const COLOR_STOCK_IDS: readonly LutStockId[] = [
   'um-400',
   'gd-200',
   'pt-400',
   'cp-200',
   'fj-400',
+  'fg-400',
   'ek-100',
+  'rb-100',
   'cs-800t',
 ];
 
@@ -297,5 +299,5 @@ function describeSceneMatch(
   return `${sceneText[sceneKind]} → 手动 ${target}`;
 }
 
-/** 供探针/测试使用：九卷里哪些是彩色卷。 */
+/** 供探针/测试使用：十一卷里哪些是彩色卷。 */
 export const AUTO_COLOR_STOCK_IDS = COLOR_STOCK_IDS;

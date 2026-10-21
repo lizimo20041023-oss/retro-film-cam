@@ -491,7 +491,7 @@ export const FilmDrawer = memo(function FilmDrawer({
 
   /**
    * 网格内容整体 memo：`PRESETS` 是模块级常量，`presetIndex` 只在换卷时变，
-   * 所以打开抽屉、下拉滚动都不会重建这九张卡（`FilmCard` 自己也 memo 了）。
+   * 所以打开抽屉、下拉滚动都不会重建这十一张卡（`FilmCard` 自己也 memo 了）。
    */
   const grid = useMemo(
     () => (
@@ -800,7 +800,7 @@ export const FilmDrawer = memo(function FilmDrawer({
           {/*
             v2.1.0 · 底片库顶部的两条新入口（用户 m03050）：
             ① 「AUTO 智能底片」—— 整卷由场景引擎按拍摄画面自动选卷（+强度）；它不是
-               第十支卷，所以不做成网格卡片，而是一整行开关，选中时九卷网格不再点亮；
+               第十二支卷，所以不做成网格卡片，而是一整行开关，选中时十一卷网格不再点亮；
             ② 「预设强度」六档分段条 —— subtle 35% / soft 60% / standard 80% /
                rich 92%（默认）/ max 100% / AUTO。选卷不会重置强度档，AUTO 底片也
                不吞强度档（两个旋钮独立：底片可以 AUTO、强度仍可手动）。

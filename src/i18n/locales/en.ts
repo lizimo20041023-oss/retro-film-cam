@@ -225,6 +225,8 @@ export const en: Messages = {
     'No photo library access. Open Settings → Privacy & Security → Photos and allow it.',
   'gallery.import.failed': 'Import failed: {message}',
   'gallery.import.noExif': 'The original has no capture date, so it is dated today.',
+  'gallery.import.noGps': 'Could not read the original photo location. Check its metadata and library access.',
+  'gallery.import.placeUnavailable': 'The original has GPS data, but the place lookup failed. Try the coordinates stamp.',
 
   /* ---------------- negative strip ---------------- */
   'gallery.mode.strip': 'Strip',

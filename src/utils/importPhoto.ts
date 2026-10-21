@@ -1,88 +1,20 @@
 /**
- * 老照片导入与重冲印（§八）。
+ * 从系统相册选择旧照片，按当前胶片设置重新冲印。
  *
- * 一件事：**让用户从系统相册挑几张旧照片 → 按"现在这套设置"重新冲印一遍**。
- * 不是"把原图塞进相册"，而是重新走一遍完整的显影管线（相框裁切 → 胶卷色彩曲线
- * → 单色颗粒 → 相纸内阴影 → 日期/地名水印），所以导入的老照片和当场拍的成片
- * 看起来是同一批底片。
+ * 拍摄时间先读原图 EXIF。位置只读用户所选照片的 EXIF GPS；选择器未给 GPS 时，
+ * 可在用户授予相册读取权限后查询 iOS Photos 或 Android MediaStore 资产的原拍摄位置。
+ * 绝不把当前手机的位置印到旧照片上。
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * 三条不能违反的规矩
- * ─────────────────────────────────────────────────────────────────────────────
- * ① **拍摄时间优先用原图的**。EXIF 里有 `DateTimeOriginal` 就把那一刻当作"拍摄时间"
- *    烧进水印（`'22 08 14` 而不是今天）。解析不出来才退回今天，并让调用方提示用户。
- * ② **绝不把当前设备位置给老照片**。这是整个 §八 里最容易做错、后果也最难看的一条
- *    —— 一张 2014 年在巴黎拍的照片，被印上"上海"比什么都不印糟糕得多。
- *    `fetchLocationStamp`**，位置**只**来自原图 EXIF 的 GPS 标签，拿不到就是 `null`。
- *    **本轮修订（用户拍板）**：拿到 EXIF GPS 之后允许反查（`Location.reverseGeocodeAsync`）
- *    把坐标变成城市 / 国家，这样老照片也能印出地名而不是一串坐标（`resolvePlaceFromExifGps`）。
- *    ⚠️ 红线没有动，只是换了个更严格的写法：**反查的入参只可能是原图 EXIF 里那对坐标**。
- *    **本轮修订**：反查住在 `locationStamp.ts` 的 `resolvePlaceFromCoords` 里
- *    （两条路共用同一份系统反查 + 重试逻辑，见下面那段补充）：那个函数**只接一对坐标**，
- *    内部只调用系统 `reverseGeocodeAsync`，不会把 EXIF 坐标发给第三方接口。
- *    本文件从头到尾没有任何一行能读到设备当前位置
- *    （`getCurrentPositionAsync` / `getLastKnownPositionAsync` / `watchPositionAsync`
- *    在这个文件里一次都不出现），所以"退化成当前设备位置"在代码结构上不可能发生
- *    （不是"记得别这么写"，是"这里没有被允许这么写的 API 调用"）。
- *    ⚠️ **'place' 档反查失败不再退回坐标**（本轮改）：反查失败就是"这张不印地名那一行"，
- *    因为地名档里出现 `LAT 23°02'N …` 等于把"我没查到"伪装成"我查到了"。
- *    只有用户在设置里**显式选了「只印坐标」档**（`locationMode === 'coords'`）才会印坐标
- *    （见 `importAndDevelop` 里 `place` 那一段）。
- *    **任何一条路失败都不会让这张照片冲印失败**（见 `resolvePlaceFromExifGps`）。
+ * 只有显式选择「地名」且水印版式包含地点时，才用系统原生反查服务将原图坐标
+ * 转换成地名；这一步可能联网，失败不影响出片，也不擅自改印坐标。
+ * Android 的系统反查要求前台定位权限，导入时按需请求一次。
+ * 用户选「坐标」时离线格式化原图坐标；关闭定位或只印日期时不读取位置。
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * 为什么要给反查加超时和重试（② 的补充，别把这一条删了）
- * ─────────────────────────────────────────────────────────────────────────────
- * `reverseGeocodeAsync` 是**网络调用**（iOS 走 Apple 的地理编码服务），可能几百毫秒，
- * 也可能在没网的时候一直不 resolve。而本文件是**串行**导入的：一次选 12 张，
- * 每张都干等就是"进度条卡在第 3 张"的经典体验。
- *
- * 所以这条路**不自己发明一套**：直接调 `locationStamp.ts` 的 `resolvePlaceFromCoords`
- * ——相机页那条路用的是同一个函数、同一组常量。系统通道超时 / 抛异常会在统一总预算内
- * 重试；失败后不再请求第三方服务。具体毫秒数只写在 `locationStamp.ts`，避免两边漂开。
- * 空数组不重试（系统明确答"这个点我查不到"）。
- * 超时、抛异常、返回空数组、返回的对象里一个字段都没有，**四种都只是"这次没地名"**，
- * 每一种都会 `console.warn` 记一笔原因（日志不再输出精确坐标），
- * **绝不向上抛** —— 抛出去会被
- * `importAndDevelop` 的 per-photo catch 记成 `failed += 1`，把一张本来能出片的照片
- * 算成失败，那是比没有地名严重得多的错。
- * ③ **不复用取景器**。相机页那个合成舞台（`useFilmStage`）在这里只当"截图工位"用：
- *    调用方把宿主传进来，本文件负责"挂 → 等就绪 → 截 → 卸"，做完一张再下一张。
- *    串行而不是并行，因为宿主只有一块屏幕位置，同时挂两张会截到彼此。
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * EXIF 的实际形状（这一条决定了下面所有解析函数的写法）
- * ─────────────────────────────────────────────────────────────────────────────
- * `expo-image-picker` 在 **iOS 上不是把 `kCGImagePropertyExifDictionary` 原样返回**：
- * 它把三本字典**拍平合并**成一层（`node_modules/expo-image-picker/ios/ImageUtils.swift`
- * 的 `readExifFrom(imageMetadata:)`）：
- *   · `{Exif}`   → 顶层：`DateTimeOriginal` / `LensModel` / `FNumber` …
- *   · `{GPS}`    → **加前缀**后进顶层：`GPSLatitude` / `GPSLongitude` / `GPSAltitude` …
- *   · `{TIFF}`   → 合并进顶层：`Make` / `Model` / `DateTime` …
- * 也就是说 iOS 上**不存在** `{GPS}` 这个嵌套键。但任务书要求两种键名都试，Android
- * 侧与历史版本确实出现过 `'{DateTimeOriginal}'` / `'{GPS}'` 这种带花括号的嵌套形态，
- * 而且 `exif` 在类型上是 `Record<string, any>`（不承诺形状）—— 所以下面每个取值
- * 都走"先拍平键、再嵌套键"两级尝试，两种形状都能吃。
- *
- * 需要网络：**只有反查地名那一步**（`resolvePlaceFromCoords` → 原生
- * `Location.reverseGeocodeAsync`；不使用第三方公开接口，见上面那段补充）。
- * 没网不是错误 —— 那张照片要么不印地名、要么（用户显式选了坐标档时）退回"只有坐标"，
- * 照常出片（`resolvePlaceFromExifGps`）。
- *
- * 需要权限：选照片由 `launchImageLibraryAsync` 自己处理（iOS 14+ 是
- * `PHPickerViewController`，选中即授权，不需要预先申请整库读取权限）。
- * 反查地名**不额外申请**定位权限：本文件从头到尾不调
- * `requestForegroundPermissionsAsync` —— 用户没给定位权限时反查就失败，
- * **失败即不印地名那一行**（老版这里写的是"失败即退回坐标"，本轮已改：
- * 只有用户显式选了 `'coords'` 档才印坐标，见 `ImportAndDevelopOptions.locationMode`）。
- * **不去要一个这个功能本来不需要的权限**，这是刻意的。
+ * 多张照片共用一块合成舞台，逐张冲印。EXIF 缺失、授权拒绝或反查失败均不会
+ * 让可处理的照片失效；结果会分别报告未读到原图 GPS 和地名反查失败。
  */
 import * as ImagePicker from 'expo-image-picker';
-// ⚠️ 规矩② 的 import 纪律换了个写法（原文是"这里只用 `reverseGeocodeAsync`"）：
-// 反查这一步整个搬到了 `locationStamp.ts` 的 `resolvePlaceFromCoords`（两条路共用），
-// 所以本文件现在**连 `expo-location` 都不 import** —— 连它的类型都不需要。
-// 于是"读设备当前位置"的 API（`getCurrentPositionAsync` / `getLastKnownPositionAsync` /
-// `watchPositionAsync`）在这个文件里不但**不许**出现，而且**根本拿不到**：规矩② 见文件头。
+// 本文件不调用设备当前位置 API；导入权限与照片资产位置只由 importLocation 处理。
 import { grainLevelAt, findGrainLevelIndex, applyGrainLevel } from '../constants/grain';
 import type { LocaleId } from '../i18n/types';
 import type {
@@ -99,7 +31,9 @@ import type {
   WatermarkZone,
 } from '../types';
 import { deleteLocalFilesBestEffort } from './fileCleanup';
+import { readExifGps as parseExifGps } from './exifGps';
 import { addShot } from './galleryStore';
+import { canReverseGeocodeImportedPhoto, createPhotoAssetGpsReader } from './importLocation';
 // 反查（含超时 / 重试 / 失败措辞）从 `locationStamp.ts` 引：相机页和相册导入
 // 必须是同一份逻辑、同一组毫秒数，这个文件里**不许**再出现任何"反查超时"的常量或实现。
 // 本项目 v1.5.1 之后只认 `resolvePlaceFromCoords` 这一个入口（它内部只走系统原生
@@ -171,7 +105,7 @@ export interface ImportAndDevelopOptions {
   /**
    * 设置页的定位档位（`AppSettings.locationMode`）。
    *
-   * ⚠️ **只有 `'place'` 会联网反查地名**，不传 = `'place'`（保持老调用方的行为）：
+   * ⚠️ **只有显式传入 `'place'` 会走系统地名反查**，不传 = `'off'`：
    *   · `'place'` —— 用户要的就是地名。每张最多等系统原生反查的 10s 总预算，
    *     **反查失败就是"这张不印地名那一行"**，不会退回坐标；
    *   · `'coords'` —— 用户明确选了"只印坐标"。相机页那条路（`locationStamp.ts` 的
@@ -229,6 +163,10 @@ export interface ImportAndDevelopResult {
    * 照片本身是成功的，所以不放进 `failed`。
    */
   missingExifDate: boolean;
+  /** 成功冲印的照片中，至少一张从 EXIF 和可访问的照片库资产均未读到 GPS。 */
+  missingSourceGps: boolean;
+  /** 成功冲印的照片中，至少一张有原图 GPS，但地名档的反查未成功。 */
+  placeLookupFailed: boolean;
 }
 
 /* ==========================================================================
@@ -271,18 +209,6 @@ function pickValue(exif: ExifBag, flatKeys: readonly string[], nestKeys: readonl
     }
   }
   return undefined;
-}
-
-/** 数字 / 数字字符串 → 有限数；其余（含 `''`、`'NaN'`、对象）→ `null`。 */
-function toFiniteNumber(value: unknown): number | null {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : null;
-  }
-  if (typeof value === 'string' && value.trim().length > 0) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
 }
 
 /**
@@ -347,59 +273,9 @@ export function readExifCapturedAt(exif: ExifBag | null | undefined): Date | nul
   return parseExifDate(raw);
 }
 
-/**
- * 原图的坐标。拿不到（或者只有一半）返回 `null`。
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * ⚠️ 为什么不读 `GPSLatitudeRef` / `GPSLongitudeRef`（**这是有证据的结论，不是省事**）
- * ─────────────────────────────────────────────────────────────────────────────
- * EXIF 规范里经纬度是"无符号的度分秒三元组 + 一个 N/S、E/W 的 Ref 标签"，所以
- * **直接读原始 EXIF 写入值**的实现必须自己按 Ref 取负 —— 那种实现在这里确实会错。
- * 但 `expo-image-picker` 给我们的**不是**原始 EXIF 写入值，这两条都已在本仓库的
- * `node_modules` 里逐行核对过：
- *
- * · **iOS**（`expo-image-picker/ios/ImageUtils.swift` 的 `readExifFrom(imageMetadata:)`，
- *   该函数在 259 / 277 / 302 行三处被调用，覆盖"从相册选 / 从 data 解 / 从 PHAsset 拿"）：
- *   `if let gps = imageMetadata[kCGImagePropertyGPSDictionary as String] as? [String: Any]`
- *   之后 `exif["GPS\(key)"] = value` —— 它把 `kCGImagePropertyGPSDictionary` 里
- *   **CoreGraphics 已经解析好的键值对**整体加了 `GPS` 前缀搬进顶层。
- *   那本字典里的 `kCGImagePropertyGPSLatitude` 是 `CLLocationDegrees`（**带符号的 double**），
- *   苹果在解析时就已经把 `GPSLatitudeRef === 'S'` 折成了负号，
- *   并把度分秒三元组折成了十进制度。Ref 的语义已经被消费掉了。
- *
- * · **Android**（`expo-image-picker/android/.../exporters/ImageExporter.kt` 的 `exif()`）：
- *   `exifInterface.latLong?.let { latLong -> putDouble(TAG_GPS_LATITUDE, latLong[0]) … }`
- *   —— 用的是 `androidx.exifinterface` 的 `getLatLong()`。它在文档里明说
- *   "returns the latitude and longitude as **double values** … in degrees"，
- *   同样已经是**带符号的十进制度数**（南半球 / 西半球为负），并且**优先取
- *   TAG_GPS_LATITUDE 而不是 LATITUDE_REF**（Ref 只在缺少数值标签时才被拿来兜底）。
- *
- * 所以在这里补读 Ref 并再次取负 = **双重取负**：一张南半球（悉尼）或西半球（旧金山）
- * 的照片会被翻到地球另一面 —— 从"修 bug"变成"引 bug"，而且症状（地名跑到反方向）
- * 比原来难查得多。下面的 `latitude < -90 || > 90` 区间校验也印证了同一个前提：
- * **上游给的已经是带符号度数**，否则那个下界永远不可能被触发。
- *
- * 万一将来换了图片选择库（拿到的是原始 EXIF 写入值），判断依据是同一个：
- * 先看它给的是不是带符号十进制度数；**只有拿到的是"值 + Ref 两个字段"时才需要取负**，
- * 而且那时两个都要读（Ref 缺失时按 N/E 处理）。
- */
+/** 原图 GPS：兼容选择器拍平的十进制度与原始 EXIF 度分秒，缺失时返回 null。 */
 export function readExifGps(exif: ExifBag | null | undefined): { latitude: number; longitude: number } | null {
-  if (!exif) {
-    return null;
-  }
-  const latitude = toFiniteNumber(
-    pickValue(exif, ['GPSLatitude', 'latitude'], ['{GPS}', 'GPS', '{Exif}']),
-  );
-  const longitude = toFiniteNumber(
-    pickValue(exif, ['GPSLongitude', 'longitude'], ['{GPS}', 'GPS', '{Exif}']),
-  );
-  if (latitude === null || longitude === null) {
-    return null;
-  }
-  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
-    return null;
-  }
-  return { latitude, longitude };
+  return parseExifGps(exif);
 }
 
 /**
@@ -419,7 +295,7 @@ function toResolvedPlace(coords: { latitude: number; longitude: number }): Resol
 }
 
 /**
- * EXIF 坐标 → 结构化地名（只走系统原生反查）。这是规矩② 在代码里的落点，改动前先读文件头。
+ * 所选原照片的坐标 → 结构化地名（只走系统原生反查）。
  *
  * 三种结局，**只有第一种会带地名**：
  *   1. 系统反查成功、且解析出至少一个名字字段 → `resolvePlaceFromCoords` 的结果；
@@ -449,10 +325,10 @@ function toResolvedPlace(coords: { latitude: number; longitude: number }): Resol
  * 于是一张本来能出片的照片因为"没网"被算成失败。共享 helper 的契约同样是"绝不抛"
  * （连"原生模块缺失"那种同步抛错都被它收进返回值），所以这里连 `try` 都不需要。
  *
- * ⚠️ **入参只有坐标**：唯一的调用点是 `readExifGps(exif)` 的结果。这个函数里没有
- * 任何"取当前位置"的调用，也不可能拿到 —— 规矩② 不是靠自觉，是靠这一点。
+ * 入参只来自原图 EXIF 或该照片的 iOS Photos / Android MediaStore 资产；
+ * 这里没有读取设备当前位置的路径。
  */
-async function resolvePlaceFromExifGps(gps: {
+async function resolvePlaceFromSourceGps(gps: {
   latitude: number;
   longitude: number;
 }): Promise<ResolvedPlace | null> {
@@ -538,11 +414,13 @@ export async function importAndDevelop(
       reason: 'permission-denied',
       message: describeError(error),
       missingExifDate: false,
+      missingSourceGps: false,
+      placeLookupFailed: false,
     };
   }
 
   if (picked.canceled) {
-    return { ok: false, uris: [], failed: 0, reason: 'cancelled', missingExifDate: false };
+    return { ok: false, uris: [], failed: 0, reason: 'cancelled', missingExifDate: false, missingSourceGps: false, placeLookupFailed: false };
   }
 
   /*
@@ -553,7 +431,7 @@ export async function importAndDevelop(
    */
   const assets = picked.assets.filter((asset) => asset.type === 'image' || asset.type == null);
   if (assets.length === 0) {
-    return { ok: false, uris: [], failed: 0, reason: 'cancelled', missingExifDate: false };
+    return { ok: false, uris: [], failed: 0, reason: 'cancelled', missingExifDate: false, missingSourceGps: false, placeLookupFailed: false };
   }
 
   // ---- 2. 颗粒档位：和相机页走同一对纯函数，力度不漂移 --------------------
@@ -564,49 +442,57 @@ export async function importAndDevelop(
   const uris: string[] = [];
   let failed = 0;
   let missingExifDate = false;
+  let missingSourceGps = false;
+  let placeLookupFailed = false;
   let lastError: string | null = null;
+  const readPhotoAssetGps = createPhotoAssetGpsReader();
+  let geocodePermission: Promise<boolean> | null = null;
+  const geocodeResults = new Map<string, Promise<ResolvedPlace | null>>();
 
   // ---- 3. 逐张冲印（**串行**：宿主只有一块屏幕位置） ----------------------
   for (let index = 0; index < assets.length; index += 1) {
     options.onProgress?.({ index, total: assets.length });
     const asset = assets[index];
     const exif = isBag(asset.exif) ? asset.exif : null;
+    const photoStartedAt = __DEV__ ? Date.now() : 0;
 
     try {
       // EXIF 拍摄时间：拿不到就是 `null` —— 明确告诉管线"我找过了，没有"，
       // 管线会落成"今天"（`input.capturedAt ?? new Date()`），并让我们记一笔提示。
       const capturedAt = readExifCapturedAt(exif);
-      if (capturedAt === null) {
-        missingExifDate = true;
-      }
 
       /*
-       * 位置**只**来自原图 GPS。没有 GPS 就是 `null`（没有坐标可反查，也就没有地名）；
-       * 有 GPS 时按用户选的档位决定印什么，两条路的输入都是这一对 EXIF 坐标 ——
-       * 严禁退化成"当前设备位置"（规矩②，见文件头）。
-       *
-       * **三档的分工（本轮改的就是这里）**：
-       *   · `'off'`            → 不印地名那一行（`null`）。连反查都不发，省一次联网与隐私面。
-       *   · `'place'`（默认）  → 只用系统原生反查；**失败就是 `null`**，
-       *                         不会退回坐标。这条是用户点名的红线：地名档里出现
-       *                         `LAT 23°02'N …` 等于把"我没查到"伪装成"我查到了"。
-       *   · `'coords'`         → 不反查，直接 `coordsOnlyPlace` 印坐标。这是**唯一**
-       *                         允许出现坐标的档位，而且必须是用户显式选的。
-       *
-       * 反查这一步是**本文件唯一的网络调用**，也是最可能卡住的一步，所以：
-       *   · 只有"地名"档才真的联网（`wantsPlace`，理由见 `ImportAndDevelopOptions.locationMode`
-       *     的注释：`'coords'` / `'off'` 两条路要的结果都不需要反查，发出去纯属白等加隐私风险）；
-       *   · 它自带超时**和一次重试**（`resolvePlaceFromExifGps` → `locationStamp` 的
-       *     `resolvePlaceFromCoords`：原生单次最多 5s、最多两次、总预算 10s）；
-       *   · 失败原因会进 `console.warn`，但不记录精确坐标；
-       *   · 它**不抛**（同上）—— 一张照片能不能出片，绝不由"有没有网"决定。
-       * 串行导入时这就是"每张最多多等 10s、但一定能等到下一张"的那道闸门
-       * （只有这一步真的失败时才会等满，正常几百毫秒就回来了）。
+       * 地点只来自所选原图：先读 EXIF，再按需读 iOS Photos / Android MediaStore 资产位置。
+       * 地名档走系统反查；坐标档离线排字；关闭或只印日期时不读取位置。
+       * 系统反查失败不会让照片冲印失败，也不会在地名档擅自改印坐标。
        */
-      const gps = readExifGps(exif);
-      const mode: LocationMode = options.locationMode ?? 'place';
-      const wantsPlace = mode === 'place';
-      const geocoded = gps !== null && wantsPlace ? await resolvePlaceFromExifGps(gps) : null;
+      // 两个实际入口都会传用户选定的档位；没有显式选择时不读取照片位置。
+      const mode: LocationMode = options.locationMode ?? 'off';
+      const wantsLocation = mode !== 'off' && options.watermarkLayout !== 'dateOnly';
+      let gps = wantsLocation ? readExifGps(exif) : null;
+      if (gps === null && wantsLocation) {
+        // 选择器交来的 EXIF 缺 GPS 时，系统照片资产可能仍保存原拍摄位置。
+        // 系统照片库权限由用户授予；只查询这张所选照片，不读取设备当前坐标。
+        gps = await readPhotoAssetGps(asset.assetId);
+      }
+      const wantsPlace = mode === 'place' && wantsLocation;
+      let geocoded: ResolvedPlace | null = null;
+      if (gps !== null && wantsPlace) {
+        // 用户已在设置中选「地名」；resolvePlaceFromCoords 只调用系统原生反查。
+        // Android 的原生反查额外要求前台定位权限，同批照片只申请一次。
+        geocodePermission ??= canReverseGeocodeImportedPhoto();
+        if (await geocodePermission) {
+          // 只复用坐标完全相同的结果，避免把边界附近两张不同位置的照片合并。
+          // 缓存仅活在本次导入中，且不记录坐标日志。
+          const key = `${gps.latitude},${gps.longitude}`;
+          let result = geocodeResults.get(key);
+          if (result === undefined) {
+            result = resolvePlaceFromSourceGps(gps);
+            geocodeResults.set(key, result);
+          }
+          geocoded = await result;
+        }
+      }
       /*
        * `null` 在三种档位下分别是"不印地名"（off）/ "这次没查到，不印地名"（place）/
        * "没有 GPS 可印"（coords 且 gps 为 null）—— 三种的下场一模一样，就是 `null`。
@@ -615,6 +501,9 @@ export async function importAndDevelop(
        */
       const place =
         geocoded ?? (gps !== null && mode === 'coords' ? toResolvedPlace(gps) : null);
+      const sourceGpsMissingThisPhoto = wantsLocation && gps === null;
+      const placeLookupFailedThisPhoto = wantsPlace && gps !== null && geocoded === null;
+      const locationResolvedAt = __DEV__ ? Date.now() : 0;
 
       const photo = await processFilmPhoto({
         /*
@@ -643,6 +532,7 @@ export async function importAndDevelop(
         placeDetail: options.placeDetail,
         exposureIndex: exposureBase + index,
       });
+      const renderedAt = __DEV__ ? Date.now() : 0;
 
       /*
        * 存进 App 内相册。`addShot` 按约定**不抛**（失败返回 `null`），所以这里
@@ -672,6 +562,17 @@ export async function importAndDevelop(
         // 只删 App 自己归一化/裁切出的缓存；系统选择器交来的原始资产绝不能删除。
         deleteLocalFilesBestEffort([photo.rawUri], '导入裁切缓存');
       }
+      missingSourceGps ||= sourceGpsMissingThisPhoto;
+      placeLookupFailed ||= placeLookupFailedThisPhoto;
+      missingExifDate ||= capturedAt === null;
+      if (__DEV__) {
+        console.info('[retro-film-cam] 导入耗时', {
+          photo: index + 1,
+          locationMs: locationResolvedAt - photoStartedAt,
+          renderMs: renderedAt - locationResolvedAt,
+          saveMs: Date.now() - renderedAt,
+        });
+      }
     } catch (error) {
       // 一张坏图不该拖垮整批：记下原因，继续下一张
       failed += 1;
@@ -689,10 +590,12 @@ export async function importAndDevelop(
       reason: 'failed',
       ...(lastError === null ? {} : { message: lastError }),
       missingExifDate,
+      missingSourceGps,
+      placeLookupFailed,
     };
   }
 
-  return { ok: true, uris, failed, missingExifDate };
+  return { ok: true, uris, failed, missingExifDate, missingSourceGps, placeLookupFailed };
 }
 
 /** 错误 → 一行给用户看的文字（拿不到 message 就用 `String(error)`）。 */

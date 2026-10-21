@@ -24,7 +24,7 @@
  * 选中态为什么是"边框 + 右上角 ✓"两条
  * ─────────────────────────────────────────────────────────────────────
  * 用户给的规格就是这两条：当前激活的那张边框高亮成琥珀橙 `#E5A93C`，
- * 右上角再盖一个 `✓`。为什么要两条而不是一条：抽屉里十张卡的色块颜色本身就
+ * 右上角再盖一个 `✓`。为什么要两条而不是一条：抽屉里十一张卡的色块颜色本身就
  * 五花八门，只靠一圈描边的话，在浅色色块旁边（比如褪色很重的过期片）对比度
  * 会掉下去；`✓` 是一个**和颜色无关**的形状信号，扫一眼就知道选的是哪张。
  * 左侧那根 2pt 竖条是 v1.2.0 留下的第三个信号，保留 —— 三者在同一个位置
@@ -33,9 +33,9 @@
  * ─────────────────────────────────────────────────────────────────────
  * 为什么要 memo，以及为什么 props 里传的是 id 而不是对象
  * ─────────────────────────────────────────────────────────────────────
- * 抽屉一屏要摆十张卡。`PRESETS` 是模块级常量、引用永不变化，所以只要传进来的
+ * 抽屉共十一张卡。`PRESETS` 是模块级常量、引用永不变化，所以只要传进来的
  * 是**基本类型**（`presetId` / `selected` / `onSelect`），`memo` 就真的能挡住
- * "打开抽屉时父组件重渲染导致十张卡全部重画"。如果改成把 `preset` 对象或
+ * "打开抽屉时父组件重渲染导致十一张卡全部重画"。如果改成把 `preset` 对象或
  * 内联箭头函数传进来，`memo` 会失效 —— 所以调用方必须传稳定的 `onSelect`
  * （`CameraScreen` 里用 `useCallback` 包的）。
  */
@@ -348,8 +348,8 @@ function swatchZones(preset: FilmPreset): SwatchZone {
  *
  * 为什么写显式映射而不是从 `preset.name` 解析：名字是给人看的商品名，不是数据
  * 字段；`EK-100` 实际是反转片（该标 SLIDE 而不是 ISO 100）、`CS-800T` 的 800 在
- * 名字中间 —— 解析迟早出错。九卷是冻结的（v1.9.0 底片库重做后仍是九卷），一张
- * 表最省心，也不需要给 `FilmPreset` 加 `iso` / `stockType` 字段（那会牵动
+ * 名字中间 —— 解析迟早出错。十一卷用显式表记录卷种最省心，也不需要给
+ * `FilmPreset` 加 `iso` / `stockType` 字段（那会牵动
  * `presets.ts` 与五语言包）。
  * 兜底（将来加卷忘了登记）才退回 `mono` 判断 + 末段数字，绝不抛错。
  */
@@ -361,8 +361,10 @@ function stockBadgeOf(preset: FilmPreset): string {
     case 'um-400':
     case 'pt-400':
     case 'fj-400':
+    case 'fg-400':
       return 'ISO 400';
     case 'ek-100':
+    case 'rb-100':
       return 'SLIDE';
     case 'cs-800t':
       return '800T';
@@ -459,7 +461,7 @@ export const FilmCard = memo(function FilmCard({
   const { t } = useI18n();
   const theme = useTheme();
   // 颜色必须在组件里现取：模块级 StyleSheet 会把深浅色在加载那一刻冻结住，
-  // 而这十张卡是抽屉里唯一会整片换肤的东西。
+  // 而这十一张卡是抽屉里唯一会整片换肤的东西。
   const styles = useMemo(() => createStyles(theme), [theme]);
   const description = preset.description ?? '';
   const badge = stockBadgeOf(preset);

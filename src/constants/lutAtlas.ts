@@ -2439,6 +2439,15 @@ export const LUT_ATLAS_BASE64: Record<string, string> = {
 };
 
 /**
+ * Two additional rolls reuse licensed spectral seed atlases, then receive
+ * their own 33³ color response in filmProfiles.ts. The resulting LUTs are
+ * cached independently by stock ID. Reusing the compressed seed avoids
+ * duplicating ~60 KB of base64 in the app bundle for each roll.
+ */
+LUT_ATLAS_BASE64['fg-400'] = LUT_ATLAS_BASE64['fj-400'];
+LUT_ATLAS_BASE64['rb-100'] = LUT_ATLAS_BASE64['ek-100'];
+
+/**
  * 上游 MIT 归属声明：随包分发时保留作者与许可。
  * 商标规避（用户红线）：不写入任何参考胶卷厂商/商品名——
  * 负片/相纸完整映射只留在仓库文档 THIRD-PARTY-NOTICES.md 与工作区 provenance。

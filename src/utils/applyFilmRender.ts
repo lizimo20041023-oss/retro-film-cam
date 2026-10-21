@@ -43,6 +43,10 @@ import type { PngImage } from './pngCodec';
 export interface RenderFilmToFileInput {
   /** 待显影的照片文件（`file://`；由 ImageManipulator 预处理成 PNG 或 JPEG）。 */
   sourceUri: string;
+  /** 双重曝光第一张底片，已按同一窗口裁切并缩到与 sourceUri 完全同尺寸。 */
+  overlaySourceUri?: string;
+  /** 第一张底片盖在第二张之上的不透明度。 */
+  overlayOpacity?: number;
   /** 卷 id（决定用哪张 33³ LUT，以及 halation 强度）。 */
   stockId: string;
   /** 预设里与观感有关的字段（`ResolvedFilmPreset` 的子集）。 */
@@ -193,6 +197,23 @@ export async function renderFilmToFile(
     /* JPEG 或任何其它魔数：原生收口成 8-bit PNG，再走同一条纯 JS 解码。 */
     png = decodePng(await readAsEightBitPngBytes(input.sourceUri));
   }
+  let overlayRgba: Uint8Array | null = null;
+  if (input.overlaySourceUri) {
+    const overlayFile = new File(input.overlaySourceUri);
+    if (!overlayFile.exists) {
+      throw new Error(`双重曝光第一张底片不存在：${input.overlaySourceUri}`);
+    }
+    const overlayBytes = overlayFile.bytesSync();
+    const overlayPng = decodePng(
+      sniffFilmSourceFormat(overlayBytes) === 'png'
+        ? overlayBytes
+        : await readAsEightBitPngBytes(input.overlaySourceUri),
+    );
+    if (overlayPng.width !== png.width || overlayPng.height !== png.height) {
+      throw new Error('双重曝光两张底片的像素尺寸不一致');
+    }
+    overlayRgba = overlayPng.rgba;
+  }
   const params = filmLookParamsFor(input.preset);
   renderFilmFrame(png.rgba, png.width, png.height, {
     stockId: input.stockId,
@@ -203,6 +224,8 @@ export async function renderFilmToFile(
     seed: input.seed,
     gamma: params.gamma,
     mono: params.mono,
+    overlayRgba,
+    overlayOpacity: input.overlayOpacity,
     /*
      * 把强度交给像素循环（不要在这里先乘好再传）：`renderFilmFrame` 内部用
      * `scaleFilmLook` 一次算出「暗角 EV / 颗粒幅度 / halation 幅度」的生效值，

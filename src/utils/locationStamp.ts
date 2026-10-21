@@ -18,7 +18,6 @@
 import * as Location from 'expo-location';
 import type { LocaleId, MessageKey } from '../i18n/types';
 import type {
-  GeoLocale,
   LocalePreference,
   LocationFailureReason,
   LocationMode,
@@ -244,261 +243,13 @@ export function describeGeocodeFailure(outcome: ReverseGeocodeFailure): string {
   return `反查地名抛异常（发了 ${outcome.attempts} 次）：${reason}`;
 }
 
-/* ==========================================================================
- * 第二条通道：免 Key 的公开反查（BigDataCloud）
- * ========================================================================== */
-
-/**
- * 网络兜底这条通道**总共**最长等多久（毫秒）。
- *
- * ## 为什么是 4000，以及"最坏要等多久"到底是多少
- *
- * 这条通道只在**原生反查已经失败之后**才会发出去，所以它花的时间是**加在**原生那一段
- * 后面的（`reverseGeocodeWithRetry` 已经开始计时）。把两段加起来才是用户真正在等的：
- *
- *   原生：最多 2 次 × 5000ms            = 10000ms（`GEOCODE_TOTAL_BUDGET_MS`，硬闸门）
- *   网络：最多 1 次 × 4000ms            =  4000ms（本常量，**不重试**）
- *   ────────────────────────────────────────────
- *   单张照片最坏等待                    = 14000ms ≈ 14 秒
- *
- * 这个数**必须**在注释里写死并保持可核（用户最烦的就是导入一张照片卡半天）：
- * 加这条通道之前是 10s，之后是 14s，**多出来的 4s 只花在"原生两次都没成"的照片上** ——
- * 也就是那些本来就已经退成坐标的照片。正常照片（几百毫秒回来的）一秒都不会多等。
- *
- * 为什么**不给网络这一条加重试**：重试的收益在"偶尔抽风"的服务上，而这条通道的失败
- * 几乎都是"没网"（重试还是没网）。多一次就多 4s，串行导入 12 张就是 48s ——
- * 那是比"没有地名"严重得多的体验问题。一次不成就退坐标。
- *
- * 为什么比原生单次的 5000ms 还小 1000：它是**最后一道**兜底，前面的 10s 已经把
- * "网络慢"这件事充分暴露过了；再给 5s 等于承认总时长可以到 15s。
- */
-export const GEOCODE_NETWORK_TIMEOUT_MS = 4000;
-
-/**
- * 免 Key 的公开反查接口。
- *
- * 为什么用它（而不是再加一个原生 SDK）：`Location.reverseGeocodeAsync` 在 iOS 上走
- * 苹果自己的服务，失败时我们**没有任何补救手段**；这条 HTTPS 接口不需要任何 Key、
- * 不需要额外权限、也不需要新增依赖（`fetch` 是 RN 内置的）。
- *
- * ⚠️ 隐私：这是把**照片里的坐标**发给第三方。所以它只在
- *   ① 设置里明确选了「地名」档（`locationMode === 'place'`）、且
- *   ② 原生反查已经失败
- * 之后才会发出 —— 见 `resolvePlaceFromCoords`。用户选「只印坐标」或「关闭」时，
- * 这个函数在整个进程里一次都不会被调用。
- */
-const BIGDATACLOUD_ENDPOINT = 'https://api.bigdatacloud.net/data/reverse-geocode-client';
-
-/**
- * BigDataCloud 的响应里我们真正会读的字段（其余字段一律不声明，见下）。
- *
- * 为什么**不**用 `interface` + 索引签名去"完整描述"这个接口：它的响应里有一个很大的
- * `localityInfo.administrative[]` 数组（实测香港那一次回了 7 条、每条带 description /
- * wikidataId / geonameId），既没必要读、也不该让它进入我们的类型。
- * 只声明要用的五个字段，其余用不着。
- *
- * ⚠️ 全部按"可能缺失 / 可能是空串"处理（`?` + `string`）：接口没有版本承诺，
- * 而且 `principalSubdivision` 在港澳这种城市型地区**实测就是空串**。
- */
-interface BigDataCloudReverse {
-  /** 国家 / 地区名，**已经按 `localityLanguage` 本地化**（实测香港回「香港」）。 */
-  countryName?: string;
-  /** ISO 3166-1 alpha-2（实测香港回 `'HK'`，**不是 `'CN'`** —— 红线靠我们自己的表）。 */
-  countryCode?: string;
-  /** 一级行政区（省 / 州）。实测巴黎回 `'Ile-de-France'`，香港回 `''`。 */
-  principalSubdivision?: string;
-  /** 城市。 */
-  city?: string;
-  /** 城市下面的区（实测香港回 `'油尖旺區'`、巴黎回 `'Saint-Merri'`）。 */
-  locality?: string;
-}
-
-/**
- * 网络通道的结局。**三态**，而且刻意只判 `ok` / 其余：
- * 超时、HTTP 非 200、畸形 JSON 在**日志措辞**上不值得分成三句 —— 它们对用户是同一件事
- * （"网络这条路也没成"），分得越细，日志里越多没有信息量的行。
- * 真正需要区分的是"原生失败"与"网络也失败"这两段，那由调用方（`resolvePlaceFromCoords`）拼。
- */
-type NetworkGeocodeAttempt =
-  | { status: 'ok'; address: PlaceGeocodeAddress }
-  | { status: 'failed'; reason: string };
-
-/**
- * 超时 / `AbortController` 版的取值。
- *
- * 为什么不能复用上面的 `withTimeout`：那一个拿不到 `AbortController`，
- * 超时之后 `fetch` **还在跑**（连接不释放，用户切页面时它还在耗电）。
- * 这里把 `abort()` 和"resolve 成哨兵"绑在同一个计时器上。
- *
- * ⚠️ 两个细节都踩过坑：
- * 1. `abortPromise.catch(() => undefined)` **必须写**：`abort()` 触发时
- *    `fetch` 那一侧的拒绝会由 `Promise.race` 消费掉，但这个 `catch` 分支也要有人接，
- *    否则 Hermes 会在控制台抛一个 `AbortError` 的未处理拒绝；
- * 2. 无论成功失败都 `clearTimeout`：`fetch` 正常回来之后还留着计时器的话，
- *    它会在 4s 后调一次没有意义的 `abort()`。
- */
-async function fetchWithAbortTimeout(url: string, ms: number): Promise<Response | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
-  const abortPromise = new Promise<null>((resolve) => {
-    controller.signal.addEventListener('abort', () => resolve(null), { once: true });
-  });
-  try {
-    return await Promise.race([fetch(url, { signal: controller.signal }), abortPromise]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * 地名语言 → BigDataCloud 的 `localityLanguage` 取值。
- *
- * 接口只认 `'zh'` / `'ja'` / `'en'` 三种写法（实测可用）。映射是**一对一直译**：
- * `'zh-Hans'` / `'zh-Hant'` → `'zh'`（接口不做简繁区分，香港简繁回的都是「油尖旺區」），
- * `'ja'` → `'ja'`，`'en'` → `'en'`。
- *
- * ⚠️ **不许用界面语言推**：界面 ja + 地名 en 是合法组合，反查结果要的是英文词条；
- * 这个函数只吃 `GeoLocale`（`resolveGeoLocale` 收口后的值），别把 `LocaleId` 传进来。
- */
-function localityLanguage(language: GeoLocale): 'zh' | 'ja' | 'en' {
-  switch (language) {
-    case 'zh-Hans':
-    case 'zh-Hant':
-      return 'zh';
-    case 'ja':
-      return 'ja';
-    case 'en':
-      return 'en';
-  }
-}
-
-/**
- * 把 BigDataCloud 的响应体变成 `PlaceGeocodeAddress`；一个可用地名都没有时返回 `undefined`。
- *
- * ⚠️ **不做任何"猜"的降级**：这个接口给的字段就那五个，缺了就是缺了。
- * 尤其**不许**拿 `localityInfo.administrative[]` 里的名字来顶 ——
- * 那一堆是"这个点周边有哪些行政区"（实测还混着「南海」「粵港澳大灣區」这种非行政区），
- * 顺序和层级都没有承诺，用它等于把地名交给运气。
- */
-function parseBigDataCloudAddress(body: BigDataCloudReverse): PlaceGeocodeAddress | undefined {
-  const countryName = typeof body.countryName === 'string' ? body.countryName.trim() : '';
-  const countryCode = typeof body.countryCode === 'string' ? body.countryCode.trim() : '';
-  const subdivision = typeof body.principalSubdivision === 'string' ? body.principalSubdivision.trim() : '';
-  const city = typeof body.city === 'string' ? body.city.trim() : '';
-  const locality = typeof body.locality === 'string' ? body.locality.trim() : '';
-
-  // 国家名、国家码、城市全空 —— 这个响应没有任何可用的地名（204 / 空对象 / 纯坐标都走这里）。
-  if (countryName.length === 0 && countryCode.length === 0 && city.length === 0 && subdivision.length === 0) {
-    return undefined;
-  }
-
-  return {
-    /*
-     * 三个字段的映射（**顺序有意义**）：
-     *   · `country` 用 `countryName`（已本地化）；缺失时才退 `countryCode`，
-     *     让 `formatResolvedPlace` 的国名段不至于空着（`countryWord` 本来就有这条降级）；
-     *   · `region` 用 `principalSubdivision`（省 / 州）；
-     *   · `city` 用 `city`，缺失时退 `locality`（区）—— 和 `resolvePlaceFromGeocode`
-     *     自带的降级链方向一致（越靠近拍摄点的越优先）。
-     *
-     * ⚠️ `resolvePlaceFromGeocode` 才是"反查结果 → 结构"的唯一入口，本函数只负责
-     * **把形状摆正**（字段名对齐），一行字符串都不拼 —— 拼接和红线判别全在 `placeNames.ts`。
-     * 这样这条通道和原生通道最后走的是**同一个渲染器**，不存在"网络回来的地名少一个「中国」"。
-     */
-    country: countryName.length > 0 ? countryName : countryCode,
-    isoCountryCode: countryCode.length > 0 ? countryCode : null,
-    region: subdivision.length > 0 ? subdivision : null,
-    city: city.length > 0 ? city : locality.length > 0 ? locality : null,
-  };
-}
-
-/**
- * 第二条通道：发一次公开反查（**含 4s 超时**）。本函数**绝不抛**。
- *
- * 契约与原生那条完全一致（这是刻意的，两条路必须能放进同一个 `??` 里）：
- * · 超时 / 非 2xx / 畸形 JSON / 网络异常 → 统一的失败结局，原因写进 `reason`；
- * · **一个字段都没解析出来**（204、`null`、空对象）→ 也是失败，因为"没有地名"和
- *   "调用失败"对调用方的下场一样（退坐标），但对日志有意义，所以 reason 分开写。
- * · 失败一律只 `console.warn`，**绝不向上抛** —— 抛出去会变成
- *   `importAndDevelop` 的 `failed += 1`，把一张本来能出片的照片算成失败。
- */
-async function reverseGeocodeViaNetwork(
-  coords: { latitude: number; longitude: number },
-  language: GeoLocale,
-): Promise<NetworkGeocodeAttempt> {
-  const url =
-    `${BIGDATACLOUD_ENDPOINT}?latitude=${encodeURIComponent(String(coords.latitude))}` +
-    `&longitude=${encodeURIComponent(String(coords.longitude))}` +
-    // `localityLanguage` 只收 'zh' / 'ja' / 'en' 三种写法（实测可用）；地名语言到接口
-    // 语言的映射是**一对一直译**：'zh-Hans' / 'zh-Hant' → 'zh'（接口不做简繁区分，
-    // 香港简繁回的都是「油尖旺區」），'ja' → 'ja'，'en' → 'en'。
-    // ⚠️ 不能用界面语言推：界面 ja + 地名 en 时，反查结果要的是英文词条。
-    `&localityLanguage=${localityLanguage(language)}`;
-
-  let response: Response | null;
-  try {
-    response = await fetchWithAbortTimeout(url, GEOCODE_NETWORK_TIMEOUT_MS);
-  } catch (error) {
-    // 网络层异常（DNS / TLS / 断网 / 请求被 abort）。**只 warn**，不抛。
-    const reason = error instanceof Error ? error.message : String(error);
-    console.warn(`[retro-film-cam] 公开反查接口请求失败：${reason}`);
-    return { status: 'failed', reason };
-  }
-
-  if (response === null) {
-    // 计时器先到：`fetchWithAbortTimeout` resolve 成 null（同时已经把请求 abort 掉）。
-    console.warn(
-      `[retro-film-cam] 公开反查接口超时（超过 ${GEOCODE_NETWORK_TIMEOUT_MS}ms，请求已中止）`,
-    );
-    return { status: 'failed', reason: `超时（${GEOCODE_NETWORK_TIMEOUT_MS}ms）` };
-  }
-
-  if (!response.ok) {
-    console.warn(`[retro-film-cam] 公开反查接口返回 HTTP ${response.status}`);
-    return { status: 'failed', reason: `HTTP ${response.status}` };
-  }
-
-  /*
-   * 解析这一步单独包 try：畸形 JSON（网关回了 HTML 错误页 / 被中间设备改写）抛的是
-   * `SyntaxError`，和"网络异常"是两回事，但下场一样。**不许让它冒到调用方**
-   * （调用方在 `importAndDevelop` 的 per-photo try 里，冒出去就是一张照片被算成失败）。
-   */
-  let body: BigDataCloudReverse;
-  try {
-    body = (await response.json()) as BigDataCloudReverse;
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    console.warn(`[retro-film-cam] 公开反查接口回了不是 JSON 的内容：${reason}`);
-    return { status: 'failed', reason };
-  }
-
-  if (body === null || typeof body !== 'object') {
-    console.warn('[retro-film-cam] 公开反查接口回了一个空响应（不是对象）');
-    return { status: 'failed', reason: '响应为空' };
-  }
-
-  const address = parseBigDataCloudAddress(body);
-  if (address === undefined) {
-    console.warn('[retro-film-cam] 公开反查接口没有给出任何可用地名（国家 / 行政区 / 城市全空）');
-    return { status: 'failed', reason: '没有可用地名' };
-  }
-
-  return { status: 'ok', address };
-}
-
-/* ==========================================================================
- * 两条通道的编排：原生优先 → 公开接口兜底
- * ========================================================================== */
-
-/** 两条通道都走完之后的结局。`ok` 里**一定有**一个可用的地名（没有地名的情形算失败）。 */
+/** 系统反查的结局。`ok` 里一定有一个可用地名。 */
 export type ResolvePlaceOutcome =
-  | { status: 'ok'; address: PlaceGeocodeAddress; place: ResolvedPlace; channel: 'native' | 'network' }
+  | { status: 'ok'; address: PlaceGeocodeAddress; place: ResolvedPlace; channel: 'native' }
   | {
       status: 'failed';
       /** 原生那一段的结局（超时 / 抛异常 / 空数组 / 字段全空）。 */
       native: ReverseGeocodeOutcome;
-      /** 网络那一段为什么也没成（`null` = 没走到那一步）。 */
-      network: string | null;
       /** 系统原生反查一共尝试了几次（1~2 次）。 */
       attempts: number;
     };
@@ -555,7 +306,6 @@ export async function resolvePlaceFromCoords(
   return {
     status: 'failed',
     native,
-    network: null,
     attempts: native.attempts,
   };
 }

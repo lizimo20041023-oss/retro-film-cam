@@ -2,7 +2,7 @@
   "expo": {
     "name": "FretroCam",
     "slug": "retro-film-cam",
-    "version": "2.2.0",
+    "version": "2.3.0",
     "icon": "./assets/icon.png",
     "scheme": "fretrocam",
     "orientation": "portrait",
@@ -32,9 +32,9 @@
       [
         "expo-media-library",
         {
-          "photosPermission": "允许 $(PRODUCT_NAME) 保存成片到相册。",
+          "photosPermission": "允许 $(PRODUCT_NAME) 读取所选照片的拍摄时间和地点，并保存冲印后的成片。",
           "savePhotosPermission": "允许 $(PRODUCT_NAME) 把成片保存到相册。",
-          "isAccessMediaLocationEnabled": false
+          "isAccessMediaLocationEnabled": true
         }
       ],
       [

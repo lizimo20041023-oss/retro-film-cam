@@ -92,6 +92,9 @@ export interface FilmRenderOptions {
   stockId?: string;
   /** 33³ LUT；`null` = 恒等（兜底路径/探针）。 */
   lut: Lut3D | null;
+  /** 可选的第一张底片；在输入 gamma 和 LUT 之前与当前底片合成。 */
+  overlayRgba?: Uint8Array | null;
+  overlayOpacity?: number;
   /** halation 强度 0~1（缺省 0）。 */
   halation: number;
   /** 角部 EV magnitude（0 = 不做暗角）。 */
@@ -330,6 +333,14 @@ export function renderFilmFrame(
   if (rgba.length !== width * height * 4) {
     throw new Error(`filmRender: 缓冲长度 ${rgba.length} 与 ${width}×${height}×4 不符`);
   }
+  const overlay = options.overlayRgba ?? null;
+  if (overlay !== null && overlay.length !== rgba.length) {
+    throw new Error('filmRender: 双重曝光底片尺寸不匹配');
+  }
+  const overlayOpacity = Number.isFinite(options.overlayOpacity)
+    ? Math.max(0, Math.min(1, options.overlayOpacity as number))
+    : 0.5;
+  const overlayQ = Math.round(overlayOpacity * 256);
 
   // 强度（v2.1.0）：把 halation / 暗角 EV / 颗粒幅度一次算成「实际生效」的整型口径
   const look = scaleFilmLook(options.halation, options.vignette, options.grain, options.intensity);
@@ -410,6 +421,12 @@ export function renderFilmFrame(
       let r0 = rgba[o];
       let g0 = rgba[o + 1];
       let b0 = rgba[o + 2];
+      if (overlay !== null) {
+        const baseQ = 256 - overlayQ;
+        r0 = (r0 * baseQ + overlay[o] * overlayQ + 128) >>> 8;
+        g0 = (g0 * baseQ + overlay[o + 1] * overlayQ + 128) >>> 8;
+        b0 = (b0 * baseQ + overlay[o + 2] * overlayQ + 128) >>> 8;
+      }
       if (warp !== null) {
         r0 = warp[r0];
         g0 = warp[g0];

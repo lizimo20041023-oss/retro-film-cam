@@ -85,7 +85,7 @@
  *   · 滤掉所有 photo 层（含彩色卷的 chroma-lock；S 曲线/曝光提亮/黑位托底同样不进 live）；
  *   · 滤掉颗粒纹理层；
  *   · 丢弃 shadow-tint / highlight-tint 两条全屏染色层；
- *   · 只把 temperature / tint 两条色纸层用 liveLookOpacity 压到 0.04~0.08；
+ *   · 彩卷把 temperature / tint 合并为一条卷色纸；EK-100 原本没有这两层，补一条；
  *   · mono 卷的 `#808080 color` 色度锁层保留 opacity 1（黑白卷取景器必须当场看到黑白）；
  *   · halation / 暗角 / 漏光原样保留。
  */
@@ -465,8 +465,8 @@ export function liveLookOpacity(opacity: number): number {
 /**
  * live 面被丢弃的全屏染色层（用户 m05280 降发热）。
  *
- * v1.9.4：color-density 已随图层一起删除；只剩 shadow-tint / highlight-tint 两条全屏
- * 染色层丢给成片路径，取景器只留色温/色调示意。
+ * v1.9.4：color-density 已随图层一起删除；shadow-tint / highlight-tint 两条全屏
+ * 染色层仍只用于成片路径，取景器用一条卷色纸示意。
  */
 const LIVE_DROPPED_COLOR_LAYER_KEYS = new Set(['shadow-tint', 'highlight-tint']);
 
@@ -474,13 +474,49 @@ const LIVE_DROPPED_COLOR_LAYER_KEYS = new Set(['shadow-tint', 'highlight-tint'])
 const LIVE_COMPRESSED_COLOR_LAYER_KEYS = new Set(['temperature', 'tint']);
 
 /**
+ * A single stock dye replaces the old faint white-balance paper in the live
+ * view. It gives each color stock a recognizable cue without asking iOS to
+ * composite a photo copy, and keeps live color layers at one. The final
+ * photograph still gets its full 33³ LUT in the file renderer.
+ */
+const LIVE_STOCK_DYES: Readonly<Record<string, string>> = {
+  'um-400': '#8795A8',
+  'gd-200': '#E5C56C',
+  'pt-400': '#E8B7AD',
+  'cp-200': '#A88D5C',
+  'fj-400': '#73B6A2',
+  'fg-400': '#639589',
+  'ek-100': '#B39EAA',
+  'rb-100': '#83A4BA',
+  'cs-800t': '#638EC2',
+};
+
+function liveStockDye(preset: ResolvedFilmPreset, hex: string): GradeLayer {
+  const red = Number.parseInt(hex.slice(1, 3), 16);
+  const green = Number.parseInt(hex.slice(3, 5), 16);
+  const blue = Number.parseInt(hex.slice(5, 7), 16);
+  const temperature = preset.color.temperature ?? 0;
+  const tint = preset.color.tint ?? 0;
+  const byte = (value: number): string => Math.round(clamp(value, 0, 255)).toString(16).padStart(2, '0');
+  const color = `#${byte(red + temperature * 48 - tint * 10)}${byte(green + tint * 42)}${byte(blue - temperature * 48 - tint * 10)}`;
+  return {
+    kind: 'color',
+    key: 'live-stock-dye',
+    label: `取景器卷色 ${preset.name}`,
+    color,
+    blendMode: 'soft-light',
+    opacity: round4(clamp((preset.color.shadowTintOpacity ?? 0) * 0.8, 0.06, 0.28)),
+  };
+}
+
+/**
  * 构造某个面（composite / live）实际要渲染的层表。
  *
  * - composite：`buildGradeLayers` 原样返回（成片/合成/贴纸截图用）。
  * - live：滤掉**所有** `kind:'photo'` 同源层（曝光提亮/S 曲线/彩色卷色度锁/黑位托底都不进
  *   取景器 —— 每帧全屏混合 + 截图是纯烧 GPU，v1.8.6 发热纪律）+ 颗粒纹理层 +
- *   shadow-tint/highlight-tint 两条全屏染色层；剩余色纸层 temperature/tint
- *   走 liveLookOpacity 压到 0.04~0.08；mono 卷的 #808080 色度锁层保留 opacity 1
+ *   shadow-tint/highlight-tint 两条全屏染色层；彩卷将 temperature/tint 合成一条卷色纸，
+ *   未定义卷色时仍走 liveLookOpacity；mono 卷的 #808080 色度锁层保留 opacity 1
  *   （黑白卷取景器必须当场是黑白）；halation / 暗角 / 漏光保留原 opacity。
  */
 export function planFilmLooks(
@@ -491,6 +527,8 @@ export function planFilmLooks(
   if (surface === 'composite') return layers;
 
   const liveLayers: GradeLayer[] = [];
+  const stockDye = LIVE_STOCK_DYES[preset.id];
+  let dyeAdded = false;
   for (const layer of layers) {
     // 同源 photo 层：取景器一律不画（每帧全屏混合 = 发热）。
     if (layer.kind === 'photo') continue;
@@ -499,11 +537,25 @@ export function planFilmLooks(
     // 全屏化学染色层：live 丢弃（降发热）。
     if (layer.kind === 'color' && LIVE_DROPPED_COLOR_LAYER_KEYS.has(layer.key)) continue;
     if (layer.kind === 'color' && LIVE_COMPRESSED_COLOR_LAYER_KEYS.has(layer.key)) {
-      liveLayers.push({ ...layer, opacity: liveLookOpacity(layer.opacity) });
+      if (stockDye !== undefined) {
+        if (!dyeAdded) {
+          liveLayers.push(liveStockDye(preset, stockDye));
+          dyeAdded = true;
+        }
+      } else {
+        liveLayers.push({ ...layer, opacity: liveLookOpacity(layer.opacity) });
+      }
       continue;
     }
     // chroma-lock（mono 灰层）/ halation / 暗角 / 漏光：原样保留。
     liveLayers.push(layer);
+  }
+  // Some stocks have no temperature/tint layer (EK-100); place their single
+  // stock dye before textures so the live view still shows the selected roll.
+  if (stockDye !== undefined && !dyeAdded) {
+    const firstTexture = liveLayers.findIndex((layer) => layer.kind === 'texture');
+    const index = firstTexture < 0 ? liveLayers.length : firstTexture;
+    liveLayers.splice(index, 0, liveStockDye(preset, stockDye));
   }
   return liveLayers;
 }

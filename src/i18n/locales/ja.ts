@@ -220,6 +220,8 @@ export const ja: Messages = {
     '写真へのアクセスが許可されていません。システム設定 → プライバシーとセキュリティ → 写真 で許可してください。',
   'gallery.import.failed': '取り込みに失敗しました：{message}',
   'gallery.import.noExif': '元写真に撮影日時がないため、今日の日付で現像します。',
+  'gallery.import.noGps': '元写真の位置を読み取れません。写真の位置情報と写真ライブラリの権限をご確認ください。',
+  'gallery.import.placeUnavailable': '元写真にGPS情報はありますが、地名を取得できませんでした。座標表示をお試しください。',
 
   /* ---------------- フィルム長尺（§9） ---------------- */
   'gallery.mode.strip': '長尺フィルム',

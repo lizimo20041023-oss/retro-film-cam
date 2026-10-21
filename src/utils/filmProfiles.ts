@@ -12,6 +12,10 @@ interface FilmPersonality {
   readonly black: number;
   readonly white: number;
   readonly saturation: number;
+  /** Red, yellow, green, cyan, blue, magenta sensitivity, baked once into the LUT. */
+  readonly hueSaturation: readonly [number, number, number, number, number, number];
+  /** Optional hue-selective density: keeps a blue sky deep without tinting skin. */
+  readonly hueExposure?: readonly [number, number, number, number, number, number];
   readonly matrix: readonly [
     number, number, number,
     number, number, number,
@@ -32,79 +36,116 @@ const IDENTITY_MATRIX: FilmPersonality['matrix'] = [
 const FILM_PERSONALITIES: Record<LutStockId, FilmPersonality> = {
   'um-400': {
     gamma: 1.02,
-    contrast: 0.3,
-    black: 0.012,
-    white: 0.965,
-    saturation: 0.9,
-    matrix: [1.05, -0.025, -0.025, -0.015, 1.035, -0.02, 0.025, -0.02, 0.995],
-    shadows: [-0.016, 0.002, 0.022],
-    highlights: [0.022, 0.012, -0.008],
+    contrast: 0.42,
+    black: 0.008,
+    white: 0.985,
+    saturation: 0.94,
+    hueSaturation: [1.1, 0.98, 0.82, 0.9, 1.04, 0.96],
+    matrix: [1.07, -0.04, -0.03, -0.015, 1.04, -0.025, 0.025, -0.015, 0.99],
+    shadows: [-0.034, -0.005, 0.034],
+    highlights: [0.035, 0.018, -0.015],
     grainScale: 0.9,
   },
   'gd-200': {
-    gamma: 0.96,
-    contrast: 0.12,
-    black: 0.018,
-    white: 0.98,
-    saturation: 0.96,
-    matrix: [1.055, 0.01, -0.025, 0.005, 1.025, -0.02, -0.015, 0.005, 0.965],
-    shadows: [0.018, 0.005, -0.018],
-    highlights: [0.032, 0.018, -0.03],
+    gamma: 0.88,
+    contrast: 0.07,
+    black: 0.03,
+    white: 0.99,
+    saturation: 0.97,
+    hueSaturation: [1.05, 1.08, 0.82, 0.72, 0.74, 0.95],
+    matrix: [1.09, 0, -0.045, 0.01, 1.03, -0.025, -0.025, 0, 0.94],
+    shadows: [0.035, 0.015, -0.025],
+    highlights: [0.05, 0.025, -0.04],
     grainScale: 0.65,
   },
   'pt-400': {
-    gamma: 0.9,
-    contrast: -0.18,
-    black: 0.045,
-    white: 0.965,
-    saturation: 0.78,
-    matrix: [1.025, 0.015, -0.01, -0.01, 1.015, 0.005, 0.01, 0.01, 0.99],
-    shadows: [-0.006, 0.008, 0.012],
-    highlights: [0.026, 0.004, -0.004],
+    gamma: 0.84,
+    contrast: -0.28,
+    black: 0.075,
+    white: 0.99,
+    saturation: 0.86,
+    hueSaturation: [1.08, 0.9, 0.88, 0.95, 0.85, 1.08],
+    matrix: [1.04, 0.01, -0.02, -0.015, 1, 0.015, 0.015, 0.005, 0.985],
+    shadows: [0.004, 0.016, 0.018],
+    highlights: [0.04, 0.012, -0.012],
     grainScale: 0.5,
   },
   'cp-200': {
-    gamma: 1,
-    contrast: 0.18,
-    black: 0.026,
-    white: 0.945,
-    saturation: 0.82,
-    matrix: [1.07, 0.015, -0.025, 0.015, 1.005, -0.02, -0.02, 0.015, 0.94],
-    shadows: [0.024, 0.006, -0.018],
-    highlights: [0.032, 0.018, -0.026],
+    gamma: 1.01,
+    contrast: 0.25,
+    black: 0.035,
+    white: 0.94,
+    saturation: 0.75,
+    hueSaturation: [1.03, 1.02, 0.62, 0.75, 0.62, 0.87],
+    matrix: [1.095, 0.01, -0.045, 0.018, 1.04, -0.045, -0.03, 0, 0.93],
+    shadows: [0.025, 0.01, -0.025],
+    highlights: [0.04, 0.023, -0.03],
     grainScale: 0.8,
   },
   'fj-400': {
-    gamma: 0.93,
-    contrast: -0.04,
-    black: 0.028,
-    white: 0.975,
-    saturation: 0.84,
-    matrix: [0.97, 0.015, -0.005, -0.02, 1.045, 0.01, -0.005, 0.035, 1.015],
-    shadows: [-0.018, 0.016, 0.018],
-    highlights: [-0.012, 0.012, 0.02],
+    gamma: 0.9,
+    contrast: -0.12,
+    black: 0.035,
+    white: 0.985,
+    saturation: 0.94,
+    hueSaturation: [0.9, 0.86, 1.07, 1.1, 0.94, 0.88],
+    matrix: [0.955, 0.018, -0.008, -0.035, 1.065, 0.01, -0.025, 0.045, 1.02],
+    shadows: [-0.035, 0.024, 0.01],
+    highlights: [-0.016, 0.005, 0.032],
     grainScale: 0.58,
   },
-  'ek-100': {
+  'fg-400': {
+    // Consumer-negative separation: cyan-green toe, faint magenta shoulder,
+    // firm contrast and restrained color. Greens have their own density.
     gamma: 1.02,
-    contrast: 0.3,
-    black: 0.004,
-    white: 0.99,
-    saturation: 1.1,
+    contrast: 0.32,
+    black: 0.014,
+    white: 0.97,
+    saturation: 0.83,
+    hueSaturation: [1.08, 0.92, 0.84, 0.91, 0.86, 0.96],
+    hueExposure: [1, 1, 0.91, 0.97, 1, 1],
+    matrix: [1.035, -0.01, -0.025, -0.025, 1.055, -0.005, -0.015, 0.025, 1.015],
+    shadows: [-0.033, 0.025, 0.018],
+    highlights: [0.032, -0.014, 0.024],
+    grainScale: 0.83,
+  },
+  'ek-100': {
+    gamma: 1.05,
+    contrast: 0.38,
+    black: 0.002,
+    white: 0.995,
+    saturation: 1.15,
+    hueSaturation: [1.02, 1.02, 1.06, 1.06, 1.08, 1.04],
     matrix: [1.0375, -0.0175, -0.01, -0.0125, 1.0375, -0.0075, -0.005, -0.0175, 1.0425],
     shadows: [-0.008, 0.002, 0.012],
     highlights: [0.004, 0.006, 0.012],
     grainScale: 0,
   },
+  'rb-100': {
+    // Positive-film density with a selective blue/cyan sky response. Warm
+    // subjects stay warm; there is deliberately no blanket blue wash.
+    gamma: 0.9,
+    contrast: 0.34,
+    black: 0.008,
+    white: 0.985,
+    saturation: 1.2,
+    hueSaturation: [1.07, 1.04, 0.95, 1.18, 1.26, 1.06],
+    hueExposure: [1, 1, 0.98, 0.83, 0.68, 1],
+    matrix: [1.04, -0.02, -0.02, -0.01, 0.98, 0.03, -0.01, 0.02, 0.99],
+    shadows: [-0.005, 0.002, 0.014],
+    highlights: [0.013, 0.009, -0.006],
+    grainScale: 0.45,
+  },
   'cs-800t': {
-    gamma: 1.04,
-    contrast: 0.2,
-    black: 0.012,
-    white: 0.955,
-    saturation: 0.92,
-    matrix: [1.035, -0.015, -0.02, -0.02, 1.025, 0.005, -0.025, 0.025, 1.09],
-    shadows: [-0.026, -0.006, 0.05],
-    highlights: [0.035, 0.012, -0.022],
+    gamma: 1.1,
+    contrast: 0.28,
+    black: 0.003,
+    white: 0.97,
+    saturation: 0.96,
+    hueSaturation: [1.1, 1, 0.72, 0.9, 1.12, 0.92],
+    matrix: [1.02, -0.02, -0.04, -0.025, 1.015, 0, -0.04, 0.035, 1.12],
+    shadows: [-0.052, -0.012, 0.075],
+    highlights: [0.055, 0.027, -0.032],
     grainScale: 1,
   },
   'hp-400': {
@@ -113,6 +154,7 @@ const FILM_PERSONALITIES: Record<LutStockId, FilmPersonality> = {
     black: 0.045,
     white: 0.96,
     saturation: 0,
+    hueSaturation: [1, 1, 1, 1, 1, 1],
     matrix: IDENTITY_MATRIX,
     shadows: [0, 0, 0],
     highlights: [0, 0, 0],
@@ -125,6 +167,7 @@ const FILM_PERSONALITIES: Record<LutStockId, FilmPersonality> = {
     black: 0,
     white: 0.955,
     saturation: 0,
+    hueSaturation: [1, 1, 1, 1, 1, 1],
     matrix: IDENTITY_MATRIX,
     shadows: [0, 0, 0],
     highlights: [0, 0, 0],
@@ -140,6 +183,33 @@ function clamp01(value: number): number {
 function smoothstep(edge0: number, edge1: number, value: number): number {
   const t = clamp01((value - edge0) / (edge1 - edge0));
   return t * t * (3 - 2 * t);
+}
+
+/**
+ * Film dye layers respond differently to foliage, skin, and sky. Evaluate this
+ * only while building the 33³ LUT; the full-size photo still uses one lookup.
+ * Fade the sector correction around neutral colors so near-grey skies and skin
+ * shadows cannot jump between hue sectors as exposure changes by one byte.
+ */
+function hueResponse(
+  r: number,
+  g: number,
+  b: number,
+  responseBySector: readonly [number, number, number, number, number, number],
+): number {
+  const hi = Math.max(r, g, b);
+  const lo = Math.min(r, g, b);
+  const chroma = hi - lo;
+  if (chroma < 0.025) return 1;
+  let sector: number;
+  if (hi === r) sector = ((g - b) / chroma + 6) % 6;
+  else if (hi === g) sector = (b - r) / chroma + 2;
+  else sector = (r - g) / chroma + 4;
+  const first = Math.floor(sector) % 6;
+  const blend = sector - Math.floor(sector);
+  const response = responseBySector[first] * (1 - blend)
+    + responseBySector[(first + 1) % 6] * blend;
+  return 1 + (response - 1) * smoothstep(0.025, 0.16, chroma);
 }
 
 function toneLuma(value: number, profile: FilmPersonality): number {
@@ -183,15 +253,20 @@ export function applyFilmPersonalityToLut(lut: Lut3D, stockId: string): Lut3D {
     const mixedG = sourceR * m[3] + sourceG * m[4] + sourceB * m[5];
     const mixedB = sourceR * m[6] + sourceG * m[7] + sourceB * m[8];
     const luma = clamp01(mixedR * 0.2126 + mixedG * 0.7152 + mixedB * 0.0722);
-    const tone = toneLuma(luma, profile);
+    const density = profile.hueExposure === undefined
+      ? 1
+      : hueResponse(mixedR, mixedG, mixedB, profile.hueExposure);
+    const tone = clamp01(toneLuma(luma, profile) * density);
+    const saturation = profile.saturation
+      * hueResponse(mixedR, mixedG, mixedB, profile.hueSaturation);
     const shadowWeight = 1 - smoothstep(0.12, 0.62, tone);
     const highlightWeight = smoothstep(0.48, 0.94, tone);
 
-    let red = tone + (mixedR - luma) * profile.saturation
+    let red = tone + (mixedR - luma) * saturation
       + profile.shadows[0] * shadowWeight + profile.highlights[0] * highlightWeight;
-    let green = tone + (mixedG - luma) * profile.saturation
+    let green = tone + (mixedG - luma) * saturation
       + profile.shadows[1] * shadowWeight + profile.highlights[1] * highlightWeight;
-    let blue = tone + (mixedB - luma) * profile.saturation
+    let blue = tone + (mixedB - luma) * saturation
       + profile.shadows[2] * shadowWeight + profile.highlights[2] * highlightWeight;
 
     /*

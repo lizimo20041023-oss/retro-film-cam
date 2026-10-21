@@ -210,7 +210,7 @@ export const PRESETS: FilmPreset[] = [
   {
     id: 'um-400',
     name: 'UM-400',
-    description: '高反差拍立得 · 街拍王牌',
+    description: '青黑暖光 · 高反差街拍',
     color: {
       // 极强反差（0.62 上限）+ 微暖色温把高光推成奶油白；暗角拉满让街头更"拍立得"。
       temperature: 0.1,
@@ -233,7 +233,7 @@ export const PRESETS: FilmPreset[] = [
   {
     id: 'gd-200',
     name: 'GD-200',
-    description: '金色日光 · 暖阳日常',
+    description: '暖金日光 · 柔亮高光',
     color: {
       // 全画面暖金：静态 +0.22 色温 + 金黄高光 + 琥珀棕暗部，和 FJ 形成强冷暖反差。
       temperature: 0.22,
@@ -254,7 +254,7 @@ export const PRESETS: FilmPreset[] = [
   {
     id: 'pt-400',
     name: 'PT-400',
-    description: '大师人像 · 奶油肤色',
+    description: '柔粉人像 · 低反差浅黑',
     color: {
       // 低反差 + 高提亮 = 通透空气感；轻微冷色温把黄压下去，肤色走桃粉。
       temperature: -0.12,
@@ -276,7 +276,7 @@ export const PRESETS: FilmPreset[] = [
   {
     id: 'cp-200',
     name: 'CP-200',
-    description: '复古琥珀 · 九十年代',
+    description: '橄榄茶褐 · 旧日街景',
     color: {
       // 九十年代暖调：中间调橄榄琥珀，暗部茶褐，反差中等偏上。
       temperature: 0.16,
@@ -297,7 +297,7 @@ export const PRESETS: FilmPreset[] = [
   {
     id: 'fj-400',
     name: 'FJ-400',
-    description: '日系青绿 · 空气感',
+    description: '清亮青绿 · 空气感',
     color: {
       // 冷翠青绿人格：静态 -0.20 色温 + 绿 tint，与 GD 的金色完全对立。
       temperature: -0.2,
@@ -318,9 +318,31 @@ export const PRESETS: FilmPreset[] = [
     vignette: 0.2,
   },
   {
+    id: 'fg-400',
+    name: 'FG-400',
+    description: '富士绿 · 青影品红高光',
+    color: {
+      // 偏硬的消费负片：墨绿植被，青绿色暗部与一点品红高光。
+      temperature: -0.08,
+      tint: 0.1,
+      sCurveContrast: 0.55,
+      chromaLock: 0.14,
+      exposureLift: 0.13,
+      shadowCrush: 0,
+      shadowTint: '#185B55',
+      shadowTintBlendMode: 'soft-light',
+      shadowTintOpacity: 0.32,
+      highlightTint: '#EACDDD',
+      highlightTintBlendMode: 'soft-light',
+      highlightTintOpacity: 0.27,
+    },
+    grain: 0.025,
+    vignette: 0.23,
+  },
+  {
     id: 'ek-100',
     name: 'EK-100',
-    description: '反转片 · 浓郁高密',
+    description: '反转片 · 强彩深黑',
     color: {
       // 全库最高反差与饱和度：sCurve 上限 + 最高色度锁（0.22），提亮压低换更深的黑位。
       temperature: 0,
@@ -341,9 +363,30 @@ export const PRESETS: FilmPreset[] = [
     vignette: 0.26,
   },
   {
+    id: 'rb-100',
+    name: 'RB-100',
+    description: '理光蓝 · 深蓝正片',
+    color: {
+      // 蓝天的密度和饱和度在 LUT 里按色相单独雕塑，暖色主体不整体蒙蓝。
+      temperature: -0.09,
+      sCurveContrast: 0.58,
+      chromaLock: 0.21,
+      exposureLift: 0.13,
+      shadowCrush: 0,
+      shadowTint: '#233C50',
+      shadowTintBlendMode: 'soft-light',
+      shadowTintOpacity: 0.25,
+      highlightTint: '#F2E9D6',
+      highlightTintBlendMode: 'soft-light',
+      highlightTintOpacity: 0.21,
+    },
+    grain: 0.015,
+    vignette: 0.23,
+  },
+  {
     id: 'cs-800t',
     name: 'CS-800T',
-    description: '电影钨丝 · 冷调夜戏',
+    description: '钨丝夜色 · 蓝影暖灯',
     color: {
       // 强冷蓝影调：静态 -0.24 色温 + 品红 tint 压绿，暗部直接沉进冷蓝。
       temperature: -0.24,

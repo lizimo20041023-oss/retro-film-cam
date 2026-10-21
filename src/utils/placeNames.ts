@@ -908,7 +908,7 @@ function isSameAdministrativeName(left: string, right: string): boolean {
  * 汉字简繁归一（v1.9.3 §5.1）
  *
  * 目的：`zh-Hant` 档整行必须繁体（`中國 · 雲南省 · 麗江市`），`zh-Hans` 档整行必须
- * 简体（`中国 · 云南省 · 丽江市`）。反查服务（BigDataCloud / 离线表）回填的
+ * 简体（`中国 · 云南省 · 丽江市`）。系统反查回填的
  * `country` / `region` / `city` 是**另一套字形**（繁体 → 简中档、简中 → 繁中档、
  * 混排）时，渲染前按目标档位做一次确定性归一；`ja` / `en` 一个字节都不动。
  *

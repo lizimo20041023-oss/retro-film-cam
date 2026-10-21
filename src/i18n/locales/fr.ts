@@ -228,6 +228,8 @@ export const fr: Messages = {
     "Accès à la photothèque refusé. Ouvrez Réglages → Confidentialité et sécurité → Photos et autorisez-le.",
   'gallery.import.failed': "Échec de l'import : {message}",
   'gallery.import.noExif': "L'original n'a pas de date de prise de vue : daté d'aujourd'hui.",
+  'gallery.import.noGps': "Position de la photo introuvable. Vérifiez ses métadonnées et l'accès à la photothèque.",
+  'gallery.import.placeUnavailable': "L'original a des coordonnées GPS, mais le lieu est introuvable. Essayez le tampon de coordonnées.",
 
   /* ---------------- bande négative ---------------- */
   'gallery.mode.strip': 'Bande',

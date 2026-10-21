@@ -339,10 +339,9 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
    * 【＋ 導入】：选外部照片 → 逐张按当前设置重新冲印 → 存进相机胶卷 →
    * 刷新列表并直接打开第一张新成片的大图（用户要的"冲印完成后打开大图预览"）。
    *
-   * ⚠️ **绝不使用"当前设备位置"**。`importPhoto.ts` 只调 `expo-location` 的
-   * `reverseGeocodeAsync`，输入永远是原图 EXIF 里那一对坐标；原图没有 EXIF GPS 时
-   * 地点那一行就留给合成层印摄影代号，绝不能把"用户此刻站在哪"强加给一张
-   * 2014 年的老照片（规矩②，见 `importPhoto.ts` 文件头）。
+   * ⚠️ **绝不使用"当前设备位置"**。坐标优先来自原图 EXIF；iOS 在用户授予
+   * 照片库读取权限后也可读取所选照片资产保存的原拍摄位置。
+   * 地名反查只使用这些原图坐标，缺失时不把用户此刻所在地点印到旧照片上。
    *
    * 反查**只在设置选了"地名"档时才发生**（`locationMode` 原样透传下去）：
    * `'coords'` 要的就是坐标本身、`'off'` 连地名那一行都不会印 —— 这两种情况下
@@ -395,8 +394,12 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
             pendingOpenUri.current = first;
           }
         }
-        if (result.missingExifDate) {
-          showToast({ key: `import-noexif-${Date.now()}`, message: t('gallery.import.noExif') });
+        const importNotices: string[] = [];
+        if (result.missingExifDate) importNotices.push(t('gallery.import.noExif'));
+        if (result.missingSourceGps) importNotices.push(t('gallery.import.noGps'));
+        if (result.placeLookupFailed) importNotices.push(t('gallery.import.placeUnavailable'));
+        if (importNotices.length > 0) {
+          showToast({ key: `import-notice-${Date.now()}`, message: importNotices.join(' ') });
         }
         return;
       }

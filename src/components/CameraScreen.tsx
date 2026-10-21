@@ -295,6 +295,9 @@ interface DevelopShotJob extends DevelopJobBase {
   exposureIndex: number;
   /** 非 `null` = 这是双曝的合成张（第二张），旧的那张压在上面。 */
   overlayUri: string | null;
+  /** 首张的原始尺寸，供两张底片在进入 LUT 前对齐画幅。 */
+  overlayPhoto: CapturedPhoto | null;
+  overlayDigitalFactor: number | undefined;
   overlayOpacity: number | undefined;
   /** v2.1.0：按快门那一刻的底片模式（manual = 用户选的那卷；auto = 场景引擎选卷）。 */
   stockMode: StockMode;
@@ -692,6 +695,8 @@ export function CameraScreen() {
   const [countdown, setCountdown] = useState<number | null>(null);
   const [doubleExposure, setDoubleExposure] = useState(false);
   const [pendingExposureUri, setPendingExposureUri] = useState<string | null>(null);
+  const pendingExposurePhotoRef = useRef<CapturedPhoto | null>(null);
+  const pendingExposureDigitalFactorRef = useRef(1);
   /**
    * 相框实时预览开关（v1.7.0 · 模块三）。
    *
@@ -1055,6 +1060,8 @@ export function CameraScreen() {
         placeDetail: job.placeDetail,
         exposureIndex: job.exposureIndex,
         overlayUri: job.overlayUri ?? undefined,
+        overlayPhoto: job.overlayPhoto,
+        overlayDigitalFactor: job.overlayDigitalFactor,
         overlayOpacity: job.overlayUri === null ? undefined : job.overlayOpacity,
         onStage,
       });
@@ -1130,9 +1137,11 @@ export function CameraScreen() {
       }
       setAlbumKey((current) => current + 1);
       setStatus({ kind: 'idle' });
-      if (result.missingExifDate) {
-        setNotice(t('gallery.import.noExif'));
-      }
+      const importNotices: string[] = [];
+      if (result.missingExifDate) importNotices.push(t('gallery.import.noExif'));
+      if (result.missingSourceGps) importNotices.push(t('gallery.import.noGps'));
+      if (result.placeLookupFailed) importNotices.push(t('gallery.import.placeUnavailable'));
+      if (importNotices.length > 0) setNotice(importNotices.join(' '));
     };
 
     try {
@@ -1146,17 +1155,8 @@ export function CameraScreen() {
             const result = await developShotWithRetry(job);
             setStatus({ kind: 'done', uri: result.photo.uri, saved: result.save.ok });
             setExposureCount((current) => current + 1);
-            if (job.overlayUri !== null) {
-              // 双曝的第二张洗完了：这一对结束，清掉暂存的第一张与开关
-              setPendingExposureUri(null);
-              setDoubleExposure(false);
-            } else {
-              /*
-               * 单张不入队清重曝状态：v1.8.x 每张洗完都会 `setDoubleExposure(false)`，
-               * 但在队列化之后那会误伤"用户刚打开重曝、第一张已暂存"的那一对 ——
-               * 队列里的旧工单洗完时把新的 pending 抹掉，第二次按快门就丢底片。
-               */
-            }
+            // 重曝的一对在第二次快门入队时就已清掉暂存状态；这里不能再清，
+            // 否则后台冲印完成时会误删用户随后开始的新一对。
             setAlbumKey((current) => current + 1);
             void addShot({
               sourceUri: result.photo.uri,
@@ -1887,6 +1887,8 @@ export function CameraScreen() {
     }
     setDoubleExposure((current) => !current);
     // 任何一次切换都把没冲的半成品丢掉：留着它，下次开重曝会莫名其妙叠上一张旧照片
+    pendingExposurePhotoRef.current = null;
+    pendingExposureDigitalFactorRef.current = 1;
     setPendingExposureUri(null);
   }, [pendingExposureUri]);
 
@@ -2039,7 +2041,11 @@ export function CameraScreen() {
       //     iOS 无论传什么都走后处理；写上它对两端都安全。
       //   · `exif: false` —— 我们不用相机 EXIF 的时间/地点（日期走 App 自己的时钟、
       //     地点走 `resolveForShot()`），少解一份 EXIF 省一次内存峰值。
+      const shutterStartedAt = __DEV__ ? Date.now() : 0;
       const shot = await camera.takePictureAsync({ quality: 1, skipProcessing: false, exif: false });
+      if (__DEV__) {
+        console.info(`[filmPerf] takePicture=${Date.now() - shutterStartedAt}ms`);
+      }
       if (!shot || !shot.uri) {
         throw new Error(t('error.noPhoto'));
       }
@@ -2054,6 +2060,8 @@ export function CameraScreen() {
 
       if (doubleExposure && overlayUri === null) {
         // 重曝第一张：先留着不冲，等第二张叠上去一起冲
+        pendingExposurePhotoRef.current = captured;
+        pendingExposureDigitalFactorRef.current = digitalFactor;
         setPendingExposureUri(captured.uri);
         setStatus({ kind: 'idle' });
         setNotice(t('camera.tool.double.hint'));
@@ -2075,11 +2083,20 @@ export function CameraScreen() {
         digitalFactor,
         exposureIndex: exposureCount + queuedExposures + 1,
         overlayUri,
+        overlayPhoto: overlayUri === null ? null : pendingExposurePhotoRef.current,
+        overlayDigitalFactor: overlayUri === null ? undefined : pendingExposureDigitalFactorRef.current,
         overlayOpacity: overlayUri === null ? undefined : DOUBLE_OVERLAY_OPACITY,
         ...frozen,
       };
       jobQueueRef.current.push(job);
       setQueueDepth(jobQueueRef.current.length);
+      if (overlayUri !== null) {
+        // 原图与尺寸已冻结在工单里，立刻结束这一对；允许用户继续开始下一对。
+        pendingExposurePhotoRef.current = null;
+        pendingExposureDigitalFactorRef.current = 1;
+        setPendingExposureUri(null);
+        setDoubleExposure(false);
+      }
       // 入队即归还快门：泵在后台串行洗，取景器与快门立刻可用
       kickQueue();
     } catch (error) {

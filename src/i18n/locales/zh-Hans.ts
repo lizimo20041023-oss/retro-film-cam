@@ -225,6 +225,8 @@ export const zhHans = {
   'gallery.import.denied': '没有相册访问权限，请到 系统设置 → 隐私与安全性 → 照片 里打开。',
   'gallery.import.failed': '导入失败：{message}',
   'gallery.import.noExif': '原图没有拍摄时间，按今天冲印。',
+  'gallery.import.noGps': '未读到原图位置；请检查照片定位和相册权限。',
+  'gallery.import.placeUnavailable': '原图有坐标，但地名解析失败；可切换坐标水印重试。',
 
   /* ---------------- 底片长卷（§9） ---------------- */
   'gallery.mode.strip': '长卷底片',
