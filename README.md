@@ -77,6 +77,7 @@ Windows 电脑开发 → iPhone 真机运行，**不需要 Xcode、不需要 Mac
 - [53. v2.1.0：三条手术（九卷 LUT 重烘焙 + 预设强度 6 档 + 场景智能匹配）](#53-v210三条手术九卷-lut-重烘焙--预设强度-6-档--场景智能匹配)
 - [54. v2.1.1：PNG 16-bit 解码器 + JPEG/PNG 双格式路由（紧急修复）](#54-v211png-16-bit-解码器--jpegpng-双格式路由紧急修复)
 - [55. v2.1.2：LUT 拨乱反正（回退 spectral 基底 + 单遍干净管线 + 纯亮度颗粒 + 去 AUTO 角标）](#55-v212lut-拨乱反正回退-spectral-基底--单遍干净管线--纯亮度颗粒--去-auto-角标)
+- [56. v2.3.2：海外地名识别 + 拍照/读写与发热优化](#56-v232海外地名识别--拍照读写与发热优化)
 
 ---
 
@@ -8312,6 +8313,139 @@ min ΔE00 24.76）整体换为 `bp-mt-2.1.2`（311,555 B /
 强度表 35/65/100/130/160% 收敛为 35/60/80/92/100% 且禁外推，颗粒从彩噪改回纯亮度
 单源，AUTO 胶囊从导出画布移除。16-bit PNG 解码器、JPEG/PNG 双格式路由、九卷
 33³ LUT 像素管线、场景选卷、相框/日期/水印全部沿用 v2.1.1。
+
+## 56. v2.3.2：海外地名识别 + 拍照/读写与发热优化
+
+### 56.1 问题与背景
+
+v2.3.1 的真机反馈集中在两条链路上，均可在源码层复现：
+
+**A. 海外地名识别失败（地名档只剩坐标）**
+
+1. **Photon 语言参数越界**：地名服务的 `lang` 只接受 default / de / en / fr；客户端对
+   中文/日文系统仍拼 `lang=zh` / `lang=ja`，服务端返回 HTTP 400，旧实现把该错误静默
+   吞掉后直接进入下一候选。
+2. **系统反查单次超时**：系统 reverse geocode 固定 `2000ms × 1 次`，海外无离线地名包
+   时经常超时，重试预算实为 0。
+3. **无持久化缓存**：每次冷启动、每次快门都重新走网络，同一地点反复出片重复请求。
+4. **失败语义错位**：地名解析失败后只回退到经纬度（或空串），「地名档」输出坐标，
+   违背该档位的产品语义。
+
+**B. 拍照 / 读写照片慢、发热**
+
+1. **显影期停相机会话**：`cameraActive` 里带 `!developing`，每张照片显影时都要把
+   `AVCaptureSession` stop/start 一次；连拍时反复启停是发热与取景冻结的主因。
+2. **显影队列深度 1**：显影一张期间不能再按快门，连拍被串行卡死。
+3. **采集质量 1.0**：`takePictureAsync` 直接拿全质量 JPEG，文件大、解码慢；成片画布
+   长边 1800 会重采样，采集端的多余像素白付解码代价。
+4. **同步 IO**：`applyFilmRender` 用 `bytesSync()` 同步读整文件，JS 线程等待 IO；
+   `getGalleryUsage` 逐张 `stat`，相册越大越慢。
+
+### 56.2 地名解析一：语言候选链与 400 重发
+
+- 新增纯函数模块 `src/utils/geocodePlan.ts`（零 `expo` / `react-native` import，可直接
+  被 Node 探针加载）：集中语言选择、请求候选链、缓存 key / TTL / 距离校验与序列化规则。
+- 语言候选链：**首选语言 → 无 `lang` 兜底**；`zh` / `ja` 不再作为 `lang` 发出，中文与
+  日文系统改用服务端默认语言（default / de / en / fr 之外一律带 `lang` 即 400）。
+- **400 重发**：收到 HTTP 400 时改发**无 `lang`** 的同一请求（最多一次），不再把 400
+  当作「无结果」静默吞掉。
+- `src/utils/locationStamp.ts` 接入 `geocodePlan`，保持既有导出签名
+  （`resolvePlaceFromCoords` / `reverseGeocodeWithRetry` / `fetchLocationStamp` 等）不变。
+
+### 56.3 地名解析二：持久化缓存与 TTL
+
+- `src/hooks/useLocationStamp.ts` 用 **AsyncStorage** 持久化地名条目：成功结果与失败
+  （负缓存）都落盘，冷启动即可命中。
+- 缓存键 = 坐标量化 + 语言档；读取时做 **TTL** 与**距离校验**（坐标相近才复用，避免
+  把 A 点的地名贴到 B 点）。
+- 快门路径：**先查缓存**，命中直接出地名；未命中给 develop 阶段
+  6s 预算，超时则先出片、后台继续预热并写缓存，下一张即命中。
+- seed（预热）完成后同地点重复拍摄零新增网络请求。
+
+### 56.4 地名解析三：失败兜底——绝不退回坐标
+
+- 地名档（`allowCoords: false`）解析失败时返回空串，**绝不输出经纬度**；坐标只属于
+  坐标档（`allowCoords: true`）。
+- 失败同样写入负缓存并记录日志，避免同一坐标反复请求服务端。
+- 中文/日文请求不再产生 400；离线或服务不可用时按「空地名」降级，不阻塞出片。
+
+### 56.5 性能一：显影期保活 + 连拍队列 + 采集质量
+
+- `CameraScreen.tsx`：`cameraActive` 与 `interactive` 去掉 `!developing` 门——显影期间
+  相机会话保持运行，不再每张 stop/start；`takePictureAsync` 之后才置 `developing`，
+  不会打断正在进行的采集。
+- `MAX_DEVELOP_QUEUE_DEPTH` 1 → **2**：显影一张期间可以再按一张，队列满后才提示等待。
+- `takePictureAsync` 的 `quality` 1 → **0.92**：成片画布长边 1800 会重采样，采集端
+  0.92 JPEG 肉眼无差，文件更小、解码更快；**最终成片分辨率与画质档位不变**（不放宽
+  1800 长边、不改 LUT 与卷参数）。
+
+### 56.6 性能二：异步 IO 与缩略图字节索引
+
+- `src/utils/applyFilmRender.ts`：`bytesSync()` 改 `await file.bytes()`（overlay 读取与
+  `readAsEightBitPngBytes` 同改），导出签名与语义不变；`write` 保持同步并在注释说明
+  原因（expo-file-system SDK 57 无异步 write）。
+- `src/utils/processFilmPhoto.ts` / `importPhoto.ts`：去掉可合并的重复
+  `ImageManipulator` 中转——`crop` + `resize` 合并为单次 `actions`，删除中间文件时点
+  提前，避免同一像素多次解码；改动前先用基准脚本量化。
+- `src/utils/galleryStore.ts`：`addShot` 把**成片 + 缩略图字节数**写进索引条目（新增
+  可选字段，旧索引向后兼容）；`getGalleryUsage` 直接对索引求和，不再逐张同步 `stat`；
+  列表读取只读索引，不触碰原文件。
+- `__DEV__` 下保留/新增 `[filmPerf]` 计时日志，便于真机对比；发布包不输出日志。
+
+### 56.7 门禁与核验
+
+- `tsc --noEmit -p tsconfig.json` EXIT 0；`git diff --numstat` 无整文件 EOL churn、
+  零新增依赖、零 `as any`。
+- **主门 39 / 失败 0；总门 41 / 失败 0；断言总数
+  57,120**（v2.1.2 基线 34 主门 / 36 总门 / 52,286 断言）。
+- 4 个 codex 仓库门禁脚本接入新跑批：`scripts/check-overseas-location.cjs`（本版扩展
+  「zh/ja 不出现 `lang=zh|ja`、400 后重发无 `lang`、seed 后零网络、负缓存生效、
+  `allowCoords:false` 返 `''`」断言）、`check-import-gps.cjs`、`check-film-overlay.cjs`、
+  `check-film-presets.cjs`；全部只读调用、不改脚本内容。
+- 新增 `_probe_v232_perf.cjs`（源码级断言：`cameraActive` 不含 `!developing`、
+  `MAX_DEVELOP_QUEUE_DEPTH === 2`、`quality < 1`、`await ...bytes()` 而非 `bytesSync()`、
+  gallery 索引含字节汇总、LUT/画质档未被放宽），并附 Node 计时基准。
+- 探针重钉到 v2.3.2 语义：版本锚点 2.1.x → 2.3.2、卷数 9 → 11（`fg-400` / `rb-100`
+  由同一 base 图集按人格参数派生）；旧断言只改期望值，断言方向不弱化。
+- IPA 核验 `_verify_ipa_v232.py`：`--self-test` / `--local` / `--grain` / `--vignette`
+  全 RESULT OK（EXPECTED 2.3.2 / PREVIOUS 2.3.1）。
+
+### 56.8 发布指纹（v2.3.2）
+
+| 项 | 值 |
+| --- | --- |
+| commit | `917b34f88eb2d7ebeb8582906e5e768119065881`（10 files changed, 1151 insertions(+), 88 deletions(-)） |
+| 远端 master | `917b34f88eb2d7ebeb8582906e5e768119065881`（tree `e685d38f5b1497b91332843d1850b244409f64db`） |
+| CI run / job | `39631156862` / `119329363745` |
+| artifact | `12360557849`（10,829,955 B） |
+| 门禁断言 | 57,120（39 主门 / 41 总门，0 失败） |
+| bundle | 1,763,030 B，sha256 `b32567664fa6c66ebd3e49aa22d8d8dd021a7bb78861a70c26db0315d743b1e7` |
+| IPA | `FretroCam-v2.3.2-unsigned.ipa`，10,945,244 B，sha256 `cb03e49d6673a3f0ac905cf6dc0294e9af51f6ee761f863708b91892c6f386e5` |
+| Release | `419805159` / asset `663154123` |
+| 下载 | https://github.com/lizimo20041023-oss/retro-film-cam/releases/download/v2.3.2/FretroCam-v2.3.2-unsigned.ipa |
+
+版本链：v2.3.2 在 v2.3.1 之上只改 location 与 perf 两条链路；色彩侧零回归 —— LUT 图集
+校准标记 `bp-mt-2.1.2` 保留，十一卷（`fg-400` / `rb-100` 由同一 base
+图集按人格参数派生）、相框/日期/水印全部沿用 v2.3.1。
+
+### 56.9 不改动与已知限制（如实记录）
+
+**不改动**：LUT 数值与色彩科学、卷库（十一卷）及各卷参数、相框/日期/水印、画质档位与
+成片 1800 长边分辨率、强度/场景匹配语义、`package.json`（零新增依赖）。
+
+**已知限制**：
+
+- 无真机 / 模拟器：本项目历版一贯的交付边界（未签名 IPA + CI 构建）；本版性能数字来自
+  Node 基准与源码级断言，真机发热/耗电未实测。
+- Photon 与系统反查均为**外部服务**：离线、限流或服务变更时地名档降级为空地名；海外
+  精度受数据源限制，本版解决的是「请求参数错误 / 超时 / 重复请求 / 坐标兜底」，不是
+  地名数据本身的质量。
+- AsyncStorage 只存地名条目（坐标、名称、时间戳、语言档与失败标记），**不存照片或任何
+  敏感信息**；缓存可被系统清理，清空后按未命中处理。
+- 显影期保活与队列深度 2 让连拍更顺，但持续高速连拍仍受内存与设备温度限制；
+  6s 预算是「尽力而为」，超时后先出片、后台补写缓存。
+- `quality 0.92` 只在采集阶段生效，最终画布仍按 1800 长边重采样，成片分辨率与色彩管线
+  不变。
 
 ---
 
