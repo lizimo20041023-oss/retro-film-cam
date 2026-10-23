@@ -16,7 +16,7 @@
  * 排版层和渲染层各算一遍宽度，两边慢慢就散了。
  */
 
-import type { DateFormatId, DateGlowId, DateGlyphStyleId, DateStampSpot } from '../types';
+import type { DateFormatId, DateGlowId, DateGlyphStyleId, DateSizeId, DateStampSpot } from '../types';
 import { DATE_DESIGN_PX, absoluteFontPx } from './canvasBase';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -505,6 +505,13 @@ export const DATE_GLYPH_STYLES: Record<DateGlyphStyleId, DateGlyphStyleSpec> = {
   ccd_osd: { fontWeight: '800', trackingScale: 0.6, glowScale: 0.8, heightRatio: 1.16 },
   lab_inkjet: { fontWeight: '400', trackingScale: 1.1, glowScale: 0.4, heightRatio: 1.16 },
   archival_steel: { fontWeight: '600', trackingScale: 1.9, glowScale: 0.35, heightRatio: 1.16 },
+};
+
+/** 日期字号档位。与画布宽度的线性关系不变，标准档保留历史尺寸。 */
+export const DATE_SIZE_SCALE: Readonly<Record<DateSizeId, number>> = {
+  small: 0.8,
+  standard: 1,
+  large: 1.18,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

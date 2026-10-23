@@ -1,5 +1,5 @@
 /**
- * 十一卷真胶片 LUT 资产的运行时入口（九张光谱图集 + 两卷派生人格）。
+ * 胶片 LUT 资产的运行时入口；部分卷复用光谱基底并叠加独立人格。
  *
  * ── 这里在做什么 ────────────────────────────────────────────────────────────
  * `constants/lutAtlas.ts` 里是九张 **256×141 RGBA PNG 图集**的 base64（两卷复用基底，
@@ -19,7 +19,7 @@
  * 所以这里吞掉异常、`console.warn`（真机上留一条证据），返回 null 让调用方回退。
  *
  * ⚠️ 不要在这里 `import` 任何 React Native / Expo 模块：这段代码要能在 Node
- * 探针里直接跑（`_probe_v200_lut.cjs` 就是这么验证九卷 maxDiff=0 的）。
+ * 探针里直接跑。
  */
 
 import { LUT_ATLAS_BASE64 } from '../constants/lutAtlas';
@@ -33,6 +33,16 @@ import { applyFilmPersonalityToLut } from './filmProfiles';
 /** 卷 id → Lut3D。只缓存成功结果；失败的卷下次调用会再试（资产可能被热更新修好）。 */
 const lutCache = new Map<string, Lut3D>();
 
+/** 两款新卷共享已有光谱图集；各自的独立响应在 filmProfiles.ts 中烘焙。 */
+const BASE_ATLAS_BY_STOCK: Readonly<Record<string, string>> = {
+  'dc-200': 'um-400',
+  'mt-500': 'pt-400',
+};
+
+function atlasFor(stockId: string): string | undefined {
+  return LUT_ATLAS_BASE64[BASE_ATLAS_BY_STOCK[stockId] ?? stockId];
+}
+
 /**
  * 取一卷的 33³ LUT。
  *
@@ -45,7 +55,7 @@ export function getLutForStock(stockId: string): Lut3D | null {
     return cached;
   }
 
-  const atlas = LUT_ATLAS_BASE64[stockId];
+  const atlas = atlasFor(stockId);
   if (typeof atlas !== 'string' || atlas.length === 0) {
     return null;
   }
@@ -61,9 +71,9 @@ export function getLutForStock(stockId: string): Lut3D | null {
   }
 }
 
-/** 图集里有没有这卷（不解码，只查 key；探针用它校验九卷覆盖率）。 */
+/** 图集里有没有这卷（不解码；可包含明确映射的共享基底）。 */
 export function hasLutForStock(stockId: string): boolean {
-  const atlas = LUT_ATLAS_BASE64[stockId];
+  const atlas = atlasFor(stockId);
   return typeof atlas === 'string' && atlas.length > 0;
 }
 

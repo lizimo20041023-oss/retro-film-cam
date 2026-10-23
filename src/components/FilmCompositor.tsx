@@ -38,7 +38,6 @@ import ViewShot from 'react-native-view-shot';
 import type { ViewShotRef } from 'react-native-view-shot';
 import { frameSkinSeedOf } from '../constants/frames';
 import {
-  dateEngineFontPx,
   dateEngineTextWidth,
   formatWithDateEngine,
   shouldStampDate,
@@ -222,8 +221,8 @@ export interface WatermarkPlanInput {
   /** 这一卷拍到第几张（1 起数）。没有就只印到 `· 35MM` 为止。 */
   exposureIndex?: number;
   /**
-   * 日期引擎（v1.8.0 · 模块四）：决定日期的**文字**（`format`）、**字号**（`glyphStyle`）、
-   * **落点**（`spot`）与**发光色**（`glow`）。
+   * 日期引擎决定日期的**文字**（`format`）、**字形**（`glyphStyle`）、**落点**（`spot`）、
+   * **发光色**（`glow`）与**大小**（`size`）。
    *
    * 为什么日期串也归它管：v1.7.0 用的是写死的石英字模 `'YY  MM  DD`，
    * 而引擎的 13 档格式里有 `YYYY.MM.DD` / `YYYY年M月D日` 这种七段管画不出来的串 ——
@@ -323,6 +322,7 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
      */
     input.watermarkZone,
     input.watermarkAlign,
+    dateEngine.size ?? 'standard',
   );
 
   /*
@@ -387,6 +387,7 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
             dateEngine.glyphStyle,
             input.watermarkZone,
             input.watermarkAlign,
+            dateEngine.size ?? 'standard',
           );
         }
       }
@@ -473,6 +474,9 @@ export function planInPhotoDate(input: WatermarkPlanInput): InPhotoDatePlan | nu
     'dateOnly',
     '',
     dateEngine.glyphStyle,
+    'auto',
+    'auto',
+    dateEngine.size ?? 'standard',
   );
   const line = plan.lines.find((entry) => entry.kind === 'date');
   if (line?.quartz === undefined) {
@@ -484,8 +488,7 @@ export function planInPhotoDate(input: WatermarkPlanInput): InPhotoDatePlan | nu
    * 唯一的高度来源，这里跟着它取，竖排机位旋转 90° 之后的外接矩形才不会差一截
    * （差一截的表现是"贴边的竖排日期压出了照片窗口"，而 `resolveDateSpot` 会以为还放得下）。
    */
-  const fontPx = dateEngineFontPx(dateEngine.glyphStyle, layout.width);
-  const boxHeight = glyphHeight(dateEngine.glyphStyle, fontPx);
+  const boxHeight = glyphHeight(dateEngine.glyphStyle, line.quartz.fontSize);
   const inset = Math.max(2, Math.round(layout.width * timestamp.insetRatio));
   const placement = resolveDateSpot(
     dateEngine.spot,
@@ -1252,7 +1255,7 @@ function QuartzPiece({
   piece: WatermarkPiece;
   fontFamily: string;
   dateEngine: DateEngineConfig;
-  /** 画布宽度（逻辑点）：新路径的字号唯一来源就是它（`dateEngineFontPx`）。 */
+  /** 画布宽度（逻辑点）：为兼容旧调用保留，实际字号由 `quartz.fontSize` 决定。 */
   canvasWidth: number;
   /** 00 NO FRAME 时给日期垫双层全向暗影（见 `DateGlyphs`）。 */
   haloShadow: boolean;

@@ -16,6 +16,7 @@ import type {
   DateFormatId,
   DateGlowId,
   DateGlyphStyleId,
+  DateSizeId,
   DateStampSpot,
   FrameVariant,
   GeoLocale,
@@ -71,11 +72,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
    * `stockMode: 'manual'` 是必须的默认值：老用户升级上来仍按"自己挑的那一卷"拍，
    * 不会被场景引擎悄悄换卷 —— 想让它接管，要用户自己点底片库顶部的 AUTO 入口。
    *
-   * `presetIntensity: 'rich'`（92%）是用户点名的默认值：默认拍出来就要有强烈的
-   * 胶片味。v2.1.2 之前 100% 的观感落在 `'max'` 档，想回去的人自己选。
+   * 新安装默认 `standard`（80%）让胶片效果更克制；已有用户存储的强度档原样保留。
    */
   stockMode: 'manual',
-  presetIntensity: 'rich',
+  presetIntensity: 'standard',
   geoLocale: 'auto',
   /*
    * `captureQuality: 'standard'` 是**必须**的默认值：`high` / `max` 会把成片
@@ -95,7 +95,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
    */
   noFrameAspect: '3:4',
   /*
-   * 日期引擎出厂设置：美式日期 + 石英液晶 + 白边下巴左右分列 + 钨丝琥珀橙。
+   * 日期引擎出厂设置：美式日期 + 石英液晶 + 白边下巴左右分列 + 钨丝琥珀橙 + 标准字号。
    *
    * `quartz_led` 是 v1.8.3 的新默认档，继承 v1.7.0 那行橙色液晶日期的观感；
    * `spot: 'strip_split'` 与 `glow: 'classic_amber'` 也是刻意选的 —— 它们合起来
@@ -107,6 +107,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     glyphStyle: 'quartz_led',
     spot: 'strip_split',
     glow: 'classic_amber',
+    size: 'standard',
   },
 };
 
@@ -233,13 +234,12 @@ const DATE_GLOWS: readonly DateGlowId[] = [
   'ccd_green',
   'cyber_cyan',
 ];
+const DATE_SIZES: readonly DateSizeId[] = ['small', 'standard', 'large'];
 
 /**
- * 日期引擎是**四个字段一起认**：只要有一项不认识，整个对象退回出厂设置。
+ * 日期引擎的每个字段按白名单读取；老存储缺少大小档时回落标准字号。
  *
- * 为什么不像别的字段那样逐项兜底：这四个轴是配套的（比如"画内竖排"配"石英液晶"
- * 才有那台机器的味道），混搭一个默认值会让 UI 显示的档位和实际渲染的档位对不上 ——
- * 那比整组回默认更难排查。
+ * 逐字段回落可以保留老用户已有的格式、字形、机位和颜色。
  */
 function pickDateEngine(raw: unknown): DateEngineConfig {
   const fallback = DEFAULT_SETTINGS.dateEngine;
@@ -251,6 +251,7 @@ function pickDateEngine(raw: unknown): DateEngineConfig {
     glyphStyle: pickGlyphStyle(raw.glyphStyle, fallback.glyphStyle),
     spot: pick(raw.spot, DATE_SPOTS, fallback.spot),
     glow: pick(raw.glow, DATE_GLOWS, fallback.glow),
+    size: pick(raw.size, DATE_SIZES, fallback.size),
   };
 }
 

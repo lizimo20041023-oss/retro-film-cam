@@ -116,7 +116,7 @@ const native = {
     },
     async reverseGeocodeAsync() {
       state.calls += 1;
-      return state.responses.shift() ?? [];
+      return await (state.responses.shift() ?? []);
     },
   },
 };
@@ -269,6 +269,24 @@ async function main() {
   assert.equal(permissionFallback.place.city, 'Paris');
   assert.equal(state.calls, nativeCallsBeforePermissionFallback);
   assert.equal(photonCalls, 2);
+
+  // A stalled native provider must not hold Photon behind its 6-second internal retry budget.
+  let finishNative;
+  state.responses = [new Promise((resolve) => { finishNative = resolve; })];
+  state.calls = 0;
+  state.fetchResponses = [{
+    status: 200, city: 'Rome', region: 'Lazio', country: 'Italy', countryCode: 'IT',
+  }];
+  const raced = await locationStamp.resolvePlaceFromCoords(
+    { latitude: 41.9028, longitude: 12.4964 }, 'en', 'en',
+  );
+  assert.equal(raced.status, 'ok');
+  assert.equal(raced.channel, 'photon');
+  assert.equal(raced.place.city, 'Rome');
+  assert.equal(state.calls, 1);
+  finishNative([]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(state.calls, 1);
 
   // --- v2.3.2 新增：语言候选链 -------------------------------------------------------
   // Photon 只支持 default / de / en / fr；zh-Hans / zh-Hant / ja 一律退成 en。

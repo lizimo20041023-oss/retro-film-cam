@@ -59,12 +59,10 @@ interface LocationFixCache {
 /**
  * 按快门时最多为定位等多久。
  *
- * v2.3.2：1.5 秒 → **6 秒**。注意这个值**不阻塞快门**：`resolveForShot()` 只是被
- * 调用（promise 冻进工单），真正的等待发生在 develop 阶段（`job.place` 的 `await`）。
- * 海外冷启动的系统反查 + Photon 兜底本来就可能要 3~6 秒，1.5 秒一刀切等于
- * "第一张永远没有地名"；放宽到 6 秒后，第一张能等到、后续照片直接命中缓存。
+ * 最多 5 秒。定位从快门时开始，照片像素处理同时进行；只在最后烧水印前等待
+ * 尚未完成的余量。截止线到达后这张不印地名，照片仍正常出片。
  */
-const SHOT_DEADLINE_MS = 6000;
+const SHOT_DEADLINE_MS = 5000;
 
 /**
  * 给 promise 加一道硬截止线，超时返回 `null`。
@@ -131,6 +129,7 @@ export function useLocationStamp(): LocationStampController {
    * 返回的结局对两者都成立，因为它只取决于设置与设备位置。
    */
   const inflightRef = useRef<{ key: string; promise: Promise<LocationStampOutcome> } | null>(null);
+  const cacheHydrationRef = useRef<Promise<void>>(Promise.resolve());
 
   // 关掉定位时，任何在途的结果都不许再改状态。
   const aliveRef = useRef(true);
@@ -164,7 +163,7 @@ export function useLocationStamp(): LocationStampController {
    */
   useEffect(() => {
     let cancelled = false;
-    void AsyncStorage.getItem(GEOCODE_STORAGE_KEY)
+    cacheHydrationRef.current = AsyncStorage.getItem(GEOCODE_STORAGE_KEY)
       .then((raw) => {
         if (cancelled) return;
         const entries = parseGeocodeCache(raw);
@@ -179,7 +178,7 @@ export function useLocationStamp(): LocationStampController {
   }, []);
 
   /**
-   * 取一次定位结局，带 60s 缓存 + 在途复用（v1.8.6 · 契约 §5）。
+   * 取一次定位结局，带 3 分钟缓存 + 在途复用。
    *
    * `force` 只在用户主动"重新探测"时用（设置页打开定位 / 手动刷新）：
    * 那条路径的语义是"我不信你手里的旧坐标，现在就重取"。
@@ -200,14 +199,17 @@ export function useLocationStamp(): LocationStampController {
         return inflight.promise;
       }
 
-      const promise = fetchLocationStamp(mode, geoLocale, detail, localeId).then((outcome) => {
-        if (outcome.ok) {
-          fixCacheRef.current = { key, at: Date.now(), outcome };
-        }
-        // 成功与失败（负缓存）都落盘：重启后同一片区域不必再联网（v2.3.2）。
-        persistCache();
-        return outcome;
-      });
+      // 先读取磁盘缓存，再决定是否唤醒 GPS；两个启动 effect 同时执行时也不漏缓存。
+      const promise = cacheHydrationRef.current
+        .then(() => fetchLocationStamp(mode, geoLocale, detail, localeId))
+        .then((outcome) => {
+          if (outcome.ok) {
+            fixCacheRef.current = { key, at: Date.now(), outcome };
+          }
+          // 成功与失败（负缓存）都落盘：重启后同一片区域不必再联网。
+          persistCache();
+          return outcome;
+        });
       inflightRef.current = { key, promise };
       const clear = (): void => {
         if (inflightRef.current?.promise === promise) {
@@ -256,9 +258,7 @@ export function useLocationStamp(): LocationStampController {
       return null;
     }
     // 到这里才带截止线：LCD 上那次探测可以慢慢等，按快门这次不行。
-    // v1.8.6：走 fetchFix 的 60s 缓存 —— 连拍第二张不再重新唤醒 GPS（契约 §5）。
-    // v2.3.2：命中 `locationStamp` 的持久化缓存时 fetchFix 直接同步 resolve（不联网），
-    // 所以 6 秒截止线只对真正的冷启动生效；命中时快门路径零等待。
+    // 命中 3 分钟定位缓存时直接返回；冷启动先水合地名缓存，再视距离决定是否联网。
     const outcome = await withinDeadline(fetchFix(false), SHOT_DEADLINE_MS);
     if (outcome === null) {
       return null;

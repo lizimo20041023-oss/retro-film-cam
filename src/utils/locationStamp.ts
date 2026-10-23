@@ -3,8 +3,8 @@
  *
  * 隐私前提（写在这里也是给以后改代码的人看）：
  * - **默认关**，且关的时候连权限都不申请（`expo-location` 一行都不调）；
- * - 地名模式先用系统反查（iOS 走苹果、Android 走谷歌）；系统没有返回地名时，
- *   会把经纬度与地名语言发送给 Photon / OpenStreetMap 兜底，不会上传照片；
+ * - 地名模式先给系统反查 400ms（iOS 走苹果、Android 走谷歌）；若仍无地名，
+ *   会把经纬度与地名语言发送给 Photon / OpenStreetMap 竞速，不会上传照片；
  * - 坐标模式是**纯本地格式化**，拿到经纬度就完事，不请求任何网络。
  *
  * 本文件只负责"拿到什么"，不负责"这一行长什么样"：
@@ -76,7 +76,7 @@ export const GEOCODE_MAX_ATTEMPTS = 2;
  * 系统反查总预算：**6000ms**（v2.3.2）。
  *
  * 两次尝试加起来也不许超过它；相机页 `useLocationStamp.resolveForShot` 给 develop
- * 阶段的截止线也是同一个 6 秒（`SHOT_DEADLINE_MS`），两条路的耐心值不会打架。
+ * 阶段另有 5 秒截止线（`SHOT_DEADLINE_MS`）；单次系统重试仍受这里的上限约束。
  */
 export const GEOCODE_TOTAL_BUDGET_MS = 6000;
 
@@ -90,15 +90,18 @@ const GEOCODE_MIN_ATTEMPT_MS = 1000;
 const PHOTON_TIMEOUT_MS = 4500;
 /** 公共 Photon 服务请求之间至少间隔一秒，避免批量导入形成突发流量。 */
 const PHOTON_MIN_INTERVAL_MS = 1000;
+/** 系统先回答一个短窗口；慢请求与 Photon 并行，以首个可用地名为准。 */
+const PHOTON_HEAD_START_MS = 400;
+/** 导入与拍摄共用的地名查询总预算；覆盖 400ms 抢先窗口和 Photon 的 4.5 秒超时。 */
+const PLACE_LOOKUP_BUDGET_MS = 5000;
 const PHOTON_CACHE_LIMIT = 128;
 
 /**
  * 超时哨兵。
  *
  * ⚠️ 它**区分不了**"超时"和"调用抛异常"（`withTimeout` 把两者都塌成它），
- * 所以地名反查那条路不用它 —— 那条路要能在日志里说清失败原因，用的是下面
- * 能返回三态的 `reverseGeocodeOnce`。这个哨兵现在只服务"取当前位置"那一步
- * （那里两种情形都只是 failed，不需要区分）。
+ * 所以原生单次反查不用它 —— 那条路要能在日志里说清失败原因，用的是下面
+ * 能返回三态的 `reverseGeocodeOnce`。这里用于取当前位置和整次地名竞速的截止线。
  */
 const TIMEOUT = Symbol('timeout');
 
@@ -191,18 +194,14 @@ export type ReverseGeocodeFailure = Extract<ReverseGeocodeOutcome, { status: 'ti
 /**
  * 系统反查地名（**可能联网**），总共最多 `GEOCODE_MAX_ATTEMPTS` 次。
  *
- * 这是**两条路唯一的反查入口**：
- * · 相机页 —— `fetchLocationStamp` 的 `mode === 'place'` 分支；
- * · 相册导入 —— `importPhoto.resolvePlaceFromExifGps`（入参是原图 EXIF 里那对坐标，
- *   不碰设备当前位置）。
- * 耐心值 / 重试次数 / 总预算只在上面三个常量里定义一次；调用方**不许**再自己包一层
- * timeout（那等于把总预算乘上第二次）。
+ * 相机页和相册导入都通过 `resolvePlaceFromCoords` 调用本函数；相册导入只使用
+ * 原图 EXIF 坐标，不碰设备当前位置。单次重试预算只在上面三个常量里定义一次。
  *
  * 契约：**本函数绝不抛**，三类结局都从返回值出来。为什么这么强调：
  * 导入那条路上抛出去会被 `importAndDevelop` 的 per-photo catch 记成 `failed += 1` ——
  * 一张本来能出片的照片会因为"没网"算成失败，比没有地名严重得多。
  *
- * 空数组 / 空地址直接交给 Photon 兜底，不再重复请求系统服务。
+ * 空数组 / 空地址也会在预算内重试；Photon 可在原生请求未完成时并行查询。
  */
 function geocodeAddressScore(address: Location.LocationGeocodedAddress): number {
   const present = (value: string | null | undefined): boolean =>
@@ -239,7 +238,7 @@ export function pickBestGeocodedAddress(
 export async function reverseGeocodeWithRetry(coords: {
   latitude: number;
   longitude: number;
-}): Promise<ReverseGeocodeOutcome> {
+}, shouldRetry: () => boolean = () => true): Promise<ReverseGeocodeOutcome> {
   const startedAt = Date.now();
   let attempts = 0;
   let lastFailure: 'timeout' | 'error' = 'timeout';
@@ -248,6 +247,7 @@ export async function reverseGeocodeWithRetry(coords: {
   let lastAttemptWasEmpty = false;
 
   while (attempts < GEOCODE_MAX_ATTEMPTS) {
+    if (attempts > 0 && !shouldRetry()) break;
     const remaining = GEOCODE_TOTAL_BUDGET_MS - (Date.now() - startedAt);
     // 第一次一定发（只有 `attempts > 0` 才看预算）：预算管的是**重试**，
     // 不是"开局就可能没时间"。`GEOCODE_MAX_ATTEMPTS` 被调大时，闸门就在这一行。
@@ -555,8 +555,8 @@ type NativePlaceResult = {
 async function resolveNativePlace(coords: {
   latitude: number;
   longitude: number;
-}): Promise<NativePlaceResult> {
-  const native = await reverseGeocodeWithRetry(coords);
+}, shouldRetry?: () => boolean): Promise<NativePlaceResult> {
+  const native = await reverseGeocodeWithRetry(coords, shouldRetry);
   if (native.status !== 'ok' || native.address === undefined) return { native };
   const place = resolvePlaceFromGeocode(native.address, coords.latitude, coords.longitude);
   return hasPlaceName(place) ? { native, address: native.address, place } : { native };
@@ -573,8 +573,79 @@ export type ResolvePlaceOutcome =
       attempts: number;
     };
 
+type PlaceRaceResult =
+  | Extract<ResolvePlaceOutcome, { status: 'ok' }>
+  | { status: 'failed'; nativeResult: NativePlaceResult };
+
 /**
- * 坐标 → 结构化地名：**先查持久 / 内存缓存**，未命中才走系统反查，再不行用 Photon 兜底。
+ * 原生反查先得到一个短暂机会；它慢时与 Photon 同时查询，取首个有效地名。
+ * Photon 保留原有串行限流和缓存。Photon 先成功时，原生调用不能取消，
+ * 但会阻止其第二次重试，减少后台多余的定位工作。
+ */
+async function racePlaceProviders(
+  coords: { latitude: number; longitude: number },
+  geoLocale: LocalePreference,
+  uiLocale: LocaleId,
+  nativeAllowed: boolean,
+): Promise<PlaceRaceResult> {
+  let photonSucceeded = false;
+  const nativeTask = (nativeAllowed
+    ? resolveNativePlace(coords, () => !photonSucceeded)
+    : Promise.resolve<NativePlaceResult>({
+        native: { status: 'error', attempts: 0, error: new Error('系统反查不可用') },
+      }))
+    .catch((error: unknown): NativePlaceResult => ({
+      native: { status: 'error', attempts: 0, error },
+    }))
+    .then((result) => ({ kind: 'native' as const, result }));
+
+  const nativePlace = (result: NativePlaceResult): PlaceRaceResult | null =>
+    result.address !== undefined && result.place !== undefined
+      ? { status: 'ok', address: result.address, place: result.place, channel: 'native' }
+      : null;
+  const photonPlace = (address: PlaceGeocodeAddress | undefined): PlaceRaceResult | null => {
+    if (address === undefined) return null;
+    const place = resolvePlaceFromGeocode(address, coords.latitude, coords.longitude);
+    return hasPlaceName(place)
+      ? { status: 'ok', address, place, channel: 'photon' }
+      : null;
+  };
+
+  const early = await Promise.race([
+    nativeTask,
+    delay(PHOTON_HEAD_START_MS).then(() => ({ kind: 'timer' as const })),
+  ]);
+  if (early.kind === 'native') {
+    const success = nativePlace(early.result);
+    if (success !== null) return success;
+  }
+
+  const photonTask = photonAddressFor(coords, geoLocale, uiLocale)
+    .catch(() => undefined)
+    .then((address) => {
+      if (photonPlace(address) !== null) photonSucceeded = true;
+      return { kind: 'photon' as const, address };
+    });
+  if (early.kind === 'native') {
+    const photon = await photonTask;
+    return photonPlace(photon.address) ?? { status: 'failed', nativeResult: early.result };
+  }
+
+  const first = await Promise.race([nativeTask, photonTask]);
+  if (first.kind === 'native') {
+    const success = nativePlace(first.result);
+    if (success !== null) return success;
+    const photon = await photonTask;
+    return photonPlace(photon.address) ?? { status: 'failed', nativeResult: first.result };
+  }
+  const success = photonPlace(first.address);
+  if (success !== null) return success;
+  const native = await nativeTask;
+  return nativePlace(native.result) ?? { status: 'failed', nativeResult: native.result };
+}
+
+/**
+ * 坐标 → 结构化地名：先查缓存，再给系统反查短暂优先窗口，随后与 Photon 竞速。
  *
  * 这是"相机页现场拍"和"相册导入"**唯一**的地名入口，两条路必须从这里拿
  * （耐心值 / 重试 / 失败语义 / 日志措辞都只在本文件里定义一次，见文件头）。
@@ -585,12 +656,8 @@ export type ResolvePlaceOutcome =
  * 就是"每次都重新唤醒一次系统反查 + 一次 Photon"。缓存带两种 TTL：
  * 成功 10 分钟、失败 120 秒（负缓存，见 `geocodePlan`）；距离按 2km 邻近匹配。
  *
- * ## 最坏等待时间
- *
- * ```
- *   系统原生：最多 6000ms（2 次 × 3500ms 受同一总预算约束）；Photon：最多 4500ms
- * ```
- * Photon 只会在系统明确失败或超时后启动，不会在系统成功时外发坐标。
+ * 总等待上限 5 秒。系统在前 400ms 内返回有效地名时不请求 Photon；
+ * 之后哪个服务先给出有效地名，就用哪个结果。
  *
  * ## 绝不抛
  *
@@ -623,36 +690,15 @@ export async function resolvePlaceFromCoords(
     }
   }
 
-  // ② Android 导入旧照片时，系统反查需要前台定位权限；用户拒绝后仍可直接使用已经
-  // 授权的 Photon 兜底，且不会为了旧照片去读取设备当前位置。
-  const nativeResult: NativePlaceResult = nativeAllowed
-    ? await resolveNativePlace(coords)
-    : {
-        native: {
-          status: 'error',
-          attempts: 0,
-          error: new Error('系统反查不可用'),
-        },
-      };
-  if (nativeResult.address !== undefined && nativeResult.place !== undefined) {
-    return {
-      status: 'ok',
-      address: nativeResult.address,
-      place: nativeResult.place,
-      channel: 'native',
-    };
-  }
-
-  // ③ Photon 兜底（候选链与负缓存都在 `photonAddressFor` / `geocodePlan` 里）。
-  const photonAddress = await photonAddressFor(coords, geoLocale, uiLocale);
-  if (photonAddress !== undefined) {
-    const place = resolvePlaceFromGeocode(photonAddress, coords.latitude, coords.longitude);
-    if (hasPlaceName(place)) {
-      return { status: 'ok', address: photonAddress, place, channel: 'photon' };
-    }
-  }
-
-  const native = nativeResult.native;
+  // Android 导入没有前台定位权限时跳过原生反查；只处理所选照片的坐标。
+  const race = await withTimeout(
+    racePlaceProviders(coords, geoLocale, uiLocale, nativeAllowed),
+    PLACE_LOOKUP_BUDGET_MS,
+  );
+  if (race !== TIMEOUT && race.status === 'ok') return race;
+  const native: ReverseGeocodeOutcome = race === TIMEOUT
+    ? { status: 'timeout', attempts: nativeAllowed ? 1 : 0 }
+    : race.nativeResult.native;
 
   /*
    * 走到这里有两种原因，日志里必须分得清：
@@ -788,7 +834,7 @@ export async function fetchLocationStamp(
     }
 
     /*
-     * 反查地名：系统服务优先，失败后用 Photon / OpenStreetMap 兜底；调度、缓存与日志全部收在
+     * 反查地名：系统服务短暂优先，慢请求与 Photon / OpenStreetMap 竞速；调度、缓存与日志全部收在
      * `resolvePlaceFromCoords` 里；相册导入走的是**同一个函数**，两条路的等待时间
      * 与失败行为必须一模一样。Photon 只收到经纬度与地名语言，不会收到照片。
      *

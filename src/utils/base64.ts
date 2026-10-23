@@ -1,7 +1,7 @@
 /**
  * 纯 JS base64 解码（零依赖，成片管线专用）
  *
- * 为什么需要：九卷 33³ LUT 图集以 base64 字符串打进 JS bundle（`constants/lutAtlas.ts`），
+ * 为什么需要：33³ LUT 基底图集以 base64 字符串打进 JS bundle（`constants/lutAtlas.ts`），
  * 运行时解成 Uint8Array 再喂 `decodePng` + `extractLutFromAtlas`。只在「首次用某一卷」时
  * 解一次（`lutAssets.ts` 内有缓存），总量约 250KB，耗时可以忽略。
  *

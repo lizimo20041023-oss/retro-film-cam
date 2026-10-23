@@ -62,7 +62,7 @@ import { useSettings } from '../hooks/useSettings';
 import { CAPTURE_QUALITIES, findCaptureQualitySpec, resolveCaptureLongEdge } from '../constants/captureQuality';
 import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex, resolveFrame, wrapIndex } from '../constants/frames';
 import { applyGrainLevel, findGrainLevelIndex, grainLevelAt } from '../constants/grain';
-import { intensityScaleForTier } from '../constants/intensity';
+import { INTENSITY_AUTO_MAX, INTENSITY_AUTO_MIN, intensityScaleForTier } from '../constants/intensity';
 import {
   ASSUMED_LENS_NATIVE_MM,
   TELEPHOTO_FOCAL_STOP,
@@ -94,7 +94,8 @@ import { resolveGeoLocale } from '../utils/placeNames';
 import { AlbumThumb } from './AlbumThumb';
 import { DevelopBadge, computeDevelopStageBox } from './DevelopOverlay';
 import { DialButton } from './DialButton';
-import { planWatermark } from './FilmCompositor';
+import { planInPhotoDate, planWatermark } from './FilmCompositor';
+import type { WatermarkPlanInput } from './FilmCompositor';
 import { FilmStageComposer } from './FilmStageComposer';
 import { FilmLookLayers } from './FilmLookLayers';
 import { FilmDrawer } from './FilmDrawer';
@@ -224,20 +225,10 @@ const DEVELOP_DONE_VISIBLE_MS = 3000;
 const DEVELOP_ERROR_VISIBLE_MS = 5000;
 
 /**
- * 含正在冲印的工单在内最多保留**两项**（v2.3.2 用户 m04906 提速/降发热）。
- *
- * 这个数不是"越大越流畅"：每多排一张，就多一份全尺寸相机原图（12MP JPEG 约 3~5MB）
- * 压在 cache 里，靠后的那张要等前面全部洗完才轮得到，用户的"拍了却迟迟没出片"感
- * 也会被放大。上限 2 = 「正在洗的一张」+「显影时可以再按的一张」：
- *  - 显影期相机保活（见下面 `cameraActive`）之后，快门不再被 `developing` 锁死，
- *    按下去能立刻拿到原图入队，不必等上一张洗剂冲完；
- *  - 再深就变成"盲拍连发"：用户看不到每一张的显影结果，存储峰值也线性上涨。
- *
- * v2.3.0~v2.3.1 曾经是 `1` 并配"显影期停采集"，代价是每拍一张都 `stopRunning()` /
- * `startRunning()` 一次 `AVCaptureSession` —— 取景器黑一下、对焦要重等，
- * 这才是真机上"拍照慢 + 持续发热"的主因（会话重建比多跑两秒预览贵得多）。
+ * 同一时刻只保留一项显影任务。冲印或多张导入期间暂停相机采集，避免 ISP、
+ * 实时图层和 JS 像素处理同时运行；也不积压多张全尺寸原图。
  */
-const MAX_DEVELOP_QUEUE_DEPTH = 2;
+const MAX_DEVELOP_QUEUE_DEPTH = 1;
 
 /**
  * iOS 把"被完全遮住的视图"截成空图时抛回来的原生文案（`react-native-view-shot`
@@ -276,8 +267,8 @@ function afterTwoFrames(): Promise<void> {
  * 一张待冲印工单（v1.9.0 · 用户手术一 · 契约 §6）。
  *
  * 工单在**快门按下的那一刻**冻结：之后用户改预设 / 画质 / 水印 / 定位，都不影响
- * 已经排队的这张。`place` 是快门那一刻就发起、轮到冲印时才 await 的定位 Promise：
- * 按快门那一路不能等它（最多 2.5s，契约 §5 要求快门段保持短）。
+ * 已经排队的这张。`place` 是快门那一刻就发起、最终烧水印前才 await 的定位 Promise：
+ * 按快门路径不等待它，整次查询最多使用 5 秒预算。
  */
 interface DevelopJobBase {
   frame: FrameSpec;
@@ -764,12 +755,7 @@ export function CameraScreen() {
   const [filmDrawerVisible, setFilmDrawerVisible] = useState(false);
   /** 相册缩略图自己那份列表不会跟着别处变，用这个键催它重读 */
   const [albumKey, setAlbumKey] = useState(0);
-  /**
-   * 冲印队列长度（v1.9.0 · 用户手术一）。
-   *
-   * 它只喂给徽标的"队列 N"文案，**不参与任何交互门控** —— 冲印期间取景器、
-   * 快门、物理快门、画质胶囊都照常可用（这是这一刀的核心体验）。
-   */
+  /** 冲印队列长度，只用于徽标的“队列 N”文案；交互由 `developing` 统一门控。 */
   const [queueDepth, setQueueDepth] = useState(0);
   /**
    * 兜底：iOS 对"被完全遮住"的合成视图截到空图时，把舞台临时抬到遮挡层之上。
@@ -780,9 +766,9 @@ export function CameraScreen() {
   const cameraRef = useRef<ComponentRef<typeof CameraView>>(null);
   /** 同步锁：`setState` 是异步的，连点两下快门会漏进来两次 —— v1.9.0 起它只锁 `takePictureAsync` 那一段 */
   const shotLockRef = useRef(false);
-  /** 冲印队列本体（v1.9.0）：push / shift 只在这里发生，`pumpQueue` 串行消费 */
+  /** 冲印队列本体：push / shift 只在这里发生，`pumpQueue` 串行消费。 */
   const jobQueueRef = useRef<DevelopJob[]>([]);
-  /** 泵是否在跑：可重入守卫（第二次 `kickQueue` 直接返回，`while` 自己会把新工单捡走） */
+  /** 泵是否在跑：可重入守卫，防止同一个工单启动两条处理链。 */
   const pumpingRef = useRef(false);
   /** 舞台是否已经被抬起来过（同一次冲印只兜底重试一次，避免无限重试） */
   const stageElevatedRef = useRef(false);
@@ -864,14 +850,15 @@ export function CameraScreen() {
    * 为什么在预览路径就乘：LUT 像素管线只在成片那一步跑，取景器看到的是声明式图层
    * （染色/S 曲线/暗角）。如果这里不缩放，用户把强度从 35% 拨到 100% 时取景器
    * 一点变化都没有 —— 那个旋钮在预览里就等于不存在，只能拍完才知道差别。
-   * AUTO 档没有固定倍率（`intensityScaleForTier` 返回 null），预览按 1.0 渲染并在
-   * 胶囊里显示 AUTO；真正的倍率由场景引擎在成片那一步决定。
+   * AUTO 档没有固定倍率。预览取 AUTO 区间中点，避免预览显示满强度，
+   * 成片却按场景使用较柔和的强度；最终值仍由场景引擎决定。
    *
    * `applyPresetIntensity` 是纯函数、返回新对象（不改 `resolved`），成片链路用的
    * 仍是未缩放的 `gradedPreset` —— 成片的强度由 `processFilmPhoto` 按工单里的
    * `intensityTier` 再算一次，两条路不互相污染。
    */
-  const previewIntensityScale = intensityScaleForTier(settings.presetIntensity) ?? 1;
+  const previewIntensityScale = intensityScaleForTier(settings.presetIntensity)
+    ?? (INTENSITY_AUTO_MIN + INTENSITY_AUTO_MAX) / 2;
   const previewResolved = useMemo(
     () => applyPresetIntensity(resolved, previewIntensityScale),
     [resolved, previewIntensityScale],
@@ -879,18 +866,8 @@ export function CameraScreen() {
   const frameName = frame.nameKey !== undefined ? t(frame.nameKey) : frame.name;
   const developing = status.kind === 'developing';
   const cameraGranted = cameraPermission?.granted === true;
-  /**
-   * 显影期**不再**冻结取景器交互（v2.3.2 · 用户 m04906）。
-   *
-   * v2.3.0 曾把它写成 `cameraGranted && !developing`，想让纯 JS 像素循环独占 CPU；
-   * 代价是每张照片显影的 1~2 秒里，画幅切换 / 轻触对焦 / 刻度尺全部失灵，
-   * 连续拍两张必须先等第一张洗完 —— 用户感知就是"拍照很慢"。
-   *
-   * 恢复 v1.9.0 语义：交卷之后的显影是**后台串行队列**的事（`pumpQueue`），
-   * 取景器只负责取景；参数入口各自有自己的保护（`ToolRow` 的 `busy` 仍会挡
-   * "会改变拍摄参数"的入口，避免连拍把参数改到一半产生歧义）。
-   */
-  const interactive = cameraGranted;
+  /** 显影期间关闭相机交互，取景器恢复后再允许下一次快门。 */
+  const interactive = cameraGranted && !developing;
   const lensesKnown = lenses.length > 0;
   const stop: ZoomStop = ZOOM_STOPS[stopIndex] ?? ZOOM_STOPS[DEFAULT_STOP_INDEX];
   // 焦段读数 = 假定原生焦距 × 布局裁切因子 × 原生变焦因子（v1.8.4）：
@@ -1032,10 +1009,9 @@ export function CameraScreen() {
   /**
    * 串行冲印泵（v1.9.0 · 用户手术一 · 契约 §6.4）。
    *
-   * 队列里同一时刻只有队首那一张在洗：`processFilmPhoto` 的合成舞台是**单例**
-   * （`useFilmStage.host` 的 `mount` 互斥），并行洗两张会互相把对方的舞台拆掉。
-   * `pumpingRef` 只防重入；真正的排队语义靠 `while (queue.length)`：洗到一半用户
-   * 又按了快门（新工单 push 进同一个数组），这一轮循环会自己把它捡走。
+   * 队列里同一时刻只有队首工单在处理：`processFilmPhoto` 的合成舞台是**单例**
+   * （`useFilmStage.host` 的 `mount` 互斥），并行处理会互相拆掉舞台。
+   * `pumpingRef` 防止重复唤醒；队列上限为一，显影完成后才恢复下一次快门或导入。
    */
   const pumpQueue = useCallback(async () => {
     if (pumpingRef.current) {
@@ -1047,8 +1023,7 @@ export function CameraScreen() {
 
     /** 洗一张按快门来的照片（双曝时两张已经由 `photo` + `overlayUri` 带齐）。 */
     const developShot = async (job: DevelopShotJob) => {
-      // 定位 Promise 是快门那一刻发起的，到这里才 join：最多已经等了半张相片的时间
-      const place = await job.place;
+      // 地名在快门时开始查询，和像素显影并行；只在最终烧水印前等待它。
       const onStage = (stage: DevelopStage) => {
         setStatus((current) =>
           current.kind === 'developing' ? { kind: 'developing', stage } : current,
@@ -1064,7 +1039,7 @@ export function CameraScreen() {
         intensityTier: job.intensityTier,
         stage: stageBox,
         host: filmStage.host,
-        place,
+        place: job.place,
         locale: job.locale,
         watermarkLayout: job.watermarkLayout,
         watermarkZone: job.watermarkZone,
@@ -1284,46 +1259,11 @@ export function CameraScreen() {
   const framePreviewVisible = framePreview && !covered;
 
   /**
-   * 相机会话是否该跑着（v1.8.8 · 用户 m05280 降发热）。
-   *
-   * `expo-camera` 的 `active` prop 在 iOS 上直接映射到 `AVCaptureSession.stopRunning()` /
-   * `startRunning()`（`node_modules/expo-camera/ios/Current/CameraSessionManager.swift` 的
-   * `updateCameraIsActive`）。相框设置、相册、胶片抽屉盖住取景器时，预览看不见却还在
-   * 满帧出图 —— 那是真机持续发热的固定大头。这里让它只在"取景器真的看得见"时跑：
-   *   · 面板打开（`covered`）→ 停采集；
-   *   · 退到后台（`appActive === false`）→ 停采集；
-   *   · 相机权限没给时本来就没挂载，这里恒 false 也无害。
-   *
-   * **v1.8.9 · 用户 m06262 修掉 v1.8.8 引入的一处回归：这里原来还带着 `!developing`。**
-   * `handleShutter` 的顺序是先 `setStatus({ kind: 'developing' })`、紧接着 `takePictureAsync`；
-   * 状态一提交，这里立刻变 `false` → `session.stopRunning()`，而正在飞的静态拍摄会被
-   * AVFoundation 中止，原生在 `didFinishProcessingPhoto(error:)` 里走
-   * `CameraPhotoCapture.swift:130` 分支，直接抛
-   * `CameraImageCaptureException: Image could not be captured`
-   * —— 用户在真机上看到的就是「顯影失敗」+ 冻结的取景画面。
-   * 闪光灯拍摄要预闪 + 测光、耗时明显更长，几乎 100% 输给这次停机；不带闪光灯时只是
-   * 偶尔输，所以才表现成"只有开闪光灯才拍不了"。
-   * 现在冲印期也不再停会话：后台洗片时取景器照常可用（v1.9.0 · 用户手术一要求
-   * "拍完立刻能继续取景/连拍"），多跑几秒采集的耗电远小于"把一次拍摄打断"的代价；
-   * 真正的大头（面板盖住 / 退后台）继续停。
-   *
-   * 注意 `CameraView` **不卸载**（卸载会重建采集会话、回来黑一下）：只是 `active` 开关。
+   * 相机只在取景时采集。面板、后台与显影期均暂停；保留 CameraView 挂载。
+   * 冲印泵在 takePictureAsync 完成后才置 developing，导入入口还检查
+   * shotLockRef，避免静态拍摄进行中停掉 AVCaptureSession。
    */
-  /*
-   * v2.3.2（用户 m04906）把 `!developing` 又从这条式子里拿掉了。
-   *
-   * 上面整段注释已经写过 v1.8.9 的那次教训；v2.3.0 为了给纯 JS 像素循环让出 ISP
-   * 带宽又把它加了回来，结果是每张照片显影 1~2 秒里都要 `stopRunning()` 一次、
-   * 洗好再 `startRunning()` 一次 —— 会话重建本身（黑帧、重新对焦/测光、AGC 重新收敛）
-   * 比多跑这两秒预览贵得多，真机上就是"拍一张卡一下 + 机身持续发热"。
-   *
-   * 现在冲印是后台串行队列（`pumpQueue`）：`setStatus({ kind: 'developing' })` 发生在
-   * `takePictureAsync` **成功之后**（本文件 `pumpQueue` 的 while 循环开头），置位那一刻
-   * 没有任何静态拍摄在飞，所以停采集不会打断拍摄 —— 换句话说，`!developing` 在这里既
-   * 没有正确性收益，也只有重建会话的代价。显影期间保持采集，是"拍完立刻能接着取景/连拍"
-   * 的另一半；真正的大头（面板盖住 / 退后台）继续停。
-   */
-  const cameraActive = cameraGranted && !covered && appActive;
+  const cameraActive = cameraGranted && !covered && appActive && !developing;
 
   /**
    * 预览要画的水印片段（v1.7.0 · 模块三）。
@@ -1342,11 +1282,7 @@ export function CameraScreen() {
    * `presetName` 取 `resolved.name`：关闭定位时"摄影代号 + 第几张"顶上地名那一行，
    * 代号必须和这张要用的预设一致，否则预览会印着上一卷的代号。
    */
-  const previewPieces = useMemo(() => {
-    if (!framePreviewVisible) {
-      return [];
-    }
-    return planWatermark({
+  const previewWatermarkInput = useMemo<WatermarkPlanInput>(() => ({
       layout: previewLayout,
       frame: resolvedFrame,
       timestamp: resolved.timestamp,
@@ -1375,9 +1311,8 @@ export function CameraScreen() {
        * 就是假的。它是全局设置而不是预设字段（理由见 FilmCompositor 调用点那段）。
        */
       dateEngine: settings.dateEngine,
-    });
-  }, [
-    framePreviewVisible,
+    }),
+  [
     previewLayout,
     resolvedFrame,
     resolved.timestamp,
@@ -1393,6 +1328,14 @@ export function CameraScreen() {
     settings.dateEngine,
     exposureCount,
   ]);
+  const previewPieces = useMemo(
+    () => framePreviewVisible ? planWatermark(previewWatermarkInput) : [],
+    [framePreviewVisible, previewWatermarkInput],
+  );
+  const previewInPhotoDate = useMemo(
+    () => framePreviewVisible ? planInPhotoDate(previewWatermarkInput) : null,
+    [framePreviewVisible, previewWatermarkInput],
+  );
 
   /**
    * 相机权限只在"系统还愿意弹窗"的时候自动问一次。被永久拒绝后再调 `request`
@@ -2005,7 +1948,7 @@ export function CameraScreen() {
    *
    * 这条路径现在只做三件事：`takePictureAsync` 拿原图 → 把"这一张怎么冲"的快照
    * 塞进 `jobQueueRef` → 立刻释放快门锁。裁切 / 测光 / 离屏合成 / 写相册全部由
-   * `pumpQueue` 在后台串行完成，所以按完快门 ≈200ms 就能接着取景、连拍。
+   * `pumpQueue` 串行完成；显影时暂停相机采集，完成后恢复取景和快门。
    *
    * 只剩一条"要按两次才出片"的路径：重曝（§一.7）—— 开着重曝时第一次按快门
    * 只把照片存进 `pendingExposureUri`，**不冲印**；第二次才把两张一起交给合成器。
@@ -2062,13 +2005,13 @@ export function CameraScreen() {
       setNotice(null);
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-      // 定位与拍摄并行，但**不在这里 await 定位**（最多 2.5s，契约 §5）：Promise 冻进工单
+      // 定位与拍摄并行，但**不在这里 await 定位**（统一预算最多 5s）：Promise 冻进工单。
       const place = locationStamp.resolveForShot();
       // 走 expo-camera 的**高画质静态拍摄**通道（v1.7.0 · 模块一第 2 条）：
       //   · `quality: 0.92` —— v2.3.2（用户 m04906）：原来拉满 1.0，一张 12MP 的 JPEG
       //     接近源分辨率最重的编码档，原生编码 + 随后 `decodePng` 前的整图读取都要为
       //     那点肉眼不可见的高频细节付时间与发热。0.92 是相机管线里的"高质量"档，
-      //     而这张原图**不是成片**：它还要经 LUT 源缩放（长边 1120/1440）与 1800 画布
+      //     而这张原图**不是成片**：它还要经 LUT 源缩放（长边 1024/1440）与 1800 画布
       //     重采样，0.92 与 1.0 的差异在被重采样两轮之后不可分辨，文件却小 ~40%，
       //     解码与写盘同步变快。
       //   · `skipProcessing: false` —— **显式**声明"要完整后处理"。它本来就是 expo-camera
@@ -2090,7 +2033,7 @@ export function CameraScreen() {
       }
       const captured: CapturedPhoto = { uri: shot.uri, width: shot.width, height: shot.height };
 
-      // `takePictureAsync` 期间导入按钮仍可入队；再次检查，保证异步间隙也不会突破上限。
+      // 防御性复查队列上限，避免未来入口改动在异步拍摄间隙塞入第二个工单。
       if (jobQueueRef.current.length >= MAX_DEVELOP_QUEUE_DEPTH) {
         deleteLocalFilesBestEffort([captured.uri], '队列溢出原图缓存');
         setNotice(t('camera.shutter.busy'));
@@ -2130,13 +2073,13 @@ export function CameraScreen() {
       jobQueueRef.current.push(job);
       setQueueDepth(jobQueueRef.current.length);
       if (overlayUri !== null) {
-        // 原图与尺寸已冻结在工单里，立刻结束这一对；允许用户继续开始下一对。
+        // 原图与尺寸已冻结在工单里，结束这一对；显影完成后再允许开始下一对。
         pendingExposurePhotoRef.current = null;
         pendingExposureDigitalFactorRef.current = 1;
         setPendingExposureUri(null);
         setDoubleExposure(false);
       }
-      // 入队即归还快门：泵在后台串行洗，取景器与快门立刻可用
+      // 入队后释放原生拍摄锁，随后由显影状态暂停取景器直到这张处理完。
       kickQueue();
     } catch (error) {
       // 只有 `takePictureAsync` 这一段的失败会走到这里（冲印失败由泵自己报）
@@ -2220,9 +2163,8 @@ export function CameraScreen() {
   }, [handleCancelCountdown, runShutter]);
 
   usePhysicalShutter({
-    // v1.9.0 · 用户手术一：冲印不再占用物理快门 —— 后台洗片时照样能按、能连拍；
-    // 倒计时中 `countdownRef` 自己处理"按下去就是取消"，与冲印状态无关
-    enabled: cameraGranted && cameraReady,
+    // 与屏幕快门共用显影锁，避免物理按键在相机暂停时触发空拍。
+    enabled: cameraGranted && cameraReady && !developing,
     onPress: () => {
       // 唯一的 Heavy 触感。两行都故意不 await：快门响应不能被触感或异步流程拖慢
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
@@ -2234,13 +2176,16 @@ export function CameraScreen() {
    * 从系统相册导入并重新冲印（§一.4 的 `＋导入`）—— v1.9.0 起也走冲印队列。
    *
    * 为什么也入队而不是直接 await：`importAndDevelop` 会打开系统相册选择器并逐张冲印，
-   * 在 v1.8.x 里它把 `developing` 一直挂着、顺带锁死取景器。入队之后选择器排到它才开、
-   * 照片在后台洗，取景器照常可用 ——「导入不锁取景器」是契约 §6.6 的明确要求。
+   * 选择器排到它才开；导入期间暂停相机采集，让图像处理独占预算。
    *
    * `setStatus(developing)` 由泵在轮到它时设置：`FilmCompositor` 得在屏幕上真实布局过，
    * iOS 的 `renderInContext` 抓不到没上屏的内容。
    */
   const handleImport = useCallback(() => {
+    if (shotLockRef.current) {
+      setNotice(t('gallery.import.busy'));
+      return;
+    }
     if (jobQueueRef.current.length >= MAX_DEVELOP_QUEUE_DEPTH) {
       setNotice(t('gallery.import.busy'));
       return;
@@ -2441,6 +2386,7 @@ export function CameraScreen() {
           top={frameOffset.top}
           variant={settings.frameVariant}
           pieces={previewPieces}
+          inPhotoDate={previewInPhotoDate}
           fontFamily={fonts.fontFamily}
           glow={resolved.timestamp.glow}
           dateEngine={settings.dateEngine}
@@ -2455,10 +2401,11 @@ export function CameraScreen() {
       frameOffset.left,
       frameOffset.top,
       settings.frameVariant,
-      // v1.8.7 模块一：日期引擎四个轴（格式/字形/机位/发光色）必须进依赖 ——
+      // 日期引擎五个轴（格式/字形/机位/发光色/大小）必须进依赖 ——
       // 少一行，用户改「字形」时取景器就不重渲染，看起来就是"设置无效"。
       settings.dateEngine,
       previewPieces,
+      previewInPhotoDate,
       fonts.fontFamily,
       resolved.timestamp.glow,
     ],
@@ -2490,14 +2437,10 @@ export function CameraScreen() {
           <View style={styles.coreSide}>
             <AlbumThumb refreshKey={albumKey} size={CORE_THUMB_SIZE} onPress={handleOpenGalleryScreen} />
           </View>
-          {/*
-            v2.3.2（用户 m04906）：显影期不再禁用快门 —— 队列上限 2 允许"洗一张、再按一张"。
-            仍只被"相机没就绪 / 没权限"挡，与 v1.9.0 一致；队列满时 `handleShutter`
-            自己会把提示换成 `camera.shutter.busy`（文案不变）。
-          */}
+          {/* 显影时相机采集暂停，快门待成片完成后恢复。 */}
           <ShutterButton
             onPress={handleShutterPress}
-            disabled={!cameraReady || !cameraGranted}
+            disabled={!cameraReady || !cameraGranted || developing}
           />
           <View style={[styles.coreSide, styles.coreSideRight]}>
             <DialButton
@@ -2961,8 +2904,8 @@ export function CameraScreen() {
       {/*
         冲印徽标（v1.9.0 · 用户手术一）：绝对定位的安全区小胶囊（层级阶梯里的 21）。
 
-        它**不是**遮罩：没有 backdrop、没有全屏 Pressable，也不渲染合成舞台 —— 洗片期间
-        取景器与快门照常可用，用户只会看到顶部飘着一行"显影中 / 队列 N"。
+        它**不是**遮罩：没有 backdrop、没有全屏 Pressable，也不渲染合成舞台。
+        洗片期间由显影状态暂停相机与快门，顶部显示"显影中 / 队列 N"。
         done 3s / error 5s 之后由上面的 effect 自动退回 idle（徽标自己无状态、不可点）。
 
         合成舞台（v1.8.6 起按需瞬时挂载）已经搬到取景器内部、`cameraClipNode` 之前 ——

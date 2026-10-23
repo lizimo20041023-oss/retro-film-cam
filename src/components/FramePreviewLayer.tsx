@@ -26,9 +26,8 @@
  * ── 与 `FilmCompositor` 的关系（**这段要说清楚，否则以后会改歪**）────────────
  * 水印的三条渲染分支与 `FilmCompositor.tsx` 的 ③ 段是**刻意照抄**的：预览要"所见即
  * 所得"，就得和成片用同一套规则（同一份 `WatermarkPiece[]`、同一个 `DateStamp`）。
- * 唯一的差别是字号来源 —— 成片按合成舞台算，预览按取景器尺寸算，但两边都是
- * `dateFontOf(画布宽度, dateFontRatioOf(config.fontSizeRatio, toneScale))`
- * 这**同一个比例**（v1.7.0 起字号的唯一口径，见 `utils/watermarkTypography.ts`），
+ * 唯一的差别是画布宽度 —— 成片按合成舞台算，预览按取景器尺寸算，
+ * 两边都由 `computeWatermarkPlan` 按同一日期大小档计算，
  * 所以"预览里多大，成片里就多大"在比例意义上成立。预览层自己一个字号的算术都不做：
  * `pieces` 是 `planWatermark()` 按预览布局算好的，本层只负责把它画出来。
  *
@@ -60,7 +59,7 @@ import { frameSkinSeedOf } from '../constants/frames';
 import { frameOrientationOfLayout, frameSourceOf } from '../utils/geometry';
 import { DateStamp } from './DateStamp';
 import { FrameSkin, paperCornerRadius } from './FrameSkin';
-import type { WatermarkPiece } from './FilmCompositor';
+import type { InPhotoDatePlan, WatermarkPiece } from './FilmCompositor';
 import type { DateEngineConfig, FrameLayout, FrameSpec, FrameVariant, Rect } from '../types';
 
 /**
@@ -169,6 +168,8 @@ export interface FramePreviewLayerProps {
   variant: FrameVariant;
   /** 水印片段，**必须**是 `planWatermark(...)` 的输出（和成片同一份）。 */
   pieces: WatermarkPiece[];
+  /** 画内日期的位置和盒尺寸，与成片共用 `planInPhotoDate`。 */
+  inPhotoDate?: InPhotoDatePlan | null;
   /** 等宽字体族（`useFilmFonts().fontFamily`）。 */
   fontFamily: string;
   /** 预设的辉光总开关（`preset.timestamp.glow`），与成片同源。 */
@@ -193,6 +194,7 @@ function FramePreviewLayerImpl({
   top,
   variant,
   pieces,
+  inPhotoDate,
   fontFamily,
   glow,
   dateEngine,
@@ -463,6 +465,18 @@ function FramePreviewLayerImpl({
             </View>
           );
         })}
+        {inPhotoDate && dateEngine ? (
+          <DateStamp
+            quartz={inPhotoDate.quartz}
+            color={inPhotoDate.color}
+            fontFamily={fontFamily}
+            glyphStyle={dateEngine.glyphStyle}
+            glow={dateEngine.glow}
+            spot={dateEngine.spot}
+            box={{ left: inPhotoDate.placement.box.left, top: inPhotoDate.placement.box.top }}
+            contrastShadow
+          />
+        ) : null}
       </View>
     </View>
   );

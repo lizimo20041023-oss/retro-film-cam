@@ -116,7 +116,7 @@ export interface ProcessFilmPhotoInput {
    * 用户切成英文以后，已经烧进照片的字不会变。传结构进来，合成层才可能按当前语言
    * 重排。只有 `locationText` 没有它时，合成层原样印那一行字（向后兼容）。
    */
-  place?: ResolvedPlace | null;
+  place?: ResolvedPlace | null | Promise<ResolvedPlace | null>;
   /**
    * 拍这张时的界面语言。合成层用它把 `place` 拼成那一行字。
    * 不传 = 简体中文。
@@ -488,7 +488,7 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
   const maxLongEdge = input.maxLongEdge ?? preset.normalizeMaxLongEdge;
   const startedAt = Date.now();
   const devTiming = __DEV__
-    ? { mark: startedAt, normalizeCrop: 0, lutInput: 0, sceneProbe: 0, pixelGrade: 0, stageCapture: 0 }
+    ? { mark: startedAt, normalizeCrop: 0, lutInput: 0, sceneProbe: 0, pixelGrade: 0, placeWait: 0, stageReady: 0, capture: 0 }
     : null;
   const warnings: string[] = [];
 
@@ -721,7 +721,8 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
     frame,
     capturedAt,
     locationText: input.locationText ?? null,
-    place: input.place ?? null,
+    // 地名可能仍在查询；像素处理完成后、挂载水印前才读取其结果。
+    place: null,
     locale: input.locale ?? 'zh-Hans',
     watermarkLayout: input.watermarkLayout ?? 'split',
     /*
@@ -763,7 +764,7 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
    * 用户红线（m02361 第四条）①：严禁两遍 view-shot。v2.0.0 先截照片 → JS 洗 →
    * 再截合成图，要挂两次合成视图、等两次 onLoad：慢、会闪、还多一次 PNG 编解码。
    * v2.0.1 把照片像素层的来源换成 `ImageManipulator`（**已有依赖，零新增**）：
-   * 从裁切后的底片直接输出一张长边 1280~1600 的 PNG → 单趟像素管线 → 只挂一次
+   * 从裁切后的底片直接输出一张长边 1024~1440 的 PNG → 单趟像素管线 → 只挂一次
    * 合成视图、只截一次图。
    *
    * 照片像素层因此与成片画布**解耦**：成片仍是 2048/3024/4032 的相框画布
@@ -843,7 +844,7 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
      *
      * `renderFilmToFile` 已经把它的字节读进内存、洗进了 `rendered.uri`；这一行之后
      * 合成层只画 `lutUri`，返回的 `rawUri` 是裁切前的 `cropped.uri` —— 没有任何消费者
-     * 还会读 `lutSource.uri`。提前删掉，就不必让它陪跑后面的挂载/截图（一张 1120~
+     * 还会读 `lutSource.uri`。提前删掉，就不必让它陪跑后面的挂载/截图（一张 1024~
      * 1440 的 PNG 约 2~5MB，双曝时还有第二张）。末尾的 `renderTemporaryUris` 清理
      * 仍保留（里面还包括 `rendered.uri`，而且重复删一个已不存在的文件是无害的）。
      */
@@ -878,12 +879,23 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
    *    有 `lutUri` 时合成层会跳过声明式调色层与重曝叠图（它们已经烘进像素）。
    */
   input.onStage?.('capturing');
-  const finalStageInput: FilmStageInput = { ...stageInput, lutUri };
   let uri = '';
   try {
+    const placeWaitStartedAt = devTiming !== null ? Date.now() : 0;
+    const place = (await input.place) ?? null;
+    if (devTiming !== null) devTiming.placeWait = Date.now() - placeWaitStartedAt;
+    const finalStageInput: FilmStageInput = {
+      ...stageInput,
+      place,
+      lutUri,
+    };
+    const stageReadyStartedAt = devTiming !== null ? Date.now() : 0;
     host.mount(finalStageInput);
     await host.whenReady();
+    if (devTiming !== null) devTiming.stageReady = Date.now() - stageReadyStartedAt;
+    const captureStartedAt = devTiming !== null ? Date.now() : 0;
     uri = await host.capture();
+    if (devTiming !== null) devTiming.capture = Date.now() - captureStartedAt;
   } catch (error) {
     deleteLocalFilesBestEffort(renderTemporaryUris, '显影中间图');
     if (cropped.uri !== photo.uri) deleteLocalFilesBestEffort([cropped.uri], '显影源图缓存');
@@ -896,11 +908,11 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
   // 这两张 PNG 只服务本次 LUT 与最终截图；ViewShot 返回后已没有消费者，立即回收。
   deleteLocalFilesBestEffort(renderTemporaryUris, '显影中间图');
   if (devTiming !== null) {
-    devTiming.stageCapture = Date.now() - devTiming.mark;
     console.info(
       `[filmPerf] normalize+crop=${devTiming.normalizeCrop}ms ` +
       `lutInput=${devTiming.lutInput}ms scene=${devTiming.sceneProbe}ms ` +
-      `pixelGrade=${devTiming.pixelGrade}ms stage+capture=${devTiming.stageCapture}ms`,
+      `pixelGrade=${devTiming.pixelGrade}ms placeWait=${devTiming.placeWait}ms ` +
+      `stageReady=${devTiming.stageReady}ms capture=${devTiming.capture}ms`,
     );
   }
 

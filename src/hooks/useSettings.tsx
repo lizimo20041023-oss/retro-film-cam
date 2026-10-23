@@ -72,9 +72,9 @@ export interface SettingsContextValue {
    */
   setNoFrameAspect: (next: NoFrameAspect) => void;
   /**
-   * 日期烙印引擎（v1.8.0）：格式 / 字形 / 机位 / 发光色四项一起改。
+   * 日期烙印引擎：格式 / 字形 / 大小 / 机位 / 发光色一起保存。
    *
-   * 四项**不接受部分更新**：它们是同一枚烙印的四个轴，单独换一个会让
+   * 这份对象**不接受部分更新**：单独换一个会让
    * "数码管字形 + 白边分离机位"这种组合在中途露出半个状态。调用方要么整份
    * 传、要么用 `{ ...settings.dateEngine, spot: next }` 显式展开。
    */

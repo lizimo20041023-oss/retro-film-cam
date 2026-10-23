@@ -364,7 +364,7 @@ export interface LocationLayout {
  *   → color-burn 光学色彩密度（0.08~0.16，天空/绿植/颜料增重）
  *   → screen 克制提亮（0.06~0.14；夜景强制 0）
  *   → 冷暖分离（soft-light / overlay，浓度提升到 0.24~0.36）
- *   → multiply 黑位托底（仅 TX-400 0.08）
+ *   → multiply 黑位托底（历史参数兼容）
  *   → 黑白去色（mono 卷）
  *   → halation（仅 CS-800T 0.06）
  *   → 物理介质（颗粒 / 暗角 / 漏光）
@@ -382,7 +382,7 @@ export interface ColorGradeConfig {
   /**
    * v1.9.3 手术二 · **德味核心反差层（零模糊同源 overlay S 曲线）**：
    * 同源无模糊 `Image`（blurRadius 0）以 'overlay' 自叠，opacity = 本值
-   * （九卷 0.40~0.60，渲染侧夹 ≤ 0.60）。
+   * （渲染侧会按统一上限夹取）。
    * 数学：Y<0.5 → 2Y²（暗部压出油润浓黑）；Y≥0.5 → 1−2(1−Y)²（亮部推亮）。
    * 三通道独立非线性拉伸自带原生胶片饱和度，中灰不动点、黑场白场都不动。
    */
@@ -396,19 +396,19 @@ export interface ColorGradeConfig {
    * 所以 —— 高权重 overlay 刚雕出的浓黑/通透亮部 100% 保留（明度反差丝毫不减），
    * 而 overlay 在 128 分界线处把 R/G/B 独立压暗/提亮造成的青蓝/紫红伪色，被按本值
    * 的权重锁回原图真实色相。中性浅灰（水泥地/白花）压暗后仍是高级炭灰/奶油白。
-   * 黑白胶卷（HP-400 / TX-400）不走这一项：由预设 `mono` 在渲染侧改成
+   * 黑白胶卷不走这一项：由预设 `mono` 在渲染侧改成
    * `#808080` `color` opacity 1.0 的 100% 去色层，层序仍在全部染色之后。
    */
   chromaLock?: number;
   /**
    * v1.9.3 手术二 · **克制的高光补偿（零模糊 screen）**：同源无模糊 `Image`（blurRadius 0）
-   * 以 'screen' 自叠，opacity = 本值（九卷 0.16~0.26，渲染侧夹 ≤ 0.28；夜景 `dark` 场景整体目标 0.06，不再归零）。
+   * 以 'screen' 自叠，opacity = 本值（渲染侧夹 ≤ 0.28）。
    * Y=0 时恒为 0 —— 黑色显示器/夜空绝不起雾；只做微弱高光延展，不冲淡暗部。
    */
   exposureLift?: number;
   /**
    * v1.9.3 手术二 · **黑位托底**：同源无模糊 `Image` 以 'multiply' 自叠（Y'=Y²）。
-   * 九卷里八卷为 0，只有 TX-400 保留 0.05；渲染侧硬上限 0.05。
+   * 当前预设均为 0；字段保留给历史数据兼容，渲染侧仍有硬上限。
    */
   shadowCrush?: number;
   /**
@@ -422,7 +422,7 @@ export interface ColorGradeConfig {
    * multiply / exclusion / screen 会污染黑场白场，一律禁止。
    */
   shadowTintBlendMode?: BlendMode;
-  /** 暗部化学偏色的不透明度（v1.9.4 九卷 0.10~0.18，渲染侧夹 ≤ 0.20）。 */
+  /** 暗部化学偏色的不透明度；渲染侧统一夹取。 */
   shadowTintOpacity?: number;
   /**
    * Layer 4b **高光/中间调色彩密度**：空串 = 该卷没有这一层。整幅纯色 + `highlightTintBlendMode`。
@@ -431,7 +431,7 @@ export interface ColorGradeConfig {
   highlightTint?: string;
   /** 色彩密度层混合模式：v1.9.4 只允许 soft-light（其它值一律回退 soft-light）。 */
   highlightTintBlendMode?: BlendMode;
-  /** 色彩密度层的不透明度（v1.9.4 九卷 0.14~0.20，渲染侧夹 ≤ 0.20）。 */
+  /** 色彩密度层的不透明度；渲染侧统一夹取。 */
   highlightTintOpacity?: number;
   /**
    * **暖红光晕（halation）**：v1.9.4 起只有 CS-800T 一支为 0.04（电影冷夜光晕），
@@ -617,7 +617,7 @@ export type PresetIntensityTier = 'subtle' | 'soft' | 'standard' | 'rich' | 'max
 /**
  * 底片选择模式（v2.1.0 用户 m03050 手术三）。
  *
- * - `'manual'`：用户从九卷里手动挑一卷；
+ * - `'manual'`：用户从当前预设库里手动挑一卷；
  * - `'auto'`：`recommendStockAndIntensity(scene)` 按当前画面自动选卷 + 自动强度，
  *   成片左下角印 `AUTO -> UM-400 · 95%` 徽标。
  */
@@ -1044,8 +1044,11 @@ export type DateGlowId =
   | 'ccd_green'
   | 'cyber_cyan';
 
+/** 日期烙印大小；只缩放日期字形与字距，不改变地名和摄影代号字号。 */
+export type DateSizeId = 'small' | 'standard' | 'large';
+
 /**
- * 日期引擎的四个轴。**是全局设置，不挂在预设上** ——
+ * 日期引擎的五个轴。**是全局设置，不挂在预设上** ——
  * 它回答的是"我这台机器装了什么后背"，和装什么胶卷无关。
  */
 export interface DateEngineConfig {
@@ -1057,6 +1060,8 @@ export interface DateEngineConfig {
   spot: DateStampSpot;
   /** 发光色，默认 `'classic_amber'`（钨丝琥珀橙 = `#FF8A00`，与 v1.6.1 同色）。 */
   glow: DateGlowId;
+  /** 日期烙印大小，默认 `'standard'`，沿用老用户原有成片比例。 */
+  size: DateSizeId;
 }
 
 /** 全部用户设置。**加字段必须同步改 `settingsStore.ts` 的默认值**。 */
@@ -1140,7 +1145,7 @@ export interface AppSettings {
    */
   noFrameAspect: NoFrameAspect;
   /**
-   * 日期烙印引擎（v1.8.0）：格式 / 字形 / 机位 / 发光色四个轴，默认值见
+   * 日期烙印引擎：格式 / 字形 / 大小 / 机位 / 发光色，默认值见
    * `DateEngineConfig` 的字段注释与 `settingsStore.DEFAULT_SETTINGS`。
    */
   dateEngine: DateEngineConfig;

@@ -160,7 +160,7 @@ function effectiveGrain(grain: number, stockId?: string): number {
 /**
  * 把「基础观感量」乘上预设强度（v2.1.0 手术二 → v2.1.2 无外推）。
  *
- *   intensity 缺省 / 非法 → 0.92（`clampIntensityScale` 的口径：≤0 或非有限数回默认 rich 档）；
+ *   intensity 非法 → 0.80（`clampIntensityScale` 回落默认 standard 档）；
  *   刻度恒在 [0.35, 1.00]，只往回收、绝不越过基准值；
  *   halation = clamp(base · intensity, 0, HALATION_EFFECTIVE_MAX)
  *   vignette = base <= 0 ? 0 : min(base · intensity, VIGNETTE_EV_MAX)
@@ -363,7 +363,7 @@ export function renderFilmFrame(
   const radiusX = buildRadiusSquares(width);
   const radiusY = buildRadiusSquares(height);
 
-  /** 九卷 LUT 的通道平面（局部常量，循环里直接按名字读，命中单态优化）。 */
+  /** 当前 LUT 的通道平面（局部常量，循环里直接按名字读，命中单态优化）。 */
   const lutR = sampler === null ? null : sampler.rPlane;
   const lutG = sampler === null ? null : sampler.gPlane;
   const lutB = sampler === null ? null : sampler.bPlane;

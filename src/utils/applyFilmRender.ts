@@ -6,7 +6,7 @@
  * - 文件读写只能走 expo-file-system（SDK 57 只保留新 API），把它关在这里，探针不碰 IO。
  *
  * 数据流（一次快门，v2.0.1 起**不再有两遍截图**）：
- *   `expo-image-manipulator` 从原图裁出相框窗口比例、缩放到长边 1280~1600，存 **PNG**
+ *   `expo-image-manipulator` 从原图裁出相框窗口比例、缩放到长边 1024~1440，存 **PNG**
  *     （`prepareLutSource`，见 `processFilmPhoto.ts`）
  *     → `await new File(uri).bytes()` 读字节（v2.3.2 起走异步读，见 `renderFilmToFile`），
  *       **按魔数路由**（v2.1.1 双格式输入）：

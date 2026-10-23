@@ -6,7 +6,7 @@
  * 绝不把当前手机的位置印到旧照片上。
  *
  * 只有显式选择「地名」且水印版式包含地点时，才把原图坐标转换成地名：先用系统
- * 原生服务，失败后把经纬度与地名语言发送给 Photon / OpenStreetMap；不上传照片。
+ * 原生服务先尝试，慢请求与 Photon / OpenStreetMap 并行；不上传照片。
  * Android 的系统反查要求前台定位权限，导入时按需请求一次。
  * 用户选「坐标」时离线格式化原图坐标；关闭定位或只印日期时不读取位置。
  *
@@ -478,9 +478,9 @@ export async function importAndDevelop(
         gps = await readPhotoAssetGps(asset.assetId);
       }
       const wantsPlace = mode === 'place' && wantsLocation;
-      let geocoded: ResolvedPlace | null = null;
+      let geocodedPromise: Promise<ResolvedPlace | null> = Promise.resolve(null);
       if (gps !== null && wantsPlace) {
-        // 用户已在设置中选「地名」；resolvePlaceFromCoords 先调系统服务，再按需用 Photon。
+        // 用户已在设置中选「地名」；系统服务短暂优先，慢请求与 Photon 竞速。
         // Android 的原生反查额外要求前台定位权限，同批照片只申请一次。
         geocodePermission ??= canReverseGeocodeImportedPhoto();
         const nativeAllowed = await geocodePermission;
@@ -493,7 +493,7 @@ export async function importAndDevelop(
           result = resolvePlaceFromSourceGps(gps, nativeAllowed, options.locale);
           geocodeResults.set(key, result);
         }
-        geocoded = await result;
+        geocodedPromise = result;
       }
       /*
        * `null` 在三种档位下分别是"不印地名"（off）/ "这次没查到，不印地名"（place）/
@@ -501,10 +501,12 @@ export async function importAndDevelop(
        * 所以这里不再是以前那个 `geocoded ?? toResolvedPlace(gps)`：
        * 那个写法在**地名档反查失败**时也会印出坐标，正是本轮要消掉的行为。
        */
-      const place =
-        geocoded ?? (gps !== null && mode === 'coords' ? toResolvedPlace(gps) : null);
+      const place = wantsPlace
+        ? geocodedPromise
+        : gps !== null && mode === 'coords'
+          ? toResolvedPlace(gps)
+          : null;
       const sourceGpsMissingThisPhoto = wantsLocation && gps === null;
-      const placeLookupFailedThisPhoto = wantsPlace && gps !== null && geocoded === null;
       const locationResolvedAt = __DEV__ ? Date.now() : 0;
 
       const photo = await processFilmPhoto({
@@ -534,6 +536,9 @@ export async function importAndDevelop(
         placeDetail: options.placeDetail,
         exposureIndex: exposureBase + index,
       });
+      // processFilmPhoto 已在最终烧水印前等待这项查询；这里复用结果只为统计提示。
+      const geocoded = await geocodedPromise;
+      const placeLookupFailedThisPhoto = wantsPlace && gps !== null && geocoded === null;
       const renderedAt = __DEV__ ? Date.now() : 0;
 
       /*

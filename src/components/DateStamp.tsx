@@ -5,7 +5,7 @@
  * 1. **旧路径（兼容面，一行都不许破）**：`{ quartz, color, fontFamily }` ——
  *    `FilmCompositor.tsx` 与 `FramePreviewLayer.tsx:177/201` 就是这么调它的。
  *    缺省（不传 `glyphStyle`）时走 `<Text>` 等宽粗体，与 v1.7.0 的成片逐像素同观感。
- * 2. **新路径（日期引擎）**：额外传 `glyphStyle` / `spot` / `glow` / `canvasWidth`，
+ * 2. **新路径（日期引擎）**：额外传 `glyphStyle` / `spot` / `glow`，
  *    由 `DateGlyphs.OpticalDateText` 画「一行 iOS 原生等宽文本 × 三层绝对对齐发光」。
  *
  * ## 为什么保留旧路径而不是一刀切
@@ -34,7 +34,7 @@
  * 新路径不再逐格画字：整行只排一次字，`OpticalDateText` 把同一行文本画三遍
  * （同字体 / 同字号 / 同行高 / 同字距，只有颜色与阴影不同），竖排机位是**整行**旋转。
  * 所以既没有"逐格取整"的累积误差，也没有"每格量宽"的必要：
- * 宽度照抄 `quartz.width`，高度照抄 `glyphHeight()`，渲染层不量任何东西。
+ * 宽度照抄 `quartz.width`，字号照抄 `quartz.fontSize`，高度由 `glyphHeight()` 算出。
  *
  * ⚠️ 因此**不许**再把 `adjustsFontSizeToFit` / `minimumFontScale` 加回来，
  * 也不许把旧路径的 `ellipsizeMode` 改成 `tail`：省略号会把"算错了"伪装成"字体没装好"。
@@ -43,7 +43,7 @@ import { memo } from 'react';
 import type { ReactElement } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import type { DateGlowId, DateGlyphStyleId, DateStampSpot } from '../types';
-import { DATE_SPOT_TRAITS, dateEngineFontPx } from '../constants/dateEngine';
+import { DATE_SPOT_TRAITS } from '../constants/dateEngine';
 import { OpticalDateText, glyphHeight } from './DateGlyphs';
 import type { WatermarkQuartz } from '../utils/geometry';
 
@@ -72,13 +72,8 @@ export interface DateStampProps {
    */
   glow?: DateGlowId;
   /**
-   * 当前画布宽度（逻辑点）。新路径的**字号唯一来源**是
-   * `dateEngine.dateEngineFontPx(style, canvasWidth)`（→ `canvasBase.absoluteFontPx`）。
-   *
-   * ⚠️ 不传时退回 `quartz.fontSize`：兼容面要求"只给三个旧 prop 也能画"，
-   * 而 `quartz.fontSize` 同样是排版层按画布宽度算出来的数，两者同源，
-   * 不会出现"渲染层自己瞎猜一个字号"。探针会断言：
-   * `dateEngineFontPx(style, canvasWidth)` 与 `quartz.fontSize` 在 1440 设计基准上相等。
+   * 兼容旧调用方的画布宽度。实际字号始终取排版层的 `quartz.fontSize`，
+   * 因为用户选择的日期大小已经算进其中，渲染层不可再按画布重算覆盖。
    */
   canvasWidth?: number;
   /**
@@ -102,20 +97,6 @@ export interface DateStampProps {
   contrastShadow?: boolean;
 }
 
-/**
- * 新路径的实际字号。
- *
- * 提取成函数是因为它**同时**被字形层与（曾经的）晕染层读：两处各算一次就会出现
- * "字形按 12pt 画、光晕按 11.94pt 扩"这种半个像素的分叉，而它在真机上表现为
- * "光晕比字大了一圈"，很容易被当成配色问题。
- */
-function engineFontPx(style: DateGlyphStyleId, quartz: WatermarkQuartz, canvasWidth?: number): number {
-  if (canvasWidth !== undefined && canvasWidth > 0) {
-    return dateEngineFontPx(style, canvasWidth);
-  }
-  return quartz.fontSize;
-}
-
 function DateStampImpl({
   quartz,
   color,
@@ -123,7 +104,6 @@ function DateStampImpl({
   glyphStyle,
   spot,
   glow,
-  canvasWidth,
   box,
   haloShadow = false,
   contrastShadow = false,
@@ -144,10 +124,10 @@ function DateStampImpl({
   /** 渲染宽度：两条路径都用排版层算死的 `quartz.width`（`width` 与 `maxWidth` 是同一个数）。 */
   const width = quartz.width;
   /**
-   * 新路径的实际字号（旧路径不用）：与排版层的 `quartz.fontSize` **同源**
-   * （都走 `canvasBase.absoluteFontPx`）；不传 canvasWidth 时退回 `quartz.fontSize`。
+   * 新路径与排版层共用字号。这里重新按画布计算会覆盖用户的大小档位，
+   * 还会让字形真实高度与画内机位的定位盒不一致。
    */
-  const fontPx = glyphStyle !== undefined ? engineFontPx(glyphStyle, quartz, canvasWidth) : 0;
+  const fontPx = glyphStyle !== undefined ? quartz.fontSize : 0;
   /**
    * 行盒高度：新路径 = `字号 × DATE_GLYPH_STYLES[style].heightRatio`（1.16），
    * 旧路径 = `字号 × 1.16`。两条路径是同一个几何，切换字形不会让日期块上下跳。

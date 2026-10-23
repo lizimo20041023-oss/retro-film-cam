@@ -109,11 +109,11 @@ function clampChannel(value: number): number {
   return value;
 }
 
-/** 中灰：所有近似都以它为起点，相当于"标准场景的中间调"（v2.1.0 取 88 让九卷染色三档都落在 [6,250] 内且不封顶）。 */
+/** 中灰：所有色阶近似都以它为起点。 */
 const BASE_GRAY = 88;
 /**
  * v1.9.4 黑位托底（同源 multiply 自叠）对色块底部的满量程下压：
- * 覆盖 0~0.12 量程（0.10 时 ≈ 24 阶；全库只有 TX-400 会用到）。
+ * 覆盖 0~0.12 量程；当前卷的 shadowCrush 均为 0。
  */
 const CRUSH_RANGE = 800;
 /**
@@ -145,7 +145,7 @@ const SHADOW_GAIN = 1.8;
 /** 化学高光偏色的偏移倍率：染色不透明度^1.5 × 通道差 × 权重 × 7.0 × 色度锁系数。 */
 const HIGHLIGHT_GAIN = 7.0;
 /**
- * 顶部色阶的公共提亮底量：v2.1.0 的九卷染色对比度很强，顶部档 highlightWeight = 1
+ * 顶部色阶的公共提亮底量；顶部档 highlightWeight = 1。
  * 会被深色方向整档拉偏、破坏"底部 < 中间调 < 高光"的亮度单调；
  * 这里给顶部补一个与预设参数无关的固定提亮，把单调性从染色手里拿回来。
  */
@@ -153,7 +153,7 @@ const TOP_LIFT = 10;
 /**
  * 染色不透明度的**非线性吃料指数**：胶片乳剂的染色密度不是线性叠加的，
  * 这里按 `opacity^1.5` 近似 —— 低不透明度的分离色更克制、高不透明度才吃饱，
- * 同时让九卷 swatch 在 [6,250] 通道域里两两可辨（线性档在 v2.1.0 强染色参数下无解）。
+ * 让 swatch 在 [6,250] 通道域里保留辨识度。
  */
 const SATURATION_EXPONENT = 1.5;
 /**
@@ -200,7 +200,7 @@ function chromaScaleOf(chromaLock: number | undefined): number {
 }
 
 /**
- * 静态色温/色调对色块的**通道位移**（v2.1.0 九卷性格的一部分）：
+ * 静态色温/色调对色块的通道位移：
  * 暖色温 +R / −B、冷色温反向、绿 tint +G、品红 tint +R/+B。
  *
  * 与 `gradeLayers.ts` 的 soft-light 暖/冷、绿/品红亮色层同向，只是把"多层软光"
@@ -234,7 +234,7 @@ function lightTint(
 }
 
 /**
- * v2.1.0「九卷强性格」配方 → 三段色阶（高光 / 中间调 / 暗部）。
+ * 胶片参数 → 三段色阶（高光 / 中间调 / 暗部）。
  *
  * 映射纪律（与 `gradeLayers.ts` 的图层顺序 1~12 对应，photo 层全部 blurRadius 0 自叠）：
  *  1. `sCurveContrast`→ overlay 自叠：底部压深（×1.35）、中间调微抬（×0.055）、顶部提亮（×0.55）
@@ -244,7 +244,7 @@ function lightTint(
  *  3b. `TOP_LIFT`     → 与预设无关的顶部固定提亮（+10 阶），抵消深色高光染色的整档拉暗
  *  4. `shadowTint*`   → 化学暗部偏色（只 soft-light），权重 底部 1.0 / 中间 0.45 / 顶部 0.15，增益 ×1.8
  *  5. `highlightTint*`→ 德味暖调分色（只 soft-light），权重 顶部 1.0 / 中间 0.4 / 底部 0.2，增益 ×7.0
- *  6. `shadowCrush`   → multiply 自叠：只压暗部（底部 ×0.3，中间调 ×0.06；只有 TX-400 0.10）
+ *  6. `shadowCrush`   → multiply 自叠：仅兼容历史参数，当前卷不启用。
  *  7. `vignette`      → 只压四角；横向色带把它映射到**下沿**（底部 −VIGNETTE_RANGE×0.42）
  *  8. `temperature` / `tint` → 卷静态色温/色调的通道位移（暖 +R/−B、绿 +G、品红 +R/+B）
  *  9. `mono`          → 三档全部取 BT.709 亮度（`#808080 + 'color'` 的去色等价）
@@ -357,10 +357,10 @@ function stockBadgeOf(preset: FilmPreset): string {
   switch (preset.id) {
     case 'gd-200':
     case 'cp-200':
+    case 'dc-200':
       return 'ISO 200';
     case 'um-400':
     case 'pt-400':
-    case 'fj-400':
     case 'fg-400':
       return 'ISO 400';
     case 'ek-100':
@@ -368,8 +368,9 @@ function stockBadgeOf(preset: FilmPreset): string {
       return 'SLIDE';
     case 'cs-800t':
       return '800T';
+    case 'mt-500':
+      return 'ISO 500';
     case 'hp-400':
-    case 'tx-400':
       return 'B&W';
     default:
       break;

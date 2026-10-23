@@ -19,10 +19,11 @@
  *    （见 `TONE_STYLE`）—— 打字机体是印在相纸上的小字，本来就比点阵液晶小一圈。
  *
  * 三条从上一版保留下来的规则，别顺手改掉：
- *   1. 日期 / 地名的字号**只来自 `watermarkTypography.ts` 的那一次线性映射**
- *      （`dateFontOf(画布宽度, 字形档)` → `canvasBase.absoluteFontPx`）：
- *      字号 ÷ 画布宽度是常数 ⇒ 换相框、换手机、换成片分辨率，成片上的像素高度都恒定。
- *      **改字号只改那两个文件**（设计像素在 `constants/canvasBase.ts`），四种版式一起动。
+ *   1. 日期 / 地名的基准字号来自 `watermarkTypography.ts` 的线性映射；
+ *      日期再乘用户选择的固定大小档位（地名保持原字号）。
+ *      基准来自 `dateFontOf(画布宽度, 字形档)` → `canvasBase.absoluteFontPx`。
+ *      选定档位后字号 ÷ 画布宽度是常数 ⇒ 换相框、换手机，比例保持一致。
+ *      基准设计像素在 `constants/canvasBase.ts`，用户档位在 `constants/dateEngine.ts`。
  *      v1.7.0 那条"画布宽度 × 0.032 再 clamp 到 [11, 96]"的式子里，下限在小屏上
  *      会把比例锁死（320pt 手机算出 7.3pt 被抬到 11pt），于是同样一款相框在不同设备上
  *      印出两种比例 —— 那正是用户报的浮动；v1.8.0 把 clamp、整数取整、预设权重与墨色
@@ -44,7 +45,7 @@
  *    推导与复现脚本见 `src/components/DateStamp.tsx` 顶部。
  */
 import type { LocaleId } from '../i18n/types';
-import { DATE_GLYPH_STYLES } from '../constants/dateEngine';
+import { DATE_GLYPH_STYLES, DATE_SIZE_SCALE } from '../constants/dateEngine';
 import { CENTERED_SEPARATOR, pad2, timestampTracking } from './formatTimestamp';
 import {
   codeFontOf,
@@ -59,6 +60,7 @@ import {
 } from './watermarkTypography';
 import type {
   DateGlyphStyleId,
+  DateSizeId,
   DateStampSpot,
   FontWeight,
   FrameLayout,
@@ -1240,6 +1242,8 @@ export function computeWatermarkPlan(
   zone: WatermarkZone = 'auto',
   /** 水印**横向对齐**（v1.8.11 设置项）。不传 = `'auto'` = 跟随相框 `watermark.align`。 */
   align: WatermarkAlign = 'auto',
+  /** 日期大小档；标准档保留旧版字号，地名与摄影代号不缩放。 */
+  dateSize: DateSizeId = 'standard',
 ): WatermarkPlan {
   const anchor = resolveTimestampAnchor(frame, config);
   const tone: 'amber' | 'graphite' = frame.watermark?.tone ?? 'amber';
@@ -1262,7 +1266,8 @@ export function computeWatermarkPlan(
    * 写成绝对点的话，大画布上"字距 ÷ 字号"会变小 —— 那就是用户报的"间距浮动"。
    */
   const canvasWidth = layout.width;
-  const dateFont = dateFontOf(canvasWidth, glyphStyle);
+  const dateScale = DATE_SIZE_SCALE[dateSize];
+  const dateFont = dateFontOf(canvasWidth, glyphStyle) * dateScale;
   const placeFont = placeFontOf(canvasWidth);
   /*
    * 日期字距 = 基准字距（参考画布 358pt 上 2pt）× 字形档的 `trackingScale`。
@@ -1275,7 +1280,7 @@ export function computeWatermarkPlan(
    * ⚠️ 只在这里乘一次：`quartz.letterSpacing` 是下游唯一读到的字距，
    * 渲染层（`OpticalDateText`）拿到后直接照抄，不再乘第二次。
    */
-  const dateSpacing = dateLetterSpacingOf(canvasWidth) * DATE_GLYPH_STYLES[glyphStyle].trackingScale;
+  const dateSpacing = dateLetterSpacingOf(canvasWidth) * DATE_GLYPH_STYLES[glyphStyle].trackingScale * dateScale;
   const glyphSlack = dateGlyphSlackOf(canvasWidth);
   const splitGutter = splitGutterOf(canvasWidth);
   /*

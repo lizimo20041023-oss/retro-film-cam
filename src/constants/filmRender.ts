@@ -18,7 +18,7 @@
  *     delta，没有任何彩卷三通道权重）。强度用**像素幅度** 0 / 2.5 / 5 / 8.5 / 13。
  *   · **暗角限制在 −0.25 ~ −0.55 EV**，中心 55% 完全通透（smoothstep 平台），
  *     不再是中心就开始压的幂函数。
- *   · **LUT 输入长边锁在 1280~1600px**：这是 JS 像素循环的硬预算。
+ *   · **LUT 输入长边锁在 1024~1440px**：三档画质各有固定的 JS 像素预算。
  *   · **场景自适应 gamma**：逆光/暗光把 LUT 输入暗部与中间调整体托起（0.88~1.06）。
  *
  * 所有函数都是纯函数、不读任何环境，Node 探针可以直接 import 逐值核对。
@@ -38,19 +38,19 @@ export { INTENSITY_SCALE_MAX, INTENSITY_SCALE_MIN };
 /** 3D LUT 每轴的采样数（33³ = 35,937 项）。 */
 export const LUT_SIZE = 33;
 
-/** 内置 LUT 的十一卷 id（九卷光谱基底 + 两卷独立派生人格）。 */
+/** 内置 LUT 的十一卷 id。 */
 export const LUT_STOCK_IDS = [
   'um-400',
   'gd-200',
   'pt-400',
   'cp-200',
-  'fj-400',
+  'dc-200',
   'fg-400',
   'ek-100',
   'rb-100',
+  'mt-500',
   'cs-800t',
   'hp-400',
-  'tx-400',
 ] as const;
 
 export type LutStockId = (typeof LUT_STOCK_IDS)[number];
@@ -96,13 +96,13 @@ export const HALATION_BY_STOCK: Record<LutStockId, number> = {
   'gd-200': 0.015,
   'pt-400': 0,
   'cp-200': 0,
-  'fj-400': 0,
+  'dc-200': 0,
   'fg-400': 0,
   'ek-100': 0,
   'rb-100': 0,
+  'mt-500': 0,
   'cs-800t': 0.12,
   'hp-400': 0,
-  'tx-400': 0,
 };
 
 /** 未登记卷的 halation 缺省值：0（宁可没有，也不许再出一层雾）。 */
@@ -269,23 +269,23 @@ export const HALATION_EFFECTIVE_MAX = 0.6;
  * LUT 输入长边（JS 像素循环的硬预算）
  * ========================================================================== */
 
-/** LUT 输入图长边下限（像素）。标准档由 1280 降到 1120，像素循环减少约 23%。 */
-export const LUT_SOURCE_LONG_EDGE_MIN = 1120;
+/** 标准档输入长边；相对 1120px 少约 16% 像素，高清档仍保留原尺寸。 */
+export const LUT_SOURCE_LONG_EDGE_MIN = 1024;
 
 /** LUT 输入图长边上限（像素）。 */
 export const LUT_SOURCE_LONG_EDGE_MAX = 1440;
 
 /** 三档输出画布 → LUT 输入预算。胶片 LUT 不变，只减少纯 JS 要处理的像素数。 */
 const LUT_SOURCE_LONG_EDGE_BY_CAPTURE: readonly { readonly capture: number; readonly source: number }[] = [
-  { capture: 1800, source: 1120 },
+  { capture: 1800, source: 1024 },
   { capture: 2560, source: 1280 },
   { capture: 3264, source: 1440 },
 ];
 
 /**
- * 成片画布长边（`captureLongEdge`）→ 进 JS LUT 的图长边（1120~1440）。
+ * 成片画布长边（`captureLongEdge`）→ 进 JS LUT 的图长边（1024~1440）。
  *
- * 用三个画质参考点做分段线性：≤1800 恒 1120，≥3264 恒 1440，中间按比例；没有第三个变量的
+ * 用三个画质参考点做分段线性：≤1800 恒 1024，≥3264 恒 1440，中间按比例；没有第三个变量的
  * 隐藏状态 —— `FilmCompositor` 与 `processFilmPhoto` 各算一次也一定得到同一个数。
  */
 export function lutSourceLongEdgeFor(captureLongEdge: number): number {

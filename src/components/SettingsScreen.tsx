@@ -12,9 +12,9 @@
  * 所以改成 **单行折叠栏**（Accordion）：
  *   lang / loc_mode / loc_detail / loc_lang / watermark_layout /
  *   watermark_zone / watermark_align / adaptive_grade /
- *   date_format / date_style / date_pos / date_color /
+ *   date_format / date_style / date_size / date_pos / date_color /
  *   quality / grain / frameless_ratio
- * 默认全部收起 ⇒ 15 行接近一屏（iPhone 13 上最底部一栏要轻滑一下），
+ * 默认全部收起 ⇒ 16 行，
  * 每行右侧是"当前选中的那一档"。
  *
  * ── 状态机（只有一条真源）────────────────────────────────────────────────
@@ -64,6 +64,7 @@ import type {
   DateFormatId,
   DateGlowId,
   DateGlyphStyleId,
+  DateSizeId,
   DateStampSpot,
   GeoLocale,
   GrainLevelId,
@@ -88,10 +89,10 @@ import type {
 const SUMMARY_GOLD = '#C86418';
 
 /**
- * 15 个折叠栏的稳定 key（顺序 = 界面顺序）。
+ * 折叠栏的稳定 key（顺序 = 界面顺序）。
  *
  * 单独列一个联合类型而不是 `string`：
- * ① `expandedKey` 只允许装这 15 个值，写错立刻编译报错；
+ * ① `expandedKey` 只允许装已声明的值，写错立刻编译报错；
  * ② 展开体用 `switch (key)` 渲染，联合类型能让 tsc 检查"每一栏都有实现"。
  */
 type SectionKey =
@@ -105,6 +106,7 @@ type SectionKey =
   | 'adaptive_grade'
   | 'date_format'
   | 'date_style'
+  | 'date_size'
   | 'date_pos'
   | 'date_color'
   | 'quality'
@@ -115,11 +117,11 @@ type SectionKey =
  * 界面顺序 = 「越常改的越靠上」+「有从属关系的必须相邻」：
  * 语言 → 定位 → 地名详细度（只在"地名"档生效，紧跟定位）→ 地名语言（只影响地名那行）
  * → 水印三轴（版式 → 纵向落点 → 横向对齐；先决定怎么排、再决定落在哪）
- * → 场景自适应（冲印要不要看画面统计）→ 日期四轴（格式 → 字形 → 机位 → 颜色，
+ * → 场景自适应（冲印要不要看画面统计）→ 日期五轴（格式 → 字形 → 大小 → 机位 → 颜色，
  * 先决定印什么、再决定怎么长、印在哪、发什么光）→ 画质 → 颗粒 → 无相框画幅。
  *
- * 日期四轴为什么各自独立成栏：用户明确要求"严禁把格式、字形、位置、颜色混在一起"。
- * 四者两两正交 —— 换颜色不该看见格式列表，换格式也不该看见机位。
+ * 日期各轴独立成栏：用户明确要求"严禁把格式、字形、位置、颜色混在一起"。
+ * 各项独立 —— 换颜色不该看见格式列表，换格式也不该看见机位。
  * 水印三轴同理（v1.8.11 新增后两轴）：换版式不该顺带改纵/横落点。
  */
 const SECTION_ORDER: readonly SectionKey[] = [
@@ -133,6 +135,7 @@ const SECTION_ORDER: readonly SectionKey[] = [
   'adaptive_grade',
   'date_format',
   'date_style',
+  'date_size',
   'date_pos',
   'date_color',
   'quality',
@@ -169,11 +172,10 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   const styles = useMemo(() => createStyles(theme), [theme]);
 
   /**
-   * 唯一展开状态：`null` = 15 栏全部收起（打开设置页时的默认视图）。
+   * 唯一展开状态：`null` = 全部收起（打开设置页时的默认视图）。
    *
    * 为什么不是 `Record<SectionKey, boolean>`：手风琴只允许同时展开一栏，
-   * 一个 `SectionKey | null` 就把"哪一栏开着"这件事表达完了；用 15 个布尔
-   * 就得在每次 toggle 时手写"把其它 14 个置 false"，那是最容易漏的地方。
+   * 一个 `SectionKey | null` 就把"哪一栏开着"这件事表达完了。
    */
   const [expandedKey, setExpandedKey] = useState<SectionKey | null>(null);
 
@@ -244,7 +246,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   /**
    * 每次"打开"设置页都回到全收起。
    *
-   * 为什么不是"记住上次展开哪一栏"：这一屏的定位是"一眼看全 15 类"，
+   * 为什么不是"记住上次展开哪一栏"：这一屏的定位是先看全所有类别，
    * 记住展开态等于下次打开直接跳到半屏列表，反而丢了设计意图。
    * 在 `visible` 变 true 时复位，也顺带清掉上次关页时挂起的定时器。
    */
@@ -365,7 +367,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   const handleDateFormat = useCallback(
     (next: DateFormatId): void => {
       void Haptics.selectionAsync();
-      // 整份传：四轴共用一条存储记录，部分更新会让"没动的那三轴"落回缺省值
+      // 整份传：日期五项共用一条存储记录，部分更新会让未改字段落回缺省值。
       setDateEngine({ ...dateEngine, format: next });
     },
     [dateEngine, setDateEngine],
@@ -375,6 +377,14 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
     (next: DateGlyphStyleId): void => {
       void Haptics.selectionAsync();
       setDateEngine({ ...dateEngine, glyphStyle: next });
+    },
+    [dateEngine, setDateEngine],
+  );
+
+  const handleDateSize = useCallback(
+    (next: DateSizeId): void => {
+      void Haptics.selectionAsync();
+      setDateEngine({ ...dateEngine, size: next });
     },
     [dateEngine, setDateEngine],
   );
@@ -438,7 +448,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   }
 
   /**
-   * 15 栏的标题与摘要。
+   * 各栏的标题与摘要。
    *
    * 摘要口径 = 「当前选中的那一档，用和展开列表里**一模一样**的文字」——
    * 收起时看到的是"標準"，展开后对勾就在"標準"那一行，两者不会对不上。
@@ -463,6 +473,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   );
   const formatRow = findOrFirst(DATE_FORMAT_ROWS, (row) => row.format === dateEngine.format);
   const glyphRow = findOrFirst(DATE_GLYPH_ROWS, (row) => row.glyphStyle === dateEngine.glyphStyle);
+  const sizeRow = findOrFirst(DATE_SIZE_ROWS, (row) => row.size === dateEngine.size);
   const spotRow = findOrFirst(DATE_SPOT_ROWS, (row) => row.spot === dateEngine.spot);
   const glowRow = findOrFirst(DATE_GLOW_ROWS, (row) => row.glow === dateEngine.glow);
   const qualitySpec = findOrFirst(CAPTURE_QUALITIES, (spec) => spec.id === settings.captureQuality);
@@ -507,6 +518,10 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
       title: t('settings.section.dateFont'),
       summary: t(glyphRow.labelKey),
     },
+    date_size: {
+      title: t('settings.section.dateSize'),
+      summary: t(sizeRow.labelKey),
+    },
     date_pos: {
       title: t('settings.section.datePos'),
       summary: t(spotRow.labelKey),
@@ -535,7 +550,7 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
   };
 
   /**
-   * 展开体：`switch` 保证 15 栏都有实现（`SectionKey` 是联合类型，
+   * 展开体：`switch` 保证各栏都有实现（`SectionKey` 是联合类型，
    * 少写一栏 tsc 会报"函数缺少返回"）。
    *
    * 每台选项列表都复用旧的 `OptionRow`；提示句（hint）放在**展开后**的
@@ -744,6 +759,21 @@ export function SettingsScreen({ visible, onClose, locationState }: SettingsScre
             </View>
             <Text style={styles.hint}>{t('settings.dateEngine.hint')}</Text>
           </>
+        );
+
+      case 'date_size':
+        return (
+          <View style={styles.group}>
+            {DATE_SIZE_ROWS.map((row) => (
+              <OptionRow
+                key={row.size}
+                label={t(row.labelKey)}
+                selected={dateEngine.size === row.size}
+                onPress={() => pickAfter(() => handleDateSize(row.size))}
+                a11yLabel={t('settings.dateEngine.a11y.size', { label: t(row.labelKey) })}
+              />
+            ))}
+          </View>
         );
 
       case 'date_pos':
@@ -1105,9 +1135,9 @@ const ADAPTIVE_GRADE_ROWS: readonly {
 ];
 
 /**
- * 日期引擎四张行的表。
+ * 日期引擎各档位的表。
  *
- * 四张表各自对应一个折叠栏（格式 / 字形 / 机位 / 发光），**不再混排**：
+ * 各表分别对应一个折叠栏（格式 / 字形 / 大小 / 机位 / 发光），**不再混排**：
  * 用户 m01534 明确要求"严禁把格式、字形、位置、颜色混在一起"。
  *
  * 顺序一律 = `types/index.ts` 里那个枚举的声明顺序，不另排一套：
@@ -1142,6 +1172,13 @@ const DATE_GLYPH_ROWS: readonly { glyphStyle: DateGlyphStyleId; labelKey: Messag
   { glyphStyle: 'ccd_osd', labelKey: 'settings.dateEngine.glyph.ccd_osd' },
   { glyphStyle: 'lab_inkjet', labelKey: 'settings.dateEngine.glyph.lab_inkjet' },
   { glyphStyle: 'archival_steel', labelKey: 'settings.dateEngine.glyph.archival_steel' },
+];
+
+/** 日期字号只作用于时间烙印；标准档与旧版画面相同。 */
+const DATE_SIZE_ROWS: readonly { size: DateSizeId; labelKey: MessageKey }[] = [
+  { size: 'small', labelKey: 'settings.dateEngine.size.small' },
+  { size: 'standard', labelKey: 'settings.dateEngine.size.standard' },
+  { size: 'large', labelKey: 'settings.dateEngine.size.large' },
 ];
 
 /** 字形行右侧样例的固定日期串（用户规范逐字：`10 17 '26`）。 */

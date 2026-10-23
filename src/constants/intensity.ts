@@ -2,7 +2,7 @@
  * 预设强度档位表（v2.1.2 用户 m00001：单遍干净管线）。
  *
  * 用户在设置页 / 底片库顶部 / 取景器参数栏三处选强度：
- *   subtle 35% · soft 60% · standard 80% · rich 92%（**默认**）· max 100% · auto
+ *   subtle 35% · soft 60% · standard 80%（默认）· rich 92% · max 100% · auto
  *
  * 渲染侧只认 `intensityScale`（0.35~1.00 的全局风格乘数），**只做区间内插值、绝不外推**：
  *   · `out = orig + (lut − orig) * scale`，`scale` 恒在 [0.35, 1.00]；
@@ -11,7 +11,7 @@
  *     同样只往回收、不超过各自基准值。
  *
  * `auto` 档没有固定倍率：由 `utils/sceneMatch.ts` 的 `recommendStockAndIntensity()`
- * 按场景在 70%~95% 之间决定。
+ * 按场景在 70%~85% 之间决定。
  */
 
 import type { PresetIntensityTier } from '../types';
@@ -56,7 +56,7 @@ export const PRESET_INTENSITY_OPTIONS: readonly PresetIntensityOption[] = [
     label: '濃郁',
     percent: '92%',
     scale: 0.92,
-    description: '默认档：接近满浓度，一眼可辨。',
+    description: '浓郁档：接近满浓度，适合需要更明显胶片感时。',
   },
   {
     id: 'max',
@@ -70,25 +70,25 @@ export const PRESET_INTENSITY_OPTIONS: readonly PresetIntensityOption[] = [
     label: 'AUTO',
     percent: 'AUTO',
     scale: null,
-    description: '按场景智能匹配强度（70%~95%）。',
+    description: '按场景智能匹配强度（70%~85%）。',
   },
 ];
 
-/** 默认档位（用户 m00001 明确要求默认 `rich` = 92%）。 */
-export const DEFAULT_PRESET_INTENSITY: PresetIntensityTier = 'rich';
+/** 默认档位；老用户已保存的档位不会被覆盖。 */
+export const DEFAULT_PRESET_INTENSITY: PresetIntensityTier = 'standard';
 
 /** 固定档位的乘数范围（上限 1.00：任何档位都不再越过 LUT 标定值）。 */
 export const INTENSITY_SCALE_MIN = 0.35;
 export const INTENSITY_SCALE_MAX = 1;
 
-/** AUTO 强度的可调范围（与 `utils/sceneMatch.ts` 的 `AUTO_INTENSITY_BY_SCENE` 同步）。 */
+/** AUTO 强度范围（与 `utils/sceneMatch.ts` 同步）。 */
 export const INTENSITY_AUTO_MIN = 0.7;
-export const INTENSITY_AUTO_MAX = 0.95;
+export const INTENSITY_AUTO_MAX = 0.85;
 
-/** 非法乘数的回落值：0.92 = `rich`（默认档），不再回落老的 1.00。 */
-export const INTENSITY_SCALE_FALLBACK = 0.92;
+/** 非法乘数回落到默认标准档。 */
+export const INTENSITY_SCALE_FALLBACK = 0.8;
 
-/** 把任意乘数夹到合法区间（非法输入回落 0.92 = 默认 rich 档）。 */
+/** 把任意乘数夹到合法区间。 */
 export function clampIntensityScale(scale: number): number {
   if (!Number.isFinite(scale) || scale <= 0) {
     return INTENSITY_SCALE_FALLBACK;

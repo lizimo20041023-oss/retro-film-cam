@@ -11,7 +11,7 @@
   - 四角 rho>1 按 1 处理（满不透明度）；
   - RGB 恒为 (4, 12, 20) 深青黑，不随半径变化（半径只控制 alpha）；
   - 渲染侧 opacity 由预设 `vignette` 决定，v1.9.4 值域 0.16~0.28
-    （USER m10195 要求"四角压暗 0.18~0.28"，见契约 §2 九卷表）。
+    （强度由当前预设表和渲染上限共同约束）。
 
 渲染侧（gradeLayers.ts）以 `blendMode:'multiply'` + `opacity = preset.vignette`
 叠加该贴图。multiply 之所以安全：中心 alpha=0（没有任何上层像素参与混合，白不变灰），

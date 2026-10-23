@@ -1,29 +1,7 @@
 /**
- * AUTO 场景智能选卷 + 自动强度引擎（v2.1.0 用户 m03050 手术三）。
- *
- * 输入是成片链路在裁切后采到的 `SceneStats`（见 `types/index.ts` 与 `utils/sceneProbe`），
- * 输出「最匹配的胶卷 + 强度倍率 + 成片左下角徽标」。
- *
- * 两种工作模式（由 `settings.stockMode` / `settings.presetIntensity` 决定）：
- * 1. **AUTO 底片**（`stockMode === 'auto'`）：整卷也由场景决定，强度用规则表里的固定值
- *    （94% / 75% / 92% / 88% / 90% / 95%）。
- * 2. **手动底片 + AUTO 强度**（`presetIntensity === 'auto'`）：底片保持用户选的那卷，
- *    只按场景在 **70%~95%** 之间调强度（v2.1.2 用户 m00001：强度不再越过 100% 档位）。
- *
- * 规则顺序（先命中先赢，见用户 m03050 的 6 大场景表）：
- *   ① 夜景/暗光      shadowShare > 0.52                        → CS-800T · 94%
- *   ② 高调雪景/顺光人像 highlightShare > 0.48 && saturation < 0.22 → PT-400 · 75%
- *   ③ 晴天逆光/大光比 (highlightShare > 0.15 && shadowShare > 0.18) || contrast > 0.22
- *                                                              → EK-100 · 92%
- *   ④ 森林绿植/海湾蓝天 warmth < -0.05 且 meanLuma >= 0.35       → FJ-400 · 88%
- *   ⑤ 黄金时刻/暖调街巷 warmth > 0.08                            → GD-200 · 90%
- *      （warmth 偏中等时用 CP-200，保留复古琥珀性格）
- *   ⑥ 室内静物/平光近景 contrast < 0.18                          → UM-400 · 95%
- *   兜底 neutral                                                  → PT-400 · 80%
- *
- * 纯函数、零依赖（不 import RN / Expo），Node 探针可直接跑。
+ * AUTO 场景分类与选卷。自动强度在 70%–85% 之间，手动档位保持用户选择。
+ * 规则只使用 SceneStats，照片像素处理由独立渲染管线完成。
  */
-
 import type { PresetIntensityTier, SceneStats } from '../types';
 import type { LutStockId } from '../constants/filmRender';
 import {
@@ -48,8 +26,8 @@ export interface StockRecommendation {
   intensityAuto: boolean;
   /**
    * 成片左下角徽标文本（`null` = 不需要画）：
-   * - AUTO 底片：`AUTO -> UM-400 · 95%`
-   * - 手动底片 + AUTO 强度：`UM-400 · AUTO 92%`
+   * - AUTO 底片：`AUTO -> UM-400 · 80%`
+   * - 手动底片 + AUTO 强度：`UM-400 · AUTO 80%`
    */
   label: string | null;
   /** 匹配理由（中文短句，调试/无障碍文案用）。 */
@@ -66,28 +44,26 @@ export type SceneMatchSceneKind =
   | 'flat-indoor'
   | 'neutral';
 
-/** AUTO 模式下每个场景选哪卷、给多少强度（用户表里的固定值，全部落在 70%~95%）。 */
-const AUTO_STOCK_BY_SCENE: Readonly<
-  Record<SceneMatchSceneKind, { stockId: LutStockId; scale: number }>
-> = {
-  night: { stockId: 'cs-800t', scale: 0.94 },
-  'bright-highkey': { stockId: 'pt-400', scale: 0.75 },
-  backlight: { stockId: 'ek-100', scale: 0.92 },
-  'cool-green': { stockId: 'fj-400', scale: 0.88 },
-  golden: { stockId: 'gd-200', scale: 0.9 },
-  'flat-indoor': { stockId: 'um-400', scale: 0.95 },
-  neutral: { stockId: 'pt-400', scale: 0.8 },
+/** AUTO 模式下每个场景选哪卷。 */
+const AUTO_STOCK_BY_SCENE: Readonly<Record<SceneMatchSceneKind, LutStockId>> = {
+  night: 'cs-800t',
+  'bright-highkey': 'pt-400',
+  backlight: 'ek-100',
+  'cool-green': 'fg-400',
+  golden: 'gd-200',
+  'flat-indoor': 'um-400',
+  neutral: 'pt-400',
 };
 
-/** 手动底片 + AUTO 强度时，每个场景给多少强度（70%~95% 区间内，与 `INTENSITY_AUTO_MIN/MAX` 同步）。 */
+/** AUTO 强度：按场景取 70%~85%（与 `INTENSITY_AUTO_MIN/MAX` 同步）。 */
 const AUTO_INTENSITY_BY_SCENE: Readonly<Record<SceneMatchSceneKind, number>> = {
-  night: 0.94,
-  'bright-highkey': 0.75,
-  backlight: 0.92,
-  'cool-green': 0.88,
-  golden: 0.9,
-  'flat-indoor': 0.95,
-  neutral: 0.8,
+  night: 0.8,
+  'bright-highkey': 0.7,
+  backlight: 0.78,
+  'cool-green': 0.74,
+  golden: 0.76,
+  'flat-indoor': 0.8,
+  neutral: 0.72,
 };
 
 /** 场景分类的优先级（先命中先赢）。 */
@@ -100,21 +76,22 @@ const SCENE_ORDER: readonly SceneMatchSceneKind[] = [
   'flat-indoor',
 ];
 
-/** 十一卷里的彩色卷（AUTO 可识别全部九卷彩色底片）。 */
+/** 可选的彩色卷；AUTO 模式也从这里识别手动选卷。 */
 const COLOR_STOCK_IDS: readonly LutStockId[] = [
   'um-400',
   'gd-200',
   'pt-400',
   'cp-200',
-  'fj-400',
+  'dc-200',
   'fg-400',
   'ek-100',
   'rb-100',
+  'mt-500',
   'cs-800t',
 ];
 
 /** 黑白卷（AUTO 不选它们，除非用户手动指定）。 */
-const MONO_STOCK_IDS: readonly LutStockId[] = ['hp-400', 'tx-400'];
+const MONO_STOCK_IDS: readonly LutStockId[] = ['hp-400'];
 
 function isSceneFinite(scene: SceneStats | null | undefined): scene is SceneStats {
   return (
@@ -180,7 +157,7 @@ export function classifyMatchScene(
   return 'neutral';
 }
 
-/** 手动底片 + AUTO 强度：按场景取强度（夹在 70%~95%）。 */
+/** 按场景取 AUTO 强度，夹在 70%~85%。 */
 export function autoIntensityForScene(sceneKind: SceneMatchSceneKind): number {
   const base = AUTO_INTENSITY_BY_SCENE[sceneKind];
   return Math.min(INTENSITY_AUTO_MAX, Math.max(INTENSITY_AUTO_MIN, base));
@@ -236,14 +213,14 @@ export function recommendStockAndIntensity(
   // ① 底片：AUTO 用规则表；手动保持用户那卷（非法 id 回落 UM-400）。
   let stockId: LutStockId;
   if (stockAuto) {
-    stockId = sceneKind === 'golden' ? goldenStockFor(scene) : auto.stockId;
+    stockId = sceneKind === 'golden' ? goldenStockFor(scene) : auto;
   } else if (isKnownStock(options.manualStockId)) {
     stockId = options.manualStockId;
   } else {
     stockId = 'um-400';
   }
 
-  // ② 强度：手动档位优先；AUTO 强度按场景（已在 `autoIntensityForScene` 里夹到 70%~95%）；
+  // ② 强度：手动档位优先；AUTO 强度按场景取 70%~85%。
   //    两者都缺 = 100%。手动档位**不套** AUTO 的下限，否则 subtle 35% 会被抬到 70%
   //    （v2.1.2 用户 m00001：档位表本身已经是 0.35~1.00 的合法值）。
   let intensityScale: number;
@@ -299,5 +276,5 @@ function describeSceneMatch(
   return `${sceneText[sceneKind]} → 手动 ${target}`;
 }
 
-/** 供探针/测试使用：十一卷里哪些是彩色卷。 */
+/** 供探针/测试使用：当前哪些卷是彩色卷。 */
 export const AUTO_COLOR_STOCK_IDS = COLOR_STOCK_IDS;

@@ -802,7 +802,7 @@ export const FilmDrawer = memo(function FilmDrawer({
             ① 「AUTO 智能底片」—— 整卷由场景引擎按拍摄画面自动选卷（+强度）；它不是
                第十二支卷，所以不做成网格卡片，而是一整行开关，选中时十一卷网格不再点亮；
             ② 「预设强度」六档分段条 —— subtle 35% / soft 60% / standard 80% /
-               rich 92%（默认）/ max 100% / AUTO。选卷不会重置强度档，AUTO 底片也
+               standard 80%（默认）/ rich 92% / max 100% / AUTO。选卷不会重置强度档，AUTO 底片也
                不吞强度档（两个旋钮独立：底片可以 AUTO、强度仍可手动）。
             两块都**不另铺底色**，与相框行共用"只靠一道下边线分节"的规矩（见
             `close` / `framePanel` 的注释：抽屉里第二块底色就是第二处接缝）。
