@@ -40,7 +40,7 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
    var zoom: CGFloat { get }
    var onMountError: EventDispatcher { get }
    var onCameraReady: EventDispatcher { get }
-@@ -34,11 +38,49 @@
+@@ -34,11 +38,45 @@
    private var photoOutput: AVCapturePhotoOutput?
    private var videoFileOutput: AVCaptureMovieFileOutput?
    private var runtimeErrorTask: Task<Void, Never>?
@@ -65,10 +65,6 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
 +    }
 +  }
 +
-+  deinit {
-+    if let thermalObserver { NotificationCenter.default.removeObserver(thermalObserver) }
-+  }
-+
 +  /// Reduce continuous ISP / preview work without changing sensor crop or still size.
 +  /// Low minimum FPS lets auto-exposure retain long exposures in dim scenes.
 +  private func configureStillPreviewRate() {
@@ -90,7 +86,7 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
    }
 
    func initializeCaptureSessionInput() {
-@@ -110,6 +152,7 @@
+@@ -110,6 +148,7 @@
      }
      if delegate.active {
        if hasAvailableCameraDevice && !self.session.isRunning {
@@ -98,7 +94,7 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
          self.session.startRunning()
        }
      } else {
-@@ -198,6 +241,11 @@
+@@ -198,6 +237,11 @@
        return
      }
 
@@ -110,7 +106,7 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
      do {
        try device.lockForConfiguration()
        defer { device.unlockForConfiguration() }
-@@ -209,6 +257,160 @@
+@@ -209,6 +253,160 @@
      }
    }
 
@@ -271,7 +267,7 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
    func updateZoom() {
      guard let device = captureDeviceInput?.device, let delegate else {
        return
-@@ -277,6 +479,10 @@
+@@ -277,6 +475,10 @@
    func stopSession() {
      runtimeErrorTask?.cancel()
      runtimeErrorTask = nil
@@ -282,15 +278,17 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
 
      // Stop before deconfiguring. Removing inputs and outputs from a session that is still
      // running rebuilds the capture graph just to tear it down, and that rebuild waits out
-@@ -323,6 +529,7 @@
+@@ -322,7 +524,9 @@
+   }
 
    deinit {
++    if let thermalObserver { NotificationCenter.default.removeObserver(thermalObserver) }
      runtimeErrorTask?.cancel()
 +    focusResetWorkItem?.cancel()
    }
 
    var currentPhotoOutput: AVCapturePhotoOutput? { photoOutput }
-@@ -339,12 +546,19 @@
+@@ -339,12 +543,19 @@
      if captureDeviceInput?.device.uniqueID == device.uniqueID {
        return
      }
@@ -310,7 +308,7 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
      }
      if let captureDeviceInput {
        session.removeInput(captureDeviceInput)
-@@ -416,6 +630,7 @@
+@@ -416,6 +627,7 @@
      configureResponsiveCapture(photoOutput)
 
      session.commitConfiguration()
