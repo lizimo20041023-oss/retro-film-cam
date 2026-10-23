@@ -8,6 +8,8 @@ import type { Messages } from '../types';
 export const ja: Messages = {
   /* ---------------- 共通 ---------------- */
   'common.unknownError': '不明なエラー',
+  'gallery.selection.save': '写真に保存',
+  'gallery.selection.saved': '{total} 枚中 {saved} 枚を保存',
 
   /* ---------------- ① 上部バー ---------------- */
   'camera.flash.label': 'フラッシュ',

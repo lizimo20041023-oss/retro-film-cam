@@ -27,6 +27,9 @@ interface FilmPersonality {
   readonly grainScale: number;
   /** Calibrated dye strength before the user's intensity control. */
   readonly dyeStrength?: number;
+  /** Spectral base density before the personality; prevents a second heavy grade
+   * on phone JPEGs which already contain a tone curve and local contrast. */
+  readonly baseDensity?: number;
 }
 
 const IDENTITY_MATRIX: FilmPersonality['matrix'] = [
@@ -37,8 +40,9 @@ const IDENTITY_MATRIX: FilmPersonality['matrix'] = [
 
 const FILM_PERSONALITIES: Record<LutStockId, FilmPersonality> = {
   'um-400': {
+    baseDensity: 0.55,
     gamma: 1,
-    contrast: 0.24,
+    contrast: 0.16,
     black: 0.012,
     white: 0.99,
     saturation: 0.94,
@@ -49,6 +53,7 @@ const FILM_PERSONALITIES: Record<LutStockId, FilmPersonality> = {
     grainScale: 0.72,
   },
   'gd-200': {
+    baseDensity: 0.45,
     gamma: 0.95,
     contrast: 0.04,
     black: 0.02,
@@ -61,11 +66,12 @@ const FILM_PERSONALITIES: Record<LutStockId, FilmPersonality> = {
     grainScale: 0.58,
   },
   'pt-400': {
-    gamma: 0.92,
-    contrast: -0.16,
-    black: 0.045,
+    baseDensity: 0.3,
+    gamma: 0.98,
+    contrast: -0.07,
+    black: 0.016,
     white: 0.99,
-    saturation: 0.92,
+    saturation: 1,
     hueSaturation: [1.04, 0.95, 0.94, 0.97, 0.93, 1.04],
     matrix: [1.02, 0.005, -0.01, -0.007, 1, 0.007, 0.007, 0.003, 0.993],
     shadows: [0.002, 0.008, 0.009],
@@ -73,11 +79,12 @@ const FILM_PERSONALITIES: Record<LutStockId, FilmPersonality> = {
     grainScale: 0.45,
   },
   'cp-200': {
+    baseDensity: 0.5,
     gamma: 1,
     contrast: 0.14,
-    black: 0.022,
-    white: 0.97,
-    saturation: 0.84,
+    black: 0.012,
+    white: 0.99,
+    saturation: 0.94,
     hueSaturation: [1.02, 1.01, 0.8, 0.86, 0.8, 0.93],
     matrix: [1.045, 0.005, -0.023, 0.009, 1.02, -0.023, -0.015, 0, 0.965],
     shadows: [0.013, 0.005, -0.013],
@@ -85,19 +92,21 @@ const FILM_PERSONALITIES: Record<LutStockId, FilmPersonality> = {
     grainScale: 0.68,
   },
   'dc-200': {
+    baseDensity: 0.42,
     // Restrained documentary color: quieter chroma, cool toe, soft shoulder.
     gamma: 1,
     contrast: 0.13,
     black: 0.018,
     white: 0.985,
-    saturation: 0.8,
-    hueSaturation: [0.94, 0.98, 0.88, 0.9, 0.88, 0.94],
+    saturation: 0.88,
+    hueSaturation: [0.94, 0.98, 0.62, 0.9, 0.88, 0.94],
     matrix: [1.012, -0.006, -0.006, -0.003, 1.008, -0.005, 0.006, 0.006, 0.99],
     shadows: [-0.011, 0.004, 0.012],
     highlights: [0.006, 0.005, -0.004],
     grainScale: 0.52,
   },
   'fg-400': {
+    baseDensity: 0.55,
     gamma: 0.94,
     contrast: 0.1,
     black: 0.018,
@@ -112,11 +121,12 @@ const FILM_PERSONALITIES: Record<LutStockId, FilmPersonality> = {
     dyeStrength: 0.68,
   },
   'ek-100': {
+    baseDensity: 0.6,
     gamma: 1.02,
-    contrast: 0.23,
+    contrast: 0.16,
     black: 0.006,
     white: 0.995,
-    saturation: 1.06,
+    saturation: 1.03,
     hueSaturation: [1.01, 1.01, 1.03, 1.03, 1.04, 1.02],
     matrix: [1.02, -0.009, -0.005, -0.006, 1.02, -0.004, -0.003, -0.009, 1.022],
     shadows: [-0.004, 0.001, 0.006],
@@ -124,6 +134,7 @@ const FILM_PERSONALITIES: Record<LutStockId, FilmPersonality> = {
     grainScale: 0,
   },
   'rb-100': {
+    baseDensity: 0.5,
     gamma: 0.98,
     contrast: 0.15,
     black: 0.01,
@@ -138,10 +149,11 @@ const FILM_PERSONALITIES: Record<LutStockId, FilmPersonality> = {
     dyeStrength: 0.62,
   },
   'mt-500': {
+    baseDensity: 0.25,
     // Low contrast cinema color with clean skin and a black floor.
-    gamma: 0.81,
-    contrast: -0.14,
-    black: 0.025,
+    gamma: 0.97,
+    contrast: -0.1,
+    black: 0.014,
     white: 0.99,
     saturation: 0.97,
     hueSaturation: [1.03, 1.01, 0.98, 0.97, 0.96, 1.02],
@@ -151,14 +163,15 @@ const FILM_PERSONALITIES: Record<LutStockId, FilmPersonality> = {
     grainScale: 0.4,
   },
   'cs-800t': {
-    gamma: 1.05,
+    baseDensity: 0.5,
+    gamma: 1.01,
     contrast: 0.15,
     black: 0.008,
     white: 0.985,
     saturation: 0.94,
     hueSaturation: [1.05, 1, 0.86, 0.95, 1.06, 0.96],
     matrix: [1.01, -0.01, -0.02, -0.013, 1.008, 0, -0.02, 0.018, 1.06],
-    shadows: [-0.026, -0.006, 0.038],
+    shadows: [-0.014, -0.003, 0.022],
     highlights: [0.028, 0.014, -0.016],
     grainScale: 0.72,
   },
@@ -238,9 +251,14 @@ export function applyFilmPersonalityToLut(lut: Lut3D, stockId: string): Lut3D {
   const lutPlane = lutSize * lutSize;
 
   for (let i = 0; i < source.length; i += 3) {
-    const sourceR = source[i] / 255;
-    const sourceG = source[i + 1] / 255;
-    const sourceB = source[i + 2] / 255;
+    const node = i / 3;
+    const inputR = Math.floor(node / lutPlane) / (lutSize - 1);
+    const inputG = (Math.floor(node / lutSize) % lutSize) / (lutSize - 1);
+    const inputB = (node % lutSize) / (lutSize - 1);
+    const density = profile.baseDensity ?? 1;
+    const sourceR = inputR + (source[i] / 255 - inputR) * density;
+    const sourceG = inputG + (source[i + 1] / 255 - inputG) * density;
+    const sourceB = inputB + (source[i + 2] / 255 - inputB) * density;
 
     if (profile.monoMix !== undefined) {
       const mono = sourceR * profile.monoMix[0]
@@ -257,10 +275,10 @@ export function applyFilmPersonalityToLut(lut: Lut3D, stockId: string): Lut3D {
     const mixedG = sourceR * m[3] + sourceG * m[4] + sourceB * m[5];
     const mixedB = sourceR * m[6] + sourceG * m[7] + sourceB * m[8];
     const luma = clamp01(mixedR * 0.2126 + mixedG * 0.7152 + mixedB * 0.0722);
-    const density = profile.hueExposure === undefined
+    const hueDensity = profile.hueExposure === undefined
       ? 1
       : hueResponse(mixedR, mixedG, mixedB, profile.hueExposure);
-    const tone = clamp01(toneLuma(luma, profile) * density);
+    const tone = clamp01(toneLuma(luma, profile) * hueDensity);
     const saturation = profile.saturation
       * hueResponse(mixedR, mixedG, mixedB, profile.hueSaturation);
     const shadowWeight = 1 - smoothstep(0.12, 0.62, tone);
@@ -301,10 +319,6 @@ export function applyFilmPersonalityToLut(lut: Lut3D, stockId: string): Lut3D {
     }
 
     if (dyeStrength < 1) {
-      const node = i / 3;
-      const inputR = Math.floor(node / lutPlane) / (lutSize - 1);
-      const inputG = (Math.floor(node / lutSize) % lutSize) / (lutSize - 1);
-      const inputB = (node % lutSize) / (lutSize - 1);
       red = inputR + (clamp01(red) - inputR) * dyeStrength;
       green = inputG + (clamp01(green) - inputG) * dyeStrength;
       blue = inputB + (clamp01(blue) - inputB) * dyeStrength;

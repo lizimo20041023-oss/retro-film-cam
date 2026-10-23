@@ -17,6 +17,8 @@
 export const zhHans = {
   /* ---------------- 通用 ---------------- */
   'common.unknownError': '未知错误',
+  'gallery.selection.save': '保存到相册',
+  'gallery.selection.saved': '已保存 {saved} / {total} 张',
 
   /* ---------------- ① 顶部操作栏（拨轮底下的蚀刻小字） ---------------- */
   'camera.flash.label': '闪光灯',

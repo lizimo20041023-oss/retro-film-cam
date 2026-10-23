@@ -19,11 +19,15 @@ import { grainLevelAt, findGrainLevelIndex, applyGrainLevel } from '../constants
 import type { LocaleId } from '../i18n/types';
 import type {
   FilmPreset,
+  DateEngineConfig,
+  FrameVariant,
   FilmStageHost,
   FrameSpec,
   LocationMode,
   NoFrameAspect,
   PlaceDetail,
+  PresetIntensityTier,
+  StockMode,
   ResolvedPlace,
   Size,
   WatermarkAlign,
@@ -52,6 +56,8 @@ import { processFilmPhoto } from './processFilmPhoto';
 
 /** `importAndDevelop` 的入参。 */
 export interface ImportAndDevelopOptions {
+  dateEngine?: DateEngineConfig;
+  frameVariant?: FrameVariant;
   /**
    * 合成舞台宿主（App 里由 `useFilmStage()` 提供）。
    *
@@ -127,6 +133,10 @@ export interface ImportAndDevelopOptions {
    * 这里走同一对纯函数，两边的颗粒力度不会漂移。
    */
   grainLevel?: string;
+  stockMode?: StockMode;
+  intensityTier?: PresetIntensityTier;
+  /** Stop between photos; an in-flight photo finishes safely before cancellation. */
+  shouldCancel?: () => boolean;
   /**
    * 这一卷已经拍到第几张（用来给这套水印编号）。
    *
@@ -453,6 +463,7 @@ export async function importAndDevelop(
 
   // ---- 3. 逐张冲印（**串行**：宿主只有一块屏幕位置） ----------------------
   for (let index = 0; index < assets.length; index += 1) {
+    if (options.shouldCancel?.()) break;
     options.onProgress?.({ index, total: assets.length });
     const asset = assets[index];
     const exif = isBag(asset.exif) ? asset.exif : null;
@@ -510,6 +521,8 @@ export async function importAndDevelop(
       const locationResolvedAt = __DEV__ ? Date.now() : 0;
 
       const photo = await processFilmPhoto({
+        dateEngine: options.dateEngine,
+        frameVariant: options.frameVariant,
         /*
          * `width` / `height` 在系统没给的时候可能是 0（见 `ImagePickerAsset` 的类型注释）。
          * 归一化那一步只按"最长边"算缩放比例，0 会让它除零，所以至少兜到 1 ——
@@ -535,6 +548,8 @@ export async function importAndDevelop(
         adaptiveGrade: options.adaptiveGrade,
         placeDetail: options.placeDetail,
         exposureIndex: exposureBase + index,
+        stockMode: options.stockMode,
+        intensityTier: options.intensityTier,
       });
       // processFilmPhoto 已在最终烧水印前等待这项查询；这里复用结果只为统计提示。
       const geocoded = await geocodedPromise;
@@ -551,7 +566,7 @@ export async function importAndDevelop(
         width: photo.pixelWidth,
         height: photo.pixelHeight,
         frameId: frame.id,
-        presetId: effectivePreset.id,
+        presetId: photo.effectivePresetId ?? effectivePreset.id,
         // 最终 ViewShot 已经是 JPEG；原样复制可避免每张导入照片再做一次全尺寸有损编码。
         sourceFormat: 'jpeg',
         maxLongEdge: Math.max(photo.pixelWidth, photo.pixelHeight),
@@ -594,7 +609,7 @@ export async function importAndDevelop(
       ok: false,
       uris,
       failed,
-      reason: 'failed',
+      reason: options.shouldCancel?.() ? 'cancelled' : 'failed',
       ...(lastError === null ? {} : { message: lastError }),
       missingExifDate,
       missingSourceGps,

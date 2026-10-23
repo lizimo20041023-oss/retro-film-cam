@@ -16,12 +16,8 @@
  * ① **齿孔轨道为什么不是"每张底片各画一段"？**
  *    用户的原话是"贯穿整屏、完全相连"。如果每张底片自己带一段轨道，底片之间
  *    的间距就会把轨道切断，滚动时还会看到一段段接头在跳。所以结构是**倒过来**的：
- *    进纸口（`FlatList`）和画面是**两个平行的东西** ——
- *      · 一个 `FlatList` 横着放，每项是透明的占位（只负责提供滚动、吸附、可见性）；
- *      · 真正的画面由 `onScroll` 的偏移量驱动，整条轨道 + 整排底片一起
- *        `translateX(-offset)`。
- *    这样轨道天然是一条连续的带子（它根本没有"每张"这个概念），
- *    而底片和它**同速**移动，观感上就是"底片在轨道上滑过"。
+ *    照片由虚拟 FlatList 负责，只挂载视口附近的底片；上下轨道独立连续。
+ *    轨道位移由 native driver 对孔距取模，不逐帧 setState，也不生成整卷齿孔。
  *
  * ② **叠合（打滑）机制已被删除，不要再加回来。**
  *    原先有一套"6% 打滑"：第 16 张一张（`index % 16 === 0`）会让后一张向左压过去叠合
@@ -38,10 +34,9 @@
  * 真机上的手感（滚动阻尼、`Haptics.selectionAsync` 的间隔是否太密）、以及
  * 齿孔轨道会不会被 `FlatList` 的裁剪吃掉 —— 见交付报告"没能验证"一节。
  */
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useMemo, useRef } from 'react';
 import {
   Animated,
-  FlatList,
   Image,
   Pressable,
   StyleSheet,
@@ -52,8 +47,8 @@ import type { NativeScrollEvent, NativeSyntheticEvent } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { themeFor, UI_MONO } from '../constants/theme';
 import type { Theme } from '../constants/theme';
-import { useI18n } from '../i18n';
 import type { GalleryShot } from '../utils/galleryStore';
+import { galleryFilmLabel } from '../utils/galleryLabels';
 
 /* ==========================================================================
  * 常量
@@ -142,7 +137,7 @@ export function frameCodeText(index: number, total: number, code: string): strin
 interface RailProps {
   side: 'top' | 'bottom';
   /** 滚动偏移（pt）。轨道跟着画面一起走，才像同一条底片在过片。 */
-  offset: number;
+  offset: ReturnType<typeof Animated.multiply>;
   holes: number;
 }
 
@@ -166,11 +161,11 @@ function FilmRail({ side, offset, holes }: RailProps): React.ReactElement {
 
   return (
     <View style={[styles.rail, side === 'top' ? styles.railTop : styles.railBottom]}>
-      <View style={[styles.railBelt, { transform: [{ translateX: -offset }] }]}>
+      <Animated.View style={[styles.railBelt, { transform: [{ translateX: offset }] }]}>
         {perforations.map((left) => (
           <View key={left} style={[styles.perforation, { left: left + (PERF_PITCH - PERF_WIDTH) / 2 }]} />
         ))}
-      </View>
+      </Animated.View>
     </View>
   );
 }
@@ -201,6 +196,7 @@ interface FrameProps {
   /** 多选删除态；不在选择模式时为 `null`。 */
   selected: boolean | null;
   onPress: (shot: GalleryShot) => void;
+  onLongPress?: (shot: GalleryShot) => void;
 }
 
 /**
@@ -208,18 +204,21 @@ interface FrameProps {
  * 整张完整居中地放进格子里 —— 关键尺寸是 `StyleSheet.absoluteFillObject` 的四条边，
  * 它是相对**父窗口**算的，所以图片绝不会由自己的宽高比把格子撑大。
  */
-function FilmFrame(props: FrameProps): React.ReactElement {
+const FilmFrame = memo(function FilmFrame(props: FrameProps): React.ReactElement {
   const { shot, index, total, frameWidth, frameHeight, isLast, code, selected, onPress } = props;
 
   const board = themeFor('dark');
   const styles = useMemo(() => createStyles(board), [board]);
 
-  const codeText = frameCodeText(index, total, code);
+  const codeText = code;
 
   return (
     <Pressable
       onPress={() => onPress(shot)}
-      accessibilityRole="imagebutton"
+      onLongPress={props.onLongPress ? () => props.onLongPress?.(shot) : undefined}
+      delayLongPress={420}
+      accessibilityRole={selected === null ? 'imagebutton' : 'checkbox'}
+      accessibilityState={selected === null ? undefined : { checked: selected }}
       accessibilityLabel={`${index + 1} / ${total}`}
       style={({ pressed }) => [
         styles.frameSlot,
@@ -264,7 +263,7 @@ function FilmFrame(props: FrameProps): React.ReactElement {
       </View>
     </Pressable>
   );
-}
+});
 
 /* ==========================================================================
  * 主组件
@@ -343,7 +342,6 @@ export function computeStripLayout(
 export interface StripViewProps {
   shots: GalleryShot[];
   /** 当前胶卷代号（`preset.code` 之类），印在齿孔轨道上。 */
-  filmCode: string;
   /** 屏上可用的宽 / 高（pt）。调用方按安全区算好。 */
   width: number;
   height: number;
@@ -362,7 +360,6 @@ export interface StripViewProps {
 export function StripView(props: StripViewProps): React.ReactElement {
   const {
     shots,
-    filmCode,
     width,
     height,
     onOpen,
@@ -371,7 +368,6 @@ export function StripView(props: StripViewProps): React.ReactElement {
     onToggleSelection,
     onBeginSelection,
   } = props;
-  const { t } = useI18n();
 
   /**
    * 暗房面固定取深色（见上面 `DARKROOM` 那段理由）。
@@ -381,7 +377,7 @@ export function StripView(props: StripViewProps): React.ReactElement {
   const board = themeFor('dark');
   const styles = useMemo(() => createStyles(board), [board]);
 
-  const [offset, setOffset] = useState(0);
+  const offset = useRef(new Animated.Value(0)).current;
   /** 上一次触发过片震动的"当前位置"。用它去重：同一个位置绝不震第二次。 */
   const lastSweptRef = useRef<number | null>(null);
 
@@ -450,44 +446,14 @@ export function StripView(props: StripViewProps): React.ReactElement {
     return <View style={[styles.root, { width, height }]} />;
   }
 
-  const railOffset = offset;
+  const railOffset = Animated.multiply(Animated.modulo(offset, PERF_PITCH), -1);
+  const visibleHoles = Math.ceil(width / PERF_PITCH) + 2;
 
   return (
     <View style={[styles.root, { width, height }]}>
       {/* ① 上下两条贯穿轨道（在画面之前画，底片滚过去时压在它们下面 —— 和真胶片一致） */}
       <View style={[styles.railLayer, { top: 0 }]} pointerEvents="none">
-        <FilmRail side="top" offset={railOffset} holes={layout.holes} />
-      </View>
-
-      {/* ② 画面：由滚动偏移驱动，整排一起平移 */}
-      <View
-        style={[styles.stripLayer, { top: RAIL_HEIGHT, height: layout.frameHeight + FRAME_FOOTER_HEIGHT }]}
-        pointerEvents="box-none"
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-      >
-        <Animated.View
-          style={[styles.strip, { transform: [{ translateX: -offset }], paddingLeft: 8 }]}
-          pointerEvents="box-none"
-        >
-          {shots.map((shot, index) => (
-            <FilmFrame
-              key={shot.id}
-              shot={shot}
-              index={index}
-              total={shots.length}
-              frameWidth={layout.frameWidth}
-              frameHeight={layout.frameHeight}
-              // 间距只有这一个来源：`FilmFrame` 内部那个 `marginRight: FRAME_GAP`。
-              // 这里不再传任何逐张变化的位移量 —— 原来传的 `previousSlip`
-              // 正是"后一张压到前一张上"的开关（见文件头 ②）。
-              isLast={index === shots.length - 1}
-              code={filmCode}
-              selected={selectionMode ? selectedSet.has(shot.id) : null}
-              onPress={handleFramePress}
-            />
-          ))}
-        </Animated.View>
+        <FilmRail side="top" offset={railOffset} holes={visibleHoles} />
       </View>
 
       {/*
@@ -497,7 +463,7 @@ export function StripView(props: StripViewProps): React.ReactElement {
         ⚠️ 触摸必须能被它拿到（它是唯一的滚动手势来源），所以底色透明但**不能** pointerEvents none。
       */}
       <View style={[styles.scrollLayer, { top: RAIL_HEIGHT, height: layout.frameHeight + FRAME_FOOTER_HEIGHT }]}>
-        <FlatList
+        <Animated.FlatList
           data={shots}
           horizontal
           keyExtractor={(shot) => shot.id}
@@ -506,27 +472,26 @@ export function StripView(props: StripViewProps): React.ReactElement {
           decelerationRate="fast"
           snapToInterval={sweepStep}
           snapToAlignment="start"
-          onScroll={(event) => setOffset(event.nativeEvent.contentOffset.x)}
+          onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: offset } } }],
+            { useNativeDriver: true })}
+          initialNumToRender={3}
+          maxToRenderPerBatch={3}
+          windowSize={5}
+          extraData={selectedIds}
+          getItemLayout={(_data, index) => ({ length: sweepStep, offset: sweepStep * index, index })}
           scrollEventThrottle={16}
           onMomentumScrollEnd={handleMomentumEnd}
           contentContainerStyle={styles.scrollContent}
           renderItem={({ item, index }) => {
-            const selected = selectedSet.has(item.id);
             return (
-              <Pressable
-                onPress={() => handleFramePress(item)}
-                onLongPress={selectionMode ? undefined : () => handleFrameLongPress(item)}
-                delayLongPress={420}
-                accessibilityRole={selectionMode ? 'checkbox' : 'imagebutton'}
-                accessibilityState={selectionMode ? { checked: selected } : undefined}
-                accessibilityLabel={t('gallery.selection.photo', {
-                  index: index + 1,
-                  total: shots.length,
-                })}
-                // 宽度就是 `sweepStep`：视觉上一格推进多少，这个透明项就必须多宽。
-                // 负位移已废除（见文件头 ②），这里与 `FilmFrame` 的
-                // `width + marginRight` 逐项相等，两边不可能再对不上。
-                style={{ width: sweepStep, height: layout.frameHeight + FRAME_FOOTER_HEIGHT }}
+              <FilmFrame
+                shot={item} index={index} total={shots.length}
+                frameWidth={layout.frameWidth} frameHeight={layout.frameHeight}
+                isLast={index === shots.length - 1}
+                code={galleryFilmLabel(item.presetId)}
+                selected={selectionMode ? selectedSet.has(item.id) : null}
+                onPress={handleFramePress}
+                onLongPress={selectionMode ? undefined : handleFrameLongPress}
               />
             );
           }}
@@ -535,7 +500,7 @@ export function StripView(props: StripViewProps): React.ReactElement {
 
       {/* ④ 下轨 */}
       <View style={[styles.railLayer, { top: RAIL_HEIGHT + layout.frameHeight + FRAME_FOOTER_HEIGHT }]} pointerEvents="none">
-        <FilmRail side="bottom" offset={railOffset} holes={layout.holes} />
+        <FilmRail side="bottom" offset={railOffset} holes={visibleHoles} />
       </View>
     </View>
   );

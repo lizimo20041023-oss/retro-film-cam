@@ -60,6 +60,7 @@ import type {
 } from '../types';
 import { compactPlace, formatResolvedPlace, watermarkPlaceFont } from '../utils/placeNames';
 import { planCapture } from '../utils/captureOptions';
+import { avoidDateCollision } from '../utils/watermarkCollision';
 import {
   computeWatermarkPlan,
   formatExposureCode,
@@ -401,7 +402,7 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
     layout.width - Math.max(2, Math.round(layout.width * timestamp.insetRatio)) * 2,
   );
 
-  return plan.lines.map((line) => ({
+  const pieces: WatermarkPiece[] = plan.lines.map((line) => ({
     // 四种版式里同一份 plan 不会出现两个同 kind 的行，所以 kind 本身就是稳定的 key
     key: line.kind,
     // v1.8.5：行种类带到渲染层 —— 地名 / 代号行要按地名语言换字体，日期行不换。
@@ -423,6 +424,9 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
     // 七段日期原样带过来（宽度 / 管高 / 缝宽 / 阴影都由 geometry 定）
     ...(line.quartz === undefined ? {} : { quartz: line.quartz }),
   }));
+  return frame.fullBleed === true
+    ? avoidDateCollision(pieces, layout, planInPhotoDate(input)?.placement.bounds ?? null)
+    : pieces;
 }
 
 /* ==========================================================================

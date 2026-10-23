@@ -90,8 +90,8 @@ export const FilmStageComposer = memo(function FilmStageComposer({
       // 固定成片导出模式：能走到这里的两个挂载点都是"要被截图存盘"的路径。
       presentation="print"
       timestampFontFamily={timestampFontFamily}
-      frameVariant={frameVariant}
-      dateEngine={dateEngine}
+      frameVariant={stage.frameVariant ?? frameVariant}
+      dateEngine={stage.dateEngine ?? dateEngine}
       lookSeed={lookSeed}
     />
   );

@@ -40,6 +40,7 @@ import type { FilmLookParams, FilmRenderStage } from './filmRender';
 import { getLutForStock } from './lutAssets';
 import { decodePng, encodePngRgba } from './pngCodec';
 import type { PngImage } from './pngCodec';
+import { hasNativeFilmRenderer, renderNativeFilm } from './nativeFilmRenderer';
 
 export interface RenderFilmToFileInput {
   /** 待显影的照片文件（`file://`；由 ImageManipulator 预处理成 PNG 或 JPEG）。 */
@@ -184,6 +185,16 @@ export async function renderFilmToFile(
   const lut = getLutForStock(input.stockId);
   if (lut === null) {
     throw new Error(`没有 ${input.stockId} 的 LUT 资产（constants/lutAtlas.ts）`);
+  }
+  // Release iOS builds process decode, LUT, grain and PNG encoding on a native
+  // serial background queue. Never read/decode a full image on the JS thread.
+  if (hasNativeFilmRenderer) {
+    const params = filmLookWithIntensity(filmLookParamsFor(input.preset), input.intensity, input.stockId);
+    input.onStage?.('lut');
+    const rendered = await renderNativeFilm(input.sourceUri, input.stockId, lut, params,
+      input.seed, input.overlaySourceUri, input.overlayOpacity);
+    input.onStage?.('done');
+    return { ...rendered, params };
   }
   const source = new File(input.sourceUri);
   if (!source.exists) {

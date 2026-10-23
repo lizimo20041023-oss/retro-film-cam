@@ -51,14 +51,14 @@ import * as Haptics from 'expo-haptics';
 import { resolveCaptureLongEdge } from '../constants/captureQuality';
 import { DEFAULT_FRAME_ID, FRAMES, findFrameIndex } from '../constants/frames';
 import { applyGrainLevel, findGrainLevelIndex, grainLevelAt } from '../constants/grain';
-import { DEFAULT_PRESET_ID, PRESETS, findPresetIndex, resolvePreset } from '../constants/presets';
-import { themeFor, useTheme, UI_MONO } from '../constants/theme';
+import { DEFAULT_PRESET_ID, PRESETS, findPresetIndex } from '../constants/presets';
+import { useTheme, UI_MONO } from '../constants/theme';
 import type { Theme } from '../constants/theme';
 import { useI18n } from '../i18n';
 import { useFilmStage } from '../hooks/useFilmStage';
 import { useGallery } from '../hooks/useGallery';
 import { useSettings } from '../hooks/useSettings';
-import type { Size } from '../types';
+import type { FilmPreset, FrameSpec, Size } from '../types';
 import { describeError } from '../utils/describeError';
 import { importAndDevelop } from '../utils/importPhoto';
 import type { GalleryShot } from '../utils/galleryStore';
@@ -66,6 +66,8 @@ import { computeDevelopStageBox } from './DevelopOverlay';
 import { FilmStageComposer } from './FilmStageComposer';
 import { Lightbox, type LightboxToast } from './Lightbox';
 import { StripView } from './StripView';
+import { savePhotoBatch } from '../utils/batchSave';
+import { saveToLibrary } from '../utils/saveToLibrary';
 import { useFilmFonts } from '../hooks/useFilmFonts';
 
 /** 三列。改这里必须同步改下面 `tileWidth` 的计算，否则最后一行会溢出屏幕。 */
@@ -124,9 +126,12 @@ function computeTileWidth(windowWidth: number): number {
 export interface GalleryScreenProps {
   visible: boolean;
   onClose: () => void;
+  currentFrame?: FrameSpec;
+  currentPreset?: FilmPreset;
+  processing?: boolean;
 }
 
-export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
+export function GalleryScreen({ visible, onClose, currentFrame, currentPreset, processing = false }: GalleryScreenProps) {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const { t, localeId } = useI18n();
@@ -145,15 +150,6 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
   const styles = useMemo(() => createStyles(theme), [theme]);
 
   /**
-   * 冲印幕布**故意不跟随机身**，固定用深色那一套。
-   *
-   * 为什么：幕布底下盖着的是 `FilmCompositor` 正在合成的照片 —— 那是暗房里的工作台，
-   * 不是 App 的外壳。系统切成浅色时把幕布也换成浅的，等于让照片浮在一块白板上，
-   * "当着用户的面冲印"这个语境就没了（同一条理由见 `StripView` 的暗房背光）。
-   */
-  const darkroom = useMemo(() => themeFor('dark'), []);
-
-  /**
    * 合成舞台宿主。**必须挂在 UI 层**（`useFilmStage` 的文件头解释了原因）：
    * iOS 截图对"没真的渲染在屏幕上"的视图可能截到空图，所以导入时 `FilmCompositor`
    * 要真的挂到本屏上、盖一层幕布，等截完再卸。
@@ -166,6 +162,17 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
 
   /** 导入进行中（选完图到全部冲印完）。用它吃掉重复点击，也用来显示幕布。 */
   const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState({ index: 0, total: 0 });
+  const importCancelRef = useRef(false);
+  const closeAfterImportRef = useRef(false);
+  const [exportProgress, setExportProgress] = useState<{ done: number; total: number } | null>(null);
+  const exportCancelRef = useRef(false);
+  const exportBusyRef = useRef(false);
+  const closeAfterExportRef = useRef(false);
+  useEffect(() => () => {
+    importCancelRef.current = true;
+    exportCancelRef.current = true;
+  }, []);
 
   /**
    * 正在看大图的那张；`null` = 停留在网格。
@@ -302,13 +309,14 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
    * 一条成片都没有时落到相机屏的默认值，这样第一次进相册点导入也不会崩。
    */
   const importFrame = useMemo(() => {
+    if (currentFrame) return currentFrame;
     const last = shots.length > 0 ? shots[0] : null;
     return FRAMES[findFrameIndex(last?.frameId ?? DEFAULT_FRAME_ID)] ?? FRAMES[0];
-  }, [shots]);
+  }, [shots, currentFrame]);
 
   const importPreset = useMemo(() => {
     const last = shots.length > 0 ? shots[0] : null;
-    const base = PRESETS[findPresetIndex(last?.presetId ?? DEFAULT_PRESET_ID)] ?? PRESETS[0];
+    const base = currentPreset ?? PRESETS[findPresetIndex(last?.presetId ?? DEFAULT_PRESET_ID)] ?? PRESETS[0];
     /*
      * 颗粒跟着**用户当前设置**走（不是跟着上一张成片）：颗粒是"这一卷怎么冲"，
      * 用户在设置页改了就该立刻生效；而相框/胶卷是"这台机器装着什么"，只能从成片反推。
@@ -319,7 +327,7 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
       ...applyGrainLevel(base, grainLevelAt(findGrainLevelIndex(settings.grainLevel)).opacity),
       captureLongEdge: resolveCaptureLongEdge(settings.captureQuality),
     };
-  }, [settings.captureQuality, settings.grainLevel, shots]);
+  }, [settings.captureQuality, settings.grainLevel, shots, currentPreset]);
 
   /**
    * 导入冲印用的舞台盒子。
@@ -348,13 +356,17 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
    * 为每张照片白等 5s 网络、还把 EXIF 坐标发给系统地理编码服务，没有道理。
    */
   const handleImport = useCallback(async (): Promise<void> => {
-    if (importing) {
+    if (importing || processing) {
       return;
     }
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setImporting(true);
+    importCancelRef.current = false;
+    setImportProgress({ index: 0, total: 0 });
     try {
       const result = await importAndDevelop({
+        dateEngine: settings.dateEngine,
+        frameVariant: settings.frameVariant,
         host: filmStage.host,
         frame: importFrame,
         /*
@@ -374,6 +386,10 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
         placeDetail: settings.placeDetail,
         grainLevel: settings.grainLevel,
         locationMode: settings.locationMode,
+        stockMode: settings.stockMode,
+        intensityTier: settings.presetIntensity,
+        shouldCancel: () => importCancelRef.current,
+        onProgress: setImportProgress,
       });
 
       if (result.ok) {
@@ -418,6 +434,10 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
       });
     } finally {
       setImporting(false);
+      if (closeAfterImportRef.current) {
+        closeAfterImportRef.current = false;
+        onClose();
+      }
     }
   }, [
     filmStage.host,
@@ -425,12 +445,17 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
     importPreset,
     importStage,
     importing,
+    processing,
     localeId,
     refresh,
     settings.captureQuality,
+    settings.dateEngine,
+    settings.frameVariant,
     settings.grainLevel,
     settings.adaptiveGrade,
     settings.locationMode,
+    settings.stockMode,
+    settings.presetIntensity,
     settings.noFrameAspect,
     settings.placeDetail,
     settings.watermarkAlign,
@@ -439,6 +464,7 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
     showToast,
     shots,
     t,
+    onClose,
   ]);
 
   /**
@@ -501,18 +527,44 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
   }, []);
 
   const toggleSelection = useCallback((shot: GalleryShot): void => {
+    if (exportProgress !== null) return;
     void Haptics.selectionAsync();
     setSelectedIds((current) =>
       current.includes(shot.id)
         ? current.filter((id) => id !== shot.id)
         : [...current, shot.id],
     );
-  }, []);
+  }, [exportProgress]);
 
   const toggleSelectAll = useCallback((): void => {
+    if (exportProgress !== null) return;
     void Haptics.selectionAsync();
     setSelectedIds(allSelected ? [] : shots.map((shot) => shot.id));
-  }, [allSelected, shots]);
+  }, [allSelected, shots, exportProgress]);
+
+  const exportSelection = useCallback(async (): Promise<void> => {
+    if (exportBusyRef.current || deletingSelection || selectedIds.length === 0) return;
+    exportBusyRef.current = true;
+    const snapshot = shots.filter((shot) => selectedSet.has(shot.id));
+    exportCancelRef.current = false;
+    setExportProgress({ done: 0, total: snapshot.length });
+    const result = await savePhotoBatch(snapshot, saveToLibrary, {
+      shouldCancel: () => exportCancelRef.current,
+      onProgress: (done, total) => setExportProgress({ done, total }),
+    });
+    setExportProgress(null);
+    exportBusyRef.current = false;
+    const saved = new Set(result.savedIds);
+    // Keep failed and unprocessed photos selected, so retry never duplicates successes.
+    setSelectedIds((current) => current.filter((id) => !saved.has(id)));
+    showToast({ key: `batch-save-${Date.now()}`, message: t('gallery.selection.saved', {
+      saved: result.savedIds.length, total: snapshot.length,
+    }) + (result.message ? ` · ${result.message}` : '') });
+    if (closeAfterExportRef.current) {
+      closeAfterExportRef.current = false;
+      onClose();
+    }
+  }, [exportProgress, deletingSelection, selectedIds, selectedSet, shots, showToast, t, onClose]);
 
   /**
    * 复用 `useGallery().remove`；它负责乐观更新、调用串行 store 删除并静默对账。
@@ -540,7 +592,7 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
   );
 
   const confirmDeleteSelection = useCallback((): void => {
-    if (selectedIds.length === 0 || deletingSelection) {
+    if (selectedIds.length === 0 || deletingSelection || exportProgress !== null) {
       return;
     }
     const snapshot = [...selectedIds];
@@ -557,7 +609,7 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
         },
       ],
     );
-  }, [deleteSelection, deletingSelection, selectedIds, t]);
+  }, [deleteSelection, deletingSelection, selectedIds, t, exportProgress]);
 
   /** 点开某一格。触感放这里而不是 `Pressable` 的 `onPress` 里，是为了只写一次。 */
   const handleOpen = useCallback((id: string): void => {
@@ -570,28 +622,20 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
   }, []);
 
   const handleCloseScreen = useCallback((): void => {
+    if (exportProgress !== null) {
+      exportCancelRef.current = true;
+      closeAfterExportRef.current = true;
+      return;
+    }
+    if (importing) {
+      importCancelRef.current = true;
+      closeAfterImportRef.current = true;
+      return;
+    }
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     exitSelection();
     onClose();
-  }, [exitSelection, onClose]);
-
-  /**
-   * 齿孔轨道上印的胶卷代号，取最近一张成片的预设**名字**。
-   *
-   * 为什么用 `name` 而不是 `id`：预设的 `name` 本来就是代号形态
-   * （`RT-400`、`PR-400`，见 `constants/presets.ts:93/111`），
-   * 而 `id` 是 `retro-400` 这种小写连字符串 —— 印在齿孔旁边像文件名，不像胶卷代号。
-   * 一条成片都没有时给空串：`frameCodeText` 收到空串会返回 `null`，轨道上就不印，
-   * 而不是印一个假的型号。
-   */
-  const lastShotCode = useMemo(() => {
-    const last = shots.length > 0 ? shots[0] : null;
-    if (last?.presetId === undefined) {
-      return '';
-    }
-    const preset = PRESETS[findPresetIndex(last.presetId)];
-    return preset?.name ?? '';
-  }, [shots]);
+  }, [exitSelection, onClose, importing, exportProgress]);
 
   // 不可见时直接不渲染：省掉一整套 FlatList 的布局开销，
   // 也避免相册里的无障碍焦点被取景屏幕抢走。
@@ -629,10 +673,10 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
         {!selectionMode ? (
           <Pressable
             onPress={() => void handleImport()}
-            disabled={importing}
+            disabled={importing || processing}
             accessibilityRole="button"
             accessibilityLabel={t('gallery.import.a11y')}
-            accessibilityState={{ disabled: importing }}
+            accessibilityState={{ disabled: importing || processing }}
             hitSlop={6}
             style={({ pressed }) => [
               styles.import,
@@ -641,7 +685,10 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
             ]}
           >
             <Text style={styles.importText} numberOfLines={1}>
-              {importing ? t('gallery.import.busy') : t('gallery.import')}
+              {importing
+                ? (importProgress.total > 0
+                  ? `${importProgress.index + 1} / ${importProgress.total}` : t('gallery.import.busy'))
+                : t('gallery.import')}
             </Text>
           </Pressable>
         ) : null}
@@ -682,7 +729,7 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
             </Text>
             <Pressable
               onPress={toggleSelectAll}
-              disabled={deletingSelection}
+              disabled={deletingSelection || exportProgress !== null}
               accessibilityRole="button"
               accessibilityState={{ disabled: deletingSelection }}
               accessibilityLabel={t(
@@ -695,27 +742,7 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
               </Text>
             </Pressable>
             <Pressable
-              onPress={confirmDeleteSelection}
-              disabled={selectedIds.length === 0 || deletingSelection}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: selectedIds.length === 0 || deletingSelection }}
-              accessibilityLabel={t('gallery.selection.delete.a11y', {
-                count: selectedIds.length,
-              })}
-              style={({ pressed }) => [
-                styles.selectionDelete,
-                (selectedIds.length === 0 || deletingSelection) && styles.selectionDeleteDisabled,
-                pressed && styles.modeButtonPressed,
-              ]}
-            >
-              <Text style={styles.selectionDeleteText} numberOfLines={1}>
-                {deletingSelection
-                  ? t('gallery.selection.deleting')
-                  : t('gallery.selection.delete')}
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={exitSelection}
+              onPress={() => { if (exportProgress) exportCancelRef.current = true; else exitSelection(); }}
               disabled={deletingSelection}
               accessibilityRole="button"
               accessibilityLabel={t('gallery.selection.cancel')}
@@ -810,9 +837,8 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
       {!loading && shots.length > 0 && viewMode === 'strip' ? (
         <StripView
           shots={shots}
-          filmCode={lastShotCode}
           width={width}
-          height={stripHeight}
+          height={stripHeight - (selectionMode ? 80 : 0)}
           onOpen={(shot) => handleOpen(shot.id)}
           selectionMode={selectionMode}
           selectedIds={selectedIds}
@@ -905,9 +931,8 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
         时直接 `return null`，从结构上保证"没在显影就绝不挂合成视图"
         （比这里再写一次三元更硬，两处挂载点共用同一道门）。
       */}
-      {importing || filmStage.stage !== null ? (
-        <View style={styles.stageLayer}>
-          <View style={styles.stageVeil} pointerEvents="auto" />
+      {filmStage.stage !== null ? (
+        <View style={styles.stageLayer} pointerEvents="none" accessibilityElementsHidden>
           <FilmStageComposer
             stage={filmStage.stage}
             viewShotRef={filmStage.viewShotRef}
@@ -947,10 +972,28 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
              * 导入成片的颗粒/微尘像素 —— 那属于"视觉零回归"范围外，本版不做。
              */
           />
-          <ActivityIndicator color={darkroom.ink.amberSoft} />
-          <Text style={styles.stageBusy} numberOfLines={1}>
-            {t('gallery.import.busy')}
-          </Text>
+        </View>
+      ) : null}
+
+      {selectionMode ? (
+        <View style={[styles.selectionDock, { bottom: Math.max(insets.bottom, 12) }]}>
+          <Pressable onPress={confirmDeleteSelection}
+            disabled={deletingSelection || exportProgress !== null || selectedIds.length === 0}
+            accessibilityRole="button" accessibilityLabel={t('gallery.selection.delete.a11y', { count: selectedIds.length })}
+            style={({ pressed }) => [styles.dockDelete, pressed && styles.modeButtonPressed,
+              (deletingSelection || exportProgress !== null || selectedIds.length === 0) && styles.selectionActionDisabled]}>
+            <Text style={styles.selectionActionText}>{t('gallery.selection.delete')}</Text>
+          </Pressable>
+          <Pressable onPress={() => void exportSelection()}
+            disabled={deletingSelection || exportProgress !== null || selectedIds.length === 0}
+            accessibilityRole="button" accessibilityLabel={t('gallery.selection.save')}
+            style={({ pressed }) => [styles.dockSave, pressed && styles.modeButtonPressed,
+              (deletingSelection || selectedIds.length === 0) && styles.selectionActionDisabled]}>
+            {exportProgress ? <ActivityIndicator size="small" color={ink.paper} /> : null}
+            <Text style={styles.dockSaveText} numberOfLines={1}>
+              {exportProgress ? `${exportProgress.done} / ${exportProgress.total}` : t('gallery.selection.save')}
+            </Text>
+          </Pressable>
         </View>
       ) : null}
 
@@ -996,11 +1039,9 @@ export function GalleryScreen({ visible, onClose }: GalleryScreenProps) {
  * - 【＋ 導入】和模式胶囊原先写死 `rgba(229,169,60,*)` / `#E5A93C`。
  *   它们是"选中 / 主操作"的强调色，浅机身的强调色是朱红，写死琥珀会在浅底上发土。
  *   这里用 `glassBorder` + `ink.amber` 表达同一件事：一块比别人实一点的底色 + 强调色文字。
- * - 只有冲印幕布（`stageVeil` / `stageBusy`）固定走深色，理由见组件里 `darkroom` 那段。
  */
 function createStyles(theme: Theme) {
   const { ink, scrim, glass, glassBorder } = theme;
-  const darkroom = themeFor('dark');
 
   return StyleSheet.create({
   root: {
@@ -1021,9 +1062,9 @@ function createStyles(theme: Theme) {
   title: {
     flex: 1,
     color: ink.paper,
-    fontFamily: UI_MONO,
-    fontSize: 18,
-    letterSpacing: 4,
+    fontSize: 24,
+    fontWeight: '500',
+    letterSpacing: 0.3,
   },
   close: {
     minWidth: 34,
@@ -1094,15 +1135,13 @@ function createStyles(theme: Theme) {
   modeButton: {
     height: 30,
     paddingHorizontal: 14,
-    borderRadius: 15,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: ink.hairline,
+    borderBottomWidth: 1.5,
+    borderColor: 'transparent',
     alignItems: 'center',
     justifyContent: 'center',
   },
   modeButtonOn: {
-    borderColor: glassBorder,
-    backgroundColor: glass,
+    borderColor: ink.paper,
   },
   modeButtonPressed: {
     opacity: 0.7,
@@ -1114,8 +1153,20 @@ function createStyles(theme: Theme) {
     letterSpacing: 1,
   },
   modeTextOn: {
-    color: ink.amber,
+    color: ink.paper,
   },
+  selectionDock: {
+    position: 'absolute', left: 20, right: 20, zIndex: 35,
+    flexDirection: 'row', alignItems: 'center', padding: 8, gap: 8,
+    backgroundColor: theme.scrim, borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth, borderColor: ink.hairline,
+  },
+  dockDelete: { paddingHorizontal: 20, height: 44, justifyContent: 'center' },
+  dockSave: {
+    flex: 1, height: 44, borderRadius: 12, backgroundColor: glass,
+    alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 10,
+  },
+  dockSaveText: { color: ink.paper, fontSize: 14, fontWeight: '600', letterSpacing: 0.3 },
   selectionEntry: {
     height: 30,
     paddingHorizontal: 14,
@@ -1186,17 +1237,6 @@ function createStyles(theme: Theme) {
     alignItems: 'center',
     justifyContent: 'center',
   },
-  stageVeil: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(10, 10, 12, 0.96)',
-  },
-  stageBusy: {
-    marginTop: 12,
-    color: darkroom.ink.paperDim,
-    fontFamily: UI_MONO,
-    fontSize: 12,
-    letterSpacing: 2,
-  },
   errorLine: {
     marginHorizontal: 20,
     marginBottom: 8,
@@ -1229,6 +1269,7 @@ function createStyles(theme: Theme) {
   },
   grid: {
     paddingHorizontal: PADDING,
+    paddingBottom: 120,
   },
   row: {
     gap: GAP,

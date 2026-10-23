@@ -8,6 +8,8 @@ import type { Messages } from '../types';
 export const zhHant: Messages = {
   /* ---------------- 通用 ---------------- */
   'common.unknownError': '未知錯誤',
+  'gallery.selection.save': '儲存至相簿',
+  'gallery.selection.saved': '已儲存 {saved} / {total} 張',
 
   /* ---------------- ① 頂部操作列 ---------------- */
   'camera.flash.label': '閃光燈',

@@ -1,11 +1,13 @@
 diff --git a/node_modules/expo-camera/ios/CameraViewModule.swift b/node_modules/expo-camera/ios/CameraViewModule.swift
-index e199463..7ca1a69 100644
 --- a/node_modules/expo-camera/ios/CameraViewModule.swift
 +++ b/node_modules/expo-camera/ios/CameraViewModule.swift
-@@ -207,6 +207,24 @@ public final class CameraViewModule: Module, ScannerResultHandler {
+@@ -204,6 +204,24 @@
          }
-       }
- 
+         if focusMode == nil && view.autoFocus != .continuousAutoFocus {
+           view.autoFocus = .continuousAutoFocus
++        }
++      }
++
 +      Prop("focusPoint") { (view, focusPoint: CGPoint?) in
 +        // Unlike the other props this one is command-like: tapping the same spot twice has to
 +        // refocus, so a value equal to the current one is still forwarded. Passing `null`
@@ -21,17 +23,13 @@ index e199463..7ca1a69 100644
 +        // nothing. `nil` and 0 are both "no compensation" and must not thrash the device.
 +        if view.exposureBias != exposureBias {
 +          view.exposureBias = exposureBias
-+        }
-+      }
-+
-       Prop("responsiveOrientationWhenOrientationLocked") { (view, responsiveOrientation: Bool?) in
-         if let responsiveOrientation, view.responsiveWhenOrientationLocked != responsiveOrientation {
-           view.responsiveWhenOrientationLocked = responsiveOrientation
+         }
+       }
+
 diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/node_modules/expo-camera/ios/Current/CameraSessionManager.swift
-index 7a6568c..655a3c0 100644
 --- a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift
 +++ b/node_modules/expo-camera/ios/Current/CameraSessionManager.swift
-@@ -13,6 +13,10 @@ protocol CameraSessionManagerDelegate: AnyObject {
+@@ -13,6 +13,10 @@
    var selectedLens: String? { get }
    var torchEnabled: Bool { get }
    var autoFocus: AVCaptureDevice.FocusMode { get }
@@ -42,25 +40,68 @@ index 7a6568c..655a3c0 100644
    var zoom: CGFloat { get }
    var onMountError: EventDispatcher { get }
    var onCameraReady: EventDispatcher { get }
-@@ -34,6 +38,14 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+@@ -34,11 +38,49 @@
    private var photoOutput: AVCapturePhotoOutput?
    private var videoFileOutput: AVCaptureMovieFileOutput?
    private var runtimeErrorTask: Task<Void, Never>?
 +  private var focusResetWorkItem: DispatchWorkItem?
 +  private var isManualFocusActive = false
 +  private var didOverrideExposureForFocusPoint = false
++  private var thermalObserver: NSObjectProtocol?
 +
 +  /// How long a manually picked focus point is held before the camera returns to
 +  /// continuous autofocus. Without this the camera would stay locked on the tapped
 +  /// spot for the rest of the session.
 +  private static let manualFocusResetDelay: TimeInterval = 4.0
- 
+
    init(delegate: CameraSessionManagerDelegate) {
      self.delegate = delegate
-@@ -198,6 +210,11 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+     super.init()
+     deviceDiscovery.delegate = self
++    thermalObserver = NotificationCenter.default.addObserver(
++      forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: nil
++    ) { [weak self] _ in
++      self?.delegate?.sessionQueue.async { [weak self] in self?.configureStillPreviewRate() }
++    }
++  }
++
++  deinit {
++    if let thermalObserver { NotificationCenter.default.removeObserver(thermalObserver) }
++  }
++
++  /// Reduce continuous ISP / preview work without changing sensor crop or still size.
++  /// Low minimum FPS lets auto-exposure retain long exposures in dim scenes.
++  private func configureStillPreviewRate() {
++    guard delegate?.mode == .picture, let device = captureDeviceInput?.device else { return }
++    let hot = ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical
++    let target: Double = hot ? 15 : 24
++    guard let range = device.activeFormat.videoSupportedFrameRateRanges.first(where: {
++      $0.minFrameRate <= target && $0.maxFrameRate >= target
++    }) else { return }
++    do {
++      try device.lockForConfiguration()
++      defer { device.unlockForConfiguration() }
++      let minimumFPS = max(range.minFrameRate, min(15, target))
++      device.activeVideoMaxFrameDuration = CMTime(seconds: 1 / minimumFPS, preferredTimescale: 60000)
++      device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: Int32(target))
++    } catch {
++      log.info("Still preview frame-rate limit unavailable: \(error.localizedDescription)")
++    }
+   }
+
+   func initializeCaptureSessionInput() {
+@@ -110,6 +152,7 @@
+     }
+     if delegate.active {
+       if hasAvailableCameraDevice && !self.session.isRunning {
++        configureStillPreviewRate()
+         self.session.startRunning()
+       }
+     } else {
+@@ -198,6 +241,11 @@
        return
      }
- 
+
 +    // An explicit mode coming from the `autoFocus` prop wins over a manual focus
 +    // point and over its pending reset to continuous autofocus.
 +    cancelPendingFocusReset()
@@ -69,10 +110,10 @@ index 7a6568c..655a3c0 100644
      do {
        try device.lockForConfiguration()
        defer { device.unlockForConfiguration() }
-@@ -209,6 +226,160 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+@@ -209,6 +257,160 @@
      }
    }
- 
+
 +  /// Applies the exposure compensation coming from the `exposureBias` prop.
 +  ///
 +  /// `setExposureTargetBias` is public, non-deprecated API, and it is the only way to bias
@@ -230,46 +271,60 @@ index 7a6568c..655a3c0 100644
    func updateZoom() {
      guard let device = captureDeviceInput?.device, let delegate else {
        return
-@@ -278,6 +449,10 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+@@ -277,6 +479,10 @@
+   func stopSession() {
      runtimeErrorTask?.cancel()
      runtimeErrorTask = nil
- 
++
 +    cancelPendingFocusReset()
 +    isManualFocusActive = false
 +    didOverrideExposureForFocusPoint = false
-+
+
      // Stop before deconfiguring. Removing inputs and outputs from a session that is still
      // running rebuilds the capture graph just to tear it down, and that rebuild waits out
-     // its own deadline when the graph never started in the first place.
-@@ -323,6 +498,7 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
- 
+@@ -323,6 +529,7 @@
+
    deinit {
      runtimeErrorTask?.cancel()
 +    focusResetWorkItem?.cancel()
    }
- 
+
    var currentPhotoOutput: AVCapturePhotoOutput? { photoOutput }
-@@ -340,6 +516,12 @@ class CameraSessionManager: NSObject, DeviceDiscoveryDelegate {
+@@ -339,12 +546,19 @@
+     if captureDeviceInput?.device.uniqueID == device.uniqueID {
        return
      }
- 
++
 +    // A reset scheduled for the previous camera must not touch the new one, and the new
 +    // device starts from its own automatic defaults anyway.
 +    cancelPendingFocusReset()
 +    isManualFocusActive = false
 +    didOverrideExposureForFocusPoint = false
-+
+
      session.beginConfiguration()
      defer {
        session.commitConfiguration()
+       delegate.emitAvailableLenses()
+       delegate.configurePreviewRotation()
++      configureStillPreviewRate()
+     }
+     if let captureDeviceInput {
+       session.removeInput(captureDeviceInput)
+@@ -416,6 +630,7 @@
+     configureResponsiveCapture(photoOutput)
+
+     session.commitConfiguration()
++    configureStillPreviewRate()
+     addErrorNotification()
+     delegate.configurePreviewRotation()
+     delegate.barcodeScanner?.maybeStartBarcodeScanning()
 diff --git a/node_modules/expo-camera/ios/Current/CameraView.swift b/node_modules/expo-camera/ios/Current/CameraView.swift
-index 4692d00..8981721 100644
 --- a/node_modules/expo-camera/ios/Current/CameraView.swift
 +++ b/node_modules/expo-camera/ios/Current/CameraView.swift
-@@ -98,6 +98,66 @@ public class CameraView: ExpoView, EXAppLifecycleListener, EXCameraInterface, Ca
+@@ -98,6 +98,66 @@
      }
    }
- 
+
 +  /// Manual point of interest in the **capture device's** coordinate space (0...1).
 +  /// `nil` returns the camera to continuous autofocus. The session manager reverts to
 +  /// continuous autofocus on its own after a while.
@@ -333,3 +388,32 @@ index 4692d00..8981721 100644
    var pictureSize = PictureSize.photo {
      didSet {
        updatePictureSize()
+diff --git a/node_modules/expo-camera/ios/Current/CameraPhotoCapture.swift b/node_modules/expo-camera/ios/Current/CameraPhotoCapture.swift
+--- a/node_modules/expo-camera/ios/Current/CameraPhotoCapture.swift
++++ b/node_modules/expo-camera/ios/Current/CameraPhotoCapture.swift
+@@ -80,8 +80,10 @@
+         ((captureDelegate?.mirror ?? false) || options.mirror)
+       var photoSettings = AVCapturePhotoSettings()
+
+-      if photoOutput.availablePhotoCodecTypes.contains(AVVideoCodecType.hevc) {
+-        photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
++      // The app consumes JPEG. Request it directly rather than HEVC followed by
++      // a full-resolution HEVC decode and JPEG transcode on every shutter.
++      if photoOutput.availablePhotoCodecTypes.contains(AVVideoCodecType.jpeg) {
++        photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
+       }
+
+       let requestedFlashMode = captureDelegate?.flashMode.toDeviceFlashMode() ?? .auto
+@@ -93,10 +95,8 @@
+         photoSettings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
+       }
+
+-      if !photoSettings.availablePreviewPhotoPixelFormatTypes.isEmpty,
+-      let previewFormat = photoSettings.__availablePreviewPhotoPixelFormatTypes.first {
+-        photoSettings.previewPhotoFormat = [kCVPixelBufferPixelFormatTypeKey as String: previewFormat]
+-      }
++      // No consumer reads previewPhoto / previewCGImageRepresentation.
++      // Keep live CameraView preview; skip only this extra still-photo thumbnail.
+
+       if photoOutput.isHighResolutionCaptureEnabled {
+         photoSettings.isHighResolutionPhotoEnabled = true

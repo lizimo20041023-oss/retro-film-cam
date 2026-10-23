@@ -9,6 +9,8 @@ import type { Messages } from '../types';
 export const en: Messages = {
   /* ---------------- generic ---------------- */
   'common.unknownError': 'Unknown error',
+  'gallery.selection.save': 'Save to Photos',
+  'gallery.selection.saved': 'Saved {saved} / {total} photos',
 
   /* ---------------- ① top bar ---------------- */
   'camera.flash.label': 'FLASH',

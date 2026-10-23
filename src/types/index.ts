@@ -756,6 +756,9 @@ export type DevelopStatus =
 
 /** 合成视图需要的一切数据（宿主把它渲染成 `<FilmCompositor />`）。 */
 export interface FilmStageInput {
+  /** Frozen appearance for an in-flight photo; changing settings affects the next one. */
+  dateEngine?: DateEngineConfig;
+  frameVariant?: FrameVariant;
   /** 已归一化的原图 uri。 */
   rawUri: string;
   /** 排版结果。 */

@@ -21,6 +21,8 @@ import { DEFAULT_NO_FRAME_ASPECT, resolveFrame } from '../constants/frames';
 import { PRESETS, applyPresetIntensity, findPresetIndex, resolvePreset } from '../constants/presets';
 import type {
   CapturedPhoto,
+  DateEngineConfig,
+  FrameVariant,
   DevelopStage,
   FilmPreset,
   FilmStageHost,
@@ -55,6 +57,8 @@ import { recommendStockAndIntensity } from './sceneMatch';
 import { saveToLibrary } from './saveToLibrary';
 
 export interface ProcessFilmPhotoInput {
+  dateEngine?: DateEngineConfig;
+  frameVariant?: FrameVariant;
   /** `takePictureAsync` 的结果。 */
   photo: CapturedPhoto;
   /** 相框（`FRAMES` 里的一项）。 */
@@ -715,6 +719,8 @@ export async function processFilmPhoto(input: ProcessFilmPhotoInput): Promise<Pr
    */
   const stagedPreset = applyPresetIntensity(capturePreset, intensityScale);
   const stageInput: FilmStageInput = {
+    dateEngine: input.dateEngine,
+    frameVariant: input.frameVariant,
     rawUri: cropped.uri,
     layout,
     preset: stagedPreset,

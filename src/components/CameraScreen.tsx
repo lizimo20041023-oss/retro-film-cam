@@ -117,6 +117,8 @@ import type { ThemeInk } from '../constants/theme';
 import type { ZoomLensRole, ZoomStop } from '../constants/lenses';
 import type {
   CapturedPhoto,
+  DateEngineConfig,
+  FrameVariant,
   DevelopStage,
   DevelopStatus,
   FilmPreset,
@@ -271,6 +273,8 @@ function afterTwoFrames(): Promise<void> {
  * 按快门路径不等待它，整次查询最多使用 5 秒预算。
  */
 interface DevelopJobBase {
+  dateEngine: DateEngineConfig;
+  frameVariant: FrameVariant;
   frame: FrameSpec;
   noFrameAspect: NoFrameAspect;
   preset: FilmPreset;
@@ -309,6 +313,8 @@ interface DevelopShotJob extends DevelopJobBase {
 /** 相册导入产生的工单：一次可能出好几张，走 `importAndDevelop` 那条管线。 */
 interface DevelopImportJob extends DevelopJobBase {
   kind: 'import';
+  stockMode: StockMode;
+  intensityTier: PresetIntensityTier;
 }
 
 type DevelopJob = DevelopShotJob | DevelopImportJob;
@@ -1030,6 +1036,8 @@ export function CameraScreen() {
         );
       };
       return processAndSaveFilmPhoto({
+        dateEngine: job.dateEngine,
+        frameVariant: job.frameVariant,
         photo: job.photo,
         frame: job.frame,
         noFrameAspect: job.noFrameAspect,
@@ -1098,6 +1106,8 @@ export function CameraScreen() {
      */
     const developImport = async (job: DevelopImportJob) => {
       const result = await importAndDevelop({
+        dateEngine: job.dateEngine,
+        frameVariant: job.frameVariant,
         host: filmStage.host,
         frame: job.frame,
         noFrameAspect: job.noFrameAspect,
@@ -1111,6 +1121,8 @@ export function CameraScreen() {
         placeDetail: job.placeDetail,
         grainLevel: job.grainLevel,
         locationMode: job.locationMode,
+        stockMode: job.stockMode,
+        intensityTier: job.intensityTier,
       });
       if (!result.ok) {
         setStatus({ kind: 'idle' });
@@ -1158,7 +1170,7 @@ export function CameraScreen() {
               width: result.photo.pixelWidth,
               height: result.photo.pixelHeight,
               frameId: job.frame.id,
-              presetId: job.preset.id,
+              presetId: result.photo.effectivePresetId ?? job.preset.id,
               maxLongEdge: job.captureLongEdge,
               sourceFormat: 'jpeg',
             })
@@ -1891,6 +1903,7 @@ export function CameraScreen() {
   }, []);
 
   const handleOpenSettingsScreen = useCallback(() => {
+    if (shotLockRef.current) return;
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSettingsVisible(true);
   }, []);
@@ -1900,6 +1913,7 @@ export function CameraScreen() {
   }, []);
 
   const handleOpenGalleryScreen = useCallback(() => {
+    if (shotLockRef.current) return;
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setGalleryVisible(true);
   }, []);
@@ -1965,6 +1979,7 @@ export function CameraScreen() {
    */
   const handleShutter = useCallback(async () => {
     const camera = cameraRef.current;
+    if (!cameraActive) return;
     if (shotLockRef.current) {
       return;
     }
@@ -1984,6 +1999,8 @@ export function CameraScreen() {
      * 只影响下一张 —— 已经排队的这张按当时的意图洗出来（契约 §6.1 的 job 快照）。
      */
     const frozen = {
+      dateEngine: settings.dateEngine,
+      frameVariant: settings.frameVariant,
       frame,
       noFrameAspect: settings.noFrameAspect,
       preset: gradedPreset,
@@ -2089,6 +2106,9 @@ export function CameraScreen() {
     }
   }, [
     cameraReady,
+    cameraActive,
+    settings.dateEngine,
+    settings.frameVariant,
     doubleExposure,
     pendingExposureUri,
     digitalFactor,
@@ -2164,7 +2184,7 @@ export function CameraScreen() {
 
   usePhysicalShutter({
     // 与屏幕快门共用显影锁，避免物理按键在相机暂停时触发空拍。
-    enabled: cameraGranted && cameraReady && !developing,
+    enabled: cameraActive && cameraReady,
     onPress: () => {
       // 唯一的 Heavy 触感。两行都故意不 await：快门响应不能被触感或异步流程拖慢
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
@@ -2193,7 +2213,11 @@ export function CameraScreen() {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setNotice(null);
     const job: DevelopImportJob = {
+      dateEngine: settings.dateEngine,
+      frameVariant: settings.frameVariant,
       kind: 'import',
+      stockMode: settings.stockMode,
+      intensityTier: settings.presetIntensity,
       frame,
       noFrameAspect: settings.noFrameAspect,
       // 同快门那处：导入也要用"含临时色温覆盖"的那一版预设
@@ -2217,6 +2241,8 @@ export function CameraScreen() {
     frame,
     kickQueue,
     localeId,
+    settings.dateEngine,
+    settings.frameVariant,
     settings.noFrameAspect,
     settings.grainLevel,
     settings.placeDetail,
@@ -2225,6 +2251,8 @@ export function CameraScreen() {
     settings.watermarkAlign,
     settings.adaptiveGrade,
     settings.locationMode,
+    settings.stockMode,
+    settings.presetIntensity,
     t,
   ]);
 
@@ -2725,7 +2753,7 @@ export function CameraScreen() {
 
       {/* ② 取景器 */}
       <View
-        style={[styles.preview, covered ? styles.previewCovered : null]}
+        style={[styles.preview, covered && filmStage.stage === null ? styles.previewCovered : null]}
         pointerEvents={covered ? 'none' : 'auto'}
         onLayout={handlePreviewLayout}
         {...pinchHandlers}
@@ -2933,7 +2961,8 @@ export function CameraScreen() {
 
       {noticeNode !== null ? <View style={styles.noticeLayer}>{noticeNode}</View> : null}
 
-      <GalleryScreen visible={galleryVisible} onClose={handleCloseGalleryScreen} />
+      <GalleryScreen visible={galleryVisible} onClose={handleCloseGalleryScreen}
+        currentFrame={frame} currentPreset={gradedPreset} processing={developing} />
       <SettingsScreen
         visible={settingsVisible}
         onClose={handleCloseSettingsScreen}

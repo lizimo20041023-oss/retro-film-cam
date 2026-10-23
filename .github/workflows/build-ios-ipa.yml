@@ -118,6 +118,20 @@ jobs:
           echo "── node_modules 顶层条目数 ──"
           ls node_modules | wc -l
 
+      - name: 验证原生像素引擎与 JS 参考一致
+        run: |
+          npm run typecheck
+          node scripts/check-v250-regressions.cjs
+          node scripts/check-film-presets.cjs
+          node scripts/check-film-overlay.cjs
+          node scripts/check-date-size.cjs
+          node scripts/check-import-gps.cjs
+          npm run check:location
+          node scripts/check-i18n.cjs
+          node scripts/native-render-fixtures.cjs "$RUNNER_TEMP/film-fixtures.json"
+          swiftc -O modules/film-renderer/ios/FilmPixelEngine.swift scripts/native-render-check/main.swift -o "$RUNNER_TEMP/film-render-check"
+          "$RUNNER_TEMP/film-render-check" "$RUNNER_TEMP/film-fixtures.json"
+
       - name: 5. 生成原生 iOS 工程（prebuild）
         # 这一步会读取 app.json，应用 expo-camera / expo-media-library 的配置，
         # 并生成 ios/ 目录（Windows 上没法做，只能在 macOS 上做）。

@@ -9,6 +9,8 @@ import type { Messages } from '../types';
 export const fr: Messages = {
   /* ---------------- générique ---------------- */
   'common.unknownError': 'Erreur inconnue',
+  'gallery.selection.save': 'Enregistrer dans Photos',
+  'gallery.selection.saved': '{saved} / {total} photos enregistrées',
 
   /* ---------------- ① barre du haut ---------------- */
   'camera.flash.label': 'FLASH',
