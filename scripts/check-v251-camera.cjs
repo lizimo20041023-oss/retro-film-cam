@@ -24,13 +24,12 @@ assert.equal(graphite.base, '#32312F');
 assert.equal(graphite.dateColor, '#D5CAB6');
 const patch = fs.readFileSync('patches/expo-camera+57.0.6.patch', 'utf8');
 for (const marker of [
-  'case .critical: target = 15',
-  'case .serious: target = 24',
-  'default: target = 30',
+  'let target = max(range.minFrameRate, min(60.0, range.maxFrameRate))',
   'min(currentSeconds, 1.0 / 30.0)',
   'min(device.activeFormat.maxISO, 640)',
   'photoQualityPrioritization = .speed',
   'isAutoVirtualDeviceFusionEnabled = false',
   'restoreFilmExposure()',
 ]) assert(patch.includes(marker), `native capture safeguard missing: ${marker}`);
+assert(!patch.includes('thermalStateDidChangeNotification'), 'preview rate must not depend on heat');
 console.log('v2.5.1 camera exposure, night density and graphite stock checks passed');
