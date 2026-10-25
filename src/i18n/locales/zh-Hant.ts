@@ -291,7 +291,7 @@ export const zhHant: Messages = {
   /* ---------------- v1.8.0：相框改成三大暗房卡纸材质 ---------------- */
   'frame.variant.archival': '經典原白',
   'frame.variant.baryta': '歲月暖黃',
-  'frame.variant.obsidian': '暗房雅黑',
+  'frame.variant.obsidian': '暗房石墨',
   /* ---------------- v1.8.1：無相框純淨全螢幕（00 NO FRAME） ---------------- */
   'frame.noFrame': '無相框',
   // 標籤只報比例數字、不寫方向詞（理由見 zh-Hans 同一段的註解）。

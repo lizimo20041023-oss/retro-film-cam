@@ -623,10 +623,13 @@ export function buildPaperDetails(
   if (skin === undefined) {
     return details;
   }
-  if (skin.paddedBevel !== false) {
+  // Raised white-paper edges read as bright plastic strips on graphite stock.
+  // Keep the film-specific perforations and frame code, which belong to the
+  // physical format rather than the paper finish.
+  if (material.id !== 'obsidian' && skin.paddedBevel !== false) {
     details.push(...buildBevelDetails(width, height, window));
   }
-  if (skin.chinCrease !== false) {
+  if (material.id !== 'obsidian' && skin.chinCrease !== false) {
     details.push(...buildChinCreaseDetails(width, height, window));
   }
   const sprockets = buildSprocketDetails(width, height, window, skin);
@@ -637,8 +640,6 @@ export function buildPaperDetails(
   if (frameCode !== null) {
     details.push(frameCode);
   }
-  // material 参与签名（冻结接口），本版细节颜色与材质无关。
-  void material;
   return details;
 }
 

@@ -1297,6 +1297,7 @@ export function CameraScreen() {
   const previewWatermarkInput = useMemo<WatermarkPlanInput>(() => ({
       layout: previewLayout,
       frame: resolvedFrame,
+      frameVariant: settings.frameVariant,
       timestamp: resolved.timestamp,
       capturedAt: previewClock,
       locationText: '',
@@ -1338,6 +1339,7 @@ export function CameraScreen() {
     settings.watermarkAlign,
     settings.placeDetail,
     settings.dateEngine,
+    settings.frameVariant,
     exposureCount,
   ]);
   const previewPieces = useMemo(

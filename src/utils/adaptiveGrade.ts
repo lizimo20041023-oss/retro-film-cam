@@ -310,13 +310,13 @@ export function applyAdaptiveColor(
 /**
  * 场景自适应 **输入 gamma**（v2.0.1 新增，只服务真胶片 LUT 管线）。
  *
- * 用户红线（m02361）一③：LUT 标定只负责「静态中间调托起 +12%~+18%」，
- * **逆光 / 暗光** 还要再自动提亮一次 LUT 的输入暗部与中间调 —— 且只动输入曲线，
- * 不动白场（端点固定 0→0、1→1），所以「黑位沉底但暗部有细节」不会被破坏。
+ * v2.5.1: phone JPEGs already expose dark scenes toward middle grey. In a
+ * truly dark scene a second gamma lift makes streetlights, faces and sky look
+ * computationally bright. Preserve their low-key density; other scenes retain
+ * the previous adaptive response.
  *
- * 物理含义：gamma < 1 = 把输入暗部整体抬到更高的 LUT 采样点（提亮），
- * gamma > 1 = 把中间调往低采样点压（略收，防高调场景过曝）。输出范围夹 [0.88, 1.06]：
- * 比 0.88 更猛会把夜景噪点抬成灰雾，比 1.06 更陡会吃掉高光层次。
+ * gamma < 1 lifts the LUT input, gamma > 1 lowers its midtones. Endpoints
+ * remain fixed at 0 and 1. The existing [0.88, 1.06] guard is retained.
  *
  * 退化契约与 `planAdaptiveGrade` 一致：scene 为 null / samples < MIN_SAMPLES → 中性 1。
  * 返回值 round3，探针可以直接按数字核对。
@@ -324,6 +324,15 @@ export function applyAdaptiveColor(
 export function sceneGamma(scene: SceneStats | null | undefined): number {
   if (scene === null || scene === undefined) return SCENE_GAMMA_NEUTRAL;
   if (!Number.isFinite(scene.samples) || scene.samples < MIN_SAMPLES) return SCENE_GAMMA_NEUTRAL;
+
+  // A phone has already exposed its JPEG toward middle grey. Applying another
+  // shadow lift to a genuinely dark scene turns the night sky and skin into
+  // bright, sharpened-looking video. Keep lamps as highlights and let the
+  // shadows stay dark. Imports use the same rule, without changing daylight.
+  if (scene.meanLuma < 0.42 && scene.shadowShare > 0.42) {
+    const darkness = (0.42 - scene.meanLuma) * 0.16 + (scene.shadowShare - 0.42) * 0.10;
+    return Math.round(clamp(1 + darkness, 1, SCENE_GAMMA_MAX) * 1000) / 1000;
+  }
 
   // ① 主判据：平均亮度偏离中灰 0.5 越多，托起/收紧越明显。
   let gamma = 1 + (scene.meanLuma - 0.5) * 0.55;

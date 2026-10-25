@@ -120,19 +120,18 @@ const BARYTA: FrameMaterialSpec = {
 };
 
 /**
- * C 暗房雅黑 `obsidian`：`#141416`（深邃哑光黑）单一平整实色卡纸，
- * 1pt 内框线 `rgba(255, 255, 255, 0.14)`。**严禁浅灰横线**。
- * 铭文 `#A9AAB2`，日期默认 LED 琥珀红。
+ * C 暗房石墨 `obsidian`：温暖的深灰纸面。低反差切边与纸白印字
+ * 收住旧黑框的亮线、橙字和大块死黑下巴。
  */
 const OBSIDIAN: FrameMaterialSpec = {
   id: 'obsidian',
   labelKey: 'frame.variant.obsidian',
-  base: '#141416',
-  borderColor: 'rgba(255, 255, 255, 0.14)',
+  base: '#32312F',
+  borderColor: 'rgba(226, 216, 198, 0.32)',
   borderWidth: 1,
-  engravingColor: '#A9AAB2',
-  dateColor: '#FF5A3C',
-  description: '暗房雅黑：#141416（深邃哑光黑）单一平整实色卡纸 + 照片内窗四周 1pt 内框线 rgba(255, 255, 255, 0.14)。',
+  engravingColor: '#B8B1A4',
+  dateColor: '#D5CAB6',
+  description: '暗房石墨：暖深灰纸面、低反差内窗切边与淡纸白印字。',
 };
 
 /** 三种材质，顺序 = 抽屉里左右滑动的顺序 = 芯片从左到右的顺序（A→B→C）。 */

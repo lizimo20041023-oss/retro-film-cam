@@ -308,7 +308,7 @@ export const fr: Messages = {
   /* ---------------- v1.8.0：相框改成三大暗房卡纸材质 ---------------- */
   'frame.variant.archival': 'Blanc archive',
   'frame.variant.baryta': 'Baryta chaud',
-  'frame.variant.obsidian': 'Noir obsidienne',
+  'frame.variant.obsidian': 'Graphite de chambre noire',
   /* ---------------- v1.8.1 : plein cadre sans bordure (00 NO FRAME) ---------------- */
   'frame.noFrame': 'Sans cadre',
   // Chiffres du ratio uniquement — voir le commentaire de la section zh-Hans pour la

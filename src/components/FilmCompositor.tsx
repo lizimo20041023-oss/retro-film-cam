@@ -198,6 +198,8 @@ export interface WatermarkPiece {
 export interface WatermarkPlanInput {
   layout: FrameLayout;
   frame: FrameSpec;
+  /** Paper finish, shared by the finder and final export. */
+  frameVariant?: FrameVariant;
   timestamp: ResolvedTimestampConfig;
   /** 按快门那一刻。 */
   capturedAt: Date;
@@ -248,6 +250,10 @@ export interface WatermarkPlanInput {
  */
 export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
   const { layout, frame, timestamp, capturedAt, locationText, place, locale, dateEngine } = input;
+  const graphitePaper = input.frameVariant === 'obsidian' && frame.watermark?.anchor === 'frame';
+  const inkFrame: FrameSpec = graphitePaper && frame.watermark
+    ? { ...frame, watermark: { ...frame.watermark, tone: 'graphite' } }
+    : frame;
 
   /*
     日期走**日期引擎**（v1.8.0 · 模块四）。
@@ -309,7 +315,7 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
   let plan = computeWatermarkPlan(
     layout,
     timestamp,
-    frame,
+    inkFrame,
     placeText,
     dateText,
     locale,
@@ -379,7 +385,7 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
           plan = computeWatermarkPlan(
             layout,
             timestamp,
-            frame,
+            inkFrame,
             placeText,
             dateText,
             locale,
@@ -424,9 +430,19 @@ export function planWatermark(input: WatermarkPlanInput): WatermarkPiece[] {
     // 七段日期原样带过来（宽度 / 管高 / 缝宽 / 阴影都由 geometry 定）
     ...(line.quartz === undefined ? {} : { quartz: line.quartz }),
   }));
+  // Graphite paper uses quiet warm ink rather than the bright amber screen
+  // lettering designed for white stock. Both preview and export use this plan.
+  const printedPieces = graphitePaper
+    ? pieces.map((piece) => ({
+        ...piece,
+        color: piece.kind === 'date' ? '#D5CAB6' : '#B8B1A4',
+        shadowRadius: 0,
+        shadowColor: 'transparent',
+      }))
+    : pieces;
   return frame.fullBleed === true
     ? avoidDateCollision(pieces, layout, planInPhotoDate(input)?.placement.bounds ?? null)
-    : pieces;
+    : printedPieces;
 }
 
 /* ==========================================================================
@@ -719,6 +735,7 @@ function FilmCompositorImpl({
     () => ({
       layout,
       frame,
+      frameVariant: stage.frameVariant ?? frameVariant,
       timestamp: preset.timestamp,
       capturedAt,
       locationText: typeof stage.locationText === 'string' ? stage.locationText : '',
@@ -740,6 +757,8 @@ function FilmCompositorImpl({
     [
       layout,
       frame,
+      stage.frameVariant,
+      frameVariant,
       preset.timestamp,
       preset.name,
       capturedAt,
@@ -810,7 +829,9 @@ function FilmCompositorImpl({
               : {
                   backgroundColor: frameMaterial.base,
                   borderWidth: 1,
-                  borderColor: 'rgba(255, 255, 255, 0.65)',
+                  borderColor: frameVariant === 'obsidian'
+                    ? frameMaterial.borderColor
+                    : 'rgba(255, 255, 255, 0.65)',
                 }),
           },
         ]}

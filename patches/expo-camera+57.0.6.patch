@@ -40,7 +40,7 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
    var zoom: CGFloat { get }
    var onMountError: EventDispatcher { get }
    var onCameraReady: EventDispatcher { get }
-@@ -34,11 +38,45 @@
+@@ -34,11 +38,55 @@
    private var photoOutput: AVCapturePhotoOutput?
    private var videoFileOutput: AVCaptureMovieFileOutput?
    private var runtimeErrorTask: Task<Void, Never>?
@@ -65,28 +65,38 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
 +    }
 +  }
 +
-+  /// Reduce continuous ISP / preview work without changing sensor crop or still size.
-+  /// Low minimum FPS lets auto-exposure retain long exposures in dim scenes.
++  /// Keep the finder responsive while scaling the continuous camera load with heat.
++  /// A fixed frame duration also prevents AE from dragging the preview down to
++  /// 15 fps in dim light. Still-photo exposure is configured separately.
 +  private func configureStillPreviewRate() {
 +    guard delegate?.mode == .picture, let device = captureDeviceInput?.device else { return }
-+    let hot = ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical
-+    let target: Double = hot ? 15 : 24
++    let target: Double
++    switch ProcessInfo.processInfo.thermalState {
++    case .critical: target = 15
++    case .serious: target = 24
++    default: target = 30
++    }
 +    guard let range = device.activeFormat.videoSupportedFrameRateRanges.first(where: {
 +      $0.minFrameRate <= target && $0.maxFrameRate >= target
 +    }) else { return }
 +    do {
 +      try device.lockForConfiguration()
 +      defer { device.unlockForConfiguration() }
-+      let minimumFPS = max(range.minFrameRate, min(15, target))
-+      device.activeVideoMaxFrameDuration = CMTime(seconds: 1 / minimumFPS, preferredTimescale: 60000)
-+      device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: Int32(target))
++      let duration = CMTime(value: 1, timescale: Int32(target))
++      if CMTimeCompare(duration, device.activeVideoMaxFrameDuration) < 0 {
++        device.activeVideoMinFrameDuration = duration
++        device.activeVideoMaxFrameDuration = duration
++      } else {
++        device.activeVideoMaxFrameDuration = duration
++        device.activeVideoMinFrameDuration = duration
++      }
 +    } catch {
 +      log.info("Still preview frame-rate limit unavailable: \(error.localizedDescription)")
 +    }
    }
 
    func initializeCaptureSessionInput() {
-@@ -110,6 +148,7 @@
+@@ -110,6 +158,7 @@
      }
      if delegate.active {
        if hasAvailableCameraDevice && !self.session.isRunning {
@@ -94,7 +104,7 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
          self.session.startRunning()
        }
      } else {
-@@ -198,6 +237,11 @@
+@@ -198,6 +247,11 @@
        return
      }
 
@@ -106,7 +116,7 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
      do {
        try device.lockForConfiguration()
        defer { device.unlockForConfiguration() }
-@@ -209,6 +253,160 @@
+@@ -209,6 +263,160 @@
      }
    }
 
@@ -267,7 +277,7 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
    func updateZoom() {
      guard let device = captureDeviceInput?.device, let delegate else {
        return
-@@ -277,6 +475,10 @@
+@@ -277,6 +485,10 @@
    func stopSession() {
      runtimeErrorTask?.cancel()
      runtimeErrorTask = nil
@@ -278,7 +288,7 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
 
      // Stop before deconfiguring. Removing inputs and outputs from a session that is still
      // running rebuilds the capture graph just to tear it down, and that rebuild waits out
-@@ -322,7 +524,9 @@
+@@ -322,7 +534,9 @@
    }
 
    deinit {
@@ -288,7 +298,7 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
    }
 
    var currentPhotoOutput: AVCapturePhotoOutput? { photoOutput }
-@@ -339,12 +543,19 @@
+@@ -339,12 +553,19 @@
      if captureDeviceInput?.device.uniqueID == device.uniqueID {
        return
      }
@@ -308,7 +318,7 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
      }
      if let captureDeviceInput {
        session.removeInput(captureDeviceInput)
-@@ -416,6 +627,7 @@
+@@ -416,6 +637,7 @@
      configureResponsiveCapture(photoOutput)
 
      session.commitConfiguration()
@@ -319,7 +329,16 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraSessionManager.swift b/n
 diff --git a/node_modules/expo-camera/ios/Current/CameraView.swift b/node_modules/expo-camera/ios/Current/CameraView.swift
 --- a/node_modules/expo-camera/ios/Current/CameraView.swift
 +++ b/node_modules/expo-camera/ios/Current/CameraView.swift
-@@ -98,6 +98,66 @@
+@@ -12,6 +12,8 @@
+   private var photoCapture: CameraPhotoCapture!
+   private var videoRecording: CameraVideoRecording!
+   // swiftlint:enable implicitly_unwrapped_optional
++
++  var currentCaptureDevice: AVCaptureDevice? { sessionManager?.currentDevice }
+
+   private var lifecycleManager: EXAppLifecycleService?
+   internal var permissionsManager: EXPermissionsInterface?
+@@ -98,6 +100,66 @@
      }
    }
 
@@ -389,7 +408,87 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraView.swift b/node_module
 diff --git a/node_modules/expo-camera/ios/Current/CameraPhotoCapture.swift b/node_modules/expo-camera/ios/Current/CameraPhotoCapture.swift
 --- a/node_modules/expo-camera/ios/Current/CameraPhotoCapture.swift
 +++ b/node_modules/expo-camera/ios/Current/CameraPhotoCapture.swift
-@@ -80,8 +80,10 @@
+@@ -11,6 +11,7 @@
+   var presetCamera: AVCaptureDevice.Position { get }
+   var mirror: Bool { get }
+   var flashMode: FlashMode { get }
++  var currentCaptureDevice: AVCaptureDevice? { get }
+   var onPictureSaved: EventDispatcher { get }
+ }
+
+@@ -26,6 +27,50 @@
+
+   private var photoCaptureOptions: TakePictureOptions?
+   private var photoCapturedContinuation: CheckedContinuation<Any, Error>?
++  private var preparingCapture = false
++  private var filmExposureDevice: AVCaptureDevice?
++
++  /// A short, moderately sensitive exposure keeps low-light shots from being
++  /// converted into day-bright multi-frame photographs. The preview stays on
++  /// automatic exposure; this temporary override exists only for the shutter.
++  private func prepareFilmExposure() async -> AVCaptureDevice? {
++    guard captureDelegate?.flashMode == .off,
++          captureDelegate?.presetCamera == .back,
++          let device = captureDelegate?.currentCaptureDevice,
++          device.isExposureModeSupported(.custom) else { return nil }
++    let currentSeconds = CMTimeGetSeconds(device.exposureDuration)
++    guard currentSeconds.isFinite, currentSeconds > 0 else { return nil }
++    let targetSeconds = max(CMTimeGetSeconds(device.activeFormat.minExposureDuration), min(currentSeconds, 1.0 / 30.0))
++    let targetISO = min(max(device.iso, device.activeFormat.minISO), min(device.activeFormat.maxISO, 640))
++    // Daylight exposures already below both limits need no device-mode switch.
++    guard currentSeconds > targetSeconds + 0.0001 || device.iso > targetISO + 0.5 else { return nil }
++    return await withCheckedContinuation { continuation in
++      do {
++        try device.lockForConfiguration()
++        device.setExposureModeCustom(
++          duration: CMTime(seconds: targetSeconds, preferredTimescale: 60000),
++          iso: targetISO
++        ) { _ in continuation.resume(returning: device) }
++        device.unlockForConfiguration()
++      } catch {
++        continuation.resume(returning: nil)
++      }
++    }
++  }
++
++  private func restoreFilmExposure() {
++    guard let device = filmExposureDevice else { return }
++    filmExposureDevice = nil
++    do {
++      try device.lockForConfiguration()
++      defer { device.unlockForConfiguration() }
++      if device.isExposureModeSupported(.continuousAutoExposure) {
++        device.exposureMode = .continuousAutoExposure
++      }
++    } catch {
++      // A camera switch/unmount can invalidate the old device during a shot.
++    }
++  }
+
+   init(delegate: CameraPhotoCaptureDelegate) {
+     self.captureDelegate = delegate
+@@ -62,10 +107,18 @@
+   }
+
+   func takePicture(options: TakePictureOptions, photoOutput: AVCapturePhotoOutput) async throws -> Any {
+-    guard photoCapturedContinuation == nil else {
++    guard photoCapturedContinuation == nil && !preparingCapture else {
+       throw CameraNotReadyException()
+     }
+-
++    preparingCapture = true
++    let exposureDevice = await prepareFilmExposure()
++    preparingCapture = false
++    guard captureDelegate != nil else {
++      filmExposureDevice = exposureDevice
++      restoreFilmExposure()
++      throw CameraUnmountedException()
++    }
++    filmExposureDevice = exposureDevice
+     return try await withCheckedThrowingContinuation { continuation in
+       photoCapturedContinuation = continuation
+       photoCaptureOptions = options
+@@ -80,8 +133,10 @@
          ((captureDelegate?.mirror ?? false) || options.mirror)
        var photoSettings = AVCapturePhotoSettings()
 
@@ -402,7 +501,7 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraPhotoCapture.swift b/nod
        }
 
        let requestedFlashMode = captureDelegate?.flashMode.toDeviceFlashMode() ?? .auto
-@@ -93,10 +95,8 @@
+@@ -93,16 +148,17 @@
          photoSettings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
        }
 
@@ -415,3 +514,29 @@ diff --git a/node_modules/expo-camera/ios/Current/CameraPhotoCapture.swift b/nod
 
        if photoOutput.isHighResolutionCaptureEnabled {
          photoSettings.isHighResolutionPhotoEnabled = true
+       }
+
+-      photoSettings.photoQualityPrioritization = .balanced
++      // Speed avoids the multi-frame low-light processing that brightens dark
++      // scenes and may override the temporary exposure duration/ISO above.
++      photoSettings.photoQualityPrioritization = .speed
++      photoSettings.isAutoVirtualDeviceFusionEnabled = false
+
+       photoOutput.capturePhoto(with: photoSettings, delegate: self)
+     }
+@@ -119,6 +175,7 @@
+     didFinishProcessingPhoto photo: AVCapturePhoto,
+     error: Error?
+     ) {
++    restoreFilmExposure()
+     guard let options = photoCaptureOptions, let continuation = photoCapturedContinuation else {
+       return
+     }
+@@ -279,6 +336,7 @@
+   }
+
+   func cleanup() {
++    restoreFilmExposure()
+     photoCapturedContinuation?.resume(throwing: CameraUnmountedException())
+     self.photoCapturedContinuation = nil
+   }

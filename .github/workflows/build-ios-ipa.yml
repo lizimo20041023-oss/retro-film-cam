@@ -122,6 +122,7 @@ jobs:
         run: |
           npm run typecheck
           node scripts/check-v250-regressions.cjs
+          node scripts/check-v251-camera.cjs
           node scripts/check-film-presets.cjs
           node scripts/check-film-overlay.cjs
           node scripts/check-date-size.cjs

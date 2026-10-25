@@ -302,7 +302,7 @@ export const en: Messages = {
   /* ---------------- v1.8.0：相框改成三大暗房卡纸材质 ---------------- */
   'frame.variant.archival': 'Archival white',
   'frame.variant.baryta': 'Baryta warm',
-  'frame.variant.obsidian': 'Obsidian black',
+  'frame.variant.obsidian': 'Darkroom graphite',
   /* ---------------- v1.8.1: borderless full-bleed capture (00 NO FRAME) ---------------- */
   'frame.noFrame': 'No frame',
   // Ratio digits only — see the zh-Hans section comment for why no "landscape/portrait"

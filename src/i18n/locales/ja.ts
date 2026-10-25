@@ -297,7 +297,7 @@ export const ja: Messages = {
   /* ---------------- v1.8.0：相框改成三大暗房卡纸材质 ---------------- */
   'frame.variant.archival': 'クラシック白',
   'frame.variant.baryta': 'バライタ暖黄',
-  'frame.variant.obsidian': 'ダークルーム黒',
+  'frame.variant.obsidian': '暗室グラファイト',
   /* ---------------- v1.8.1：枠なし全画面（00 NO FRAME） ---------------- */
   'frame.noFrame': '枠なし',
   // 比率の数字だけを出し、方向の語は書かない（理由は zh-Hans の同じ節の注記）。

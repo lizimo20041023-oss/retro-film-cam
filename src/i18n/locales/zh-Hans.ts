@@ -302,7 +302,7 @@ export const zhHans = {
   /* ---------------- v1.8.0：相框改成三大暗房卡纸材质 ---------------- */
   'frame.variant.archival': '经典原白',
   'frame.variant.baryta': '岁月暖黄',
-  'frame.variant.obsidian': '暗房雅黑',
+  'frame.variant.obsidian': '暗房石墨',
   /* ---------------- v1.8.1：无相框纯净全屏（00 NO FRAME） ---------------- */
   'frame.noFrame': '无相框',
   // 三档画幅比的**结果**，不是名字：门禁把 `3:2` 那一档冻成了 `ratio = 2/3`
